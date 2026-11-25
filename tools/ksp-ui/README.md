@@ -15,6 +15,7 @@ oracle Kontakt and KONTRA can be diffed on screen and on what scripts see.
 | behaviour | how far each drag, Shift drag and ctrl-press moves knobs, sliders (with `MOUSE_BEHAVIOUR`) and value edits; shoot with `DPI=96` |
 | layers | who hears a click where controls overlap: Z_LAYER, widget type, declaration order, labels, hidden controls and panels; shoot with `DPI=96` |
 | fields | where a menu's, a button's and a switch's words sit for each `TEXT_ALIGNMENT`, in the stock font and fonts 0, 1 and 13, lit or not and with `TEXTPOS_Y`, beside labels in each font; shoot with `DPI=96` |
+| tables | how a stock table draws: frame, field, column pitch and gaps, dimmed empty cells, bars, zero line, `$HIDE_PART_BG`, steps shown; how far a tab moves a label's words; shoot with `DPI=96` |
 
 ## Run
 

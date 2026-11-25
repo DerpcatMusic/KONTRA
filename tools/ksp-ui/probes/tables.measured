@@ -1,0 +1,30 @@
+# Kontakt 8.13 at 100 % (shoot.sh, DPI=96), oracle run 2026-11-25: how a stock table draws
+# (gen.py tables()). Coordinates are from the table's rect; w and h its size.
+# KONTRA checks: crates/app/ui-view/src/tests.rs (kontakt_table_*, table_columns_*).
+part            where                         colour
+box             1 px inside the rect          -
+frame, outer    x 1, w-2 by h-2               44 grey
+frame, inner    x 2, w-4 by h-4               57 grey
+field           x 3, w-6 by h-6               63 grey (BG_COLOR when set)
+column n        starts at 3 + floor(n * pitch), pitch = (w-6) / steps shown;
+                ends 1 px before the next starts, so the field shows in the gap
+empty cell      the column's whole height     bar colour at 1/4 alpha over the field
+bar             fractional, up from the field's bottom (down from zero when bipolar)
+bar, default    -                             0xd9dee0
+zero line       1 px at the field's middle, over bars and gaps   0xeeeeee unless set
+$HIDE_PART_BG   no frame and no field; the columns keep the 3 px inset and their dimmed cells
+                draw over the page
+# A wallpaper or set_ui_color changes neither the frame nor the field (oracle, same run).
+# A label's tab advances one space (3 px) in the pixel font, 5 px in font 13 (a space there is 2 px):
+lead            font   first ink (from the label's left)
+""              13     8
+"\t"            13     13
+"\t\t\t"        13     23
+"   "           13     14
+"\t\t\t   "     13     29
+""              stock  7
+"\t"            stock  10
+"\t\t\t"        stock  16
+"   "           stock  16
+"\t\t\t   "     stock  25
+# A label with no size (it reads 87 x 18) draws its face, in any font.

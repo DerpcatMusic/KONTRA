@@ -34,6 +34,7 @@ pub(super) fn view(
                 size,
             );
             let look = p.look.unwrap_or(v.face_look);
+            face.gesture.latest = v.pointer;
             let (mut edits, popup) =
                 input::read(ui, n, &face.tree, PageRef(0), scale, &mut face.gesture);
             if let Some(drag) = &v.files {

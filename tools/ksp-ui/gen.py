@@ -647,7 +647,55 @@ def fields():
     return p
 
 
-PAGES = [widgets, geometry, pictures_page, text, data, behaviour, layers, fields]
+def tables():
+    """Where a stock table's columns and bars sit when its width is not a multiple of its
+    columns, how its empty cells and background draw, and whether a label with no size
+    draws a face (the tempo captions of a library's step sequencer)."""
+    p = Page("tables")
+    # (columns, range, x, y, width, height, steps shown, bar colour, hidden background)
+    specs = [(16, 127, 10, 10, 247, 75, None, 0xF6B05C, False),
+             (16, 1, 280, 10, 247, 16, None, 0xF6B05C, False),
+             (16, 127, 550, 10, 240, 75, None, None, False),
+             (16, 127, 10, 110, 100, 60, None, None, False),
+             (13, 127, 130, 110, 200, 60, None, 0xF6B05C, False),
+             (16, 127, 350, 110, 247, 60, 12, 0xF6B05C, False),
+             (12, -100, 620, 110, 201, 60, None, None, False),
+             (16, 127, 10, 200, 247, 60, None, 0xF6B05C, True)]
+    for n, (cols, rng, x, y, w, h, shown, bar, bare) in enumerate(specs):
+        t = p.control("ui_table", f"t{n}", f"[{cols}](4, 4, {rng})", log=False)
+        p.at(t, x, y, w, h)
+        for i in range(cols):
+            v = 0 if i % 4 == 3 else (rng if i % 4 == 0 else rng * (i + 1) // (cols + 1))
+            p.setup.append(f"%t{n}[{i}] := {v}")
+        if shown is not None:
+            p.setup.append(f"set_table_steps_shown({t}, {shown})")
+        if bar is not None:
+            p.par(t, "BAR_COLOR", bar)
+        if bare:
+            p.par(t, "HIDE", 1)  # $HIDE_PART_BG
+    # Labels with words and no size (they read 87 x 18), in the stock font and in font 13,
+    # beside the same labels sized 87 x 18.
+    for c, (font, sized) in enumerate([(None, False), (13, False), (15, False), (None, True),
+                                       (13, True)]):
+        lab = p.control("ui_label", f"cap{c}", "(1, 1)", log=False)
+        p.at(lab, 290 + c * 100, 210, *((87, 18) if sized else ()))
+        p.setup.append(f'set_text({lab}, "/2T")')
+        if font is not None:
+            p.par(lab, "FONT_TYPE", font)
+    # How far a tab and a space move a label's words: a library's list rows start with three tabs
+    # and three spaces.
+    for c, lead in enumerate(["", "\t", "\t\t\t", "   ", "\t\t\t   "]):
+        for r, font in enumerate([13, None]):
+            lab = p.control("ui_label", f"lead{c}{r}", "(1, 1)", log=False)
+            p.at(lab, 10 + c * 150, 290 + r * 40, 140, 26)
+            p.par(lab, "TEXT", lead + "Legato")
+            p.par(lab, "TEXT_ALIGNMENT", 0)
+            if font is not None:
+                p.par(lab, "FONT_TYPE", font)
+    return p
+
+
+PAGES = [widgets, geometry, pictures_page, text, data, behaviour, layers, fields, tables]
 
 
 def main():

@@ -120,9 +120,9 @@ evidence_freshness_days: 180
   0, 40 and 105; KONTRA keeps CONTROL_PAR constants opaque.
 - `$CONTROL_PAR_WAVETABLE` in the coverage report is a wrapped table row of
   the manual (`_END_COLOR`), not a parameter.
-- Visual fidelity of the Original look (tools/ksp-ui fields page and
+- Visual fidelity of the Original look (tools/ksp-ui fields and tables pages and
   seventeen library instruments shot at 100 %, compared with
-  `tools/ksp-ui/align.py`; probes/fields.measured). Fixed: a menu's, a
+  `tools/ksp-ui/align.py`; probes/fields.measured, probes/tables.measured). Fixed: a menu's, a
   button's and a switch's words follow TEXT_ALIGNMENT and are set from the
   left when it is unset; a menu's words run under its arrow. Font 0 and an
   unset font on a field draw in the stock pixel atlas (`@stock/font`, read
@@ -131,9 +131,17 @@ evidence_freshness_days: 180
   as a label in that font; `$CONTROL_PAR_TEXTPOS_Y` on a button or switch is
   an offset from the centred place; a label's face darkens the page under
   it (black at alpha 129). Vista's and Pacific's buttons and value edits
-  now match. Open: font 1 on a field is 3 px wider than Kontakt's (57
-  against 54); stock tables (Areia Measured Tremolo) draw a grey frame and
-  inset columns where Kontakt runs them edge to edge with dim empty cells;
-  that instrument also shows dark boxes behind its tempo labels. Only
-  eleven libraries are installed; Conflux and Shreddage 3.5 load empty in
-  the oracle and are not compared.
+  now match. A stock table draws as probes/tables.measured gives (2 px
+  frame, field, whole-pixel columns with gaps, dimmed empty cells, zero line
+  over the bars); a label's tab advances one space in the pixel font and
+  about two in the others. Open: font 1 is a different, hinted face in
+  Kontakt (its 'o' is 5 px where KONTRA's is 6), so a line in it runs up to
+  3 px wider or narrower depending on its letters; a weight of 600 for 700
+  traded one probe line for the other and was not kept. Areia's tables and
+  its unsized tempo labels draw with no field or face in Kontakt, as
+  `$HIDE_PART_BG` would, though its script hides nothing: neither the
+  label's size nor a wallpaper explains it (both probed). In font 13, a
+  space is 2 px in Kontakt and about 2.7 in KONTRA's face, which moves
+  Areia's tab-and-space list rows 2 px right. Only eleven libraries are
+  installed; Conflux and Shreddage 3.5 load empty in the oracle and are not
+  compared.

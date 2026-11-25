@@ -69,25 +69,34 @@ struct PartView {
     diag_latent: Arc<Vec<String>>,
 }
 
-/// How long a library control the player moved keeps the editor's value
-/// over the rack's copy: the copy shows a move once the script has run on
-/// it, a block or more after the tick that sent it.
+/// How long a library control the player let go keeps the editor's value
+/// once the rack has carried its last move out, when the script's answer
+/// changes nothing the copy shows.
 const HOLD: Duration = Duration::from_millis(250);
+
+/// A library control the player moved: its last move, sent as edit `seq`.
+struct Held {
+    edit: input::Edit,
+    seq: u64,
+    /// The copy's revision and the time when the rack had first carried
+    /// `seq` out.
+    seen: Option<(u64, Instant)>,
+}
 
 /// The editor's own edits, which the rack's copy may not show yet.
 #[derive(Default)]
 pub(crate) struct Mine {
     /// By rack slot: the last edit sent ([`crate::Shared::request_ui`]).
     sent: HashMap<usize, u64>,
-    /// By `(rack slot, load generation)`: the library controls the player moved,
-    /// and when. Scoped by generation so a previous load's tweaks never stamp
-    /// onto a newly loaded preset.
-    touched: HashMap<(usize, u64), Vec<(Instant, input::Edit)>>,
+    /// By `(rack slot, load generation)`: the library controls the player moved.
+    /// Scoped by generation so a previous load's tweaks never stamp onto a
+    /// newly loaded preset.
+    touched: HashMap<(usize, u64), Vec<Held>>,
 }
 
 impl Mine {
     /// Notes `action`, sent to rack `slot` (at load `generation`) as edit `seq`.
-    fn note(&mut self, slot: usize, generation: u64, seq: u64, action: &Action, now: Instant) {
+    fn note(&mut self, slot: usize, generation: u64, seq: u64, action: &Action) {
         self.sent.insert(slot, seq);
         let (widget, to) = match action {
             Action::Control {
@@ -113,29 +122,49 @@ impl Mine {
                     (a, b) => std::mem::discriminant(a) == std::mem::discriminant(b),
                 }
         };
-        mine.retain(|(at, e)| now.duration_since(*at) < HOLD && !same(e));
-        mine.push((now, edit));
-    }
-
-    /// Drop edits for unloaded parts and expired edits for the remaining loads.
-    fn prune(&mut self, parts: &[PartView], now: Instant) {
-        self.touched.retain(|&(slot, generation), edits| {
-            if !parts
-                .iter()
-                .any(|p| (p.slot, p.generation) == (slot, generation))
-            {
-                return false;
-            }
-            edits.retain(|(at, _)| now.duration_since(*at) < HOLD);
-            !edits.is_empty()
+        mine.retain(|h| !same(&h.edit));
+        mine.push(Held {
+            edit,
+            seq,
+            seen: None,
         });
     }
 
-    /// The edits to rack `slot`'s face (for load `generation`) still held at `now`.
-    fn held(&self, slot: usize, generation: u64, now: Instant) -> Vec<input::Edit> {
+    /// The player still holds a control on rack `slot`'s face: its last
+    /// move stays over every copy until the press ends.
+    fn keep(&mut self, slot: usize, generation: u64) {
+        let last = self.touched.get_mut(&(slot, generation));
+        if let Some(h) = last.and_then(|held| held.last_mut()) {
+            h.seen = None;
+        }
+    }
+
+    /// Lets go of what the copy shows now: a move ends once the rack has
+    /// carried it out (`applied`) and a newer copy came (the script's
+    /// answer), or [`HOLD`] after it was carried out when none comes. Edits
+    /// to unloaded parts go.
+    fn prune(&mut self, parts: &[PartView], applied: u64, now: Instant) {
+        self.touched.retain(|&(slot, generation), held| {
+            let Some(p) = (parts.iter()).find(|p| (p.slot, p.generation) == (slot, generation))
+            else {
+                return false;
+            };
+            held.retain_mut(|h| match h.seen {
+                _ if applied < h.seq => true,
+                None => {
+                    h.seen = Some((p.revision, now));
+                    true
+                }
+                Some((revision, at)) => revision == p.revision && now.duration_since(at) < HOLD,
+            });
+            !held.is_empty()
+        });
+    }
+
+    /// The edits to rack `slot`'s face (for load `generation`) still held.
+    fn held(&self, slot: usize, generation: u64) -> Vec<input::Edit> {
         (self.touched.get(&(slot, generation)).into_iter().flatten())
-            .filter(|(at, _)| now.duration_since(*at) < HOLD)
-            .map(|(_, e)| e.clone())
+            .map(|h| h.edit.clone())
             .collect()
     }
 }
@@ -347,9 +376,9 @@ impl Snapshot {
     /// Fills `app` for a frame, keeping each part's own view state; `shown`
     /// is which load of each part the editor's faces are of. `mine` is what
     /// the editor sent: a part's mix this copy predates, and a library
-    /// control moved within [`HOLD`], keep what the editor drew, so a drag
+    /// control [`Mine`] still holds, keep what the editor drew, so a drag
     /// never springs back to a value from before its own moves.
-    fn fill(&self, app: &mut App, shown: &mut Shown, mine: &Mine, now: Instant) {
+    fn fill(&self, app: &mut App, shown: &mut Shown, mine: &Mine) {
         let sent = &mine.sent;
         if shown.browser != self.libraries.0 {
             let fresh = self.libraries.1.as_ref();
@@ -430,7 +459,7 @@ impl Snapshot {
             // them until the script has had them.
             let mut face = face;
             if let Some(f) = face.as_mut() {
-                input::apply(&mut f.tree, &mine.held(p.slot, p.generation, now));
+                input::apply(&mut f.tree, &mine.held(p.slot, p.generation));
             }
             let own = |f: fn(&Part) -> f64, theirs: f64| match &old {
                 Some(old) if held => f(old),
@@ -1054,9 +1083,16 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             if !p.shared.shown.load(Ordering::Acquire) || !view.ready() {
                 return moose::mui::mui::prelude::body("Refreshing rack…");
             }
+            // A control pressed on a face keeps its move for as long as the
+            // press lasts, however late the script's answers come.
+            for (part, v) in app.parts.iter().zip(&view.parts) {
+                if part.face.as_ref().is_some_and(|f| f.gesture.held()) {
+                    mine.keep(v.slot, v.generation);
+                }
+            }
             let now = Instant::now();
-            mine.prune(&view.parts, now);
-            view.fill(&mut app, &mut shown, &mine, now);
+            mine.prune(&view.parts, view.applied, now);
+            view.fill(&mut app, &mut shown, &mine);
             (
                 view.parts.iter().map(|v| v.slot).collect(),
                 view.parts.iter().map(|v| (v.slot, v.generation)).collect(),
@@ -1068,8 +1104,10 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         app.load_progress = p.shared.progress.snapshot();
         crate::frames::note("fill", start.elapsed());
         app.view.files = lock(&dragged).take();
+        app.view.pointer = bridge.pointer().pos;
         let response = crate::frames::time("view", || kontra_ui::app::view(ui, &mut app));
         app.view.files = None;
+        app.view.pointer = None;
         // A frame reads its input as it builds, so what a press or release
         // changes (a switch applied to the face, a row selected) shows in
         // the frame after it: ask for that one, or it waits for more input.
@@ -1246,7 +1284,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                     .iter()
                     .find(|&&(s, _)| s == slot)
                     .map_or(0, |&(_, g)| g);
-                mine.note(slot, generation, seq, &action, Instant::now());
+                mine.note(slot, generation, seq, &action);
             }
         }
         let pressed = (app.parts.iter()).any(|s| s.face.as_ref().is_some_and(|f| f.gesture.held()));
@@ -1547,6 +1585,9 @@ fn is_instrument(path: &std::path::Path) -> bool {
 }
 
 #[cfg(test)]
+mod drag_probe;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1609,8 +1650,7 @@ mod tests {
             ..Snapshot::default()
         };
         let (mut app, mut shown) = (App::default(), Shown::default());
-        let t = Instant::now();
-        view.fill(&mut app, &mut shown, &Mine::default(), t);
+        view.fill(&mut app, &mut shown, &Mine::default());
         let drawn = |app: &App| app.parts.first().map(|p| p.volume.round());
         assert_eq!(drawn(&app), Some(0.));
         // The editor dragged to +6 dB and sent it as edit 1.
@@ -1621,21 +1661,53 @@ mod tests {
             sent: HashMap::from([(0, 1)]),
             ..Mine::default()
         };
-        view.fill(&mut app, &mut shown, &mine, t);
+        view.fill(&mut app, &mut shown, &mine);
         assert_eq!(drawn(&app), Some(6.), "the copy predates the edit");
         view.applied = 1;
         view.parts = vec![part(db_to_linear(6.))];
-        view.fill(&mut app, &mut shown, &mine, t);
+        view.fill(&mut app, &mut shown, &mine);
         assert_eq!(drawn(&app), Some(6.));
         view.parts = vec![part(db_to_linear(-3.))];
-        view.fill(&mut app, &mut shown, &mine, t);
+        view.fill(&mut app, &mut shown, &mine);
         assert_eq!(drawn(&app), Some(-3.), "the rack's own change shows");
     }
 
-    /// A library control the player moves keeps its last move over the
-    /// rack's copy for [`HOLD`], one entry per control.
+    /// Rack slot 2 at load 7, its interface at `revision`.
+    fn slot_two(revision: u64) -> Vec<PartView> {
+        vec![PartView {
+            slot: 2,
+            generation: 7,
+            path: None,
+            source: None,
+            tree: None,
+            revision,
+            sounds: Default::default(),
+            name: String::new(),
+            library: String::new(),
+            preset: None,
+            modified: false,
+            mix: Mix {
+                channel: 0,
+                output: 0,
+                gain: 1.,
+                pan: 0.,
+                silent: false,
+            },
+            solo: false,
+            mute: false,
+            level: Vec::new(),
+            diag_count: 0,
+            needs: Arc::default(),
+            diag_visible: Arc::default(),
+            diag_latent: Arc::default(),
+        }]
+    }
+
+    /// A library control the player drags keeps its last move over every
+    /// copy of the rack for as long as the press lasts, however late the
+    /// script answers; let go, the script's answer to the last move shows.
     #[test]
-    fn a_moved_control_holds_its_last_move() {
+    fn a_dragged_control_holds_until_the_script_answers_its_release() {
         let (mut mine, t) = (Mine::default(), Instant::now());
         let moved = |value| Action::Control {
             part: 0,
@@ -1644,17 +1716,43 @@ mod tests {
             value,
             keys: Default::default(),
         };
-        mine.note(2, 7, 1, &moved(0.4), t);
-        mine.note(2, 7, 2, &moved(0.5), t);
-        let held = mine.held(2, 7, t + Duration::from_millis(100));
-        assert_eq!(held.len(), 1);
-        assert!(held.iter().all(|e| e.to == Set::Value(0.5)));
-        assert!(mine.held(2, 7, t + HOLD).is_empty());
-        assert!(
-            mine.held(2, 8, t).is_empty(),
-            "new generation drops stale edits"
-        );
-        assert!(mine.held(1, 7, t).is_empty());
+        let shows = |mine: &Mine| {
+            mine.held(2, 7)
+                .iter()
+                .map(|e| e.to.clone())
+                .collect::<Vec<_>>()
+        };
+        mine.note(2, 7, 1, &moved(0.4));
+        mine.note(2, 7, 2, &moved(0.5));
+        assert_eq!(shows(&mine), [Set::Value(0.5)], "one entry per control");
+        // Pressed: late copies, and copies that carried the move out, never
+        // take it back, long after any timer.
+        for (k, applied) in [1, 2, 2, 2].into_iter().enumerate() {
+            mine.keep(2, 7);
+            let late = t + Duration::from_secs(10 * k as u64);
+            mine.prune(&slot_two(10 + k as u64), applied, late);
+            assert_eq!(shows(&mine), [Set::Value(0.5)], "copy {k} mid-drag");
+        }
+        // Let go: the copy that carried the last move out still holds it,
+        // and the script's answer, the next copy, shows.
+        mine.prune(&slot_two(13), 2, t);
+        assert_eq!(shows(&mine), [Set::Value(0.5)]);
+        mine.prune(&slot_two(14), 2, t);
+        assert!(shows(&mine).is_empty(), "the release's echo shows");
+        // A script that answers nothing visible: HOLD after it was carried out.
+        mine.note(2, 7, 3, &moved(0.6));
+        mine.prune(&slot_two(14), 2, t + HOLD * 9);
+        assert_eq!(shows(&mine), [Set::Value(0.6)], "not carried out yet");
+        mine.prune(&slot_two(14), 3, t);
+        mine.prune(&slot_two(14), 3, t + HOLD / 2);
+        assert_eq!(shows(&mine), [Set::Value(0.6)]);
+        mine.prune(&slot_two(14), 3, t + HOLD);
+        assert!(shows(&mine).is_empty());
+        // Another load of the part drops what the last one held.
+        mine.note(2, 7, 4, &moved(0.7));
+        assert!(mine.held(2, 8).is_empty() && mine.held(1, 7).is_empty());
+        mine.prune(&[], 4, t);
+        assert!(shows(&mine).is_empty());
     }
 
     #[test]
@@ -1727,7 +1825,7 @@ mod tests {
             ..App::default()
         };
         let mut shown = Shown::default();
-        snap.fill(&mut app, &mut shown, &Mine::default(), Instant::now());
+        snap.fill(&mut app, &mut shown, &Mine::default());
 
         assert_eq!(app.parts.len(), 1);
         assert_eq!(

@@ -1318,19 +1318,19 @@ fn kontakt_table_honors_steps_shown_bipolar_colors_hide_bg_and_picture() {
     let px = paint(&mut ui, el, 40, 20);
     let at = |x: usize, y: usize| px.get(y * 40 + x).copied();
 
-    // HIDE_PART_BG lets page color show in empty half while still drawing bars!
+    // HIDE_PART_BG drops the frame and field: a column's empty part is the
+    // bar colour at a quarter alpha over the page (the reference 8.13,
+    // tools/ksp-ui tables page), and the gap after a column is the page.
+    let dim = |p: Option<[u8; 4]>| {
+        p.is_some_and(|[r, g, b, _]| {
+            (70..=80).contains(&r) && (20..=28).contains(&g) && (32..=40).contains(&b)
+        })
+    };
     assert_eq!(at(5, 3), Some([0xFF, 0, 0, 255]), "col 0 positive bar");
-    assert_eq!(
-        at(5, 16),
-        Some([0x10, 0x20, 0x30, 255]),
-        "col 0 lower shows page"
-    );
-    assert_eq!(
-        at(25, 3),
-        Some([0x10, 0x20, 0x30, 255]),
-        "col 1 upper shows page"
-    );
+    assert!(dim(at(5, 16)), "col 0 lower is dimmed bar: {:?}", at(5, 16));
+    assert!(dim(at(25, 3)), "col 1 upper is dimmed bar: {:?}", at(25, 3));
     assert_eq!(at(25, 16), Some([0xFF, 0, 0, 255]), "col 1 negative bar");
+    assert_eq!(at(19, 5), Some([0x10, 0x20, 0x30, 255]), "gap shows page");
     assert_eq!(at(19, 10), Some([0, 0xFF, 0, 255]), "bipolar zero line");
 
     // Adding a custom background picture draws both picture AND bars on top.
@@ -1356,10 +1356,10 @@ fn kontakt_table_honors_steps_shown_bipolar_colors_hide_bg_and_picture() {
     let px = paint(&mut ui, el, 40, 20);
     let at = |x: usize, y: usize| px.get(y * 40 + x).copied();
     assert_eq!(at(5, 3), Some([0xFF, 0, 0, 255]), "bar draws over picture");
-    assert_eq!(
-        at(5, 16),
-        Some([0, 0, 255, 255]),
-        "picture shows behind bars"
+    assert!(
+        at(5, 16).is_some_and(|[r, _, b, _]| r > 50 && b > 150),
+        "picture shows behind the dimmed column: {:?}",
+        at(5, 16)
     );
 }
 
@@ -1484,10 +1484,12 @@ fn style_font_and_value_y_invalidate_memo_and_table_columns_align_to_steps_shown
         Some([0, 0xFF, 0, 255]),
         "col 1 draws in second quarter"
     );
-    assert_eq!(
-        at(25, 30),
-        Some([0x10, 0x20, 0x30, 255]),
-        "col 2 stays empty rather than stretching 2 bars across 4 columns"
+    // An empty column keeps only its dimmed cell (a quarter of the bar
+    // colour over the page).
+    assert!(
+        at(25, 30).is_some_and(|[r, g, _, _]| r < 0x20 && (0x50..0x80).contains(&g)),
+        "col 2 stays empty rather than stretching 2 bars across 4 columns: {:?}",
+        at(25, 30)
     );
 
     // Changing only `style.font` (keeping StyleRef(0) and color/align/size identical)

@@ -1062,11 +1062,18 @@ pub(super) fn table(
     canvas(move |z| {
         let (w, h) = (z.width, z.height);
         let mut d = Vec::new();
-        let inset = if draw_bg && style.frame_rim {
-            let bg_fill = background.map_or(grey(FIELD), |c| Fill::from(super::color(c)));
-            d.push(Draw::fill(rect(0., 0., w, h), bg_fill));
-            d.push(Draw::stroke(rect(0.5, 0.5, w - 1., h - 1.), grey(EDGE), 1.));
-            1.
+        // Kontakt's stock table sits 1 px inside its rect: a 2 px frame
+        // (44, then 57) round a 63 grey field (the reference 8.13,
+        // tools/ksp-ui tables page).
+        let inset = if style.frame_rim {
+            if draw_bg {
+                let bg_fill =
+                    background.map_or(Fill::from(rgb(0x3f_3f3f)), |c| Fill::from(super::color(c)));
+                d.push(Draw::fill(rect(1., 1., w - 2., h - 2.), rgb(0x2c_2c2c)));
+                d.push(Draw::fill(rect(2., 2., w - 4., h - 4.), rgb(0x39_3939)));
+                d.push(Draw::fill(rect(3., 3., w - 6., h - 6.), bg_fill));
+            }
+            3.
         } else {
             0.
         };
@@ -1115,21 +1122,36 @@ pub(super) fn table(
                 d.push(Draw::fill(rect(ix, iy, iw, ih), fill));
             }
         }
+        let bar = bar.or(style.frame_rim.then(|| model::Rgba::rgb(0xd9_dee0)));
         let ink = bar.map_or(grey(VALUE), |c| Fill::from(super::color(c)));
+        // A Kontakt column starts at a whole pixel and leaves 1 px of field
+        // after it; its empty part is the bar colour at a quarter alpha.
+        let column = |n: usize| {
+            if style.frame_rim {
+                let (a, b) = ((n as f64 * bw).floor(), ((n + 1) as f64 * bw).floor());
+                (ix + a, (b - a - 1.).max(1.))
+            } else {
+                (ix + n as f64 * bw, bar_w)
+            }
+        };
+        if style.frame_rim
+            && let Some(c) = bar
+        {
+            let dim = Fill::from(super::color(model::Rgba { a: c.a / 4, ..c }));
+            for n in 0..shown {
+                let (x, cw) = column(n);
+                d.push(Draw::fill(rect(x, iy, cw, ih), dim.clone()));
+            }
+        }
         let is_bipolar = bipolar && zero > 0. && zero < 1.;
         let base = iy + ih * (1. - zero);
-        if style.draw_zero_line && is_bipolar {
-            let line_fill = zero_line.map_or(grey(EDGE), |c| Fill::from(super::color(c)));
-            let ly = base.round().clamp(iy, (iy + ih - 1.).max(iy));
-            d.push(Draw::fill(rect(ix, ly, iw, 1.), line_fill));
-        }
         let min_zero = if is_bipolar {
             f64::from(style.min_zero_bar_px)
         } else {
             0.
         };
         for (n, &v) in bars.iter().enumerate() {
-            let x = ix + n as f64 * bw;
+            let (x, bar_w) = column(n);
             if is_bipolar {
                 let y = iy + ih * (1. - v);
                 let bh = (base - y).abs().max(min_zero);
@@ -1147,6 +1169,14 @@ pub(super) fn table(
                     d.push(Draw::fill(rect(x, iy + ih - bh, bar_w, bh), ink.clone()));
                 }
             }
+        }
+        // The zero line crosses the bars and the gaps (in 0xeeeeee unless set,
+        // the reference 8.13, tools/ksp-ui tables page).
+        if style.draw_zero_line && is_bipolar {
+            let line = zero_line.or(style.frame_rim.then(|| model::Rgba::rgb(0xee_eeee)));
+            let line_fill = line.map_or(grey(EDGE), |c| Fill::from(super::color(c)));
+            let ly = base.round().clamp(iy, (iy + ih - 1.).max(iy));
+            d.push(Draw::fill(rect(ix, ly, iw, 1.), line_fill));
         }
         d
     })

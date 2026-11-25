@@ -82,6 +82,10 @@ pub struct Gesture {
     dragged_over: Option<WidgetRef>,
     /// What the open menu is, found again each frame (see [`Ident`]).
     menu_of: Option<Ident>,
+    /// The pointer of the input this frame answers, newer than
+    /// [`Ui::pointer`]'s (the last frame's): a drag follows it in this
+    /// frame. Taken by [`read`]; without it a drag is a frame behind.
+    pub latest: Option<Point>,
 }
 
 /// A run of characters, from and to.
@@ -390,6 +394,7 @@ pub fn read(
     let mut edits = Vec::new();
     let order = tree.draw_order(page);
     let pointer = ui.pointer().pos;
+    let latest = g.latest.take().or(pointer);
     // A file drag moves the pointer with it; one that leaves the window or
     // is cancelled takes it away: the area it was over hears it leave.
     if pointer.is_none()
@@ -533,7 +538,7 @@ pub fn read(
             // From the pointer, not the widget's own held state: a page
             // that re-renders the control mid-drag gives it a new surface.
             if let Some(p) = g.press.as_ref().filter(|p| p.n == n.0 && down)
-                && let Some(at) = pointer
+                && let Some(at) = latest
             {
                 // Sub-pixel: the pointer's travel is a float, so a
                 // high-resolution mouse or trackpad moves it finely.
@@ -1273,6 +1278,69 @@ pub fn apply(tree: &mut Interface, edits: &[Edit]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A knob dragged up half its 200-point sweep moves in the frame that
+    /// answers the move, not the one after it: the edit that frame sends,
+    /// and the value it draws, are already the new one.
+    #[test]
+    fn a_drag_follows_the_pointer_of_the_frame_it_answers() {
+        let mut tree = Interface::default();
+        tree.pages.push(kontra_ui_model::Page {
+            size: model::Size {
+                width: 200.,
+                height: 200.,
+            },
+            ..Default::default()
+        });
+        let range = model::Range {
+            min: 0.,
+            max: 100.,
+            default: 0.,
+            step: Some(1.),
+        };
+        let display = model::Display::default();
+        let rect = model::Rect::new(10, 10, 50, 50);
+        let mut knob = model::Widget::new("$k", PageRef(0), rect, Kind::Knob { range, display });
+        knob.value = Some(model::Value::Integer(0));
+        tree.widgets.push(knob);
+        let (mut ui, mut g) = (crate::ui(), Gesture::default());
+        let mut pictures = crate::Pictures::new(Box::new(|_| None));
+        let mut frame = |at: Point, down: bool, tree: &mut Interface| {
+            g.latest = Some(at);
+            let (edits, _) = read(&mut ui, 0, tree, PageRef(0), 1., &mut g);
+            apply(tree, &edits);
+            let (page, _) =
+                crate::view::page(&mut ui, 0, tree, PageRef(0), &mut pictures, (1., &[]));
+            let buttons = if down {
+                Buttons::PRIMARY
+            } else {
+                Buttons::default()
+            };
+            let pointer = PointerInput {
+                pos: Some(at),
+                buttons,
+                ..Default::default()
+            };
+            let input = Input {
+                pointer,
+                ..Default::default()
+            };
+            ui.frame(page, Some(Size::new(200., 200.)), input, 1. / 60.)
+                .expect("laid out");
+            edits
+        };
+        let on = Point::new(35., 35.);
+        frame(on, false, &mut tree);
+        frame(on, true, &mut tree);
+        frame(on, true, &mut tree);
+        let moved = frame(Point::new(35., -65.), true, &mut tree);
+        assert_eq!(
+            moved.iter().map(|e| e.to.clone()).collect::<Vec<_>>(),
+            [Set::Value(50.)],
+            "the move's own frame sends it"
+        );
+        assert_eq!(tree.widgets[0].number(), 50.);
+    }
 
     /// The reference's own example: an exponential [1; 10000] puts 0, 25,
     /// 50, 75 and 100 % at 1, 10, 100, 1000 and 10000.
