@@ -347,6 +347,7 @@ fn run_events(
         std::fs::write(file, &times).context("writing KONTRA_INSPECT_TIMES")?;
     }
     let script_faults = faults(&engine.script_faults(), &sources);
+    let ui = ui_build(path, &loaded.faces, &loaded.pages, &engine);
     let loudest_remaining = engine
         .inspect_voices()
         .map(|v| v.last_peak)
@@ -484,13 +485,51 @@ fn run_events(
             db(difference), db(peak_difference)
         ));
     }
-    Ok((
-        json!({"schema_version":1,"command":"play","instrument":path,"engine":"v3",
+    let mut out = json!({"schema_version":1,"command":"play","instrument":path,"engine":"v3",
         "result":{"scenario":scenario_name,"rate":RATE,"events":events.iter().map(|e|json!({"frame":e.frame,"event":e.description})).collect::<Vec<_>>(),
         "trace":trace,"stage_events":stage_events,"script_symbols":script_symbols,"symbol_base":kontra_ksp::SYMBOL_BASE,"route_events":route_events,"route_event_semantics":"values evaluated during CC or note-on processing before smoothing, combining and clamping; dependency flags are structural","trace_events_dropped":dropped,"remaining_voices":left,"metrics":{"peak":peak,"rms":rms,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts,"octave_bands":octave_bands,"octave_time":octave_time},
-        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "process_ms":process_time.as_secs_f64() * 1e3, "load_ms":load_ms, "script_faults":script_faults, "unhandled_actions":engine.unhandled_actions().iter().map(|(a, n)| json!([format!("{a:?}"), n])).collect::<Vec<_>>(), "unanswered_pars":engine.unanswered_pars().iter().take(40).map(|(p, n)| json!([p, n])).collect::<Vec<_>>(), "action_calls":engine.action_calls().iter().take(12).map(|(a, n)| json!([format!("{a:?}"), n])).collect::<Vec<_>>(), "peak_voices":peak_voices, "blocks_with_voices":voice_blocks, "block_timing":timing, "load_timing":load_timing, "play_timing":play_timing, "event_blocks_mono_ns":event_blocks, "audio_s":stop as f64 / f64::from(RATE), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
-        summary,
-    ))
+        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "process_ms":process_time.as_secs_f64() * 1e3, "load_ms":load_ms, "script_faults":script_faults, "unhandled_actions":engine.unhandled_actions().iter().map(|(a, n)| json!([format!("{a:?}"), n])).collect::<Vec<_>>(), "unanswered_pars":engine.unanswered_pars().iter().take(40).map(|(p, n)| json!([p, n])).collect::<Vec<_>>(), "action_calls":engine.action_calls().iter().take(12).map(|(a, n)| json!([format!("{a:?}"), n])).collect::<Vec<_>>(), "peak_voices":peak_voices, "blocks_with_voices":voice_blocks, "block_timing":timing, "load_timing":load_timing, "play_timing":play_timing, "event_blocks_mono_ns":event_blocks, "audio_s":stop as f64 / f64::from(RATE), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}});
+    out["result"]["ui_build"] = json!(ui);
+    Ok((out, summary))
+}
+
+/// Each script slot's UI as the scenario left it: a build error (a panic too)
+/// or the unsupported source features by name, with no authored values.
+fn ui_build(
+    path: &Path,
+    faces: &[Option<kontra_host::ui::Face>],
+    pages: &[Option<kontra_lua::Ui>],
+    engine: &Engine,
+) -> Vec<Value> {
+    let library = std::cell::RefCell::new(kontra_host::ui::Library::open(path));
+    let meta = |name: &str| library.borrow_mut().meta(name);
+    let features = |tree: &kontra_ui_model::Interface| {
+        let mut n = std::collections::BTreeMap::<&str, usize>::new();
+        for u in &tree.unsupported {
+            *n.entry(u.feature.as_str()).or_default() += 1;
+        }
+        json!({"widgets": tree.widgets.len(), "unsupported": n})
+    };
+    let one = |slot: usize, face: &Option<kontra_host::ui::Face>, page: &Option<kontra_lua::Ui>| {
+        Some(match (face, page) {
+            (Some(face), _) => match kontra_host::ui::interface(face, u8::try_from(slot).ok()?, engine, &meta) {
+                Ok(tree) => features(&tree),
+                Err(e) => json!({"error": e.to_string()}),
+            },
+            (None, Some(page)) => features(&kontra_host::ui::lua::tree(page, &meta)),
+            (None, None) => return None,
+        })
+    };
+    (faces.iter().zip(pages).enumerate())
+        .filter_map(|(slot, (face, page))| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| one(slot, face, page)))
+                .unwrap_or_else(|_| Some(json!({"error": "panic"})))
+                .map(|mut v| {
+                    v["slot"] = json!(slot);
+                    v
+                })
+        })
+        .collect()
 }
 
 /// Max, p50 and p99 of the per-block process time, and the five slowest blocks.

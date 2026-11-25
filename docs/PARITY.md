@@ -50,9 +50,13 @@ PR: the squash merge that last changed each row's evidence line (`Parity: <row-i
 | **Kontakt overall** | 2295 | 1026 | 523 | 560 | 186 | 44.7 | 67.5 |
 | **UVI overall** | 3892 | 205 | 162 | 947 | 2578 | 5.3 | 9.4 |
 | **All** | 6187 | 1231 | 685 | 1507 | 2764 | 19.9 | 31.0 |
+| **Kontakt corpus** (instruments fully green) | 1821 | 1567 | 0 | 254 | 0 | 86.1 | 86.1 |
+| **UVI corpus** (instruments fully green) | 660 | 648 | 0 | 12 | 0 | 98.2 | 98.2 |
 
 ni-file corpus bytes: 14543257982 read, 2809095722 unaccounted for (census snapshot); 2809095722 unaccounted after the latest batch in docs/re/NI_FILE_PARITY.md.
 UI corpus: 61 mismatched areas across 17 instruments (snapshots/ui-corpus.tsv).
+Kontakt corpus checks: green 1567/1821, load_s_p50 3.29, load_s_p95 11.35, loads 1821/1821, samples 1821/1821, script 1821/1821, sound 1736/1821, ui 1621/1821 (snapshots/corpus-census.tsv).
+UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/660, samples 660/660, script 654/660, sound 654/660, ui 660/660 (snapshots/corpus-census.tsv).
 
 ## Snapshots
 
@@ -62,6 +66,7 @@ UI corpus: 61 mismatched areas across 17 instruments (snapshots/ui-corpus.tsv).
 | `docs/parity/snapshots/ksp-status.tsv` | what KONTRA's VM and engine answer | `build-slot cargo run -p kontra-host --example ksp_status \| LC_ALL=C sort -u > docs/parity/snapshots/ksp-status.tsv` |
 | `docs/parity/snapshots/ni-file-census.tsv` | the ni-file corpus census | `build-slot cargo run --release -p kontra-format-kontakt --example chunks -- <Kontakt library root> > census.md; tools/parity-board.py --census census.md` |
 | `docs/parity/snapshots/ui-corpus.tsv` | UI areas that differ from Kontakt per corpus instrument | `tools/ksp-ui/align.py per instrument (README 'Library instruments'); one row per instrument: an opaque id and its count` |
+| `docs/parity/snapshots/corpus-census.tsv` | per check, how many installed instruments pass (load, samples, script, UI, sound) and load time | `KONTRA_CENSUS_JOBS=4 tools/parity/census.sh <out> --snapshot (counts only, no library content)` |
 | `docs/parity/snapshots/uvi-reference.tsv` | UVI Falcon's public script reference | `tools/parity-board.py --uvi-reference (https://lua.uvi.net/)` |
 | `docs/parity/snapshots/uvi-elements.tsv` | which UVI elements the loader maps or runs | `the UVI catalog lane (was tools/coverage/data/uvi-features.tsv)` |
 | `docs/parity/snapshots/modulation-targets.tsv` | Kontakt's modulation targets | `docs/specs/modulation-laws.md lane` |

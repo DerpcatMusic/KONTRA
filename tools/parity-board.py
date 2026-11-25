@@ -618,7 +618,35 @@ def summary(rows):
     for fmt in ("Kontakt", "UVI"):
         out.append((f"**{fmt} overall**", counts([r for r in rows if r["area"].startswith(fmt.lower())])))
     out.append(("**All**", counts(rows)))
+    return out + corpus_census()
+
+
+def corpus_census():
+    """One criterion per format from snapshots/corpus-census.tsv: every installed instrument, tested when it
+    is fully green (loads, samples resolve, scripts run with no fault, every UI builds with nothing
+    unsupported, the note sounds), partial when it loads but fails a check, missing when it does not load."""
+    path = SNAP / "corpus-census.tsv"
+    if not path.is_file():
+        return []
+    c = {(r["format"], r["check"]): r for r in tsv(path)}
+    out = []
+    for fmt in ("Kontakt", "UVI"):
+        if (fmt, "green") not in c:
+            continue
+        n, green, loads = (int(c[fmt, "green"]["instruments"]), int(c[fmt, "green"]["pass"]), int(c[fmt, "loads"]["pass"]))
+        pct = f"{100 * green / n:.1f}" if n else "0.0"
+        out.append((f"**{fmt} corpus** (instruments fully green)", [n, green, 0, loads - green, n - loads, pct, pct]))
     return out
+
+
+def corpus_line():
+    path = SNAP / "corpus-census.tsv"
+    if not path.is_file():
+        return []
+    rs = tsv(path)
+    return [f"{fmt} corpus checks: " + ", ".join(
+        f"{r['check']} {r['pass']}" + ("" if r["check"].startswith("load_s") else f"/{r['instruments']}")
+        for r in rs if r["format"] == fmt) + " (snapshots/corpus-census.tsv)." for fmt in dict.fromkeys(r["format"] for r in rs)]
 
 
 SNAPSHOTS = [
@@ -626,6 +654,7 @@ SNAPSHOTS = [
     ("ksp-status.tsv", "what KONTRA's VM and engine answer", "build-slot cargo run -p kontra-host --example ksp_status \\| LC_ALL=C sort -u > docs/parity/snapshots/ksp-status.tsv"),
     ("ni-file-census.tsv", "the ni-file corpus census", "build-slot cargo run --release -p kontra-format-kontakt --example chunks -- <Kontakt library root> > census.md; tools/parity-board.py --census census.md"),
     ("ui-corpus.tsv", "UI areas that differ from Kontakt per corpus instrument", "tools/ksp-ui/align.py per instrument (README 'Library instruments'); one row per instrument: an opaque id and its count"),
+    ("corpus-census.tsv", "per check, how many installed instruments pass (load, samples, script, UI, sound) and load time", "KONTRA_CENSUS_JOBS=4 tools/parity/census.sh <out> --snapshot (counts only, no library content)"),
     ("uvi-reference.tsv", "UVI Falcon's public script reference", f"tools/parity-board.py --uvi-reference ({UVI_DOCS})"),
     ("uvi-elements.tsv", "which UVI elements the loader maps or runs", "the UVI catalog lane (was tools/coverage/data/uvi-features.tsv)"),
     ("modulation-targets.tsv", "Kontakt's modulation targets", "docs/specs/modulation-laws.md lane"),
@@ -667,7 +696,7 @@ def render_md(rows, sums, fmt_extra, flagged):
     out += ["", f"ni-file corpus bytes: {tot.get('bytes', '?')} read, {tot.get('unaccounted', '?')} unaccounted for "
                 f"(census snapshot); {latest if latest is not None else '?'} unaccounted after the latest batch in "
                 f"docs/re/NI_FILE_PARITY.md.",
-            f"UI corpus: {mism[0]} mismatched areas across {mism[1]} instruments (snapshots/ui-corpus.tsv).", "",
+            f"UI corpus: {mism[0]} mismatched areas across {mism[1]} instruments (snapshots/ui-corpus.tsv).", *corpus_line(), "",
             "## Snapshots", "", "| File | What | Refresh |", "|---|---|---|"]
     out += [f"| `docs/parity/snapshots/{f}` | {w} | `{c}` |" for f, w, c in SNAPSHOTS]
     if flagged:
