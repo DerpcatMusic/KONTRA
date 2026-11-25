@@ -2770,3 +2770,49 @@ fn about_shows_the_release_version_and_build() {
     );
     assert!(releases.len() > 20 && releases.iter().all(|r| !r.lines.is_empty()));
 }
+
+/// The tick returns at once while a load waits on a slow disk (a FIFO no
+/// one writes yet): the read runs on the rack's loader thread, the editor
+/// shows a load, and a later tick installs the part once the disk answers.
+#[cfg(unix)]
+#[test]
+fn the_tick_returns_while_a_load_waits_on_the_disk() {
+    let (params, _dsp) = activate("");
+    (crate::lock(&params.shared.rack).as_mut().unwrap()).load_in_background();
+    let dir = std::env::temp_dir().join(format!("kontra-slow-tick-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let slow = dir.join("slow.sfz");
+    let made = std::process::Command::new("mkfifo").arg(&slow).status();
+    assert!(made.unwrap().success());
+    let path = slow.clone();
+    params
+        .shared
+        .request(crate::Request::Load { part: None, path });
+    let ticked = std::time::Instant::now();
+    Tick.run(&params);
+    assert!(
+        ticked.elapsed() < Duration::from_millis(500),
+        "the tick waited on the read"
+    );
+    assert!(params.shared.loading(), "the editor shows the load");
+    // The disk answers: each open of the FIFO reads the instrument.
+    std::thread::spawn(move || {
+        for _ in 0..8 {
+            let _ = std::fs::write(&slow, "<region> sample=*sine key=60\n");
+        }
+    });
+    let until = std::time::Instant::now() + Duration::from_secs(20);
+    while params.shared.loading() && std::time::Instant::now() < until {
+        Tick.run(&params);
+        std::thread::yield_now();
+    }
+    assert!(!params.shared.loading(), "the load ended");
+    let rack = crate::lock(&params.shared.rack);
+    let part = rack.as_ref().unwrap().parts()[0].as_ref();
+    assert!(
+        part.is_some(),
+        "the part is in: {:?}",
+        crate::lock(&params.shared.view).reports()
+    );
+}

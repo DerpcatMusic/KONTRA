@@ -1362,7 +1362,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             // scans moving even when the host suspends audio processing.
             if watched.shared.has_pending_work() {
                 watched.shared.wake_tick();
-            } else if watched.shared.scanning.load(Ordering::Acquire) {
+            } else if watched.shared.scanning.load(Ordering::Acquire) || watched.shared.loading() {
                 let now = crate::macros::now();
                 let prev = last_scan_wake.load(Ordering::Relaxed);
                 if now.saturating_sub(prev) >= 100

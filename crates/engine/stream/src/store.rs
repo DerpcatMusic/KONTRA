@@ -149,7 +149,7 @@ pub struct Store {
     deferred: Vec<HeadJob>,
     /// New samples, for the I/O thread's lookup table.
     registered: Sender<(SampleId, Weak<Sample>)>,
-    next_id: AtomicU32,
+    next_id: Arc<AtomicU32>,
     max_frame_bytes: usize,
     io: Option<JoinHandle<()>>,
     progress: Option<Arc<kontra_protocol::LoadProgress>>,
@@ -183,7 +183,7 @@ impl Store {
             defer: false,
             deferred: Vec::new(),
             registered,
-            next_id: AtomicU32::new(0),
+            next_id: Arc::default(),
             max_frame_bytes: config.max_frame_bytes,
             io: Some(io),
             progress: None,
@@ -198,6 +198,23 @@ impl Store {
     pub fn share_pages_in_process(&mut self) {
         static PAGES: std::sync::OnceLock<SharedPages> = std::sync::OnceLock::new();
         self.pinned = Arc::clone(PAGES.get_or_init(Arc::default));
+    }
+
+    /// A handle that loads into this store from another thread: the same
+    /// cache, pinned pages, ids and I/O thread, which it does not own.
+    #[must_use]
+    pub fn loader(&self) -> Self {
+        Self {
+            shared: Arc::clone(&self.shared),
+            pinned: Arc::clone(&self.pinned),
+            defer: self.defer,
+            deferred: Vec::new(),
+            registered: self.registered.clone(),
+            next_id: Arc::clone(&self.next_id),
+            max_frame_bytes: self.max_frame_bytes,
+            io: None,
+            progress: self.progress.clone(),
+        }
     }
 
     /// Publishes load progress to the editor.
@@ -656,8 +673,9 @@ pub struct LoadRequest {
 
 impl Drop for Store {
     fn drop(&mut self) {
-        self.shared.stop.store(true, Ordering::Relaxed);
+        // Only the owner stops the I/O thread, not a [`Store::loader`].
         if let Some(io) = self.io.take() {
+            self.shared.stop.store(true, Ordering::Relaxed);
             io.thread().unpark();
             let _ = io.join();
         }

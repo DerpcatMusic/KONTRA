@@ -22,7 +22,7 @@ mod readout;
 #[cfg(test)]
 mod tests;
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, TryLockError};
 use std::time::Duration;
 
@@ -133,6 +133,8 @@ pub struct Shared {
     /// A host's state is loading (a project opened, an undo): shown as a
     /// load too.
     restoring: AtomicBool,
+    /// Loads the rack's loader thread has not finished: shown as a load.
+    in_flight: AtomicUsize,
     /// The latency to report, in frames; the audio thread reads it.
     latency: AtomicU32,
     /// Moves when the host loads a state: the editor reads its view again.
@@ -236,6 +238,7 @@ impl Shared {
     fn loading(&self) -> bool {
         self.asked.load(Ordering::Acquire) > self.done.load(Ordering::Acquire)
             || self.restoring.load(Ordering::Acquire)
+            || self.in_flight.load(Ordering::Acquire) > 0
     }
 }
 
@@ -436,8 +439,6 @@ impl BackgroundTask for Tick {
         // A state the host restored in this batch is what `saved` holds: a
         // load beside it must not write the rack over it.
         let restores = requests.iter().any(|r| matches!(r, Request::Restore(_)));
-        // A scan reading the same disk waits while these load.
-        browser.pause(restores || requests.iter().any(Request::loads));
         for r in requests {
             let loads = r.loads();
             let holds = loads || matches!(r, Request::Restore(_));
@@ -453,9 +454,11 @@ impl BackgroundTask for Tick {
                 Request::Load { part, path } => {
                     let loaded = match (part, rack.free()) {
                         (Some(part), _) => rack.load(part, &path),
-                        (None, Some(new)) => {
-                            (rack.load(new, &path)).map(|()| editor::place(rack, browser, new))
-                        }
+                        (None, Some(new)) => rack.load(new, &path).map(|()| {
+                            if !rack.place_later(new) {
+                                editor::place(rack, browser, new);
+                            }
+                        }),
                         (None, None) => Err(kontra_host::Error::NoFreePart),
                     };
                     if let Err(e) = loaded {
@@ -478,11 +481,25 @@ impl BackgroundTask for Tick {
                 Request::AddRoot(path) => browser.add_root(path),
             }
             p.shared.holding.store(false, Ordering::Release);
+            // Counted before `done`, so the load never looks finished.
+            p.shared
+                .in_flight
+                .store(rack.in_flight(), Ordering::Release);
             if loads {
                 p.shared.done.fetch_add(1, Ordering::AcqRel);
             }
         }
-        browser.pause(false);
+        // The loads that finished on the loader thread go in now.
+        let (placed, failed) = rack.finish_loads();
+        for part in placed {
+            editor::place(rack, browser, part);
+        }
+        report.extend(failed);
+        p.shared
+            .in_flight
+            .store(rack.in_flight(), Ordering::Release);
+        // A scan reading the same disk waits while a load runs.
+        browser.pause(rack.in_flight() > 0);
         notices.extend(rack.take_notices());
         notices.append(&mut browser.notices);
         report.extend(notices);
@@ -814,6 +831,11 @@ fn build_rack(p: &KontraParams, c: &AudioConfig) -> Option<RackAudio> {
     // A part plays as soon as its plan exists; the sample heads follow.
     store.defer_heads(true);
     let (mut rack, audio) = Rack::new(rate, store, c.max_block_size);
+    // Reads and sample loads run on the rack's own thread, never on the
+    // shared task pool or under the rack lock. Tests load where they ask.
+    if !cfg!(test) {
+        rack.load_in_background();
+    }
     if let Some(saves) = kontra_host::rack::user_saves() {
         rack.set_saves(saves);
     }

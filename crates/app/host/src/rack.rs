@@ -23,6 +23,7 @@ mod audio;
 mod command;
 mod files;
 mod hold;
+mod loader;
 mod macros;
 mod named;
 mod native;
@@ -271,7 +272,7 @@ pub struct Rack {
     snapshot_bases: Vec<Option<Arc<kontra_format_kontakt::SnapshotBase>>>,
     /// The instruments the player has, by the catalog generation they are
     /// of: a snapshot kept apart from its library binds to one by name.
-    known: (u64, Vec<PathBuf>),
+    known: (u64, Arc<Vec<PathBuf>>),
     /// The multi whose multi script hears the rack's MIDI first.
     multi: Option<PathBuf>,
     /// Library folders the player moved ([`crate::relink`]), and the folders
@@ -294,6 +295,17 @@ pub struct Rack {
         mpsc::Sender<requests::Woken>,
         mpsc::Receiver<requests::Woken>,
     ),
+    /// Loads not installed yet ([`loader`]).
+    loads: loader::Loads,
+}
+
+/// An instrument read and prepared, ready to install ([`Rack::build_part`]).
+pub(crate) struct Built {
+    loaded: crate::instrument::Loaded,
+    saved: Vec<Vec<String>>,
+    source: Option<PathBuf>,
+    slots: Vec<usize>,
+    waves: crate::ui::Waves,
 }
 
 impl Rack {
@@ -331,7 +343,8 @@ impl Rack {
             generation: 0,
             native: Vec::new(),
             snapshot_bases: (0..MAX_PARTS).map(|_| None).collect(),
-            known: (0, Vec::new()),
+            known: (0, Arc::default()),
+            loads: loader::Loads::default(),
             multi: None,
             moved: Vec::new(),
             roots: Vec::new(),
@@ -369,10 +382,12 @@ impl Rack {
         &self.parts
     }
 
-    /// The first part with nothing loaded.
+    /// The first part with nothing loaded and nothing loading.
     #[must_use]
     pub fn free(&self) -> Option<usize> {
-        self.parts.iter().position(Option::is_none)
+        let loading = |n: &usize| self.running().any(|p| p.part == *n);
+        (self.parts.iter().enumerate())
+            .find_map(|(n, p)| (p.is_none() && !loading(&n)).then_some(n))
     }
 
     /// Reads, prepares and starts the instrument at `path` (its `on init`
@@ -420,8 +435,7 @@ impl Rack {
                 return Ok(());
             }
         }
-        let instrument = crate::instrument::read_saved(path, &[], &self.known.1)?;
-        self.load_ir(part, instrument, Some(path.to_owned()))
+        self.post(loader::Job::new(part, path.to_owned()))
     }
 
     /// Returns a cached open Kontakt [`SnapshotBase`] matching `base` from
@@ -567,7 +581,7 @@ impl Rack {
     pub fn know(&mut self, browser: &crate::browser::Browser) {
         let changed = self.known.0 != browser.generation;
         if changed {
-            self.known = (browser.generation, browser.instruments());
+            self.known = (browser.generation, browser.instruments().into());
             self.libraries = browser.identities();
         }
         self.moved.clone_from(&browser.prefs.moved);
@@ -686,10 +700,28 @@ impl Rack {
                 max: MAX_PARTS,
             });
         }
-        let mut instrument = instrument;
-        crate::relink::apply(&self.moved, &mut instrument);
+        let built = Self::build_part(
+            instrument,
+            self.rate,
+            &mut self.store,
+            &self.moved,
+            self.saves.as_deref(),
+        );
+        self.install_built(part, built, path, slot_types, slot_responses)
+    }
+
+    /// Reads `instrument`'s samples into `store` and compiles its scripts:
+    /// the slow part of a load, which needs nothing else of the rack.
+    pub(crate) fn build_part(
+        mut instrument: ir::Instrument,
+        rate: u32,
+        store: &mut Store,
+        moved: &[(PathBuf, PathBuf)],
+        saves: Option<&Path>,
+    ) -> Built {
+        crate::relink::apply(moved, &mut instrument);
         // The files its scripts saved come back as the bank's own.
-        let own = picks::script_files(self.saves.as_deref(), instrument.source_path.as_deref());
+        let own = picks::script_files(saves, instrument.source_path.as_deref());
         for s in (instrument.scripts.iter_mut()).filter(|s| s.dialect == ir::Dialect::Lua) {
             s.data.extend(own.iter().cloned());
         }
@@ -697,28 +729,58 @@ impl Rack {
         let source = instrument.source_path.clone();
         let slots = instrument.scripts.iter().map(|s| s.slot).collect();
         let waves = crate::ui::Waves::of(&instrument);
-        let mut loaded = crate::instrument::build(instrument, self.rate, &mut self.store);
+        let mut loaded = crate::instrument::build(instrument, rate, store);
         // The translated program is gone: its pages go back to the system
         // instead of staying resident as the allocator's free lists.
         trim::release_freed_memory();
         // A store set to defer heads read them here, behind the part.
-        if let Some(heads) = self.store.take_heads() {
+        if let Some(heads) = store.take_heads() {
             let lanes = std::thread::available_parallelism().map_or(4, |n| n.get() * 3);
             // A failed spawn leaves the heads to stream on demand.
             let _ = std::thread::Builder::new()
                 .name("kontra-heads".into())
                 .spawn(move || heads.load(lanes));
         }
-        if let Some(progress) = self.store.progress() {
+        if let Some(progress) = store.progress() {
             progress.stage(kontra_protocol::LoadStage::Interface);
         }
-        let saves = self.saves.clone();
         for s in loaded.plan.scripts.iter_mut().filter(|s| s.files.is_some()) {
             s.files = Some(Arc::new(DiskFiles {
-                saves: saves.clone(),
+                saves: saves.map(Path::to_owned),
                 rc: s.rc_folder,
             }));
         }
+        Built {
+            loaded,
+            saved,
+            source,
+            slots,
+            waves,
+        }
+    }
+
+    /// Hands a [`Built`] instrument to `part`.
+    fn install_built(
+        &mut self,
+        part: usize,
+        built: Built,
+        path: Option<PathBuf>,
+        slot_types: &[(ir::RackAt, u8, u16)],
+        slot_responses: &[(ir::RackAt, u8, String)],
+    ) -> Result<(), crate::Error> {
+        if part >= MAX_PARTS {
+            return Err(crate::Error::PartOutOfRange {
+                part,
+                max: MAX_PARTS,
+            });
+        }
+        let Built {
+            mut loaded,
+            saved,
+            source,
+            slots,
+            waves,
+        } = built;
         self.offers.retain(|o| o.part != part);
         for (summary, first) in crate::relink::missing(&loaded.diagnostics) {
             self.notices
@@ -828,6 +890,7 @@ impl Rack {
     }
 
     pub fn remove(&mut self, part: usize) {
+        self.supersede(Some(part));
         if let Some(slot) = self.parts.get_mut(part) {
             *slot = None;
             if let Some(base) = self.snapshot_bases.get_mut(part) {
