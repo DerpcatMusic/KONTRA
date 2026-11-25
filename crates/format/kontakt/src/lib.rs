@@ -138,6 +138,15 @@ pub fn inspect_protection(path: &Path) -> Result<ProtectionStatus, Error> {
     container::inspect_protection(path)
 }
 
+/// Whether the preset at `path` is encrypted, from its container alone: no
+/// access data is looked up and nothing is decrypted.
+///
+/// # Errors
+/// When `path` cannot be opened or is not a recognized Kontakt container.
+pub fn encrypted(path: &Path) -> Result<bool, Error> {
+    container::encrypted(path)
+}
+
 /// Reads the instrument at `path`; a snapshot (.nksn) is its base
 /// instrument with the snapshot's saved script values.
 ///
