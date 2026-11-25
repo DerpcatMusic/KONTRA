@@ -15,7 +15,7 @@ evidence_freshness_days: 180
 - **Problem:** KONTRA's three classifiers fail (`$NI_DETECT_*_TYPE_INVALID`, -1). The
   reference 8.13.1 reads 0 (instrument) for every signal measured so far
   (probes/ksp/detect_laws.kspp).
-- **Goal:** the three rows of docs/ksp/MANUAL-COVERAGE.md read as the reference does.
+- **Goal:** the three rows of docs/PARITY.md (Kontakt KSP) read as the reference does.
 - **Plan Reference:** the KSP parity lane of docs/architecture-v3/13-IR-VNEXT.md.
 
 ## Primary-Source & Version Proof
