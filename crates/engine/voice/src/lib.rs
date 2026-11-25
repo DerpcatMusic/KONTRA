@@ -118,24 +118,104 @@ fn bessel_i0(x: f64) -> f64 {
     sum
 }
 
+/// The Kaiser-windowed sinc at `u >= 0` lobes; `inv_i0` is `1 / I0(β)`.
+fn windowed_sinc(u: f64, inv_i0: f64) -> f64 {
+    if u == 0.0 {
+        return 1.0;
+    }
+    if u >= SINC_LOBES as f64 {
+        return 0.0;
+    }
+    let x = std::f64::consts::PI * u;
+    let r = u / SINC_LOBES as f64;
+    x.sin() / x * bessel_i0(KAISER_BETA * (1.0 - r * r).max(0.0).sqrt()) * inv_i0
+}
+
 /// Precomputes the half-sided Kaiser-windowed sinc table over `u in [0, SINC_LOBES]`.
 fn build_sinc_table() -> [f32; SINC_STORED] {
     let inv_i0 = 1.0 / bessel_i0(KAISER_BETA);
     std::array::from_fn(|i| {
-        if i == 0 {
-            return 1.0;
-        }
-        if i >= SINC_TABLE_LEN {
-            return 0.0;
-        }
         let u = (i as f64 / SINC_TABLE_LEN as f64) * SINC_LOBES as f64;
-        let x = std::f64::consts::PI * u;
-        let sinc = x.sin() / x;
-        let r = u / SINC_LOBES as f64;
-        let win = bessel_i0(KAISER_BETA * (1.0 - r * r).max(0.0).sqrt()) * inv_i0;
-        (sinc * win) as f32
+        windowed_sinc(u, inv_i0) as f32
     })
 }
+
+/// Banked kernel rows per octave of step.
+const BANKS_PER_OCTAVE: f64 = 12.0;
+/// Octaves of step the banks cover; steps above read the exact kernel.
+const BANK_OCTAVES: f64 = 4.0;
+/// How far from a bank's step, in semitones, a step may be and still read
+/// it: samples mapped a whole number of semitones from their root land on
+/// one exactly, any other step reads the exact kernel.
+const BANK_TOLERANCE: f64 = 1e-4;
+/// Phases per bank, across the half frame either side of a tap.
+const BANK_PHASES: usize = 128;
+
+/// The kernel for one step, precomputed: for each of `BANK_PHASES + 1`
+/// read offsets in [-½, ½] a row of `2·half + 1` weights summing to 1.
+struct SincBank {
+    half: usize,
+    rows: Box<[f32]>,
+}
+
+impl SincBank {
+    fn new(step: f64) -> Self {
+        let (half, scale) = sinc_params(step);
+        let inv_i0 = 1.0 / bessel_i0(KAISER_BETA);
+        let taps = 2 * half + 1;
+        let mut rows = Vec::with_capacity((BANK_PHASES + 1) * taps);
+        for p in 0..=BANK_PHASES {
+            let frac = p as f64 / BANK_PHASES as f64 - 0.5;
+            let row: Vec<f64> = (0..taps)
+                .map(|j| windowed_sinc((j as f64 - half as f64 - frac).abs() * scale, inv_i0))
+                .collect();
+            let sum: f64 = row.iter().sum();
+            rows.extend(row.iter().map(|w| (w / sum) as f32));
+        }
+        Self {
+            half,
+            rows: rows.into(),
+        }
+    }
+
+    /// The bank for `step > 1` when it is a whole number of semitones up
+    /// (within [`BANK_TOLERANCE`]); `None` otherwise or past [`BANK_OCTAVES`].
+    // ponytail: banks between semitones (stretch tuning, detune) changed
+    // the sound by -72 dBFS and cost cache misses; finer banks or a lerp
+    // between two would be needed to cover them.
+    fn of(step: f64) -> Option<&'static Self> {
+        let x = step.log2() * BANKS_PER_OCTAVE;
+        let m = x.round();
+        ((x - m).abs() <= BANK_TOLERANCE && m >= 0.0)
+            .then(|| SINC_BANKS.get(m as usize))
+            .flatten()
+    }
+
+    /// The frame at read offset `frac` in [-½, ½] from the centre of `taps`.
+    fn read(&self, taps: &[[f32; 2]], frac: f64) -> Option<[f32; 2]> {
+        let width = 2 * self.half + 1;
+        let t = ((frac + 0.5) * BANK_PHASES as f64).clamp(0.0, BANK_PHASES as f64);
+        let p = (t as usize).min(BANK_PHASES - 1);
+        let a = (t - p as f64) as f32;
+        let r0 = self.rows.get(p * width..(p + 1) * width)?;
+        let r1 = self.rows.get((p + 1) * width..(p + 2) * width)?;
+        let taps = taps.get(..width)?;
+        let (mut l, mut r) = (0.0f32, 0.0f32);
+        for ((x, w0), w1) in taps.iter().zip(r0).zip(r1) {
+            let w = w0 + (w1 - w0) * a;
+            l += x[0] * w;
+            r += x[1] * w;
+        }
+        Some([l, r])
+    }
+}
+
+static SINC_BANKS: std::sync::LazyLock<Box<[SincBank]>> = std::sync::LazyLock::new(|| {
+    let banks = (BANK_OCTAVES * BANKS_PER_OCTAVE) as usize;
+    (0..=banks)
+        .map(|m| SincBank::new(2f64.powf(m as f64 / BANKS_PER_OCTAVE)))
+        .collect()
+});
 
 /// The windowed sinc at `u >= 0` source frames from the read position, with
 /// `k` table entries per frame: linear between the table's entries, 0 past
@@ -346,6 +426,7 @@ impl Voice {
     pub fn allocate() -> Self {
         // Eagerly initialize the static windowed-sinc table off the audio thread.
         let _ = std::sync::LazyLock::force(&SINC_TABLE);
+        let _ = std::sync::LazyLock::force(&SINC_BANKS);
         Self {
             region: None,
             loops: Loops::new(),
@@ -1316,7 +1397,7 @@ impl Voice {
         let sinc_table = &*SINC_TABLE;
         // The kernel's radius and scale for the last step seen: a flat
         // ramp keeps one for the whole chunk.
-        let mut kernel = (f64::NAN, (0, 0.0));
+        let mut kernel = (f64::NAN, (0, 0.0), None);
         let mut filled = 0;
         for (i, frame) in scratch.raw.iter_mut().take(n).enumerate() {
             let cur_step = ramp.step_at(first_step, frames + i as u64);
@@ -1326,7 +1407,7 @@ impl Voice {
             }
             if cur_step > 1.0 {
                 if kernel.0 != cur_step {
-                    kernel = (cur_step, sinc_params(cur_step));
+                    kernel = (cur_step, sinc_params(cur_step), SincBank::of(cur_step));
                 }
                 let (half, scale) = kernel.1;
                 let center_i = x.round() as isize;
@@ -1336,6 +1417,15 @@ impl Voice {
                 };
                 if center < half || center + half >= window.len() {
                     break;
+                }
+                // A bank's row when the window holds it.
+                if let Some(bank) = kernel.2
+                    && let Some(from) = center.checked_sub(bank.half)
+                    && let Some(out) = window.get(from..).and_then(|t| bank.read(t, frac))
+                {
+                    *frame = out;
+                    filled += 1;
+                    continue;
                 }
                 // Each tap weighs the sinc at its distance from `x`, one row
                 // over a slice checked once, in f32.
