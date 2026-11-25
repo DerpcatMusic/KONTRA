@@ -295,11 +295,11 @@ pub struct Voice {
     offline_wait_timeouts: u64,
     /// Frames decoded ahead ([`AHEAD`]), from unrolled position `ahead_lo`;
     /// `ahead_len` 0 when they are not valid. They hold for the release
-    /// state and channel matrix they were read with.
+    /// state they were read with; a new channel matrix clears them.
     ahead: Box<[[f32; 2]]>,
     ahead_lo: i64,
     ahead_len: usize,
-    ahead_key: (Option<u64>, Option<Mix>),
+    ahead_key: Option<u64>,
     /// After a read ahead met frames not yet streamed, chunks before this
     /// position read their own window.
     ahead_retry: i64,
@@ -374,7 +374,7 @@ impl Voice {
             ahead: vec![[0.0; 2]; AHEAD].into_boxed_slice(),
             ahead_lo: 0,
             ahead_len: 0,
-            ahead_key: (None, None),
+            ahead_key: None,
             ahead_retry: i64::MIN,
             culled: false,
             offline_wait_timeouts: 0,
@@ -617,8 +617,10 @@ impl Voice {
     /// ponytail: a step at each refresh, not smoothed like the gain; ramp it
     /// per chunk if a fast sweep zippers.
     pub fn set_mix(&mut self, mix: Mix) {
-        if self.region.is_some() {
+        // Compared here, once a span, rather than at every chunk's read.
+        if self.region.is_some() && self.mix != Some(mix) {
             self.mix = Some(mix);
+            self.ahead_len = 0;
         }
     }
 
@@ -1207,7 +1209,7 @@ impl Voice {
         let at = |i: u64| base + ramp.travel(first_step, frames + i);
         let (lo, span) = window_span(n, (base, frames, first_step), ramp);
         let span = span.min(SCRATCH);
-        let key = (released, self.mix);
+        let key = released;
         let held = |v: &Self| {
             v.ahead_len > 0
                 && v.ahead_key == key

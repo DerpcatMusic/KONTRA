@@ -236,7 +236,11 @@ fn compiled() {
 
 /// What a KSP compile reads: the source, the conditions set before it and
 /// its performance view's controls.
-type KspKey = (String, Vec<String>, Vec<(String, Vec<i32>)>);
+type KspKey = (
+    String,
+    Vec<String>,
+    Vec<(String, kontra_ksp::ControlKind, Vec<i32>)>,
+);
 
 /// [`kontra_ksp::compile_with_view`], from the scripts compiled last when
 /// one had the same inputs: the instruments of a library mostly share one
@@ -246,7 +250,7 @@ type KspKey = (String, Vec<String>, Vec<(String, Vec<i32>)>);
 fn compile_ksp(
     source: &str,
     set: &[&str],
-    view: &[(&str, &[i32])],
+    view: &[(&str, kontra_ksp::ControlKind, &[i32])],
 ) -> Result<std::sync::Arc<kontra_ksp::Script>, kontra_ksp::Error> {
     use std::sync::{Arc, Mutex, PoisonError};
     static RECENT: Mutex<Vec<(KspKey, Arc<kontra_ksp::Script>)>> = Mutex::new(Vec::new());
@@ -254,7 +258,7 @@ fn compile_ksp(
         s == source
             && c.iter().map(String::as_str).eq(set.iter().copied())
             && v.iter()
-                .map(|(n, p)| (n.as_str(), p.as_slice()))
+                .map(|(n, k, p)| (n.as_str(), *k, p.as_slice()))
                 .eq(view.iter().copied())
     };
     let recent = || RECENT.lock().unwrap_or_else(PoisonError::into_inner);
@@ -273,7 +277,7 @@ fn compile_ksp(
         source.to_owned(),
         set.iter().map(|&c| c.to_owned()).collect(),
         view.iter()
-            .map(|&(n, p)| (n.to_owned(), p.to_vec()))
+            .map(|&(n, k, p)| (n.to_owned(), k, p.to_vec()))
             .collect(),
     );
     let mut recent = recent();
@@ -369,9 +373,10 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
         }
         let set: Vec<&str> = conditions.iter().map(String::as_str).collect();
         let view = crate::perf_view::find(&script.data).map(|(_, v)| v);
-        let view: Vec<(&str, &[i32])> = (view.iter().flat_map(|v| &v.controls))
-            .map(|c| (c.name.as_str(), c.params.as_slice()))
-            .collect();
+        let view: Vec<(&str, kontra_ksp::ControlKind, &[i32])> =
+            (view.iter().flat_map(|v| &v.controls))
+                .map(|c| (c.name.as_str(), c.kind, c.params.as_slice()))
+                .collect();
         match compile_ksp(&script.source, &set, &view) {
             Ok(compiled) => {
                 conditions.clone_from(&compiled.conditions);
@@ -397,9 +402,8 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                 });
                 planned.links = crate::script::links(&compiled, &script.links);
                 // A link to a control the script never declares moves nothing
-                // in Kontakt either: one left from an older script (Conflux's
-                // GUI: CC 122 to a switch it lacks). One to a declared control
-                // that we could not range is ours to fix.
+                // in Kontakt either: one left from an older script. One to a
+                // declared control that we could not range is ours to fix.
                 let absent = (script.links.iter())
                     .filter(|l| crate::script::linked(&compiled, l).is_none())
                     .count();

@@ -161,13 +161,17 @@ impl<'a> Compiler<'a> {
     }
 
     /// A control of the loaded performance view, declared on first sight: a
-    /// knob, a table for a `%` name, a text edit for an `@` name. ponytail: the view's own defaults, ranges
+    /// table for a `%` name, a text edit for an `@` name, else the view's
+    /// kind (a knob for a name the view does not list). Kontakt's MIDI
+    /// links count a view's switches with the declared ones (Conflux ties
+    /// CC 122 to its first switch, the view's `$Purge`). ponytail: the view's own defaults, ranges
     /// and table sizes are not read from its `.nckp`; controls start at 0 and
     /// tables take KSP's largest size.
     pub(super) fn view_control(
         &mut self,
         name: &'a str,
         span: Span,
+        kind: Option<ControlKind>,
         params: &[i32],
     ) -> Result<(), Error> {
         let key = name.to_ascii_lowercase();
@@ -190,7 +194,7 @@ impl<'a> Compiler<'a> {
             }
             _ => {
                 let n = Self::cells(&mut self.cells, 1, span)?;
-                (ControlKind::Knob, Ty::Int, Home::Cell(n))
+                (kind.unwrap_or(ControlKind::Knob), Ty::Int, Home::Cell(n))
             }
         };
         let index = self.controls.len() as u32;

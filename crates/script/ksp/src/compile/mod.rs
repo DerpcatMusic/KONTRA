@@ -103,7 +103,7 @@ struct Function {
 pub fn compile<'a>(
     items: &[Item<'a>],
     conditions: Vec<String>,
-    view_names: &[(&'a str, Span, &'a [i32])],
+    view_names: &[(&'a str, Span, Option<ControlKind>, &'a [i32])],
 ) -> Result<Script, Error> {
     let mut c = Compiler::<'a>::default();
     for item in items {
@@ -129,8 +129,8 @@ pub fn compile<'a>(
         };
         c.declarations(body)?;
     }
-    for &(name, span, params) in view_names {
-        c.view_control(name, span, params)?;
+    for &(name, span, kind, params) in view_names {
+        c.view_control(name, span, kind, params)?;
     }
     let mut callbacks: Vec<Callback> = Vec::new();
     let mut roots = Vec::new();

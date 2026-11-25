@@ -183,6 +183,7 @@ fn run_events(
             });
             next += 1;
         }
+        wake_unpurged(&mut engine, &mut store);
         if !stream.settle(Duration::from_secs(5)) {
             settle_timeouts += 1;
         }
@@ -677,4 +678,29 @@ fn faults(all: &[kontra_engine::Faults], sources: &[Option<String>]) -> Vec<Valu
                 "no_coroutine": f.no_coroutine, "bad_code": f.bad_code, "texts_cut": f.texts_cut})
         })
         .collect()
+}
+
+/// As the host does between blocks: loads the purged groups scripts asked
+/// for (Conflux unpurges its selected sample layer as a snapshot restores)
+/// and completes each request.
+fn wake_unpurged(engine: &mut Engine, store: &mut Store) {
+    let mut asked = Vec::new();
+    engine.drain_unpurges(|u| {
+        asked.push(u);
+        true
+    });
+    for u in asked {
+        let plan = Arc::clone(engine.plan());
+        let samples = (plan.dormant.iter().filter(|d| d.group == u.group))
+            .flat_map(|d| d.samples.iter().map(|s| s.file.as_path()));
+        let files = kontra_stream::Files::new(samples);
+        if let Some((grown, _, _)) = kontra_prepare::wake(&plan, u.group, store, &|s| files.open(s))
+        {
+            engine.swap_plan(&mut Arc::new(grown), &[]);
+            if let Some(heads) = store.take_heads() {
+                heads.load(4);
+            }
+        }
+        engine.unpurged(u, true);
+    }
 }

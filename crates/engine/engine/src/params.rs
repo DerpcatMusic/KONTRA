@@ -971,6 +971,14 @@ impl Engine {
         if let Some(v) = self.cc_values.get_mut(usize::from(cc)) {
             *v = value;
         }
+        // A control learned to this controller moves as it would for MIDI in
+        // (Conflux selects a sample layer by sending CC 122, which its MIDI
+        // automation ties to the switch whose callback unpurges that layer).
+        for (slot, script) in (0u8..).zip(&self.plan.scripts) {
+            for link in script.links.iter().filter(|l| l.cc == cc) {
+                self.linked.push((slot, link.id, link.value(value)));
+            }
+        }
         if cc == crate::midi::VCC_MONO_AT {
             for channel in (0u8..).take(kontra_behaviour::CHANNELS) {
                 self.behaviour.set_pressure(channel, value);

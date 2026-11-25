@@ -248,6 +248,9 @@ pub struct Engine {
     running: Running,
     /// Notes through every script slot, starting once the callback returns.
     pending: Vec<NoteRef>,
+    /// Script controls a script's `set_controller` moved through their MIDI
+    /// links (slot, UI id, value), set once the callback returns its VM.
+    linked: Vec<(u8, i32, i64)>,
     /// Notes a callback played, still to pass the slots after it.
     forward: Vec<NoteRef>,
     pgs: pgs::Pgs,
@@ -576,6 +579,7 @@ impl Engine {
             note_stamp: 0,
             running: Running::IDLE,
             pending: Vec::with_capacity(capacity),
+            linked: Vec::with_capacity(8),
             forward: Vec::with_capacity(capacity),
             pgs: pgs::Pgs::new(),
             timers,

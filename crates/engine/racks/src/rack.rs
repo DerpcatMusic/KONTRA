@@ -202,7 +202,9 @@ impl Rack {
                 .collect(),
             amounts: vec![0.0; mods.len()].into(),
             levels: vec![Levels::new(rate); slots.len()].into(),
-            quiet: vec![0; slots.len()].into(),
+            // A new processor holds nothing: it sleeps until its first sound,
+            // instead of convolving silence for a whole response first.
+            quiet: vec![usize::MAX; slots.len()].into(),
             rate,
         }
     }
@@ -680,6 +682,14 @@ mod tests {
             }
         }
         out
+    }
+
+    /// A new rack fed only silence never wakes its slots.
+    #[test]
+    fn a_new_slot_starts_asleep() {
+        let mut rack = Rack::new(&[Some(chorus())], RATE, &[]);
+        rack.process(&mut [[0.0; 2]; SPAN], &mut [], 120.0);
+        assert_eq!(rack.quiet.first(), Some(&usize::MAX));
     }
 
     /// A wet slot whose input and output stay silent sleeps, its clocks

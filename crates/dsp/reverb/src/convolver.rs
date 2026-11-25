@@ -11,8 +11,18 @@ use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 /// Head length, in frames.
 const HEAD: usize = 64;
 /// Each stage's block size and where its stretch of the response ends;
-/// it starts where the one before ends. The last runs to the end.
-const STAGES: [(usize, usize); 4] = [(64, 512), (256, 2048), (1024, 8192), (2048, usize::MAX)];
+/// it starts where the one before ends. The last runs to the end. Blocks
+/// grow fourfold so each stage holds about seven partitions; a late tail
+/// costs `len / 8192` products a frame instead of `len / 2048`.
+const STAGES: [(usize, usize); 5] = [
+    (64, 512),
+    (256, 2048),
+    (1024, 8192),
+    (4096, 32_768),
+    (8192, usize::MAX),
+];
+/// A response ends where both channels stay under its peak by this much (−120 dB).
+const FLOOR: f32 = 1e-6;
 /// Inputs below this magnitude count as silence.
 const SILENT: f32 = 1e-10;
 
@@ -351,8 +361,20 @@ pub struct Convolver {
 }
 
 impl Convolver {
-    /// Builds the convolver from one impulse response per channel. Allocates; not real-time.
+    /// Builds the convolver from one impulse response per channel, each cut
+    /// where both fall under [`FLOOR`] of the peak. Allocates; not real-time.
     pub fn new(left: &[f32], right: &[f32]) -> Self {
+        let peak = left.iter().chain(right).fold(0.0f32, |m, x| m.max(x.abs()));
+        let end = |c: &[f32]| {
+            c.iter()
+                .rposition(|x| x.abs() >= peak * FLOOR)
+                .map_or(0, |i| i + 1)
+        };
+        let len = end(left).max(end(right));
+        let (left, right) = (
+            left.get(..len.min(left.len())).unwrap_or_default(),
+            right.get(..len.min(right.len())).unwrap_or_default(),
+        );
         let mut planner = RealFftPlanner::<f32>::new();
         Self {
             left: Mono::new(left, &mut planner),
@@ -415,15 +437,15 @@ mod tests {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             (seed >> 8) as f32 / (1 << 24) as f32 - 0.5
         };
-        let ir: Vec<f32> = (0..20_000).map(|_| noise() * 0.01).collect();
-        let input: Vec<f32> = (0..30_000).map(|_| noise()).collect();
+        let ir: Vec<f32> = (0..40_000).map(|_| noise() * 0.01).collect();
+        let input: Vec<f32> = (0..50_000).map(|_| noise()).collect();
         let mut c = Convolver::new(&ir, &ir);
         let mut io: Vec<[f32; 2]> = input.iter().map(|&x| [x, x]).collect();
         for block in io.chunks_mut(256) {
             c.process(block);
         }
         for n in [
-            0, 63, 64, 511, 512, 2_047, 2_048, 8_191, 8_192, 25_000, 29_999,
+            0, 63, 64, 511, 512, 2_047, 2_048, 8_191, 8_192, 25_000, 32_767, 32_768, 45_000, 49_999,
         ] {
             let direct: f32 = (0..=n.min(ir.len() - 1))
                 .map(|k| ir[k] * input[n - k])
@@ -434,5 +456,12 @@ mod tests {
                 io[n][0]
             );
         }
+    }
+
+    #[test]
+    fn a_tail_under_the_floor_is_cut() {
+        let mut ir = vec![1.0, 0.5, 1e-3];
+        ir.extend([1e-7; 10_000]);
+        assert_eq!(Convolver::new(&ir, &[0.0]).taps(), 3);
     }
 }

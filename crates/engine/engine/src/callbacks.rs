@@ -61,6 +61,9 @@ impl Engine {
         let ran = std::mem::replace(&mut self.running, outer);
         self.forward_from(mark);
         self.start_pending();
+        while let Some((slot, id, value)) = self.linked.pop() {
+            self.set_control(slot, id, value);
+        }
         ran
     }
 

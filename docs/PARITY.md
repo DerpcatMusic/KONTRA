@@ -79,6 +79,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | `kontakt.dsp.chorus.measured` | #288 |
 | `kontakt.dsp.delay.measured` | #288 |
 | `kontakt.dsp.reverb.measured` | #288 |
+| `kontakt.ksp.cmd.load_performance_view` | #331 |
 
 ## Scripting (KSP): commands, callbacks and variables
 
@@ -543,7 +544,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | tested | `kontakt.ksp.cmd.set_control_help` | set_control_help | [ui.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/ui.rs) | [KONTRA#905](https://github.com/DerpcatMusic/KONTRA/pull/905) | 2026-10-28 | Keyboard Commands |
 | tested | `kontakt.ksp.cmd.set_control_par` | set_control_par | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) |  | 2026-10-27 | User Interface Widgets |
 | tested | `kontakt.ksp.cmd.set_control_par_arr` | set_control_par_arr | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) | [KONTRA#1115](https://github.com/DerpcatMusic/KONTRA/pull/1115) | 2026-10-29 | User Interface Widgets |
-| tested | `kontakt.ksp.cmd.set_controller` | set_controller | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) |  | 2026-10-27 | Callbacks |
+| tested | `kontakt.ksp.cmd.set_controller` | set_controller | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) | #331 | 2026-10-27 | Callbacks |
 | tested | `kontakt.ksp.cmd.set_engine_par` | set_engine_par | [ksp_conformance.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/ksp_conformance.rs) | #212 | 2026-11-25 | Callbacks |
 | tested | `kontakt.ksp.cmd.set_event_mark` | set_event_mark | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) | #212 | 2026-11-25 | Event Commands |
 | tested | `kontakt.ksp.cmd.set_event_par` | set_event_par | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) | [KONTRA#842](https://github.com/DerpcatMusic/KONTRA/pull/842) | 2026-10-28 | Callbacks |

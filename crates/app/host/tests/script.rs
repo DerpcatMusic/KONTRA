@@ -2476,6 +2476,43 @@ fn a_controller_tied_to_a_slider_moves_it_and_runs_its_callback() {
     assert_eq!(e.last_message(), "0");
 }
 
+/// Conflux picks its sample layer by sending CC 122 from its own script;
+/// its MIDI automation ties that controller to the performance view's
+/// first switch, `$Purge`, whose callback unpurges the layer.
+#[test]
+fn a_scripts_own_controller_moves_a_view_switch_linked_to_it() {
+    use kontra_engine::ir::{CcLink, Linked};
+    use kontra_ksp::ControlKind;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let source = "on init
+            load_performance_view(\"v\")
+        end on
+        on note
+            set_controller(122, 100)
+        end on
+        on ui_control ($Purge)
+            message(\"purge \" & $Purge)
+        end on";
+    let view: &[(&str, ControlKind, &[i32])] = &[
+        ("$Knob", ControlKind::Knob, &[]),
+        ("$Purge", ControlKind::Switch, &[]),
+    ];
+    let script = kontra_ksp::compile_with_view(source, &[], view).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    let mut planned = kontra_host::script::plan(&script, &[], &[]);
+    let link = CcLink {
+        cc: 122,
+        control: Linked::Switch(0),
+        from: 0.0,
+        to: 1.0,
+    };
+    planned.links = kontra_host::script::links(&script, &[link]);
+    plan.scripts = vec![planned];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "purge 1");
+}
+
 #[test]
 fn moving_a_control_runs_ui_controls_then_its_ui_control() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
@@ -4367,7 +4404,12 @@ fn a_knobs_declared_range_reads_back() {
             get_control_par(get_ui_id($k), $CONTROL_PAR_MAX_VALUE) & \" \" & ...
             get_control_par(get_ui_id($wt), $CONTROL_PAR_MAX_VALUE))
     end on";
-    let script = kontra_ksp::compile_with_view(source, &[], &[("$wt", &[0, 99, 1])]).unwrap();
+    let script = kontra_ksp::compile_with_view(
+        source,
+        &[],
+        &[("$wt", kontra_ksp::ControlKind::Knob, &[0, 99, 1])],
+    )
+    .unwrap();
     let mut plan = Plan::new(vec![], 16);
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     let e = Engine::new(Arc::new(plan), store.client(), RATE);

@@ -757,9 +757,10 @@ fn control(
             // As the host compiles it: a performance view's controls take
             // their UI ids in the view's order.
             let view = kontra_host::perf_view::find(&ir.data).map(|(_, v)| v);
-            let view: Vec<(&str, &[i32])> = (view.iter().flat_map(|v| &v.controls))
-                .map(|c| (c.name.as_str(), c.params.as_slice()))
-                .collect();
+            let view: Vec<(&str, kontra_ksp::ControlKind, &[i32])> =
+                (view.iter().flat_map(|v| &v.controls))
+                    .map(|c| (c.name.as_str(), c.kind, c.params.as_slice()))
+                    .collect();
             let compiled = kontra_ksp::compile_with_view(&ir.source, &[], &view).ok()?;
             let bare = |v: &str| v.trim_start_matches(['$', '%', '~', '?', '@', '!']) == name;
             let at = compiled.variables.iter().position(|v| bare(&v.name))?;

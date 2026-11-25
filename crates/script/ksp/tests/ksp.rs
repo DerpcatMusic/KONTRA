@@ -753,7 +753,15 @@ fn view_controls_follow_one_another_in_the_views_order() {
         $b_id := get_ui_id($m2)
         $b_id := get_ui_id($m1)
     end on";
-    let script = kontra_ksp::compile_with_view(source, &[], &[("$m1", &[]), ("$m2", &[])]).unwrap();
+    let script = kontra_ksp::compile_with_view(
+        source,
+        &[],
+        &[
+            ("$m1", kontra_ksp::ControlKind::Knob, &[]),
+            ("$m2", kontra_ksp::ControlKind::Knob, &[]),
+        ],
+    )
+    .unwrap();
     let index = |name: &str| {
         script
             .variables
