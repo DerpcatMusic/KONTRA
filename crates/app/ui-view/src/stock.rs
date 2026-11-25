@@ -102,9 +102,16 @@ impl Look {
             return None;
         }
         Some(match &w.kind {
+            // A stock button or switch keeps its words under
+            // $HIDE_PART_TITLE (the reference 8.13, tools/ksp-ui geometry
+            // page, switch s2).
             Kind::Button { .. } | Kind::Switch => Self::Button {
                 on: t >= 1.,
-                caption: super::caption(w),
+                caption: if w.label_in_image() {
+                    String::new()
+                } else {
+                    w.text.clone()
+                },
                 shift,
             },
             Kind::Menu { .. } => Self::Menu {
@@ -156,7 +163,10 @@ impl Look {
         (artwork, button): (Option<&[Arc<Image>; 3]>, Option<&Arc<Image>>),
         glyphs: Option<&kontra_ui_pictures::Glyphs>,
     ) -> Vec<El> {
-        let bg = bare || !wd.hide.background;
+        // A stock button or switch keeps its body under $HIDE_PART_BG (the
+        // reference 8.13, tools/ksp-ui layers page button pb, geometry page
+        // switch s1); a field drops it.
+        let bg = bare || !wd.hide.background || matches!(self, Self::Button { .. });
         let ink = |default: u32| style.map_or(rgb(default), |s| super::color(s.color));
         match self {
             Self::Button { on, caption, shift } => {

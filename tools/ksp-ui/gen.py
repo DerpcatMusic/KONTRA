@@ -235,7 +235,7 @@ def geometry():
         p.setup.append(f'set_text({v}, "s{i}")')
     p.setup.append(f"hide_part({s[1]}, $HIDE_PART_BG)")
     p.setup.append(f"hide_part({s[2]}, $HIDE_PART_TITLE)")
-    p.par(s[3], "HIDE", 16 * 8)  # $HIDE_WHOLE_CONTROL
+    p.par(s[3], "HIDE", 16)  # $HIDE_WHOLE_CONTROL
     sl = [p.control("ui_slider", f"sl{i}", "(0, 100)") for i in range(3)]
     for i, v in enumerate(sl):
         p.at(v, 500, 200 + 30 * i, 80 + 40 * i, 16)
@@ -453,8 +453,8 @@ def layers():
         (btn("ga"), btn("gb"), [("b", "Z_LAYER", -1)]),               # back layer, declared last
         (btn("ta"), ("ui_knob", "tb", "(0, 100, 1)"), []),            # a button under a later knob
         (("ui_switch", "la", ""), ("ui_label", "lb", "(1, 1)"), [("b", "Z_LAYER", 1)]),
-        (btn("ha"), btn("hb"), [("b", "HIDE", 16 * 8)]),              # the top one hidden whole
-        (btn("pa"), btn("pb"), [("b", "HIDE", 2 ** 3)]),              # the top one without its BG
+        (btn("ha"), btn("hb"), [("b", "HIDE", 16)]),                  # the top one hidden whole ($HIDE_WHOLE_CONTROL)
+        (btn("pa"), btn("pb"), [("b", "HIDE", 1)]),                   # the top one without its BG ($HIDE_PART_BG)
         (("ui_mouse_area", "ma", ""), btn("mb"), []),                 # a mouse area under a button
     ]
     for c, (first, second, pars) in enumerate(cases):
@@ -469,7 +469,7 @@ def layers():
     # A button in a hidden panel, and one in a back-layer panel under a default button.
     hp = p.control("ui_panel", "hp")
     p.at(hp, 10, 120)
-    p.par(hp, "HIDE", 16 * 8)
+    p.par(hp, "HIDE", 16)  # $HIDE_WHOLE_CONTROL
     hpin = p.control("ui_button", "hpin")
     p.at(hpin, 0, 0, 80, 30)
     p.par(hpin, "PARENT_PANEL", "__ID_hp")

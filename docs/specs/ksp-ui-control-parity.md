@@ -133,7 +133,9 @@ evidence_freshness_days: 180
   it (black at alpha 129). Vista's and Pacific's buttons and value edits
   now match. A stock table draws as probes/tables.measured gives (2 px
   frame, field, whole-pixel columns with gaps, dimmed empty cells, zero line
-  over the bars); a label's tab advances one space in the pixel font and
+  over the bars); a stock button or switch keeps its body under
+  `$HIDE_PART_BG` and its words under `$HIDE_PART_TITLE` (layers page `pb`,
+  geometry page `s1`, `s2`); a label's tab advances one space in the pixel font and
   about two in the others. A label in font 1 or 13 draws from an atlas
   cut at run time from the outline face the installed Kontakt draws them in
   (located by offset, checked by length and SHA-256, nothing distributed):
