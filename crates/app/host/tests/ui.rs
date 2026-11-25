@@ -770,3 +770,48 @@ fn binding_param_knob_drives_engine_directly_without_script_vm() {
         "engine should receive zero gain"
     );
 }
+
+/// A picture whose frame or position the script sets from one knob or
+/// slider's value shows that control's value (Analog Strings' cylinders,
+/// `179*$macros__intensity0/1000000`); one set from anything else does not.
+#[test]
+fn a_picture_the_script_turns_with_a_control_shows_that_control() {
+    let ui = tree(
+        "on init
+            declare ui_slider $amount (0, 1000000)
+            declare ui_switch $on
+            declare ui_label $cylinder (1, 1)
+            declare ui_label $slide (1, 1)
+            declare ui_label $lamp (1, 1)
+            declare ui_label $fixed (1, 1)
+            declare ui_label $both (1, 1)
+            declare %frames[2]
+            declare $plain
+        end on
+        function draw
+            set_control_par(get_ui_id($cylinder), $CONTROL_PAR_PICTURE_STATE, 179*$amount/1000000)
+            set_control_par(get_ui_id($slide), $CONTROL_PAR_POS_X, 10 + $amount / 1000)
+            set_control_par(get_ui_id($lamp), $CONTROL_PAR_PICTURE_STATE, $on)
+            set_control_par(get_ui_id($fixed), $CONTROL_PAR_PICTURE_STATE, %frames[$plain])
+            set_control_par(get_ui_id($both), $CONTROL_PAR_PICTURE_STATE, $amount + $on)
+        end function
+        on ui_control($amount)
+            call draw
+        end on",
+    );
+    let amount = ui
+        .widgets
+        .iter()
+        .position(|w| w.name == "$amount")
+        .map(ui::WidgetRef);
+    assert_eq!(widget(&ui, "$cylinder").shows, amount);
+    assert_eq!(widget(&ui, "$slide").shows, amount);
+    assert_eq!(
+        widget(&ui, "$lamp").shows,
+        None,
+        "a switch's state is not a value it turns"
+    );
+    assert_eq!(widget(&ui, "$fixed").shows, None, "an array, not a control");
+    assert_eq!(widget(&ui, "$both").shows, None, "two controls");
+    assert_eq!(widget(&ui, "$amount").shows, None);
+}

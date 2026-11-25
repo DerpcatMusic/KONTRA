@@ -69,7 +69,13 @@ pub(super) fn page<'a>(
             let raw = tree.page_rect(index);
             let over = hovered.binary_search(&index).is_ok();
             let w = tree.widgets.get(index.0)?;
-            if !tree.visible(index) || (!on_page(raw) && tree.scroller(index).is_none()) {
+            // KONTRA's control shows the value this picture showed, while
+            // the control is shown.
+            let shown_elsewhere = bare && w.shows.is_some_and(|c| tree.visible(c));
+            if shown_elsewhere
+                || !tree.visible(index)
+                || (!on_page(raw) && tree.scroller(index).is_none())
+            {
                 return None;
             }
             let held = pressed.binary_search(&index).is_ok();
