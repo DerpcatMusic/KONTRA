@@ -1533,6 +1533,19 @@ fn kontra_draws_a_slider_with_a_rotary_strip_as_a_dial() {
     }
     assert!(!stock::rotary(&tree, &tree.widgets[0]), "a fader's strip");
     assert!(look(&tree, true).is_none());
+    if let model::AssetKind::Image(m) = &mut tree.assets[1].kind {
+        (m.frames, m.size) = (
+            1,
+            Some(Size {
+                width: 51.,
+                height: 50.,
+            }),
+        );
+    }
+    assert!(
+        stock::rotary(&tree, &tree.widgets[0]),
+        "a one-frame ring is a knob too"
+    );
 }
 
 /// A picture the script turns with a control's value (Widget::shows) is
@@ -1593,5 +1606,102 @@ fn kontra_writes_the_word_a_left_out_picture_spelled() {
     assert!(
         w.words.is_empty() && w.picture.is_some(),
         "Original draws the picture"
+    );
+}
+
+/// Kontakt paints a label under a slider in the same layer (type rank), so
+/// a label behind a knob's picture shows through its clear middle (Analog
+/// Strings' "volume"). KONTRA's dial takes the slider's place in that order
+/// and paints no face: the label still shows through.
+#[test]
+fn kontra_dial_leaves_what_paints_under_it_visible() {
+    let (mut tree, wall, knob) = tree();
+    tree.widgets[0].kind = Kind::Slider {
+        range: Range::default(),
+        orientation: model::Orientation::Vertical,
+    };
+    tree.widgets[0].rect = Rect::new(0, 0, 10, 10);
+    // Declared after the slider, still painted before it.
+    let mut under = Widget::new("$label", PageRef(0), Rect::new(0, 0, 10, 10), Kind::Label);
+    under
+        .images
+        .push(ImageUse::new(AssetRef(0), Role::Background));
+    tree.widgets.push(under);
+    tree.z_order = model::ZOrder::Global; // KSP's
+    assert_eq!(
+        tree.draw_order(PageRef(0)),
+        [model::WidgetRef(1), model::WidgetRef(0)]
+    );
+    tree.pages[0].background.image = None;
+    let mut ui = crate::ui();
+    let mut pictures = pictures(wall, knob);
+    settle(&mut ui, &tree, &mut pictures, 1.);
+    let kontra = Presentation::Kontra;
+    let (el, _) = page_as(
+        &mut ui,
+        0,
+        &tree,
+        PageRef(0),
+        &mut pictures,
+        (1., &[]),
+        kontra,
+    );
+    let px = paint(&mut ui, el, 20, 10);
+    let at = |x: usize, y: usize| px.get(y * 20 + x).copied();
+    assert_eq!(
+        at(5, 6),
+        Some([0, 255, 0, 255]),
+        "the label, through the dial"
+    );
+    assert!(
+        (0..10).any(|x| at(x, 5).is_some_and(|p| p != [0, 255, 0, 255])),
+        "the dial's ring"
+    );
+}
+
+/// KONTRA's fader thumb is an outline, so a label painted under the
+/// control (Analog Strings' "tune") stays readable through it.
+#[test]
+fn kontra_fader_thumb_leaves_what_paints_under_it_visible() {
+    let (mut tree, wall, knob) = tree();
+    tree.widgets[0].kind = Kind::Slider {
+        range: Range::default(),
+        orientation: model::Orientation::Horizontal,
+    };
+    tree.widgets[0].rect = Rect::new(0, 0, 20, 10);
+    tree.widgets[0].value = Some(model::Value::Integer(0));
+    if let model::AssetKind::Image(m) = &mut tree.assets[1].kind {
+        m.size = Some(Size {
+            width: 20.,
+            height: 4.,
+        });
+    }
+    let mut under = Widget::new("$label", PageRef(0), Rect::new(0, 0, 20, 10), Kind::Label);
+    under
+        .images
+        .push(ImageUse::new(AssetRef(0), Role::Background));
+    tree.widgets.push(under);
+    tree.z_order = model::ZOrder::Global;
+    tree.pages[0].background.image = None;
+    let mut ui = crate::ui();
+    let mut pictures = pictures(wall, knob);
+    settle(&mut ui, &tree, &mut pictures, 1.);
+    let kontra = Presentation::Kontra;
+    let (el, _) = page_as(
+        &mut ui,
+        0,
+        &tree,
+        PageRef(0),
+        &mut pictures,
+        (1., &[]),
+        kontra,
+    );
+    let px = paint(&mut ui, el, 20, 10);
+    // The thumb sits at the left (value 0), 6 by 8 from y 1; its middle,
+    // above the track, is the label's red row.
+    assert_eq!(px.get(2 * 20 + 3).copied(), Some([255, 0, 0, 255]));
+    assert!(
+        (0..6).any(|x| px.get(20 + x).is_some_and(|p| *p != [255, 0, 0, 255])),
+        "the thumb's outline"
     );
 }

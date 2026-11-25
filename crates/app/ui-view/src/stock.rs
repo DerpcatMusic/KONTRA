@@ -336,10 +336,28 @@ impl Look {
                 }
             }
             Self::Dial { turn } => {
-                // The stock knob's 40 px dial, scaled to fill and centred.
+                // A ring and its pointer, square and centred, with no face:
+                // what Kontakt painted under the control's own picture
+                // (labels rank below sliders) showed through it, and still
+                // does (Analog Strings' "volume" under its knob).
                 let side = w.min(h);
                 let (x, y) = ((w - side) / 2., (h - side) / 2.);
-                vec![stack(dial(*turn, side / 40., bare)).at(x, y)]
+                let (r, stroke) = (side / 2., (side / 20.).max(1.));
+                let a = (f64::from(*turn) / 1000.).mul_add(270., -135.).to_radians();
+                let px = (r - stroke * 2.5).mul_add(a.sin(), r) - stroke;
+                let py = (r - stroke * 2.5).mul_add(-a.cos(), r) - stroke;
+                vec![
+                    block(side - stroke, side - stroke)
+                        .pill()
+                        .fill(Color::srgba(0., 0., 0., 0.))
+                        .stroke(rgb(0xc8_c8c3))
+                        .stroke_width(stroke)
+                        .at(x + stroke / 2., y + stroke / 2.),
+                    block(stroke * 2., stroke * 2.)
+                        .pill()
+                        .fill(rgb(0xfe_fefe))
+                        .at(x + px, y + py),
+                ]
             }
         }
     }
@@ -614,9 +632,23 @@ fn stock_words(text: &str, scale: f64, glyphs: Option<&kontra_ui_pictures::Glyph
     stack(layers).w(45. * scale).h(13. * scale).clip()
 }
 
-/// The stock knob's 40 px dial at `s`: ring, cap and pointer at `turn`
-/// (0..1000).
-fn dial(turn: u16, s: f64, bare: bool) -> Vec<El> {
+/// Whether slider `w` turns: its picture's frames are square, as a library
+/// draws a knob it built from a Kontakt slider (Areia's strip; Analog
+/// Strings' one-frame ring, its value shown by a label under it); a
+/// fader's frames are long and thin.
+// ponytail: frame aspect, not pixels; a square fader picture would turn.
+pub(super) fn rotary(tree: &Interface, w: &Widget) -> bool {
+    let strip = w.images.iter().find(|u| u.role == model::Role::Strip);
+    strip.is_some_and(|u| match tree.assets.get(u.asset.0).map(|a| &a.kind) {
+        Some(model::AssetKind::Image(m)) => m
+            .size
+            .is_some_and(|f| f.height > 0. && (0.75..=4. / 3.).contains(&(f.width / f.height))),
+        _ => false,
+    })
+}
+
+fn knob(wd: &Widget, title: &str, value: &str, turn: u16, s: f64, bare: bool) -> Vec<El> {
+    let light = rgb(0xfe_fefe);
     // Pacific's unpictured knobs have a lit upper ring and a dark lower edge.
     // KONTRA keeps the flat stock skin; both use the existing measured palette.
     let ring: Fill = if bare {
@@ -656,26 +688,6 @@ fn dial(turn: u16, s: f64, bare: bool) -> Vec<El> {
             .fill(rgb(0x2a_2a2a))
             .at((x - 1.5) * s, (y - 1.5) * s),
     );
-    parts
-}
-
-/// Whether slider `w` turns: its picture is a filmstrip of square frames,
-/// as a library draws a knob it built from a Kontakt slider (Areia); a
-/// linear strip's frames are long and thin.
-// ponytail: frame aspect, not pixels; a square linear strip would turn.
-pub(super) fn rotary(tree: &Interface, w: &Widget) -> bool {
-    let strip = w.images.iter().find(|u| u.role == model::Role::Strip);
-    strip.is_some_and(|u| match tree.assets.get(u.asset.0).map(|a| &a.kind) {
-        Some(model::AssetKind::Image(m)) if m.frames > 1 => m
-            .size
-            .is_some_and(|f| f.height > 0. && (0.75..=4. / 3.).contains(&(f.width / f.height))),
-        _ => false,
-    })
-}
-
-fn knob(wd: &Widget, title: &str, value: &str, turn: u16, s: f64, bare: bool) -> Vec<El> {
-    let light = rgb(0xfe_fefe);
-    let mut parts = dial(turn, s, bare);
     let side = (KNOB.0 - 36.) * s;
     let title_y = wd.text_y.map_or(1., f64::from) * s;
     let value_y = wd.value_y.map_or(21., f64::from) * s;
@@ -909,10 +921,14 @@ pub(super) fn face(w: &Widget, t: f64, (width, height): (f64, f64), bare: bool) 
                     active.clone(),
                 ));
                 let th = (across - 2.).min(thumb * 1.4).max(2.);
-                d.push(Draw::fill(
-                    place(at - thumb / 2., mid - th / 2., thumb, th),
-                    active,
-                ));
+                let thumb = place(at - thumb / 2., mid - th / 2., thumb, th);
+                // KONTRA's thumb is an outline: what Kontakt painted under
+                // the control (a "tune" label) stays readable through it.
+                d.push(if bare {
+                    Draw::stroke(thumb, active, 1.5)
+                } else {
+                    Draw::fill(thumb, active)
+                });
             }
             Kind::Shape(shape) => {
                 d.extend(super::shape::fill(shape, page_width, (w, h), background))
