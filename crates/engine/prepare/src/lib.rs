@@ -40,6 +40,7 @@ pub fn prepare(
 ) -> (Plan, Vec<ir::Diagnostic>) {
     let mut diagnostics = ir::validate(instrument);
     let loaded = load_samples(instrument, store, open, &mut diagnostics);
+    keep_heads(instrument, &loaded);
     let has_osc = instrument
         .groups
         .iter()
@@ -496,6 +497,30 @@ pub fn user_zones(
         }
     }
     Some((out, diagnostics))
+}
+
+/// Instruments whose sample heads outlive their parts.
+const HEADS_KEPT: usize = 2;
+
+/// Holds the samples of the last [`HEADS_KEPT`] instruments prepared: their
+/// pinned heads stay in the store's page map after the part that played
+/// them lets go, so a reload (a swap back, a reopened project, another
+/// instance sharing the process's pages) reads none of them again.
+// ponytail: costs up to one instrument's heads beyond the live ones (a few
+// hundred MB for the largest libraries); size it by bytes if that bites.
+fn keep_heads(instrument: &ir::Instrument, loaded: &[Option<Arc<Sample>>]) {
+    use std::sync::{Mutex, PoisonError};
+    type Kept = (std::path::PathBuf, Vec<Arc<Sample>>);
+    static KEPT: Mutex<Vec<Kept>> = Mutex::new(Vec::new());
+    let Some(path) = &instrument.source_path else {
+        return;
+    };
+    let mut kept = KEPT.lock().unwrap_or_else(PoisonError::into_inner);
+    kept.retain(|(p, _)| p != path);
+    kept.push((path.clone(), loaded.iter().flatten().cloned().collect()));
+    if kept.len() > HEADS_KEPT {
+        kept.remove(0);
+    }
 }
 
 /// Loads each sample a resident zone plays, pinning the union of its zones'

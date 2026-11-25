@@ -113,6 +113,100 @@ pub fn read_saved(
         }
         return Ok(out);
     }
+    read_cached(path, saved, known)
+}
+
+/// What a read depends on: the file (by path, modified time and length),
+/// the saved values and the instruments a snapshot may bind to.
+pub(crate) type ReadKey = (
+    PathBuf,
+    Option<std::time::SystemTime>,
+    u64,
+    Vec<Vec<String>>,
+    Vec<PathBuf>,
+);
+
+/// Reads the process translated last are kept, so reloading one of them
+/// (a swap back, a second instance, a reopened project) translates nothing.
+const READS_KEPT: usize = 4;
+
+/// How many reads [`read_saved`] has translated so far (not served from
+/// the instruments read last).
+#[must_use]
+pub fn reads_translated() -> u64 {
+    TRANSLATED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static TRANSLATED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// [`read_file`], from the last [`READS_KEPT`] reads when one had the same
+/// inputs and its file has not changed since.
+fn read_cached(
+    path: &Path,
+    saved: &[Vec<String>],
+    known: &[PathBuf],
+) -> Result<ir::Instrument, Error> {
+    let Some(key) = read_key(path, saved, known) else {
+        return read_file(path, saved, known);
+    };
+    if let Some(hit) = recalled(&key) {
+        return Ok(hit);
+    }
+    let out = read_file(path, saved, known)?;
+    remember(key, &out);
+    Ok(out)
+}
+
+/// The key of a read of `path`; None when nothing on its path exists.
+pub(crate) fn read_key(path: &Path, saved: &[Vec<String>], known: &[PathBuf]) -> Option<ReadKey> {
+    // A slot path (`Multi.nkm/2`, `Bank.sf2/0:1`) is stamped by its file.
+    let meta = path.ancestors().find_map(|p| std::fs::metadata(p).ok())?;
+    Some((
+        path.to_owned(),
+        meta.modified().ok(),
+        meta.len(),
+        saved.to_vec(),
+        known.to_vec(),
+    ))
+}
+
+// ponytail: an exact-key line scan of 4, like `compile_ksp`; a map when a
+// rack swaps between more instruments than that.
+static RECENT: std::sync::Mutex<Vec<(ReadKey, std::sync::Arc<ir::Instrument>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn recent() -> std::sync::MutexGuard<'static, Vec<(ReadKey, std::sync::Arc<ir::Instrument>)>> {
+    RECENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The instrument a recent read with `key` translated, if one did.
+pub(crate) fn recalled(key: &ReadKey) -> Option<ir::Instrument> {
+    let mut recent = recent();
+    let at = recent.iter().position(|(k, _)| k == key)?;
+    let hit = recent.remove(at);
+    let out = ir::Instrument::clone(&hit.1);
+    recent.push(hit);
+    Some(out)
+}
+
+/// Keeps what a read with `key` translated, for [`recalled`].
+pub(crate) fn remember(key: ReadKey, instrument: &ir::Instrument) {
+    TRANSLATED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut recent = recent();
+    recent.push((key, std::sync::Arc::new(instrument.clone())));
+    if recent.len() > READS_KEPT {
+        recent.remove(0);
+    }
+}
+
+/// [`read_saved`] of a file that is not a user preset, uncached.
+fn read_file(
+    path: &Path,
+    saved: &[Vec<String>],
+    known: &[PathBuf],
+) -> Result<ir::Instrument, Error> {
     if let Some((multi, slot)) = multi_slot(path) {
         let loaded = kontra_format_kontakt::multi_load(
             multi,
@@ -581,6 +675,29 @@ mod tests {
         let folded = plan(vec![player, ksp(1, "on init\nend on")]);
         assert_eq!(folded.sustain_pedal, SustainPedal::Holds);
         assert_eq!(folded.release_zones, ReleaseZones::AtRelease);
+    }
+
+    /// A second read of an unchanged file translates nothing; an edit to it
+    /// reads the new file.
+    #[test]
+    fn a_reread_translates_only_what_changed() {
+        let dir = std::env::temp_dir().join(format!("kontra-reread-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Reread.sfz");
+        std::fs::write(&path, "<region> sample=a.wav lokey=60 hikey=60\n").unwrap();
+        let zones =
+            |i: &super::ir::Instrument| i.groups.iter().map(|g| g.zones.len()).sum::<usize>();
+        let first = super::read(&path).unwrap();
+        let translated = super::reads_translated();
+        assert_eq!(super::read(&path).unwrap(), first);
+        assert_eq!(super::reads_translated(), translated);
+        std::fs::write(
+            &path,
+            "<region> sample=a.wav lokey=60 hikey=60\n<region> sample=b.wav lokey=61 hikey=61\n",
+        )
+        .unwrap();
+        assert_eq!(zones(&super::read(&path).unwrap()), zones(&first) + 1);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

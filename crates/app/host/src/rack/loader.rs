@@ -67,12 +67,22 @@ fn snapshot(job: &mut Job) -> Option<Result<kontra_engine::ir::Instrument, crate
     }
     let preset = crate::instrument::preset(&job.path, &job.known)?;
     let held = std::mem::take(&mut job.bases);
-    let base = match held.into_iter().find(|b| b.path() == preset.base) {
+    let held = held.into_iter().find(|b| b.path() == preset.base);
+    // A snapshot read a moment ago reads as it did, onto the base held.
+    let key = crate::instrument::read_key(&job.path, &[], &job.known);
+    if let Some(hit) = key.as_ref().and_then(crate::instrument::recalled) {
+        job.snapshot = held;
+        return Some(Ok(hit));
+    }
+    let base = match held {
         Some(base) => base,
         None => Arc::new(kontra_format_kontakt::open_snapshot_base(&preset.base).ok()?),
     };
     let read = kontra_format_kontakt::load_snapshot_onto(&base, &job.path, &job.known);
     job.snapshot = Some(base);
+    if let (Some(key), Ok(read)) = (key, &read) {
+        crate::instrument::remember(key, read);
+    }
     Some(read.map_err(Into::into))
 }
 

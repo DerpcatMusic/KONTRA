@@ -213,3 +213,42 @@ fn a_snapshot_load_reads_on_the_loader_thread() {
     let part = rack.parts()[0].as_ref().expect("the latest snapshot is in");
     assert_eq!(part.path.as_deref(), Some(Path::new(&latest)));
 }
+
+/// Swapping back to an instrument the process loaded a moment ago: the
+/// translation and the sample heads are reused, so only its scripts run.
+#[test]
+#[ignore = "real libraries; a measurement"]
+fn a_swap_back_reads_and_translates_nothing() {
+    use kontra_host::instrument::reads_translated;
+    let areia = format!(
+        "{K}/Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/07 Areia - Full Ens - Core Techniques.nki"
+    );
+    let analog =
+        format!("{K}/ANALOG STRINGS/Snapshots/ANALOG STRINGS/Factory/Spatial Recognition.nksn");
+    let afflatus = format!(
+        "{K}/Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/Bass Trombone Cimbasso Tuba KS.nki"
+    );
+    if !Path::new(&areia).exists() {
+        return;
+    }
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    store.share_pages_in_process();
+    let (mut rack, mut audio) = Rack::new(48_000, store, 512);
+    for (what, path) in [
+        ("areia", &areia),
+        ("analog", &analog),
+        ("areia again", &areia),
+        ("afflatus", &afflatus),
+        ("afflatus again", &afflatus),
+        ("analog again", &analog),
+        ("areia third", &areia),
+    ] {
+        let translated = reads_translated();
+        step(&mut rack, what, path);
+        eprintln!("    translated {}", reads_translated() - translated);
+        // The audio side takes the new part and lets go of the old one.
+        audio.process(512, &[]);
+        audio.process(512, &[]);
+        rack.tick();
+    }
+}
