@@ -91,11 +91,22 @@ evidence_freshness_days: 180
 - An untouched wavetable's WAVE_END_COLOR/ALPHA read uninitialised memory
   (different across runs); those 9 lines are `unstable`, and KONTRA reads
   the inherited value.
-- FILEPATH writes are kept only under a non-empty BASEPATH, by prefix. Only
-  the no-basepath case is measured; case and separator rules under a
-  basepath are not.
-- A label's TEXT reads its last line after `add_text_line` (control_pars_7).
-  Whether a button or a knob does the same is not measured.
+- FILEPATH: Kontakt 8.13 keeps a path to an existing file whatever the
+  BASEPATH (outside it, without its slash, in another case) and drops a
+  missing one (`filepath_base.kspp`, not replayed). KONTRA keeps the
+  manual's rule instead (kept under a non-empty BASEPATH, by prefix): its
+  engine cannot see files. Matching needs the host to lend an existence
+  check. With no basepath and an existing file nothing is measured yet.
+- A button's and a knob's TEXT read their last line after a TEXTLINE, as a
+  label's does (control_pars_11, replayed).
+- Drags (tools/ksp-ui behaviour page, 100 %): knobs, plain sliders and
+  horizontal `MOUSE_BEHAVIOUR` sliders match KONTRA within a unit
+  (`a_drag_moves_each_control_as_far_as_kontakt_did`). A value edit moves 4
+  units a pixel on 0..1000; KONTRA now sweeps it in 250 points, which also
+  fits the earlier 150 % fact on 0..100, but other ranges are not measured:
+  the rig loses those drags. A stock slider with a negative
+  `MOUSE_BEHAVIOUR` sweeps in 2000/|m| × 15 px; KONTRA uses its 18-point
+  height (open: one size measured). The wheel cannot be driven in the rig.
 - `$CONTROL_PAR_NONE`, `_DND_BEHAVIOUR` and `_MIDI_EXPORT_AREA_IDX` measured
   0, 40 and 105; KONTRA keeps CONTROL_PAR constants opaque.
 - `$CONTROL_PAR_WAVETABLE` in the coverage report is a wrapped table row of

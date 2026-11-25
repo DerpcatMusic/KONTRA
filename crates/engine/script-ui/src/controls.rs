@@ -402,8 +402,12 @@ impl Store {
                     return Some(HostValue::Text);
                 }
             }
-            // A file selector keeps a path under its basepath (reference
+            // A file selector keeps a path under its basepath (script
             // manual); with none set, the reference ignores it (control_pars_7).
+            // ponytail: the reference 8.13 keeps any path to an existing file,
+            // inside the base or not, and drops a missing one (the
+            // filepath_base probe); the engine cannot see files, so it keeps
+            // the manual's prefix rule until the host lends an existence check.
             Action::SetControlParStr if a == look.filepath => {
                 let path = call.texts.first().map_or("", Text::as_str);
                 let base =

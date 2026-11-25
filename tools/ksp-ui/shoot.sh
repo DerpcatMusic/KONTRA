@@ -24,7 +24,9 @@ Xvfb "$DISPLAY" -screen 0 1600x1200x24 -nolisten tcp >/dev/null 2>&1 &
 for _ in $(seq 40); do xdpyinfo >/dev/null 2>&1 && break; sleep 0.5; done; sleep 1
 # DPI=96 shoots Kontakt at 100 % (the slot's own 144 is put back on exit).
 if [ -n "${DPI:-}" ]; then
-  trap 'wine reg add "HKCU\\Control Panel\\Desktop" /v LogPixels /t REG_DWORD /d 144 /f >/dev/null 2>&1; wineserver -w' EXIT
+  # Kontakt first: `wineserver -w` waits for every Wine process, so a running Kontakt held the
+  # slot until the job's time limit.
+  trap 'wineserver -k; wine reg add "HKCU\\Control Panel\\Desktop" /v LogPixels /t REG_DWORD /d 144 /f >/dev/null 2>&1; wineserver -w' EXIT
   wine reg add "HKCU\\Control Panel\\Desktop" /v LogPixels /t REG_DWORD /d "$DPI" /f >/dev/null 2>&1
 fi
 nice -n 19 wine explorer /desktop=k8,1600x1200 "$K" "$(winepath -w "$lua")" >"$out.log" 2>&1 </dev/null &

@@ -1,0 +1,35 @@
+# Kontakt 8.13: which FILEPATH a file selector keeps under a BASEPATH. The folder
+# /data/dev/workspace/scratch/ksp-probe-fs holds a.wav and sub/b.wav (empty files made first); the
+# cases run in turn on one file selector (a script with six fails to compile in Kontakt, and two
+# timed out: probe bisect, 2026-11-25).
+# Not replayed: the kept path depends on the file existing, which KONTRA's engine cannot see.
+# Measured (slot 3, 2026-11-25), each FILEPATH read after its write:
+#   under          base .../ksp-probe-fs/   a.wav          -> a.wav (kept)
+#   under_missing  same base                missing.wav    -> a.wav (dropped: no such file)
+#   under_sub      same base                sub/b.wav      -> sub/b.wav (kept)
+#   outside        base .../sub/            ../a.wav       -> a.wav (kept, outside the base)
+#   base_no_slash  base without the slash   a.wav          -> a.wav
+#   other_case     base .../ksp-probe-fs/   upper-case A.WAV -> kept as written
+# So the base does not filter: a path to an existing file is kept, a missing one dropped.
+R one 1
+S declare ui_file_selector $fs
+S set_control_par_str(get_ui_id($fs), $CONTROL_PAR_BASEPATH, "Z:/data/dev/workspace/scratch/ksp-probe-fs/")
+T under_base get_control_par_str(get_ui_id($fs), $CONTROL_PAR_BASEPATH)
+S set_control_par_str(get_ui_id($fs), $CONTROL_PAR_FILEPATH, "Z:/data/dev/workspace/scratch/ksp-probe-fs/a.wav")
+T under get_control_par_str(get_ui_id($fs), $CONTROL_PAR_FILEPATH)
+S set_control_par_str(get_ui_id($fs), $CONTROL_PAR_FILEPATH, "Z:/data/dev/workspace/scratch/ksp-probe-fs/missing.wav")
+T under_missing get_control_par_str(get_ui_id($fs), $CONTROL_PAR_FILEPATH)
+S set_control_par_str(get_ui_id($fs), $CONTROL_PAR_FILEPATH, "Z:/data/dev/workspace/scratch/ksp-probe-fs/sub/b.wav")
+T under_sub get_control_par_str(get_ui_id($fs), $CONTROL_PAR_FILEPATH)
+S set_control_par_str(get_ui_id($fs), $CONTROL_PAR_BASEPATH, "Z:/data/dev/workspace/scratch/ksp-probe-fs/sub/")
+T outside_base get_control_par_str(get_ui_id($fs), $CONTROL_PAR_BASEPATH)
+S set_control_par_str(get_ui_id($fs), $CONTROL_PAR_FILEPATH, "Z:/data/dev/workspace/scratch/ksp-probe-fs/a.wav")
+T outside get_control_par_str(get_ui_id($fs), $CONTROL_PAR_FILEPATH)
+S set_control_par_str(get_ui_id($fs), $CONTROL_PAR_BASEPATH, "Z:/data/dev/workspace/scratch/ksp-probe-fs")
+T base_no_slash_base get_control_par_str(get_ui_id($fs), $CONTROL_PAR_BASEPATH)
+S set_control_par_str(get_ui_id($fs), $CONTROL_PAR_FILEPATH, "Z:/data/dev/workspace/scratch/ksp-probe-fs/a.wav")
+T base_no_slash get_control_par_str(get_ui_id($fs), $CONTROL_PAR_FILEPATH)
+S set_control_par_str(get_ui_id($fs), $CONTROL_PAR_BASEPATH, "Z:/data/dev/workspace/scratch/ksp-probe-fs/")
+T other_case_base get_control_par_str(get_ui_id($fs), $CONTROL_PAR_BASEPATH)
+S set_control_par_str(get_ui_id($fs), $CONTROL_PAR_FILEPATH, "Z:/DATA/DEV/WORKSPACE/SCRATCH/KSP-PROBE-FS/A.WAV")
+T other_case get_control_par_str(get_ui_id($fs), $CONTROL_PAR_FILEPATH)
