@@ -250,8 +250,11 @@ class Machine:
             v = int.from_bytes(s.take(n, kind if kind != "F" else "R"), "little")
             s.reads.append((kind, start, n, v))
             return v
-        if kind in "SW":
+        if kind in "SWN":
             n = int.from_bytes(s.take(4, "I"), "little")
+            if kind == "N" and n >= 1 << 31:  # negative i32: null string, no bytes
+                s.reads.append((kind, start, 4, 0))
+                return None
             if n > 1 << 24:
                 raise Stop("string-length")
             s.take(n * (2 if kind == "W" else 1))

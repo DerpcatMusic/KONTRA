@@ -286,3 +286,35 @@ repo-saved instrument decodes all 23 bytes. Not changed in this batch.
 
 Next: per-class children readers (slot 12) for 0x35, 0x38 and 0x39; then
 FNTableImpl and SlotList; then Program and Bank.
+
+## Batch 6: null strings
+
+FUN_140743010 (Kontakt 8.13.1) reads an i32 length through FUN_142a78270 and,
+only when it is not negative, that many bytes: a negative length is a null
+string and reads nothing more. The lowering mapped it to the unsigned string
+read (S), so every null string was rejected. It is now its own IR read, N
+(`PRIMS` in `tools/re/reader_lower.py`; `ir_sim.py` and the VM read it). The
+other string readers, FUN_142a78330 and FUN_14093ff90, take the length as
+unsigned and stay S.
+
+Five programs call it and were re-lowered into `native_schema/curated.rs`,
+replacing programs.rs's entries of the same name: FUN_140cefb80,
+BParScript's FUN_140d03920, BParExternalMod's FUN_140d09620, BParInternalMod's
+FUN_140d09b70 and its callee FUN_140d09d50. Lowering all 188 programs of
+programs.rs and curated.rs with and without N differs in exactly these five,
+and only at their 11 `(rd S)` → `(rd N)` sites. The reference interpreter,
+re-run over every sample stream, changes six sample lines (BParScript and a
+BSnapshot holding scripts), each only S → N.
+
+| | Full | Partial | Unaccounted bytes |
+| --- | ---: | ---: | ---: |
+| Before (e1432513f) | 18458541 | 8011 | 5815520864 |
+| After | 18461526 | 5026 | 5814114349 |
+
+- 0x06 BParScript v0x60: 3137 → 152 rejected (2954966910 → 2953560395 unaccounted).
+  The fixed ones are mostly empty slots (23 bytes each), so few bytes move.
+- The 152 still rejected all sit in encrypted presets (a dump pass over
+  unencrypted files writes none), so they are not traced further.
+
+Next: per-class children readers (slot 12) for 0x35, 0x38 and 0x39 and the
+BGroup v0x95 trailing bytes; then FNTableImpl and SlotList; then Program and Bank.
