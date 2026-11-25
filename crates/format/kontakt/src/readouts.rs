@@ -15,7 +15,8 @@ use crate::script_knobs::{
 // each filter kind when a library shows another.
 pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
     use ir::Form::{
-        Blank, Decimal, Hundredths, Menu, Padded, Pan, Rate, Ratio, Times, Whole, Wide, WideWhole,
+        Blank, Bpm, Decimal, Hundredths, Menu, Padded, Pan, Rate, Ratio, Times, Whole, Wide,
+        WideWhole,
     };
     use kontra_law::FormulaId::{
         BassProGainDb, BassProGeqDb, BassProGeqVolumeDb, BassProMasterDb, BassProMidDb, BiteBits,
@@ -37,6 +38,19 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
         "$ENGINE_PAR_PH_DEPTH",
         "$ENGINE_PAR_PH_FEEDBACK",
         "$ENGINE_PAR_CH_DEPTH",
+        "$ENGINE_PAR_FL_DEPTH",
+        "$ENGINE_PAR_FL_FEEDBACK",
+        "$ENGINE_PAR_GATER_MIX",
+        "$ENGINE_PAR_GATER_NOISE",
+        "$ENGINE_PAR_GATER_SHAPE",
+        "$ENGINE_PAR_WOWFLUTTER_WOW",
+        "$ENGINE_PAR_WOWFLUTTER_FLUTTER",
+        "$ENGINE_PAR_WOWFLUTTER_SCRAPE",
+        "$ENGINE_PAR_WOWFLUTTER_SPEED",
+        "$ENGINE_PAR_WOWFLUTTER_STEREO",
+        "$ENGINE_PAR_WOWFLUTTER_AGE",
+        "$ENGINE_PAR_WOWFLUTTER_SATURATION",
+        "$ENGINE_PAR_WOWFLUTTER_MIX",
         "$ENGINE_PAR_JMP_PREAMP",
         "$ENGINE_PAR_JMP_BASS",
         "$ENGINE_PAR_JMP_MID",
@@ -74,6 +88,12 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
         ("$ENGINE_PAR_CH_SPEED", exp(0.05, 8.0), Padded, none),
         ("$ENGINE_PAR_PH_SPEED", exp(0.05, 8.0), Padded, none),
         ("$ENGINE_PAR_CH_PHASE", lin(0.0, 90.0), Wide, none),
+        ("$ENGINE_PAR_FL_SPEED", exp(0.05, 8.0), Padded, none),
+        ("$ENGINE_PAR_FL_PHASE", lin(0.0, 90.0), Wide, none),
+        ("$ENGINE_PAR_PH_PHASE", lin(0.0, 90.0), Wide, none),
+        ("$ENGINE_PAR_FL_COLOR", lin(0.0, 100.0), Wide, none),
+        // `0x141adffb0`: `20 + 380·x` as `%3.0f BPM`.
+        ("$ENGINE_PAR_GATER_RATE", lin(20.0, 400.0), Bpm, none),
         (
             "$ENGINE_PAR_COMP_ATTACK",
             curve(COMP_ATTACK_MS),
