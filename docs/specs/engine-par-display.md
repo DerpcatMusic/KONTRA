@@ -65,6 +65,7 @@ oracle (`tools/kontakt-oracle/disp_sweep.py`), plus the KSP manual's parameter n
 | `$ENGINE_PAR_*` before (main 22f3e8ce99, with corpus) | 48 | 319 | 300 |
 | after #203 | 115 | 263 | 289 |
 | after the amp/delay/ring batch (main 2597cd0d20) | 196 | 263 | 208 |
+| after the menu, multiple and rate forms (main fa56d6b5b2) | 197 → 200 | 263 → 260 | 207 |
 
 ## Verification Matrix
 
@@ -86,7 +87,17 @@ None — all verification tiers execute on the current host.
   the module display code or a fitted closed form. The 201-point Raum sweep is in
   the table. Also menu names (Replika quality and BBD type), Choral delay's "x"
   prefix, Psyche Delay's stepped pitch and its detune rounding.
-- Batch 2's pending names: Bass Pro's gain, master, mid, GEQ bands and GEQ
+- Settled by 201-point runs (2026-11-25): Replika quality and BBD type are
+  menus (entry `floor(4x)`), Choral delay is "x " and `0.1 + 5x`, and Ring Mod's
+  LFO rate is `exp(1/32, 32)` with two decimals under 1. A curve readout is
+  `e^(ln lo + x·(ln hi − ln lo))` in f64 on f32 logs: 1/32..32 Hz at 0.2 reads
+  0.13, which pure f32 rounds to 0.12.
+- Still pending, each needing the module's display code from the binary and not a
+  fit: Psyche Delay's pitch (25 steps, but the edges at 0.300 and 0.520 fit no
+  single rounding of one line), Twin Delay's time (`(1 − x)² + 1999x²` misses
+  109 of 201), Bass Pro's gain (`(e^(kx) − 1)/(e^k − 1)`, k ≈ 3.228, misses 1 of
+  201; the binary reads a table), and its master, mid and GEQ curves.
+- Batch 2's pending names (before the 201-point runs): Bass Pro's gain, master, mid, GEQ bands and GEQ
   volume (curves: gain reads like 20·log10((e^(kx) − 1)/(e^k − 1)) with k
   near 3.23, not pinned by one-decimal text), Twin Delay's times (near
   2000·x², off at the low end) and Ring Mod's LFO rate (two decimals below 1,

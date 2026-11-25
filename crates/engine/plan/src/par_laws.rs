@@ -3,7 +3,7 @@
 //! Each is a named [`Law`]; the law evaluator does the maths.
 
 use kontra_ir::{self as ir, Law};
-use kontra_script_ui::readout::{Readout, write};
+use kontra_script_ui::readout::{write, Readout};
 use kontra_vm::Text;
 
 use crate::{EnginePar, EnginePars, Group};
@@ -56,15 +56,28 @@ pub fn text(pars: &EnginePars, id: i32, raw: i32, out: &mut Text) -> bool {
         return true;
     }
     let x = x as f32 / 1e6;
+    if let ir::Form::Menu(items) = r.form {
+        let i = (x * items.len() as f32) as usize;
+        out.push(
+            items
+                .get(i.min(items.len().saturating_sub(1)))
+                .unwrap_or(&""),
+        );
+        return true;
+    }
     // A readout's line is shown as `lo + (hi − lo)·x` and its curve as
-    // `e^(ln lo + x·(ln hi − ln lo))`, both in f32, which round apart from the
-    // law's own forms at ties (measured: 1..100 at 0.05 reads 6.0, 1..10
-    // reads 1.5, 31.25..4000 Hz at 0 reads " 31.3", 31.250002).
-    let v = f64::from(match r.law {
-        ir::Law::Linear { lo, hi } => lo + (hi - lo) * x,
-        ir::Law::Exp { lo, hi } => (lo.ln() + x * (hi.ln() - lo.ln())).exp(),
-        ref law => law.eval(x),
-    });
+    // `e^(ln lo + x·(ln hi − ln lo))`, the line in f32 and the curve in f64 on
+    // f32 logs, which round apart from the laws' own forms at ties (measured:
+    // 1..100 at 0.05 reads 6.0, 1..10 reads 1.5, 31.25..4000 Hz at 0 reads
+    // " 31.3", 1/32..32 Hz at 0.2 reads 0.13).
+    let v = match r.law {
+        ir::Law::Linear { lo, hi } => f64::from(lo + (hi - lo) * x),
+        ir::Law::Exp { lo, hi } => {
+            let (lo, hi) = (f64::from(lo.ln()), f64::from(hi.ln()));
+            (lo + f64::from(x) * (hi - lo)).exp()
+        }
+        ref law => f64::from(law.eval(x)),
+    };
     let readout = match r.form {
         ir::Form::Padded => Readout::Padded(v),
         ir::Form::Decimal => Readout::Signed(v),
@@ -74,7 +87,10 @@ pub fn text(pars: &EnginePars, id: i32, raw: i32, out: &mut Text) -> bool {
         ir::Form::Pan => Readout::Pan,
         ir::Form::Hundredths => Readout::Hundredths(v),
         ir::Form::WideWhole => Readout::WideWhole(v),
-        ir::Form::Blank => return true,
+        ir::Form::Blank | ir::Form::Menu(_) => return true,
+        ir::Form::Times => return out.push_fmt(format_args!("x {v:.1}")),
+        ir::Form::Rate if v.abs() < 1.0 => return out.push_fmt(format_args!("{v:.2}")),
+        ir::Form::Rate => return out.push_fmt(format_args!("{v:.1}")),
     };
     write(readout, v, out)
 }
