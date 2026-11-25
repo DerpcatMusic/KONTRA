@@ -436,6 +436,8 @@ impl BackgroundTask for Tick {
         // A state the host restored in this batch is what `saved` holds: a
         // load beside it must not write the rack over it.
         let restores = requests.iter().any(|r| matches!(r, Request::Restore(_)));
+        // A scan reading the same disk waits while these load.
+        browser.pause(restores || requests.iter().any(Request::loads));
         for r in requests {
             let loads = r.loads();
             let holds = loads || matches!(r, Request::Restore(_));
@@ -480,6 +482,7 @@ impl BackgroundTask for Tick {
                 p.shared.done.fetch_add(1, Ordering::AcqRel);
             }
         }
+        browser.pause(false);
         notices.extend(rack.take_notices());
         notices.append(&mut browser.notices);
         report.extend(notices);

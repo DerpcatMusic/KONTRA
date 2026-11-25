@@ -141,7 +141,10 @@ pub fn save(path: &Path, libraries: &[Library]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
+    // Unique per save: the browser's mid-scan saves may overlap the scan's.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.tmp.{}.{seq}", std::process::id()));
     let written =
         std::fs::write(&tmp, serde_json::to_vec(&file)?).and_then(|()| std::fs::rename(&tmp, path));
     if written.is_err() {
@@ -346,6 +349,68 @@ mod tests {
         assert!(second.libraries.iter().all(|l| l.offline.is_none()));
         assert!(identity(Path::new("/x"), Some("Komplete|NI"), &[]).starts_with("nicnt:"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A rescan finds the libraries the index knows from their stamps,
+    /// without listing their folders again; one that changed is listed.
+    #[test]
+    fn a_rescan_stats_known_libraries_instead_of_listing_them() {
+        let dir = tmp("known");
+        library(&dir.join("libs/Vendor/A"));
+        library(&dir.join("libs/Vendor/B"));
+        let roots = root(&dir.join("libs"));
+        let before = scan(&roots, &[]);
+        assert_eq!(before.libraries.len(), 2);
+        let rescan = |previous: &[Library]| {
+            let progress = Progress::default();
+            let inspect = |_: &Path| Err(crate::BankError::failed("-"));
+            let c = crate::scan_incremental(
+                &roots,
+                &progress,
+                &mut Cache::default(),
+                &inspect,
+                previous,
+            )
+            .unwrap();
+            (
+                c,
+                progress.folders.load(std::sync::atomic::Ordering::Relaxed),
+            )
+        };
+        let (again, listed) = rescan(&before.libraries);
+        assert_eq!(again.libraries, before.libraries);
+        assert_eq!(listed, 2, "only the root and the vendor folder");
+        std::fs::write(dir.join("libs/Vendor/B/Pads/New.sfz"), b"<region>").unwrap();
+        let (changed, listed) = rescan(&again.libraries);
+        assert!(listed > 2, "the changed library is listed again");
+        let b = changed
+            .libraries
+            .iter()
+            .find(|l| l.dir.ends_with("B"))
+            .unwrap();
+        assert!(b.presets.iter().any(|p| p.ends_with("Pads/New.sfz")));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A paused scan waits at its next check; resuming or stopping it lets
+    /// it go on.
+    #[test]
+    fn a_paused_scan_goes_on_when_resumed_or_stopped() {
+        let progress = std::sync::Arc::new(Progress::default());
+        progress.pause(true);
+        let waiter = {
+            let p = std::sync::Arc::clone(&progress);
+            std::thread::spawn(move || p.canceled())
+        };
+        progress.pause(false);
+        assert!(!waiter.join().unwrap(), "resumed, not canceled");
+        progress.pause(true);
+        let waiter = {
+            let p = std::sync::Arc::clone(&progress);
+            std::thread::spawn(move || p.canceled())
+        };
+        progress.stop();
+        assert!(waiter.join().unwrap(), "a stop wakes a paused scan");
     }
 
     #[test]
