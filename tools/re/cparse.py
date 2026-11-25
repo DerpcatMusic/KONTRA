@@ -30,6 +30,7 @@ TYPE_WORDS = {
     "int", "uint", "short", "ushort", "char", "byte", "bool", "float", "double", "longlong",
     "ulonglong", "long", "ulong", "code", "void", "float10", "size_t", "unsigned", "signed",
     "int3", "int5", "int6", "int7", "uint3", "uint5", "uint6", "uint7", "BOOL", "wchar_t",
+    "ThrowInfo",
 }
 
 

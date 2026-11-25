@@ -185,3 +185,30 @@ yet (0x45 BInsertBus is hand-only) or that Kontakt's reader rejects (scripts).
 SessionState (0x0F02) now names its stop: an unframed nested object of
 unknown class in [ref]. Next: unframed lists (ZoneList, FNTableImpl,
 GroupList, SlotList), BParEnv 0x90, scripts (BParScript 0x60).
+
+## Batch 3: BParEnv, and what snapshots leave unread
+
+The census now splits the bytes of nested objects a reader consumes but does not
+decode by parent, nested SerType and cause. On 0a34e0945 (before this batch) the 902 partial snapshots left 145914405 bytes in 0x07
+BParEnv (no reader) and 2223277 in 0x45 BInsertBus (no reader); no script was
+rejected.
+
+BParEnv had no reader because the catalog took vtable [ref]'s private
+reader (slot 11, [ref]), an empty stub. Its public reader (slot 10,
+[ref]) accepts version 0x90 and reads one u32 envelope type, 0, 1 or 2.
+It is the first entry of `native_schema/curated.rs`: readers programs.rs lacks,
+each one function lowered by `tools/re/lower_curated.py` from the decompile
+(programs.rs itself cannot be regenerated: its Ghidra project is gone and
+another analysis does not reproduce it).
+
+| | Full | Partial | Unaccounted bytes |
+| --- | ---: | ---: | ---: |
+| Before | 17042634 | 1423918 | 9398002934 |
+| After | 18432295 | 34257 | 9246529885 |
+
+- 0x07 BParEnv v0x90: 1389661 objects, 5558644 → 0 unaccounted, all full.
+- 0x4F BSnapshot v1: 109307562 → 2003547; v3: 38830120 → 219730. What is left
+  is 0x45 BInsertBus, nested with no reader.
+
+Next: BInsertBus 0x45, then the unframed lists (ZoneList, FNTableImpl,
+GroupList, SlotList).

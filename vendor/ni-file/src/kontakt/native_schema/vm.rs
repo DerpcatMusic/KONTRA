@@ -9,7 +9,31 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use super::curated::{CURATED_PROGRAMS, CURATED_READERS};
 use super::programs::{ProgramSrc, ReaderSrc, PROGRAMS, READERS};
+
+/// The generated programs and the curated ones (curated.rs).
+fn all_programs() -> &'static [&'static ProgramSrc] {
+    static ALL: OnceLock<Vec<&'static ProgramSrc>> = OnceLock::new();
+    ALL.get_or_init(|| CURATED_PROGRAMS.iter().chain(PROGRAMS).collect())
+}
+
+/// The generated readers, with a curated reader (curated.rs) in place of the row of the same
+/// SerType and class.
+fn all_readers() -> &'static [&'static ReaderSrc] {
+    static ALL: OnceLock<Vec<&'static ReaderSrc>> = OnceLock::new();
+    ALL.get_or_init(|| {
+        let curated = |r: &ReaderSrc| {
+            CURATED_READERS
+                .iter()
+                .any(|c| c.sertype == r.sertype && c.class == r.class)
+        };
+        CURATED_READERS
+            .iter()
+            .chain(READERS.iter().filter(|r| !curated(r)))
+            .collect()
+    })
+}
 
 /// Embedded bodies a reader reads through a host object's virtual reader, so the stream
 /// does not name their class: (program, SerType of the body).
@@ -43,7 +67,7 @@ const OBJECTS: &[(&str, &[u16], u16)] = &[
 /// Whether the reader of `sertype` reads nested objects these tables name (beyond what the
 /// reference interpreter tools/re/ir_sim.py models).
 pub(super) fn names_nested(sertype: u16) -> bool {
-    READERS.iter().any(|r| {
+    all_readers().iter().any(|r| {
         r.sertype == sertype
             && (OBJECTS.iter().any(|(at, _, _)| *at == r.program)
                 || BODIES.iter().any(|(at, _)| *at == r.program))
@@ -123,9 +147,52 @@ pub struct Decoded {
     pub class: &'static str,
     pub fields: Vec<Field>,
     pub consumed: usize,
-    /// Bytes of nested framed objects whose class neither the stream nor the reader names:
-    /// their framing is consumed but their areas are not decoded.
-    pub opaque: usize,
+    /// Bytes of nested framed objects that are consumed but not decoded, by class and cause.
+    pub opaque: Vec<Opaque>,
+}
+
+impl Decoded {
+    /// All opaque bytes.
+    pub fn opaque_bytes(&self) -> usize {
+        self.opaque.iter().map(|o| o.bytes).sum()
+    }
+}
+
+/// Bytes of nested objects of one class that a decode consumed without decoding, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Opaque {
+    /// The nested object's SerType; `None` when neither stream nor reader names it.
+    pub sertype: Option<u16>,
+    pub why: &'static str,
+    pub bytes: usize,
+}
+
+/// Add `bytes` of `sertype` with cause `why` to `into`, one entry per class and cause.
+fn hide(into: &mut Vec<Opaque>, sertype: Option<u16>, why: &'static str, bytes: usize) {
+    match into
+        .iter_mut()
+        .find(|o| o.sertype == sertype && o.why == why)
+    {
+        Some(o) => o.bytes += bytes,
+        None if bytes > 0 => into.push(Opaque {
+            sertype,
+            why,
+            bytes,
+        }),
+        None => {}
+    }
+}
+
+/// Why a nested object did not decode, as an [`Opaque`] cause.
+fn cause(e: &Undecoded) -> &'static str {
+    match e {
+        Undecoded::Truncated => "truncated",
+        Undecoded::Rejected => "rejected",
+        Undecoded::Unresolved(_) => "not modelled",
+        Undecoded::Budget => "search over budget",
+        Undecoded::Trailing(_) => "trailing bytes",
+        Undecoded::NoReader => "no reader",
+    }
 }
 
 type Val = Option<(i64, u32)>;
@@ -544,12 +611,12 @@ struct Library {
 fn library() -> Result<&'static Library, &'static IrError> {
     static LIB: OnceLock<Result<Library, IrError>> = OnceLock::new();
     LIB.get_or_init(|| {
-        let index: HashMap<&'static str, usize> = PROGRAMS
+        let index: HashMap<&'static str, usize> = all_programs()
             .iter()
             .enumerate()
             .map(|(i, p)| (p.name, i))
             .collect();
-        let programs = PROGRAMS
+        let programs = all_programs()
             .iter()
             .map(|p| build(p, &index).map_err(|IrError(why)| IrError(format!("{}: {why}", p.name))))
             .collect::<Result<_, _>>()?;
@@ -631,7 +698,7 @@ struct Machine<'a> {
     next_sp: i64,
     nobj: i64,
     globals: [Val; 2],
-    opaque: usize,
+    opaque: Vec<Opaque>,
 }
 
 fn wrap(v: i64, bits: u8, signed: bool) -> i64 {
@@ -665,7 +732,7 @@ impl<'a> Machine<'a> {
             next_sp: STACK,
             nobj: 0,
             globals: [class.map(|c| (i64::from(c), 0)), None],
-            opaque: 0,
+            opaque: Vec::new(),
         };
         m.store(STREAM + 0x10, 4, Some((1, 0))); // byte-order flag Kontakt tests: 1 = no swap
         m.store(STREAM + 8, 8, Some((STREAM + 0x100, 0)));
@@ -801,7 +868,7 @@ impl<'a> Machine<'a> {
     }
 
     fn reader_of(&self, sertype: u16) -> Option<(usize, u16, u16)> {
-        let r = READERS
+        let r = all_readers()
             .iter()
             .find(|r| r.sertype == sertype && !r.program.is_empty())?;
         Some((*self.lib.index.get(r.program)?, r.sertype, r.current))
@@ -849,7 +916,16 @@ impl<'a> Machine<'a> {
                 areas.push((begin, n));
             }
             match reader {
-                None => self.opaque += areas.iter().map(|&(_, n)| n).sum::<usize>(),
+                None => hide(
+                    &mut self.opaque,
+                    named,
+                    if named.is_some() {
+                        "no reader"
+                    } else {
+                        "class not named"
+                    },
+                    areas.iter().map(|&(_, n)| n).sum::<usize>(),
+                ),
                 Some((_, sertype, _)) => {
                     let area = |(begin, n): (usize, usize)| {
                         data.get(begin..begin.saturating_add(n)).ok_or(Stop::Throw)
@@ -903,17 +979,27 @@ impl<'a> Machine<'a> {
         let (body, at) = if public.0.is_empty() && !private.0.is_empty() {
             private
         } else {
-            self.opaque += private.0.len();
+            hide(
+                &mut self.opaque,
+                Some(sertype),
+                "second block",
+                private.0.len(),
+            );
             public
         };
         // Its framing bounds it, so an object its reader does not decode is opaque bytes
         // for the census, not a stop for the parent's search (which would replay it).
-        let Ok(d) = nested_decode(sertype, ver, body) else {
-            self.opaque += body.len();
-            return Ok(());
+        let d = match nested_decode(sertype, ver, body) {
+            Ok(d) => d,
+            Err(e) => {
+                hide(&mut self.opaque, Some(sertype), cause(&e), body.len());
+                return Ok(());
+            }
         };
         let (base, depth) = (self.stream.base + at, self.depth + 1);
-        self.opaque += d.opaque;
+        for o in &d.opaque {
+            hide(&mut self.opaque, o.sertype, o.why, o.bytes);
+        }
         self.fields.extend(d.fields.into_iter().map(|f| Field {
             offset: f.offset + base,
             depth: f.depth + depth,
@@ -942,14 +1028,19 @@ impl<'a> Machine<'a> {
     fn chunk(&mut self, id: u16, body: &[u8], at: usize) {
         let opaque = body.len();
         let parsed = (|| {
-            let (&flag, rest) = body.split_first()?;
-            let ver = u16::from_le_bytes([*rest.first()?, *rest.get(1)?]);
+            const SHORT: &str = "not object-framed";
+            let (&flag, rest) = body.split_first().ok_or(SHORT)?;
+            let ver = u16::from_le_bytes([*rest.first().ok_or(SHORT)?, *rest.get(1).ok_or(SHORT)?]);
             if flag > 1 || !accepts(id, ver) {
-                return None;
+                return Err(if flag > 1 {
+                    "not object-framed"
+                } else {
+                    "no reader"
+                });
             }
             let rest = &rest[2..];
             if flag == 0 {
-                return Some((
+                return Ok((
                     ver,
                     (&[][..], at + 3),
                     (rest, at + 3),
@@ -959,23 +1050,35 @@ impl<'a> Machine<'a> {
             let mut areas = Vec::with_capacity(3);
             let mut off = 0;
             for _ in 0..3 {
-                let n = u32::from_le_bytes(rest.get(off..off + 4)?.try_into().ok()?) as usize;
-                let area = rest.get(off + 4..(off + 4).checked_add(n)?)?;
+                let n = rest
+                    .get(off..off + 4)
+                    .and_then(|b| b.try_into().ok())
+                    .map(u32::from_le_bytes)
+                    .ok_or(SHORT)? as usize;
+                let area = (off + 4)
+                    .checked_add(n)
+                    .and_then(|end| rest.get(off + 4..end))
+                    .ok_or(SHORT)?;
                 areas.push((area, at + 3 + off + 4));
                 off += 4 + n;
             }
-            (off == rest.len()).then(|| (ver, areas[0], areas[1], areas[2]))
+            if off == rest.len() {
+                Ok((ver, areas[0], areas[1], areas[2]))
+            } else {
+                Err(SHORT)
+            }
         })();
-        let Some((ver, private, public, children)) = parsed else {
-            self.opaque += opaque;
-            return;
+        let (ver, private, public, children) = match parsed {
+            Ok(p) => p,
+            Err(why) => return hide(&mut self.opaque, Some(id), why, opaque),
         };
-        let (fields, extra) = (self.fields.len(), self.opaque);
+        let (fields, extra) = (self.fields.len(), self.opaque.clone());
         if self.framed(id, ver, private, public).is_err()
             || self.children(children.0, children.1).is_err()
         {
             self.fields.truncate(fields);
-            self.opaque = extra + opaque;
+            self.opaque = extra;
+            hide(&mut self.opaque, Some(id), "child framing", opaque);
         }
     }
 
@@ -984,10 +1087,10 @@ impl<'a> Machine<'a> {
         let Some(sertype) = named else {
             return self.run_nested(prog, ver);
         };
-        let element = READERS
+        let element = all_readers()
             .iter()
             .find(|r| r.sertype == sertype)
-            .and_then(element_of)
+            .and_then(|r| element_of(r))
             .map(|c| (i64::from(c), 0));
         let outer = std::mem::replace(&mut self.globals[0], element);
         let r = self.run_nested(prog, ver);
@@ -1125,7 +1228,7 @@ impl<'a> Machine<'a> {
     fn call(&mut self, prog: usize, args: &[Val], depth: u32) -> Result<Val, Stop> {
         self.call_body(prog, args, depth).map_err(|e| match e {
             Stop::Unresolved(w) if !w.contains(" in FUN_") => {
-                let at = PROGRAMS.get(prog).map_or("?", |p| p.name);
+                let at = all_programs().get(prog).map_or("?", |p| p.name);
                 Stop::Unresolved(format!("{w} in {at}"))
             }
             e => e,
@@ -1182,7 +1285,7 @@ impl<'a> Machine<'a> {
                     let ver = self.ev(v, &regs)?;
                     let named = BODIES
                         .iter()
-                        .find(|(at, _)| PROGRAMS.get(prog).is_some_and(|q| q.name == *at))
+                        .find(|(at, _)| all_programs().get(prog).is_some_and(|q| q.name == *at))
                         .map(|&(_, sertype)| sertype);
                     let reader = match named {
                         Some(sertype) => self.reader_of(sertype),
@@ -1219,7 +1322,10 @@ impl<'a> Machine<'a> {
 
 /// Reader table rows for one SerType.
 pub(super) fn readers_for(sertype: u16) -> impl Iterator<Item = &'static ReaderSrc> {
-    READERS.iter().filter(move |r| r.sertype == sertype)
+    all_readers()
+        .iter()
+        .copied()
+        .filter(move |r| r.sertype == sertype)
 }
 
 fn reader_for(sertype: u16, version: u16) -> Option<&'static ReaderSrc> {
@@ -1236,7 +1342,7 @@ struct Outcome {
     stop: Option<Stop>,
     fields: Vec<Field>,
     consumed: usize,
-    opaque: usize,
+    opaque: Vec<Opaque>,
     out: Vec<u8>,
     chooser: Chooser,
 }
@@ -1259,7 +1365,7 @@ fn attempt(
                 stop: Some(Stop::Virtual(format!("bundled reader IR: {why}"))),
                 fields: Vec::new(),
                 consumed: 0,
-                opaque: 0,
+                opaque: Vec::new(),
                 out: Vec::new(),
                 chooser,
             }
@@ -1273,7 +1379,7 @@ fn attempt(
             ))),
             fields: Vec::new(),
             consumed: 0,
-            opaque: 0,
+            opaque: Vec::new(),
             out: Vec::new(),
             chooser,
         };
@@ -1428,7 +1534,7 @@ pub struct ReaderInfo {
 }
 
 pub fn readers() -> Vec<ReaderInfo> {
-    READERS
+    all_readers()
         .iter()
         .map(|r| ReaderInfo {
             sertype: r.sertype,
@@ -1461,7 +1567,7 @@ fn constants(prog: &str) -> Vec<i64> {
         if !seen.insert(n) {
             continue;
         }
-        let Some(p) = PROGRAMS.iter().find(|p| p.name == n) else {
+        let Some(p) = all_programs().iter().find(|p| p.name == n) else {
             continue;
         };
         for line in p.ops.lines() {
@@ -1759,13 +1865,13 @@ mod catalog_equivalence_tests {
 
     #[test]
     fn every_retained_program_builds_and_matches_legacy_lowering() {
-        let index: HashMap<_, _> = PROGRAMS
+        let index: HashMap<_, _> = all_programs()
             .iter()
             .enumerate()
             .map(|(i, p)| (p.name, i))
             .collect();
         let mut checked = 0;
-        for src in PROGRAMS {
+        for src in all_programs() {
             let current = build(src, &index).unwrap_or_else(|e| panic!("{}: {e:?}", src.name));
             let old = legacy_build(src, &index);
             assert_eq!(current.params, old.params, "{} params", src.name);
@@ -1782,7 +1888,7 @@ mod catalog_equivalence_tests {
             );
             checked += 1;
         }
-        assert_eq!(checked, PROGRAMS.len());
+        assert_eq!(checked, all_programs().len());
         assert!(checked > 0);
     }
 
