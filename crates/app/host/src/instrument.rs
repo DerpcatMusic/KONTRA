@@ -124,6 +124,8 @@ pub(crate) type ReadKey = (
     u64,
     Vec<Vec<String>>,
     Vec<PathBuf>,
+    // The moved-folders generation: a relink re-resolves the samples.
+    u64,
 );
 
 /// Reads the process translated last are kept, so reloading one of them
@@ -167,6 +169,7 @@ pub(crate) fn read_key(path: &Path, saved: &[Vec<String>], known: &[PathBuf]) ->
         meta.len(),
         saved.to_vec(),
         known.to_vec(),
+        kontra_format::moved_generation(),
     ))
 }
 

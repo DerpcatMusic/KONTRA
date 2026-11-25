@@ -29,6 +29,7 @@ pub use format::{
 // settings file and the readers run deep inside each format; a parameter
 // through every reader when a second source of moves appears.
 static MOVED: RwLock<Vec<(PathBuf, PathBuf)>> = RwLock::new(Vec::new());
+static MOVED_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Sets the moved folders ([`moved`]).
 pub fn set_moved(moved: &[(PathBuf, PathBuf)]) {
@@ -36,7 +37,14 @@ pub fn set_moved(moved: &[(PathBuf, PathBuf)]) {
         && *now != moved
     {
         moved.clone_into(&mut now);
+        MOVED_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+/// Changes whenever [`set_moved`] changes the moved folders, so a cache of
+/// translations (which resolve samples through them) can key on it.
+pub fn moved_generation() -> u64 {
+    MOVED_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Whether any folder is set as moved ([`set_moved`]).
