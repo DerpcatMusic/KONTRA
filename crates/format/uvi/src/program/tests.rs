@@ -1730,6 +1730,8 @@ fn a_program_plays_in_a_part_that_cc_7_10_and_11_move() {
     assert_eq!(c.top_db, 6.0);
     // A stereo pan turns the far side to `(1 + cos π·pan)/2`.
     assert_eq!(out.output.balance, ir::Balance::Cosine);
+    // A mono sample's pan, at the default PanLaw 0: `(1 ∓ sin(π/2·pan))/2`.
+    assert_eq!(out.output.mono, Some(ir::Balance::HalfSine));
 }
 
 #[test]

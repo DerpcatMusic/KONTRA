@@ -444,6 +444,31 @@ fn a_voice_pans_by_its_instruments_balance_law() {
 }
 
 #[test]
+fn a_mono_sample_pans_by_its_instruments_mono_law() {
+    // UVI's default PanLaw: half the mono sample on each side at the centre,
+    // `(1 ∓ sin(π/2·pan))/2` off it, against the same voice with no mono law.
+    let render = |pan, mono| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut z = zone(&mut store, 1.0);
+        z.pan = pan;
+        let mut plan = Plan::new(vec![z], 16);
+        plan.output.balance = kontra_ir::Balance::Cosine;
+        plan.output.mono = mono;
+        let mut e = engine(&store, plan);
+        level(&mut e, &[on(60, 1.0)]);
+        (0..8).map(|_| level(&mut e, &[])).last().unwrap()
+    };
+    let [unity, _] = render(0.0, None);
+    for (pan, want) in [(0.0, [0.5, 0.5]), (0.5, [0.146_447, 0.853_553]), (-1.0, [1.0, 0.0])] {
+        let [l, r] = render(pan, Some(kontra_ir::Balance::HalfSine)).map(|side| side / unity);
+        assert!(
+            (l - want[0]).abs() < 1e-3 && (r - want[1]).abs() < 1e-3,
+            "{pan}: {l} {r}"
+        );
+    }
+}
+
+#[test]
 fn complementary_random_start_rules_partition_every_note_on() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut left = zone(&mut store, 1.0);
