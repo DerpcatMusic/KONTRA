@@ -12,6 +12,8 @@
 //!    engine always has a graph (docs/specs/effect-racks-on-audiograph.md).
 //! 6. Cyclic `AudioGraph` errors are surfaced (never silently discarded) in both
 //!    `kontra-prepare` and `Engine::try_new` / `Engine::graph_error`.
+//! 6. UVI effects load through their one `UviModule` table: no second
+//!    hand-written builder, and `format/uvi` production lines only fall.
 #![allow(clippy::expect_used, clippy::indexing_slicing)]
 
 use std::collections::HashSet;
@@ -297,6 +299,70 @@ fn only_the_audio_graph_runs_instrument_buses() {
         !engine.contains("graph: Option<"),
         "the engine's graph is optional again: every plan routes through one"
     );
+}
+
+/// Code lines (not blank, not comments) of `src` before its trailing
+/// `#[cfg(test)] mod … {`; `tests.rs` files count 0.
+fn production_lines(src: &Path) -> usize {
+    if src.file_name().is_some_and(|n| n == "tests.rs") {
+        return 0;
+    }
+    let text = std::fs::read_to_string(src).expect("read src");
+    let lines: Vec<&str> = text.lines().collect();
+    let test_mod = lines
+        .windows(2)
+        .position(|w| w[0] == "#[cfg(test)]" && w[1].starts_with("mod ") && w[1].ends_with('{'));
+    lines[..test_mod.unwrap_or(lines.len())]
+        .iter()
+        .filter(|l| {
+            let l = l.trim();
+            !l.is_empty() && !l.starts_with("//")
+        })
+        .count()
+}
+
+#[test]
+fn uvi_effects_load_through_their_module_tables() {
+    let mut files = Vec::new();
+    walk_rs(&kontra_crates_dir().join("format/uvi/src"), &mut files);
+    // The builders `UviModule` replaced (tools/migrations/uvi-mapping-tables.py).
+    let builders = count_needles(
+        &files,
+        &[
+            "fn dual_delay(",
+            "fn spark_verb(",
+            "fn flanger(",
+            "fn phasor(",
+            "fn wave_shaper(",
+            "fn diode_clipper(",
+            "fn shelves(",
+            "fn maximizer(",
+            "fn drive(",
+        ],
+    );
+    assert_eq!(
+        builders, 0,
+        "a UVI effect grew a second builder beside its UviModule"
+    );
+    // 6,966 on b19c21ca3, 6,613 after the tables (06-FORMATS.md §3).
+    let lines: usize = files.iter().map(|p| production_lines(p)).sum();
+    assert!(
+        lines <= 6_613,
+        "format/uvi code lines rose to {lines}; ratchet is 6,613"
+    );
+}
+
+fn count_needles(files: &[PathBuf], needles: &[&str]) -> usize {
+    files
+        .iter()
+        .map(|p| {
+            let text = std::fs::read_to_string(p).expect("read src");
+            needles
+                .iter()
+                .map(|n| text.matches(n).count())
+                .sum::<usize>()
+        })
+        .sum()
 }
 
 #[test]

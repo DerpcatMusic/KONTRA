@@ -19,70 +19,127 @@ use kontra_ir as ir;
 use kontra_law::common::SQUARE_ROOT;
 use roxmltree::Node;
 
-use super::{flag, num};
+use super::{Attr, SPEED_OF_SOUND, UviModule, ids, num};
 
-const SPEED_OF_SOUND: f64 = 340.0;
+/// SparkVerb: the 21 parameters above, in knob order.
+pub static SPARK_VERB: UviModule = UviModule {
+    id: ids::SPARK_VERB,
+    tag: "SparkVerb",
+    attrs: &[
+        Attr::num("RoomSize", 20.0),
+        Attr::num("DecayTime", 1.0),
+        Attr::num("PreDelay", 0.0),
+        Attr::num("Rolloff", 20_000.0),
+        Attr::num("Width", 1.0),
+        Attr::num("Mix", 1.0),
+        Attr::num("MixMode", 0.0),
+        Attr::num("Diffusion", 0.618),
+        Attr::num("ModRate", 1.0),
+        Attr::num("ModDepth", 4.0),
+        Attr::num("Quality", 3.0),
+        Attr::num("Shape", 0.0),
+        Attr::flag("DiffusionOnOff"),
+        Attr::num("DiffusionStart", 5.0),
+        Attr::num("DecayLow", 1.0),
+        Attr::num("DecayHigh", 1.0),
+        Attr::num("FreqLow", 250.0),
+        Attr::num("FreqHigh", 12_000.0),
+        Attr::flag("LowCut"),
+        Attr::flag("HiCut"),
+        Attr::flag("Freeze"),
+    ],
+    report: spark_verb_report,
+    build_effect: |p, current| {
+        let [
+            room,
+            decay,
+            predelay,
+            rolloff,
+            width,
+            mix,
+            mix_mode,
+            diffusion,
+            mod_rate,
+            mod_depth,
+            quality,
+            shape,
+            diff_on,
+            diff_start,
+            decay_low,
+            decay_high,
+            freq_low,
+            freq_high,
+            low_cut,
+            hi_cut,
+            freeze,
+        ] = *p
+        else {
+            return None;
+        };
+        let room = f64::from(room).max(1.0);
+        let seconds = f64::from(decay).max(0.01) * room / 10.0;
+        let crossing = room / SPEED_OF_SOUND;
+        let hz = f64::from(mod_rate).max(0.0) / 16.0 / crossing;
+        let swing_ms = if hz > 0.0 {
+            let ratio = f64::from(mod_depth).max(0.0) * std::f64::consts::LN_2 / 1200.0;
+            1000.0 * ratio / (std::f64::consts::TAU * hz)
+        } else {
+            0.0
+        };
+        let mix = f64::from(mix).clamp(0.0, 1.0);
+        let (wet, dry) = if (mix_mode - 1.0).abs() < 0.5 {
+            (SQUARE_ROOT.eval_f64(mix), SQUARE_ROOT.eval_f64(1.0 - mix))
+        } else {
+            (mix, 1.0 - mix)
+        };
+        let law = ir::HadamardNetwork {
+            lines: 1 << (f64::from(quality).clamp(1.0, 4.0) as u8),
+            shape,
+            diffusers: diff_on > 0.5,
+            diffuser_ms: diff_start.max(0.1),
+            decay_low,
+            decay_high,
+            low_hz: freq_low,
+            high_hz: freq_high,
+            low_cut: low_cut > 0.5,
+            high_cut: hi_cut > 0.5,
+            freeze: freeze > 0.5,
+        };
+        Some(ir::Effect {
+            kind: ir::EffectKind::Reverb(ir::Reverb {
+                seconds: seconds as f32,
+                size: crossing as f32,
+                network: Some(ir::Network::Hadamard(law)),
+                damping: 0.0,
+                diffusion: diffusion.clamp(0.0, 1.0),
+                predelay_ms: predelay.max(0.0),
+                high_cut_hz: rolloff,
+                low_shelf_db: 0.0,
+                stereo: width.clamp(0.0, 1.0),
+                modulation_ms: swing_ms as f32,
+                modulation_hz: hz as f32,
+            }),
+            bypass: current.bypass,
+            output: wet as f32,
+            dry: dry as f32,
+        })
+    },
+};
 
-/// The SparkVerb at `node`. Quality is log2 of the lines (+0x4c, flag 0x80
-/// reallocates); Mode picks the lines' read interpolation (+0x50 → each
-/// line's +0x48, 0x14167d8b0; 0x1416485a0: 0 none, 1 linear, 2 cubic), and
-/// only linear is carried. Density and a Mode other than 1 are reported.
-pub(super) fn spark_verb(node: Node, notes: &mut Notes) -> Result<ir::Effect, String> {
-    let room = num(node, "RoomSize", 20.0)?.max(1.0);
-    let seconds = num(node, "DecayTime", 1.0)?.max(0.01) * room / 10.0;
-    let crossing = room / SPEED_OF_SOUND;
-    let quality = num(node, "Quality", 3.0)?;
+/// Quality is log2 of the lines (+0x4c, flag 0x80 reallocates); Mode picks
+/// the lines' read interpolation (+0x50 → each line's +0x48, 0x14167d8b0;
+/// 0x1416485a0: 0 none, 1 linear, 2 cubic), and only linear is carried.
+/// Density and a Mode other than 1 are reported.
+fn spark_verb_report(node: Node, notes: &mut Notes) -> Result<(), String> {
     if node.attribute("Density").is_some() || num(node, "Mode", 1.0)? != 1.0 {
         notes.add(ir::Impact::Audible, "sparkverb density or mode", "");
     }
-    let hz = num(node, "ModRate", 1.0)?.max(0.0) / 16.0 / crossing;
-    let swing_ms = if hz > 0.0 {
-        let ratio = num(node, "ModDepth", 4.0)?.max(0.0) * std::f64::consts::LN_2 / 1200.0;
-        1000.0 * ratio / (std::f64::consts::TAU * hz)
-    } else {
-        0.0
-    };
-    let mix = num(node, "Mix", 1.0)?.clamp(0.0, 1.0);
-    let (wet, dry) = if num(node, "MixMode", 0.0)? == 1.0 {
-        (SQUARE_ROOT.eval_f64(mix), SQUARE_ROOT.eval_f64(1.0 - mix))
-    } else {
-        (mix, 1.0 - mix)
-    };
-    let law = ir::HadamardNetwork {
-        lines: 1 << (quality.clamp(1.0, 4.0) as u8),
-        shape: num(node, "Shape", 0.0)? as f32,
-        diffusers: flag(node, "DiffusionOnOff"),
-        diffuser_ms: num(node, "DiffusionStart", 5.0)?.max(0.1) as f32,
-        decay_low: num(node, "DecayLow", 1.0)? as f32,
-        decay_high: num(node, "DecayHigh", 1.0)? as f32,
-        low_hz: num(node, "FreqLow", 250.0)? as f32,
-        high_hz: num(node, "FreqHigh", 12_000.0)? as f32,
-        low_cut: flag(node, "LowCut"),
-        high_cut: flag(node, "HiCut"),
-        freeze: flag(node, "Freeze"),
-    };
-    Ok(ir::Effect {
-        kind: ir::EffectKind::Reverb(ir::Reverb {
-            seconds: seconds as f32,
-            size: crossing as f32,
-            network: Some(ir::Network::Hadamard(law)),
-            damping: 0.0,
-            diffusion: num(node, "Diffusion", 0.618)?.clamp(0.0, 1.0) as f32,
-            predelay_ms: num(node, "PreDelay", 0.0)?.max(0.0) as f32,
-            high_cut_hz: num(node, "Rolloff", 20_000.0)? as f32,
-            low_shelf_db: 0.0,
-            stereo: num(node, "Width", 1.0)?.clamp(0.0, 1.0) as f32,
-            modulation_ms: swing_ms as f32,
-            modulation_hz: hz as f32,
-        }),
-        bypass: false,
-        output: wet as f32,
-        dry: dry as f32,
-    })
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::load_one;
     use super::*;
 
     #[test]
@@ -95,7 +152,7 @@ mod tests {
             DiffusionOnOff="1" PreDelay="0" MixMode="1" SparkVerbVersion="1"/>"#;
         let doc = roxmltree::Document::parse(xml).unwrap();
         let mut notes = Notes::default();
-        let e = spark_verb(doc.root_element(), &mut notes).unwrap();
+        let e = load_one(doc.root_element(), &mut notes).unwrap();
         assert!(notes.finish().is_empty());
         let ir::EffectKind::Reverb(r) = e.kind else {
             panic!("{e:?}")
@@ -127,7 +184,7 @@ mod tests {
             DiffusionOnOff="1" PreDelay="0" MixMode="0" SparkVerbVersion="1"/>"#;
         let doc = roxmltree::Document::parse(xml).unwrap();
         let mut notes = Notes::default();
-        let e = spark_verb(doc.root_element(), &mut notes).unwrap();
+        let e = load_one(doc.root_element(), &mut notes).unwrap();
         assert!(notes.finish().is_empty());
         let ir::EffectKind::Reverb(r) = e.kind else {
             panic!("{e:?}")

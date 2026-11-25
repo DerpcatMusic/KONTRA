@@ -8,46 +8,19 @@
 //! `PreInsert` does. Of the effects, Gain, GainMatrix, TrackDelay (at 0),
 //! DigitalEq, Convolver, SampledReverb, ThreeBandShelves, DualDelay,
 //! Maximizer, SparkVerb, WaveShaper, DiodeClipper, Flanger and Phasor are
-//! carried; the rest pass their input and are reported (see `effects`).
+//! carried (most by their [`models::UviModule`]); the rest pass their input
+//! and are reported (see `effects`).
 
 use kontra_format::Notes;
 use kontra_ir as ir;
 use roxmltree::Node;
 
-use super::delay::dual_delay;
 use super::digital_eq::{digital_eq, gain_scale};
 use super::models;
-use super::reverb::spark_verb;
 mod inserts;
 mod moved;
-mod shaper;
-mod sweep;
 
 use super::{Library, Translator, db, flag, index_of, matrix, num, source_node};
-use shaper::{diode_clipper, wave_shaper};
-use sweep::{flanger, phasor};
-
-/// An effect's saved parameters, some set to other values (to tabulate
-/// what a connection moving them does: `moved`).
-#[derive(Clone, Copy)]
-pub(super) struct Params<'a, 'input> {
-    pub(super) node: Node<'a, 'input>,
-    set: &'a [(&'static str, f64)],
-}
-
-impl<'a, 'input> Params<'a, 'input> {
-    pub(super) fn of(node: Node<'a, 'input>) -> Self {
-        Self { node, set: &[] }
-    }
-
-    /// `name`'s value, or `default` when the effect has none.
-    pub(super) fn num(&self, name: &str, default: f64) -> Result<f64, String> {
-        match self.set.iter().find(|(n, _)| *n == name) {
-            Some(&(_, v)) => Ok(v),
-            None => num(self.node, name, default),
-        }
-    }
-}
 
 /// Attribute names on a UVI insert mapped to their [`ir::KnobModel`] knob index.
 pub(super) type KnobMap = Vec<(String, u8)>;
@@ -568,24 +541,11 @@ impl<L: Library> Translator<'_, '_, L> {
             None
         } else if node.has_tag_name("GainMatrix") {
             Some(matrix(node, &mut self.notes)?)
-        } else if node.has_tag_name("ThreeBandShelves") {
-            Some(shelves(node)?)
-        } else if node.has_tag_name("SparkVerb") {
-            Some(spark_verb(node, &mut self.notes)?)
-        } else if node.has_tag_name("Maximizer") {
-            Some(maximizer(node, &mut self.notes)?)
-        } else if node.has_tag_name("WaveShaper") {
-            wave_shaper(Params::of(node), &mut self.notes)?
-        } else if node.has_tag_name("Flanger") {
-            Some(flanger(Params::of(node))?)
-        } else if node.has_tag_name("Phasor") {
-            Some(phasor(Params::of(node), &mut self.notes)?)
-        } else if node.has_tag_name("DiodeClipper") {
-            Some(diode_clipper(node)?)
         } else if let Some(e) = inserts::bus_effect(node, &mut self.notes)? {
             Some(e)
-        } else if node.has_tag_name("DualDelay") {
-            Some(dual_delay(node, &mut self.notes)?)
+        } else if node.has_tag_name("XpanderFilter") {
+            // Off a bus ladder (`bus_effect`'s) it is not carried.
+            None
         } else if node.has_tag_name("Convolver") || node.has_tag_name("SampledReverb") {
             let raw = node.has_tag_name("SampledReverb") && !flag(node, "NormalizePower");
             let wet = num(node, "Wet", 1.0)? as f32 * if raw { RAW_WET } else { 1.0 };
@@ -594,6 +554,8 @@ impl<L: Library> Translator<'_, '_, L> {
                 Some(impulse) => effect(ir::EffectKind::Convolution { impulse }, wet, dry),
                 None => effect(ir::EffectKind::OtherWet, 1.0, dry),
             })
+        } else if let Some(e) = models::UviModule::load(node, &mut self.notes)? {
+            Some(e)
         } else {
             // ponytail: an effect with a wet path not carried yet plays only
             // its dry level; passing its input instead would be louder.
@@ -779,24 +741,6 @@ fn widen(w: f32) -> [[f32; 2]; 2] {
 /// Silence for an envelope knot, dB.
 const SILENT: f32 = -200.0;
 
-/// ThreeBandShelves: UVI's one biquad (0x1412927b0 → 0x141643350) is the
-/// mid gain times a first-order low shelf at FreqLowMid and a first-order
-/// high shelf at FreqMidHigh, each by its band's gain over the mid's
-/// (bilinear, tan-prewarped, 0x141649120). A cookbook shelf at slope 0.5 is
-/// that first-order shelf exactly.
-fn shelves(node: Node) -> Result<ir::Effect, String> {
-    let params = [
-        num(node, "FreqLowMid", 200.0)? as f32,
-        num(node, "FreqMidHigh", 4000.0)? as f32,
-        num(node, "GainLow", 0.0)? as f32,
-        num(node, "GainMid", 0.0)? as f32,
-        num(node, "GainHigh", 0.0)? as f32,
-    ];
-    models::THREE_BAND_SHELVES
-        .build_fresh(&params)
-        .ok_or_else(|| "ThreeBandShelves build failed".to_owned())
-}
-
 /// A bus GainMatrix: `Gain_i_j` is input channel `i` into output `j`. The
 /// buses carry two channels (a keygroup's matrix sums its sample channels
 /// into the first two), so the top-left block is the whole matrix; a row
@@ -816,45 +760,6 @@ fn matrix(node: Node, notes: &mut Notes) -> Result<ir::Effect, String> {
     let [ll, lr, rl, rr] = [(1, 1), (2, 1), (1, 2), (2, 2)].map(|(i, j)| cell(i, j));
     let m = [[ll? as f32, lr? as f32], [rl? as f32, rr? as f32]];
     Ok(effect(ir::EffectKind::Matrix(m), 1.0, 0.0))
-}
-
-/// UVI's Maximizer (process 0x141665620, prepare 0x141666780, parameter
-/// ids 0x1427fd2c0..2e4). Per block it takes the louder channel in dB,
-/// floored at Threshold (or through a quadratic knee `(x−T+k)²/4k` within
-/// ±Knee), and turns it into a gain of `Ceiling − level` dB after:
-///
-/// - a slew limit: the level falls at most `10000/SlewRate` dB/s (prepare
-///   `10000/(rate·SlewRate)` per frame, no limit at 0); rises are free;
-/// - two one-pole falls blended by ReleaseBlend (0x141667480): one to a
-///   third in Release ms (`e^(ln(1/3)/frames)`, ln(1/3) at 0x141e64248),
-///   one 100× slower (`e^(−0.010986/frames)`); a rise uses Attack, which
-///   CeilingMode 0 (Brickwall, the default) forces to 0;
-/// - the largest level over the last `2·⌊Lookahead·rate/2000⌋` frames
-///   (0x141667790), applied to the audio delayed by as many frames.
-///
-/// CeilingMode 2 (Hard) also clamps the output at Ceiling (`10^(C/20)`).
-/// Threshold-to-Ceiling is input gain into a limiter at Ceiling.
-///
-/// ponytail: TruePeak (Off in every corpus program) adds a 6-frame
-/// oversampled detector; it is reported, not modelled.
-fn maximizer(node: Node, notes: &mut Notes) -> Result<ir::Effect, String> {
-    if num(node, "TruePeak", 0.0)? != 0.0 {
-        notes.add(ir::Impact::Audible, "maximizer TruePeak", "");
-    }
-    let params = [
-        num(node, "Threshold", 0.0)? as f32,
-        num(node, "Ceiling", -0.1)? as f32,
-        num(node, "SlewRate", 0.0)? as f32,
-        num(node, "CeilingMode", 0.0)? as f32,
-        num(node, "Knee", 0.0)? as f32,
-        num(node, "Attack", 0.0)? as f32,
-        num(node, "Release", 10.0)? as f32,
-        num(node, "ReleaseBlend", 0.0)? as f32,
-        num(node, "Lookahead", 0.0)? as f32,
-    ];
-    models::MAXIMIZER
-        .build_fresh(&params)
-        .ok_or_else(|| "Maximizer build failed".to_owned())
 }
 
 /// The dry level of an effect whose output is mostly a wet path (a reverb,
@@ -946,7 +851,7 @@ mod tests {
         // Augmented Orchestra's most common setting (90 programs).
         let xml = r#"<Maximizer Threshold="-6" Attack="0" Lookahead="2" Release="10" Ceiling="-0.1" Knee="0" ReleaseBlend="0.1" SlewRate="20"/>"#;
         let doc = roxmltree::Document::parse(xml).unwrap();
-        let e = maximizer(doc.root_element(), &mut Notes::default()).unwrap();
+        let e = models::load_one(doc.root_element(), &mut Notes::default()).unwrap();
         let ir::EffectKind::Limiter(l) = e.kind else {
             panic!("{e:?}")
         };
@@ -964,7 +869,7 @@ mod tests {
     fn three_band_shelves_are_two_half_slope_shelves_around_the_mid_gain() {
         let xml = r#"<ThreeBandShelves FreqLowMid="250" FreqMidHigh="5000" GainLow="3" GainMid="-1" GainHigh="4"/>"#;
         let doc = roxmltree::Document::parse(xml).unwrap();
-        let e = shelves(doc.root_element()).unwrap();
+        let e = models::load_one(doc.root_element(), &mut Notes::default()).unwrap();
         let ir::EffectKind::Eq([low, high, ..]) = e.kind else {
             panic!("{e:?}")
         };
@@ -1034,9 +939,7 @@ mod tests {
         let xml = r#"<WaveShaper Mode="0" Mix="1" InputGain="40" OutputGain="40"/>"#;
         let doc = roxmltree::Document::parse(xml).unwrap();
         let node = doc.root_element();
-        let built = wave_shaper(Params::of(node), &mut Notes::default())
-            .unwrap()
-            .unwrap();
+        let built = models::load_one(node, &mut Notes::default()).unwrap();
         let (model, _) = models::decode_model(node, 0).unwrap();
         let from_model = model.build_effect(&model.saved, &built).unwrap();
         assert_eq!(from_model, built);
@@ -1048,7 +951,7 @@ mod tests {
         let xml = r#"<ThreeBandShelves FreqLowMid="250" FreqMidHigh="5000" GainLow="3" GainMid="-1" GainHigh="4"/>"#;
         let doc = roxmltree::Document::parse(xml).unwrap();
         let node = doc.root_element();
-        let loaded = shelves(node).unwrap();
+        let loaded = models::load_one(node, &mut Notes::default()).unwrap();
         let (model, attrs) = models::decode_model(node, 0).unwrap();
         assert_eq!(model.build_effect(&model.saved, &loaded).unwrap(), loaded);
         let idx = |n: &str| usize::from(attrs.iter().find(|(k, _)| k == n).unwrap().1);
@@ -1066,7 +969,7 @@ mod tests {
         // SparkVerb: RoomSize * DecayTime and equal-power Mix/MixMode
         let sv_xml = r#"<SparkVerb RoomSize="20" DecayTime="2" Mix="0.5" MixMode="1" PreDelay="10" Rolloff="8000" Width="0.8"/>"#;
         let sv_doc = roxmltree::Document::parse(sv_xml).unwrap();
-        let sv_built = spark_verb(sv_doc.root_element(), &mut Notes::default()).unwrap();
+        let sv_built = models::load_one(sv_doc.root_element(), &mut Notes::default()).unwrap();
         let (sv_model, _) = models::decode_model(sv_doc.root_element(), 0).unwrap();
         assert_eq!(
             sv_model.build_effect(&sv_model.saved, &sv_built).unwrap(),
@@ -1081,7 +984,7 @@ mod tests {
         // Maximizer: Threshold & Ceiling couple live
         let mx_xml = r#"<Maximizer Threshold="-6" Ceiling="-0.1" SlewRate="20"/>"#;
         let mx_doc = roxmltree::Document::parse(mx_xml).unwrap();
-        let mx_built = maximizer(mx_doc.root_element(), &mut Notes::default()).unwrap();
+        let mx_built = models::load_one(mx_doc.root_element(), &mut Notes::default()).unwrap();
         let (mx_model, _) = models::decode_model(mx_doc.root_element(), 0).unwrap();
         assert_eq!(
             mx_model.build_effect(&mx_model.saved, &mx_built).unwrap(),
@@ -1093,14 +996,9 @@ mod tests {
         };
         assert!((l.input_db - 9.9).abs() < 1e-4);
 
-        // DualDelay, Flanger, Phasor, XpanderFilter, Drive, DiodeClipper, DigitalEq, SampledReverb, Convolver
+        // XpanderFilter and DigitalEq load through their own paths; their models must agree
         for xml in [
-            r#"<DualDelay SyncToHost="0" DelayTime="0.25" Feedback="0.4" FeedbackRatio="0.5" Mix="0.25" Rotation="90" InputRotation="1" InputWidth="1"/>"#,
-            r#"<Flanger SyncToHost="0" Speed="0.4" Feedback="0.3" DelayTime="0.2" Depth="0.5" Mix="0.8"/>"#,
-            r#"<Phasor SyncToHost="0" Speed="0.5" MinFreq="200" MaxFreq="3000" Feedback="0.4" Depth="0.5" Spread="1"/>"#,
             r#"<XpanderFilter DistortionType="0" Algorithm="0" Mode="3" Freq="1000" Q="0.5" Drive="6"/>"#,
-            r#"<Drive Mode="0" DriveAmount="0.5"/>"#,
-            r#"<DiodeClipper Drive="6" OutputGain="-3" Tone="8000" HighPass="40" Asymmetry="0.2"/>"#,
             r#"<DigitalEq GainScale="0.5" Enabled1="1" Type1="6" Slope1="1" Freq1="1000" Gain1="6" Bandwidth1="1"/>"#,
         ] {
             let doc = roxmltree::Document::parse(xml).unwrap();
@@ -1110,14 +1008,7 @@ mod tests {
                 .build_effect(&m.saved, &effect(ir::EffectKind::Other, 1.0, 0.0))
                 .unwrap();
             let expected = match node.tag_name().name() {
-                "DualDelay" => dual_delay(node, &mut Notes::default()).unwrap(),
-                "Flanger" => flanger(Params::of(node)).unwrap(),
-                "Phasor" => phasor(Params::of(node), &mut Notes::default()).unwrap(),
                 "XpanderFilter" => crate::program::filters::effect(node, 0),
-                "Drive" => inserts::bus_effect(node, &mut Notes::default())
-                    .unwrap()
-                    .unwrap(),
-                "DiodeClipper" => diode_clipper(node).unwrap(),
                 "DigitalEq" => digital_eq(node, &mut Notes::default())
                     .unwrap()
                     .effects

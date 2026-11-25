@@ -9,14 +9,11 @@
 //! parameters one source moves are tabulated together; ponytail: those of
 //! different sources add their changes (exact unless two move one level).
 
-use kontra_format::Notes;
 use kontra_ir as ir;
 use roxmltree::{Node, NodeId};
 
 use super::super::{Library, Translator, flag, index_of, matrix, source_node};
-use super::Params;
-use super::shaper::wave_shaper;
-use super::sweep::{flanger, phasor};
+use super::models;
 
 /// Points a moved effect is tabulated at over its source's travel.
 const POINTS: usize = 33;
@@ -34,8 +31,6 @@ const FIELDS: [ir::EffectParam; 8] = [
     ir::EffectParam::PhaserFeedback,
 ];
 
-type Build = fn(Params, &mut Notes) -> Result<Option<ir::Effect>, String>;
-
 /// A moved parameter: its name, saved value, ratio and connection.
 type Moved = (&'static str, f64, f32, NodeId);
 
@@ -43,13 +38,26 @@ impl<L: Library> Translator<'_, '_, L> {
     /// Routes the live connections on the moved parameters of the effect at
     /// `node`, in slot `insert` of bus `at`.
     pub(super) fn moves(&mut self, node: Node, at: usize, insert: u8) -> Result<(), String> {
-        let (params, build): (&[&'static str], Build) = match node.tag_name().name() {
-            "Flanger" => (&["Mix", "Speed", "Feedback"], |p, _| flanger(p).map(Some)),
-            "Phasor" => (&["Depth", "Speed", "Feedback"], |p, n| {
-                phasor(p, n).map(Some)
-            }),
-            "WaveShaper" => (&["Mix", "Amount"], wave_shaper),
+        let params: &[&'static str] = match node.tag_name().name() {
+            "Flanger" => &["Mix", "Speed", "Feedback"],
+            "Phasor" => &["Depth", "Speed", "Feedback"],
+            "WaveShaper" => &["Mix", "Amount"],
             _ => return Ok(()),
+        };
+        let Some(module) = models::by_tag(node.tag_name().name()) else {
+            return Ok(());
+        };
+        let saved = module.saved(node)?;
+        // The effect with the named knobs set to other values.
+        let build = |set: &[(&str, f64)]| {
+            let mut p = saved.clone();
+            for &(name, v) in set {
+                let at = module.attrs.iter().position(|a| a.name == name);
+                if let Some(x) = at.and_then(|i| p.get_mut(i)) {
+                    *x = v as f32;
+                }
+            }
+            module.build_fresh(&p)
         };
         let program = self.program;
         // Each moved parameter's one live connection, by its source.
@@ -148,8 +156,7 @@ impl<L: Library> Translator<'_, '_, L> {
                 extra.push(id);
             }
         }
-        let scratch = &mut Notes::default();
-        let Some(mut rest) = build(Params::of(node), scratch)? else {
+        let Some(mut rest) = build(&[]) else {
             return Ok(());
         };
         for (input, moved) in by_source {
@@ -167,7 +174,7 @@ impl<L: Library> Translator<'_, '_, L> {
                         (name, saved + f64::from(r * m))
                     })
                     .collect();
-                let Some(e) = build(Params { node, set: &set }, scratch)? else {
+                let Some(e) = build(&set) else {
                     break;
                 };
                 effects.push(e);
