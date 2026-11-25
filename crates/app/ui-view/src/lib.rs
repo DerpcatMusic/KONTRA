@@ -326,8 +326,11 @@ pub fn page_as(
                 )
             );
             let atlas = match style.map(|s| &s.font) {
+                // A field in fonts 1 or 13 draws its words as a label does
+                // (`stock::label_words`).
+                Some(model::Font::Stock(id)) if field => pixel_atlas(*id),
                 Some(model::Font::Stock(id)) => stock_atlas(*id),
-                None if field => stock_atlas(0),
+                None if field => pixel_atlas(0),
                 _ => None,
             };
             match atlas {
@@ -595,15 +598,21 @@ pub fn page_as(
                         .chars()
                         .all(|c| c == '?' || kontra_ui_pictures::glyph(c) != usize::from(b'?'))
                     && matches!(style.font, model::Font::Stock(id) if stock_atlas(id).is_some())
-                    && plan::label_fits(&words, glyphs, w, scale, (insets.0 * scale, insets.1 * scale))
-                {
+                    && plan::label_fits(
+                        &words,
+                        glyphs,
+                        w,
+                        scale,
+                        (insets.0 * scale, insets.1 * scale),
+                        atlas_space(&style.font, glyphs),
+                    ) {
                     stock::label(
                         &words,
                         style,
-                        wd.text_y,
+                        atlas_top(&style.font, wd.text_y),
                         (w, h, scale, device),
                         insets,
-                        glyphs,
+                        (glyphs, atlas_space(&style.font, glyphs)),
                     )
                 } else {
                     None
@@ -898,13 +907,46 @@ pub(crate) fn knob_name(w: &model::Widget) -> String {
     }
 }
 
-/// The installed Kontakt glyph atlas a stock font id's label draws from:
+/// The installed Kontakt glyph atlas a stock font id draws from:
 /// the 9 px pixel font's family (same advances and cell in the Kontakt 8
 /// oracle). The 13 px family, font 12 among it, runs 6 % tighter than the
 /// font 12 and 13 atlases, so it draws in the outline face at its weight.
-fn stock_atlas(id: i32) -> Option<(usize, &'static str)> {
+fn pixel_atlas(id: i32) -> Option<(usize, &'static str)> {
     matches!(id, 0 | 2 | 3 | 4 | 6 | 8 | 9 | 10 | 11 | 15 | 26)
         .then_some((usize::MAX - 3, "@stock/font"))
+}
+
+/// The atlas a stock font id's label draws from: the pixel font's family,
+/// or fonts 1 and 13 cut from the installed face they are drawn in (the
+/// reference 8.13, text probe). Without that face they keep the outline
+/// face.
+fn stock_atlas(id: i32) -> Option<(usize, &'static str)> {
+    match id {
+        1 => Some((usize::MAX - 11, "@stock/face11")),
+        13 => Some((usize::MAX - 12, "@stock/face10")),
+        _ => pixel_atlas(id),
+    }
+}
+
+/// How wide a space runs in a stock atlas label: 3 px in the pixel font's
+/// family (probed in Kontakt 8), the face's own advance otherwise.
+fn atlas_space(font: &model::Font, glyphs: &kontra_ui_pictures::Glyphs) -> u32 {
+    match font {
+        model::Font::Stock(id) if pixel_atlas(*id).is_some() => 3,
+        _ => glyphs.get(usize::from(b' ')).map_or(3, |g| g.width),
+    }
+}
+
+/// Where a stock atlas label's cell top sits: the pixel font's at its
+/// TEXTPOS_Y, 2 px without one; fonts 1 and 13 2 px under TEXTPOS_Y, which
+/// counts as 0 when unset (the reference 8.13: font 13 at TEXTPOS_Y 0 and
+/// unset put the baseline 10 px down; the text probe and a library's
+/// key switch labels).
+fn atlas_top(font: &model::Font, text_y: Option<i32>) -> Option<i32> {
+    match font {
+        model::Font::Stock(id) if pixel_atlas(*id).is_some() => text_y,
+        _ => Some(text_y.unwrap_or(0) + 2),
+    }
 }
 
 /// An image asset's path and layout.

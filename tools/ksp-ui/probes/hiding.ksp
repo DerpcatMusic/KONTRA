@@ -1,0 +1,182 @@
+{ KSP UI probe suite, page hiding: written by tools/ksp-ui/gen.py }
+on init
+  make_perfview
+  set_ui_width_px(900)
+  set_ui_height_px(380)
+  declare !log[1024]
+  declare $n := 0
+  pgs_create_key(KLOG, 1)
+  declare ui_label $cap0(1, 1)
+  declare ui_label $box0(1, 1)
+  declare ui_table %t0[16](4, 4, 127)
+  make_persistent(%t0)
+  declare ui_label $cap1(1, 1)
+  declare ui_label $box1(1, 1)
+  declare ui_table %t1[16](4, 4, 127)
+  make_persistent(%t1)
+  declare ui_label $cap2(1, 1)
+  declare ui_label $box2(1, 1)
+  declare ui_table %t2[16](4, 4, 127)
+  make_persistent(%t2)
+  declare ui_label $cap3(1, 1)
+  declare ui_label $box3(1, 1)
+  declare ui_table %t3[16](4, 4, 127)
+  make_persistent(%t3)
+  set_control_par(get_ui_id($cap0), $CONTROL_PAR_POS_X, 10)
+  set_control_par(get_ui_id($cap0), $CONTROL_PAR_POS_Y, 10)
+  set_text($cap0, "/2T")
+  set_control_par(get_ui_id($box0), $CONTROL_PAR_POS_X, 110)
+  set_control_par(get_ui_id($box0), $CONTROL_PAR_POS_Y, 10)
+  set_control_par(get_ui_id($box0), $CONTROL_PAR_WIDTH, 60)
+  set_control_par(get_ui_id($box0), $CONTROL_PAR_HEIGHT, 18)
+  set_text($box0, "x1")
+  set_control_par(get_ui_id(%t0), $CONTROL_PAR_POS_X, 190)
+  set_control_par(get_ui_id(%t0), $CONTROL_PAR_POS_Y, 10)
+  set_control_par(get_ui_id(%t0), $CONTROL_PAR_WIDTH, 247)
+  set_control_par(get_ui_id(%t0), $CONTROL_PAR_HEIGHT, 40)
+  set_table_steps_shown(%t0, 16)
+  set_control_par(get_ui_id(%t0), $CONTROL_PAR_BAR_COLOR, 16167004)
+  %t0[0] := 127
+  %t0[1] := 40
+  %t0[2] := 40
+  %t0[3] := 40
+  %t0[4] := 127
+  %t0[5] := 40
+  %t0[6] := 40
+  %t0[7] := 40
+  %t0[8] := 127
+  %t0[9] := 40
+  %t0[10] := 40
+  %t0[11] := 40
+  %t0[12] := 127
+  %t0[13] := 40
+  %t0[14] := 40
+  %t0[15] := 40
+  set_control_par(get_ui_id($cap1), $CONTROL_PAR_POS_X, 10)
+  set_control_par(get_ui_id($cap1), $CONTROL_PAR_POS_Y, 70)
+  set_text($cap1, "/2T")
+  set_control_par(get_ui_id($box1), $CONTROL_PAR_POS_X, 110)
+  set_control_par(get_ui_id($box1), $CONTROL_PAR_POS_Y, 70)
+  set_control_par(get_ui_id($box1), $CONTROL_PAR_WIDTH, 60)
+  set_control_par(get_ui_id($box1), $CONTROL_PAR_HEIGHT, 18)
+  set_text($box1, "x1")
+  set_control_par(get_ui_id(%t1), $CONTROL_PAR_POS_X, 190)
+  set_control_par(get_ui_id(%t1), $CONTROL_PAR_POS_Y, 70)
+  set_control_par(get_ui_id(%t1), $CONTROL_PAR_WIDTH, 247)
+  set_control_par(get_ui_id(%t1), $CONTROL_PAR_HEIGHT, 40)
+  set_table_steps_shown(%t1, 16)
+  set_control_par(get_ui_id(%t1), $CONTROL_PAR_BAR_COLOR, 16167004)
+  %t1[0] := 127
+  %t1[1] := 40
+  %t1[2] := 40
+  %t1[3] := 40
+  %t1[4] := 127
+  %t1[5] := 40
+  %t1[6] := 40
+  %t1[7] := 40
+  %t1[8] := 127
+  %t1[9] := 40
+  %t1[10] := 40
+  %t1[11] := 40
+  %t1[12] := 127
+  %t1[13] := 40
+  %t1[14] := 40
+  %t1[15] := 40
+  set_control_par(get_ui_id($cap1), $CONTROL_PAR_HIDE, 16)
+  set_control_par(get_ui_id($box1), $CONTROL_PAR_HIDE, 16)
+  set_control_par(get_ui_id(%t1), $CONTROL_PAR_HIDE, 16)
+  set_control_par(get_ui_id($cap1), $CONTROL_PAR_HIDE, 0)
+  set_control_par(get_ui_id($box1), $CONTROL_PAR_HIDE, 0)
+  set_control_par(get_ui_id(%t1), $CONTROL_PAR_HIDE, 0)
+  set_control_par(get_ui_id($cap2), $CONTROL_PAR_POS_X, 10)
+  set_control_par(get_ui_id($cap2), $CONTROL_PAR_POS_Y, 130)
+  set_text($cap2, "/2T")
+  set_control_par(get_ui_id($box2), $CONTROL_PAR_POS_X, 110)
+  set_control_par(get_ui_id($box2), $CONTROL_PAR_POS_Y, 130)
+  set_control_par(get_ui_id($box2), $CONTROL_PAR_WIDTH, 60)
+  set_control_par(get_ui_id($box2), $CONTROL_PAR_HEIGHT, 18)
+  set_text($box2, "x1")
+  set_control_par(get_ui_id(%t2), $CONTROL_PAR_POS_X, 190)
+  set_control_par(get_ui_id(%t2), $CONTROL_PAR_POS_Y, 130)
+  set_control_par(get_ui_id(%t2), $CONTROL_PAR_WIDTH, 247)
+  set_control_par(get_ui_id(%t2), $CONTROL_PAR_HEIGHT, 40)
+  set_table_steps_shown(%t2, 16)
+  set_control_par(get_ui_id(%t2), $CONTROL_PAR_BAR_COLOR, 16167004)
+  %t2[0] := 127
+  %t2[1] := 40
+  %t2[2] := 40
+  %t2[3] := 40
+  %t2[4] := 127
+  %t2[5] := 40
+  %t2[6] := 40
+  %t2[7] := 40
+  %t2[8] := 127
+  %t2[9] := 40
+  %t2[10] := 40
+  %t2[11] := 40
+  %t2[12] := 127
+  %t2[13] := 40
+  %t2[14] := 40
+  %t2[15] := 40
+  set_control_par(get_ui_id($cap2), $CONTROL_PAR_HIDE, 0)
+  set_control_par(get_ui_id($box2), $CONTROL_PAR_HIDE, 0)
+  set_control_par(get_ui_id(%t2), $CONTROL_PAR_HIDE, 0)
+  set_control_par(get_ui_id($cap3), $CONTROL_PAR_POS_X, 10)
+  set_control_par(get_ui_id($cap3), $CONTROL_PAR_POS_Y, 190)
+  set_text($cap3, "/2T")
+  set_control_par(get_ui_id($box3), $CONTROL_PAR_POS_X, 110)
+  set_control_par(get_ui_id($box3), $CONTROL_PAR_POS_Y, 190)
+  set_control_par(get_ui_id($box3), $CONTROL_PAR_WIDTH, 60)
+  set_control_par(get_ui_id($box3), $CONTROL_PAR_HEIGHT, 18)
+  set_text($box3, "x1")
+  set_control_par(get_ui_id(%t3), $CONTROL_PAR_POS_X, 190)
+  set_control_par(get_ui_id(%t3), $CONTROL_PAR_POS_Y, 190)
+  set_control_par(get_ui_id(%t3), $CONTROL_PAR_WIDTH, 247)
+  set_control_par(get_ui_id(%t3), $CONTROL_PAR_HEIGHT, 40)
+  set_table_steps_shown(%t3, 16)
+  set_control_par(get_ui_id(%t3), $CONTROL_PAR_BAR_COLOR, 16167004)
+  %t3[0] := 127
+  %t3[1] := 40
+  %t3[2] := 40
+  %t3[3] := 40
+  %t3[4] := 127
+  %t3[5] := 40
+  %t3[6] := 40
+  %t3[7] := 40
+  %t3[8] := 127
+  %t3[9] := 40
+  %t3[10] := 40
+  %t3[11] := 40
+  %t3[12] := 127
+  %t3[13] := 40
+  %t3[14] := 40
+  %t3[15] := 40
+  set_control_par(get_ui_id($cap3), $CONTROL_PAR_HIDE, 1)
+  set_control_par(get_ui_id($box3), $CONTROL_PAR_HIDE, 1)
+  set_control_par(get_ui_id(%t3), $CONTROL_PAR_HIDE, 1)
+  set_control_par(get_ui_id($cap3), $CONTROL_PAR_HIDE, 0)
+  set_control_par(get_ui_id($box3), $CONTROL_PAR_HIDE, 0)
+  set_control_par(get_ui_id(%t3), $CONTROL_PAR_HIDE, 0)
+  pgs_set_key_val(KLOG, 0, $n)
+end on
+
+function log_line
+  if ($n < 1023)
+    inc($n)
+  end if
+  pgs_set_key_val(KLOG, 0, $n)
+end function
+
+on ui_controls
+  !log[$n] := "ucs," & $NI_UI_ID
+  call log_line
+end on
+
+on persistence_changed
+  !log[$n] := "pc"
+  call log_line
+end on
+
+on pgs_changed
+  save_array_str(!log, "Z:/data/dev/workspace/scratch/ksp-ui-trace/hiding.nka")
+end on

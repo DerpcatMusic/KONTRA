@@ -228,7 +228,7 @@ on init
   set_control_par(get_ui_id($f25), $CONTROL_PAR_FONT_TYPE, 25)
   set_control_par(get_ui_id($f25), $CONTROL_PAR_TEXT_ALIGNMENT, 1)
   set_text($f25, "Font 25 AaBb 019")
-  set_control_par(get_ui_id($f0), $CONTROL_PAR_HIDE, 8)
+  set_control_par(get_ui_id($f0), $CONTROL_PAR_HIDE, 1)
   set_control_par(get_ui_id($lines), $CONTROL_PAR_POS_X, 10)
   set_control_par(get_ui_id($lines), $CONTROL_PAR_POS_Y, 220)
   set_control_par(get_ui_id($lines), $CONTROL_PAR_WIDTH, 200)

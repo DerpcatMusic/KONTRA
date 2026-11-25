@@ -134,14 +134,20 @@ evidence_freshness_days: 180
   now match. A stock table draws as probes/tables.measured gives (2 px
   frame, field, whole-pixel columns with gaps, dimmed empty cells, zero line
   over the bars); a label's tab advances one space in the pixel font and
-  about two in the others. Open: font 1 is a different, hinted face in
-  Kontakt (its 'o' is 5 px where KONTRA's is 6), so a line in it runs up to
-  3 px wider or narrower depending on its letters; a weight of 600 for 700
-  traded one probe line for the other and was not kept. Areia's tables and
-  its unsized tempo labels draw with no field or face in Kontakt, as
-  `$HIDE_PART_BG` would, though its script hides nothing: neither the
-  label's size nor a wallpaper explains it (both probed). In font 13, a
-  space is 2 px in Kontakt and about 2.7 in KONTRA's face, which moves
-  Areia's tab-and-space list rows 2 px right. Only eleven libraries are
+  about two in the others. A label in font 1 or 13 draws from an atlas
+  cut at run time from the outline face the installed Kontakt draws them in
+  (located by offset, checked by length and SHA-256, nothing distributed):
+  hinted at 11 and 10 px per em, each glyph its `hdmx` advance wide, the
+  baseline 11 and 10 px under the label's top; without that face they keep
+  the outline face. Their TEXTPOS_Y counts as 0 when unset and the cell sits
+  2 px under it. A centred atlas label sits 1 px right of the middle (fonts
+  1, 4, 10 and 13 in the text probe). Open: Areia's tables and its unsized
+  tempo labels draw with no field or face in Kontakt, as `$HIDE_PART_BG`
+  would, though its script hides nothing: neither the label's size, a
+  wallpaper, nor hiding a control whole and showing it again explains it
+  (all probed; probes/hiding.measured). Every Areia instrument was saved by
+  Kontakt 6.7, the probes by 8.13; that is a lead, not yet evidence.
+  At 150 % the font 1 and 13 atlases are scaled from their 100 % cut, as the
+  pixel font is. Only eleven libraries are
   installed; Conflux and Shreddage 3.5 load empty in the oracle and are not
   compared.

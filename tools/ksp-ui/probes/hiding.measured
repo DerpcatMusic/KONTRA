@@ -1,0 +1,10 @@
+# Kontakt 8.13 at 100 % (shoot.sh, DPI=96, NODRIVE=1), oracle run 2026-11-25 (gen.py hiding()).
+# Each row is an unsized label, a 60 x 18 label and a 16-step table; the rows apply HIDE values in
+# order: none; 16 then 0; 0; 1 then 0.
+row   hide sequence   label face   table frame and field
+0     -               drawn        drawn
+1     16, 0           drawn        drawn
+2     0               drawn        drawn
+3     1, 0            drawn        drawn
+# A control hidden whole and shown again draws as one never hidden: the last HIDE value is all
+# that counts. KONTRA keeps only the last value, so it draws these rows the same.

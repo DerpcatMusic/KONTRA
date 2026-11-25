@@ -42,7 +42,33 @@ pub fn prewarm() {
     });
 }
 
+/// Stock fonts 1 and 13 as picture fonts, cut from the installed face at
+/// 11 and 10 px per em (the reference 8.13, text and fields probes: their
+/// advances are its `hdmx` widths, baselines 11 and 10 px under a label's
+/// top, whose atlas cell starts 2 px down).
+fn face_font(path: &str) -> Option<Image> {
+    static ATLASES: [OnceLock<Option<Image>>; 2] = [OnceLock::new(), OnceLock::new()];
+    let (i, ppem, base) = match path {
+        "@stock/face11" => (0, 11, 9),
+        "@stock/face10" => (1, 10, 8),
+        _ => return None,
+    };
+    ATLASES
+        .get(i)?
+        .get_or_init(|| {
+            let face = ART.get_or_init(load).as_ref()?.stock_face.as_ref()?;
+            // ponytail: the cell holds only a row or two above the cap
+            // height, so a capital's accent is cut; a taller cell needs a
+            // per-font top.
+            super::face_atlas::atlas(face, ppem, base, 4)
+        })
+        .clone()
+}
+
 pub(super) fn frame(path: &str, meta: ImageMeta, n: u32) -> Option<Image> {
+    if path.starts_with("@stock/face") {
+        return face_font(path);
+    }
     let i = KEYS.iter().position(|(key, ..)| *key == path)?;
     let art = ART.get_or_init(load).as_ref()?;
     let image = match i {
@@ -142,7 +168,8 @@ fn load_from(path: &Path) -> Option<super::cache::Art> {
         let keep = carry.len().saturating_sub(overlap);
         carry.drain(..keep);
     }
-    let outline = super::outline::extract(&mut file);
+    let outline = super::outline::RALDO.extract(&mut file);
+    let stock_face = super::outline::STOCK.extract(&mut file);
     let after = path.metadata().ok()?;
     if before.len() != after.len() || before.modified().ok()? != after.modified().ok()? {
         return None;
@@ -165,6 +192,7 @@ fn load_from(path: &Path) -> Option<super::cache::Art> {
         font12: font12.and_then(decode),
         field: field.and_then(decode),
         outline,
+        stock_face,
     };
     super::cache::save(path, &format!("{:x}", hash.finalize()), &images);
     Some(images)

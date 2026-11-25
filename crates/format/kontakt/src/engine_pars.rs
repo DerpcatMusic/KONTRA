@@ -136,7 +136,14 @@ const ACCEPTS: &[(&str, i32, i32)] = &[
 ];
 
 /// Filter-slot controls (KSP manual, "Filters") with no processor yet.
-const UNCARRIED_FILTER: &[&str] = &["$ENGINE_PAR_GAIN", "$ENGINE_PAR_BANDWIDTH"];
+const UNCARRIED_FILTER: &[&str] = &[
+    "$ENGINE_PAR_GAIN",
+    "$ENGINE_PAR_BANDWIDTH",
+    "$ENGINE_PAR_FILTER_LADDER_HQ",
+    "$ENGINE_PAR_LP_CUTOFF",
+    "$ENGINE_PAR_HP_CUTOFF",
+    "$ENGINE_PAR_S1200_FILTER_MODE",
+];
 
 /// Parameter families (a trailing `_` is a prefix, else the exact name)
 /// and their effect type, from the KSP manual's engine parameter sections.
@@ -198,6 +205,20 @@ const OWNERS: &[(&str, &str)] = &[
     ("$ENGINE_PAR_CB_", "$EFFECT_TYPE_CABINET"),
     ("$ENGINE_PAR_RG_", "$EFFECT_TYPE_REVGRAIN"),
     ("$ENGINE_PAR_TS_", "$EFFECT_TYPE_TRANS_STRETCH"),
+    ("$ENGINE_PAR_CT_", "$EFFECT_TYPE_CAT"),
+    ("$ENGINE_PAR_CS_", "$EFFECT_TYPE_CHAINSAW"),
+    ("$ENGINE_PAR_CABINET_TYPE", "$EFFECT_TYPE_CABINET"),
+    ("$ENGINE_PAR_NOISELEVEL", "$EFFECT_TYPE_LOFI"),
+    ("$ENGINE_PAR_NOISECOLOR", "$EFFECT_TYPE_LOFI"),
+    ("$ENGINE_PAR_DISTORTION_TYPE", "$EFFECT_TYPE_DISTORTION"),
+    ("$ENGINE_PAR_SHAPE_TYPE", "$EFFECT_TYPE_SHAPER"),
+    ("$ENGINE_PAR_TRANSLIM_", "$EFFECT_TYPE_TRANSLIM"),
+    ("$ENGINE_PAR_SP_", "$EFFECT_TYPE_SURROUND_PANNER"),
+    ("$ENGINE_PAR_PR_", "$EFFECT_TYPE_PLATEREVERB"),
+    ("$ENGINE_PAR_EXP_FILTER_", "$EFFECT_TYPE_AET_FILTER"),
+    ("$ENGINE_PAR_PHASE_INVERT", "$EFFECT_TYPE_INVERTER"),
+    ("$ENGINE_PAR_LR_SWAP", "$EFFECT_TYPE_INVERTER"),
+    ("$ENGINE_PAR_STEREO_PSEUDO", "$EFFECT_TYPE_STEREO"),
 ];
 
 /// The names with an engine parameter of their own.
