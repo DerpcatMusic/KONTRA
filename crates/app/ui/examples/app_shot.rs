@@ -331,6 +331,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         s.save("empty")?;
         s.click("library-0")?;
         s.save("presets")?;
+        s.app.scan = Some(app::ScanProgress {
+            folder: "Native Instruments Komplete 15 Collector's Edition Libraries".into(),
+            files: 1204,
+            found: 6,
+            machine: false,
+        });
+        s.save("scanning")?;
+        s.app.scan = None;
         s.scroll("library-list")?;
         s.click("preset-0")?;
         s.app.loading = Some(app::Loading::New);

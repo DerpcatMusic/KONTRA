@@ -232,8 +232,9 @@ impl Snapshot {
         }
         self.scan = browser
             .progress()
-            .map(|(folders, found, machine)| app::ScanProgress {
-                folders,
+            .map(|(folder, files, found, machine)| app::ScanProgress {
+                folder,
+                files,
                 found,
                 machine,
             });
@@ -369,7 +370,7 @@ impl Snapshot {
             self.readout.shown(),
             self.stats.voices,
             self.pick.clone(),
-            self.scan,
+            self.scan.clone(),
         )
     }
 
@@ -533,7 +534,7 @@ impl Snapshot {
                 .flat_map(|p| p.diag_latent.iter().cloned()),
         );
         app.pick.clone_from(&self.pick);
-        app.scan = self.scan;
+        app.scan.clone_from(&self.scan);
     }
 }
 
