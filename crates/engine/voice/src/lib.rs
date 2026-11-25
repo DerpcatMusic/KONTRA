@@ -47,6 +47,10 @@ pub enum VoiceStage {
 
 /// Source frames decoded per inner chunk. Bounds per-voice memory, not pitch.
 const SCRATCH: usize = 512;
+/// Source frames a voice decodes ahead in one read, in playback order
+/// (loops unrolled, crossfades blended): chunks slice it instead of
+/// assembling their window from the sample each time.
+const AHEAD: usize = 1024;
 /// Highest pitch step (source frames per output frame): +4 octaves at 4× rate.
 pub const MAX_STEP: f64 = 64.0;
 /// Output frames of source asked for ahead of the cursor each render.
@@ -283,6 +287,16 @@ pub struct Voice {
     /// A host's offline render: a read waits for its pages.
     mode: RenderMode,
     offline_wait_timeouts: u64,
+    /// Frames decoded ahead ([`AHEAD`]), from unrolled position `ahead_lo`;
+    /// `ahead_len` 0 when they are not valid. They hold for the release
+    /// state and channel matrix they were read with.
+    ahead: Box<[[f32; 2]]>,
+    ahead_lo: i64,
+    ahead_len: usize,
+    ahead_key: (Option<u64>, Option<Mix>),
+    /// After a read ahead met frames not yet streamed, chunks before this
+    /// position read their own window.
+    ahead_retry: i64,
 }
 
 /// The buffers a voice renders through, one set for every voice an engine
@@ -305,7 +319,8 @@ impl Scratch {
         let buffer = || vec![[0.0; 2]; SCRATCH].into_boxed_slice();
         Self {
             window: buffer(),
-            partner: buffer(),
+            // A crossfade may span a whole read ahead.
+            partner: vec![[0.0; 2]; AHEAD].into_boxed_slice(),
             raw: buffer(),
             head: buffer(),
         }
@@ -348,6 +363,11 @@ impl Voice {
             #[cfg(feature = "trace")]
             last_peak: 0.0,
             mode: RenderMode::Live,
+            ahead: vec![[0.0; 2]; AHEAD].into_boxed_slice(),
+            ahead_lo: 0,
+            ahead_len: 0,
+            ahead_key: (None, None),
+            ahead_retry: i64::MIN,
             offline_wait_timeouts: 0,
         }
     }
@@ -360,6 +380,8 @@ impl Voice {
     /// Starts playing. No allocation. The previous region's sample reference is
     /// dropped here, so the plan must keep its samples alive until it retires.
     pub fn start(&mut self, start: VoiceStart) {
+        self.ahead_len = 0;
+        self.ahead_retry = i64::MIN;
         self.loops.clear();
         if let Some(loops) = &start.region.loops {
             // Capped at inline capacity (8) so the audio thread never spills to the heap.
@@ -978,6 +1000,30 @@ impl Voice {
                         self.silent_tail = 0;
                     }
                 }
+            } else if let Some(held) = self.env.held().filter(|_| !releasing && self.settled()) {
+                // Every frame's level and gain are the same: what the loop
+                // below computes each frame, computed once.
+                let mut lagged = 1.0;
+                for at in &self.lagged {
+                    lagged *= *at;
+                }
+                let level = held * self.fade.level() * lagged;
+                let [[ll, lr], [rl, rr]] = self.gain;
+                for (frame, &[l, r]) in out.iter_mut().skip(done).zip(raw.iter()) {
+                    let (l, r) = (l * level, r * level);
+                    let left = ll * l + lr * r;
+                    let right = rl * l + rr * r;
+                    #[cfg(feature = "trace")]
+                    {
+                        self.last_peak = self.last_peak.max(left.abs()).max(right.abs());
+                    }
+                    frame[0] += left;
+                    frame[1] += right;
+                }
+                if !raw.is_empty() {
+                    self.env.skip_sustain(raw.len());
+                    self.silent_tail = 0;
+                }
             } else {
                 for (frame, &[l, r]) in out.iter_mut().skip(done).zip(raw.iter()) {
                     let level = self.env.tick() * self.fade.next() * self.tick_lags();
@@ -1103,87 +1149,103 @@ impl Voice {
         ramp: Ramp,
     ) -> usize {
         let sample = &region.sample;
-        let mix = self.mix.as_ref();
-        let loops = &self.loops;
         let released = self.released;
         let step = ramp.step_at(first_step, frames);
         let at = |i: u64| base + ramp.travel(first_step, frames + i);
         let (lo, span) = window_span(n, (base, frames, first_step), ramp);
-        let partner = &mut scratch.partner;
-        let [main, blend_cache] = &mut self.decoded;
-        let Some(window) = scratch.window.get_mut(..span.min(SCRATCH)) else {
-            return 0;
+        let span = span.min(SCRATCH);
+        let key = (released, self.mix);
+        let held = |v: &Self| {
+            v.ahead_len > 0
+                && v.ahead_key == key
+                && lo >= v.ahead_lo
+                && lo + span as i64 <= v.ahead_lo + v.ahead_len as i64
         };
-        if self.mode == RenderMode::Offline {
-            region.runs_with(loops, lo, window.len(), released, |_, run| {
-                let low = if run.descending {
-                    run.first + 1 - run.count as u64
-                } else {
-                    run.first
-                };
-                sample.prefetch(client, low, run.count as u64, 0, step, run.descending);
-                if let Some(xf) = run.crossfade() {
-                    sample.prefetch(
-                        client,
-                        xf.partner_low,
-                        xf.count as u64,
-                        0,
-                        step,
-                        xf.descending,
-                    );
-                }
-            });
-            if !client.settle(std::time::Duration::from_secs(5)) {
-                self.offline_wait_timeouts += 1;
+        if self.mode == RenderMode::Live && self.speed == 1.0 && lo >= self.ahead_retry && !held(self) {
+            let missing = fill_window(
+                region,
+                client,
+                (&self.loops, released, self.mix.as_ref()),
+                lo,
+                &mut scratch.partner,
+                &mut self.decoded,
+                &mut self.ahead,
+            );
+            if missing == 0 {
+                (self.ahead_lo, self.ahead_len, self.ahead_key) = (lo, AHEAD, key);
+            } else {
+                self.ahead_len = 0;
+                self.ahead_retry = lo + (AHEAD / 4) as i64;
             }
         }
-        let mut missing = 0;
-        // Runs tile the window from the first one's offset; each read writes
-        // all its frames, so only what no run covers needs zeroing.
-        let (mut first, mut end) = (window.len(), 0);
-        region.runs_with(loops, lo, window.len(), released, |offset, run| {
-            let count = run.count;
-            first = first.min(offset);
-            end = end.max(offset + count);
-            if let Some(dst) = window.get_mut(offset..offset + count) {
-                if run.descending {
-                    missing += sample
-                        .read_cached(client, run.first + 1 - count as u64, dst, mix, Some(main))
-                        .missing;
-                    dst.reverse();
-                } else {
-                    missing += sample
-                        .read_cached(client, run.first, dst, mix, Some(main))
-                        .missing;
-                }
-                if let Some(xf) = run.crossfade()
-                    && let (Some(blend), Some(head)) = (
-                        partner.get_mut(..xf.count),
-                        dst.get_mut(xf.offset..xf.offset + xf.count),
-                    )
-                {
-                    missing += sample
-                        .read_cached(client, xf.partner_low, blend, mix, Some(blend_cache))
-                        .missing;
-                    if xf.descending {
-                        blend.reverse();
-                    }
-                    for (k, (d, b)) in head.iter_mut().zip(blend.iter()).enumerate() {
-                        let w = (xf.progress + k as u64) as f32 / xf.len as f32;
-                        d[0] += (b[0] - d[0]) * w;
-                        d[1] += (b[1] - d[1]) * w;
-                    }
-                }
-            }
-        });
-        self.missing += u64::from(missing);
-        if first >= end {
-            window.fill([0.0; 2]);
+        let window: &[[f32; 2]] = if held(self) {
+            let from = (lo - self.ahead_lo) as usize;
+            self.ahead.get(from..from + span).unwrap_or_default()
         } else {
-            window.get_mut(..first).unwrap_or_default().fill([0.0; 2]);
-            window.get_mut(end..).unwrap_or_default().fill([0.0; 2]);
-        }
+            let Some(window) = scratch.window.get_mut(..span) else {
+                return 0;
+            };
+            if self.mode == RenderMode::Offline {
+                let loops = &self.loops;
+                region.runs_with(loops, lo, window.len(), released, |_, run| {
+                    let low = if run.descending {
+                        run.first + 1 - run.count as u64
+                    } else {
+                        run.first
+                    };
+                    sample.prefetch(client, low, run.count as u64, 0, step, run.descending);
+                    if let Some(xf) = run.crossfade() {
+                        sample.prefetch(
+                            client,
+                            xf.partner_low,
+                            xf.count as u64,
+                            0,
+                            step,
+                            xf.descending,
+                        );
+                    }
+                });
+                if !client.settle(std::time::Duration::from_secs(5)) {
+                    self.offline_wait_timeouts += 1;
+                }
+            }
+            let missing = fill_window(
+                region,
+                client,
+                (&self.loops, released, self.mix.as_ref()),
+                lo,
+                &mut scratch.partner,
+                &mut self.decoded,
+                window,
+            );
+            self.missing += u64::from(missing);
+            window
+        };
 
+        // A constant step at most 1: positions in the closed form a flat
+        // ramp reduces to, read bounds checked at the ends (positions only
+        // rise), Hermite throughout. The same values as the loop below.
+        if ramp.per_frame == 0.0
+            && first_step <= 1.0
+            && let Some(raw) = scratch.raw.get_mut(..n)
+        {
+            let x = |i: usize| base + first_step * (frames + i as u64) as f64 - lo as f64;
+            if n > 0 && reads(window.len(), x(0), first_step) && reads(window.len(), x(n - 1), first_step) {
+                for (i, frame) in raw.iter_mut().enumerate() {
+                    let x = x(i);
+                    let base = x.floor() as usize;
+                    let t = (x - base as f64) as f32;
+                    let Some(&[y0, y1, y2, y3]) = window.get(base - 1..base + 3) else {
+                        return i;
+                    };
+                    *frame = [
+                        hermite(y0[0], y1[0], y2[0], y3[0], t),
+                        hermite(y0[1], y1[1], y2[1], y3[1], t),
+                    ];
+                }
+                return n;
+            }
+        }
         let sinc_table = &*SINC_TABLE;
         let mut filled = 0;
         for (i, frame) in scratch.raw.iter_mut().take(n).enumerate() {
@@ -1251,6 +1313,66 @@ impl Voice {
         }
         filled
     }
+}
+
+/// Fills `window` with the source frames from unrolled position `lo` on:
+/// each run of the loops read (reversed when it plays backwards), its
+/// crossfade blended in, silence where no run reaches. Returns the frames
+/// that were not in memory.
+fn fill_window(
+    region: &Region,
+    client: &StreamClient,
+    (loops, released, mix): (&Loops, Option<u64>, Option<&Mix>),
+    lo: i64,
+    partner: &mut [[f32; 2]],
+    [main, blend_cache]: &mut [Box<kontra_stream::Decoded>; 2],
+    window: &mut [[f32; 2]],
+) -> u32 {
+    let sample = &region.sample;
+    let mut missing = 0;
+    // Runs tile the window from the first one's offset; each read writes
+    // all its frames, so only what no run covers needs zeroing.
+    let (mut first, mut end) = (window.len(), 0);
+    region.runs_with(loops, lo, window.len(), released, |offset, run| {
+        let count = run.count;
+        first = first.min(offset);
+        end = end.max(offset + count);
+        if let Some(dst) = window.get_mut(offset..offset + count) {
+            if run.descending {
+                missing += sample
+                    .read_cached(client, run.first + 1 - count as u64, dst, mix, Some(main))
+                    .missing;
+                dst.reverse();
+            } else {
+                missing += sample.read_cached(client, run.first, dst, mix, Some(main)).missing;
+            }
+            if let Some(xf) = run.crossfade()
+                && let (Some(blend), Some(head)) = (
+                    partner.get_mut(..xf.count),
+                    dst.get_mut(xf.offset..xf.offset + xf.count),
+                )
+            {
+                missing += sample
+                    .read_cached(client, xf.partner_low, blend, mix, Some(blend_cache))
+                    .missing;
+                if xf.descending {
+                    blend.reverse();
+                }
+                for (k, (d, b)) in head.iter_mut().zip(blend.iter()).enumerate() {
+                    let w = (xf.progress + k as u64) as f32 / xf.len as f32;
+                    d[0] += (b[0] - d[0]) * w;
+                    d[1] += (b[1] - d[1]) * w;
+                }
+            }
+        }
+    });
+    if first >= end {
+        window.fill([0.0; 2]);
+    } else {
+        window.get_mut(..first).unwrap_or_default().fill([0.0; 2]);
+        window.get_mut(end..).unwrap_or_default().fill([0.0; 2]);
+    }
+    missing
 }
 
 /// The window [`Voice::read_window`] reads for `n` frames: its first source

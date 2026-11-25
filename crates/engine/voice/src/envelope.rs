@@ -435,6 +435,13 @@ impl Envelope {
         }
     }
 
+    /// What every [`Self::tick`] returns while it holds its sustain with no
+    /// wait left; None in any other state.
+    pub fn held(&self) -> Option<f32> {
+        let s = self.settings;
+        (self.stage == Stage::Sustain && self.wait == 0).then(|| s.floor + s.depth * s.sustain)
+    }
+
     /// Moves `frames` ticks on in one step while it holds its sustain (each
     /// tick there only counts down `wait`, then reads the sustain level);
     /// false, nothing moved, in any other stage.
