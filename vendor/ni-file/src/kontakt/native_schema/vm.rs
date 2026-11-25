@@ -55,7 +55,21 @@ fn all_readers() -> &'static [&'static ReaderSrc] {
 ///   FUN_1407face0 builds them at complete-object slot 0xA4 (+0x520 = +0x10 + 0x510) with
 ///   FUN_1407fb000, which installs vtable 0x144e974f0: BZoneLevelEnv (0x2D, catalog
 ///   vtable 0x4e974f0), whose slot 8 is its reader FUN_140d04c10 (an inline body).
-const BODIES: &[(&str, u16)] = &[("FUN_140d1d860", 0x50), ("FUN_140cf1330", 0x2d)];
+/// - `FUN_140cf10e0`, LoopArray (curated.rs): up to 8 BLoop (0x05) elements, present by a
+///   bit mask; their constructor FUN_1407b0490 installs vtable 0x144e91240, whose slot 1
+///   returns 0x05 and slot 8 is the inline reader FUN_140cff510.
+/// - `FUN_140cefcf0`, the automation list: a u32 size the array is resized to
+///   (FUN_14073c3a0), a u32 count, then each element's flag, version and body. Both callers
+///   pass a BHeapArray<BAutomationObject>: BGroup's private reader at +0xD0 (BGroup's
+///   constructor FUN_1407f6fc0 installs its vtable at +0xE0) and FUN_140d0a2c0 at +0x1CED0
+///   (complete-object slot 0x39DC). BAutomationObject is 0x01 (catalog vtable 0x4757d28:
+///   slot 3 flag 0, slot 8 its inline reader FUN_140cfec70).
+const BODIES: &[(&str, u16)] = &[
+    ("FUN_140d1d860", 0x50),
+    ("FUN_140cf1330", 0x2d),
+    ("FUN_140cf10e0", 0x05),
+    ("FUN_140cefcf0", 0x01),
+];
 
 /// Nested objects whose class the stream does not name, by reader call site: (program,
 /// `(rd O)` sites in IR order, SerType).
@@ -1059,13 +1073,15 @@ impl<'a> Machine<'a> {
         if body.is_empty() {
             return Ok(());
         }
-        let d = match nested_decode(sertype, ver, private, body) {
-            Ok(d) => d,
-            Err(e) => {
-                hide(&mut self.opaque, Some(sertype), cause(&e), body.len());
-                return Ok(());
-            }
-        };
+        match nested_decode(sertype, ver, private, body) {
+            Ok(d) => self.merge(d, at),
+            Err(e) => hide(&mut self.opaque, Some(sertype), cause(&e), body.len()),
+        }
+        Ok(())
+    }
+
+    /// A nested decode of the bytes at `at` of this stream, as fields one level deeper.
+    fn merge(&mut self, d: Decoded, at: usize) {
         let (base, depth) = (self.stream.base + at, self.depth + 1);
         for o in &d.opaque {
             hide(&mut self.opaque, o.sertype, o.why, o.bytes);
@@ -1075,7 +1091,6 @@ impl<'a> Machine<'a> {
             depth: f.depth + depth,
             ..f
         }));
-        Ok(())
     }
 
     /// A framed object's child chunks (u16 SerType, u32 length, body): each decodes as its
@@ -1097,6 +1112,14 @@ impl<'a> Machine<'a> {
     /// (the parent's reader does not read it).
     fn chunk(&mut self, id: u16, body: &[u8], at: usize) {
         let opaque = body.len();
+        // A record Kontakt reads from its chunk header on (curated.rs CURATED_UNFRAMED).
+        if CURATED_UNFRAMED.iter().any(|r| r.sertype == id) {
+            match decode_unframed(id, body) {
+                Ok(d) => self.merge(d, at - 6),
+                Err(e) => hide(&mut self.opaque, Some(id), cause(&e), opaque),
+            }
+            return;
+        }
         let parsed = (|| {
             const SHORT: &str = "not object-framed";
             let (&flag, rest) = body.split_first().ok_or(SHORT)?;
