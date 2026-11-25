@@ -5,7 +5,7 @@ use mui::prelude::*;
 
 use super::{Action, App};
 use crate::kit::{self, Icon, button, field, glyph, interactive, strip};
-use crate::theme::{CONTROL, SPACE, TEXT, TIGHT, secondary};
+use crate::theme::{CONTROL, HAIR, SPACE, TEXT, TIGHT, secondary};
 
 pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let mut tools = Vec::new();
@@ -112,7 +112,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         if open && !rest.is_empty() {
             lines.push(
                 row![
-                    block(TEXT * 3., 1).shrink(0),
+                    block(TEXT * 3., HAIR).shrink(0),
                     caption(rest.join("\n")).fill(secondary()).grow(1).min_w(0)
                 ]
                 .w(Len::Pct(100.))
@@ -139,7 +139,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         caption(empty).fill(secondary()).pad(SPACE * 2.)
     } else {
         col(rows)
-            .gap(1)
+            .gap(HAIR)
             .w(Len::Pct(100.))
             .scroll()
             .id("report-list")

@@ -6,7 +6,7 @@ use mui::prelude::*;
 use super::rack::{output, pan, solo_mute};
 use super::{Action, App, db};
 use crate::kit::{self, section, strip};
-use crate::theme::{SPACE, TEXT, TIGHT, lift, part_color, secondary};
+use crate::theme::{NOTCH, SPACE, TEXT, TIGHT, lift, part_color, secondary};
 
 pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let widths = ["Narrow", "Wide"];
@@ -117,7 +117,7 @@ fn channel(ui: &mut Ui, app: &mut App, n: usize, w: f64, out: &mut Vec<Action>) 
     let meter = meter(ui, id("level"), [l as f32, r as f32])
         .vertical()
         .color(part_color(n))
-        .w(7.)
+        .w(SPACE)
         .h(height)
         .el();
     let kind = if p.library.is_empty() {
@@ -126,7 +126,7 @@ fn channel(ui: &mut Ui, app: &mut App, n: usize, w: f64, out: &mut Vec<Action>) 
         "Instrument"
     };
     col![
-        block(Len::Pct(100.), 2).fill(Fill::from(part_color(n))),
+        block(Len::Pct(100.), NOTCH).fill(Fill::from(part_color(n))),
         caption(p.name.clone())
             .text_weight(Weight::SEMIBOLD)
             .lines(2)

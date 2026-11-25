@@ -7,7 +7,7 @@ use mui::prelude::*;
 use super::{Action, FACE_SCALES, Part, PartTab, View};
 use crate::keyboard::note_name;
 use crate::kit::{self, Icon, glyph, icon_button, interactive, latch, section};
-use crate::theme::{CONTROL, SPACE, TEXT, TIGHT, part_color, secondary};
+use crate::theme::{CONTROL, MARK, SPACE, TEXT, TIGHT, part_color, secondary};
 use crate::{input, view};
 
 /// `room`: the width the rack has for a library's view, 0 while unknown.
@@ -124,7 +124,13 @@ fn fit(chosen: f64, room: (f64, f64), size: (f64, f64)) -> f64 {
     } else {
         width
     };
-    width.min(height).min(2.)
+    let fit = width.min(height);
+    // Up from 1:1, whole and half steps keep a bitmap panel crisp.
+    if fit >= 1. {
+        ((fit * 2.).floor() / 2.).min(3.)
+    } else {
+        fit
+    }
 }
 
 fn listing(title: &str, lines: &[String], empty: &str) -> El {
@@ -220,7 +226,7 @@ fn articulations(ui: &mut Ui, p: &mut Part, n: usize, v: &mut View, out: &mut Ve
                 .cursor(Cursor::Grab)
                 .tip("Drag to reorder")
                 .id(grip),
-            block(3, TEXT).fill(Fill::from(part_color(a))).shrink(0),
+            block(MARK, TEXT).fill(Fill::from(part_color(a))).shrink(0),
             body(name.clone())
                 .text_size(TEXT)
                 .fill(if selected {

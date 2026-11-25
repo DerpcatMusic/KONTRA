@@ -11,7 +11,8 @@ pub use crate::icon::{Icon, glyph};
 pub(crate) use kontra_ui_view::rect_path;
 
 use crate::theme::{
-    CONTROL, INSET, SMALL, SPACE, TEXT, TIGHT, accent, hairline, lift, quick, secondary,
+    CONTROL, HAIR, INSET, NOTCH, SMALL, SPACE, TEXT, TIGHT, accent, hairline, lift, quick,
+    secondary,
 };
 
 /// The states every flat control shares: the pointing hand, a faint lift on
@@ -23,7 +24,7 @@ pub fn interactive(el: El) -> El {
         .on(State::Hover, |s| s.fill(lift(1)))
         .on(State::Press, |s| s.fill(lift(2)))
         .on(State::FocusVisible, |s| {
-            s.stroke(Role::Primary.alpha(0.9)).stroke_width(1)
+            s.stroke(Role::Primary.alpha(0.9)).stroke_width(HAIR)
         })
 }
 
@@ -107,7 +108,7 @@ pub fn tab(ui: &mut Ui, id: impl Into<Id>, label: &str, current: bool) -> Respon
             .fill(ink(current))
             .lines(1),
         spacer(),
-        block(Len::Pct(100.), 1).fill(line).animate_with(quick())
+        block(Len::Pct(100.), HAIR).fill(line).animate_with(quick())
     ]
     .align(Align::Center)
     .pad((SPACE, 0))
@@ -513,7 +514,7 @@ pub fn list_row(
 ) -> Response {
     let id: Id = id.into();
     let changed = ui.get(id.clone()).activated();
-    let edge = block(2, Len::Pct(100.))
+    let edge = block(NOTCH, Len::Pct(100.))
         .fill(mark.map_or(Role::Ink.alpha(0.), Fill::from))
         .shrink(0);
     let el = row![
@@ -672,7 +673,7 @@ pub fn dropdown(
         } else {
             Role::Ink.alpha(0.)
         })
-        .stroke_width(1);
+        .stroke_width(HAIR);
     // The pointer rests on the button it opened: its tip would float over
     // the menu.
     let face = interactive(face).when(!shown, |e| e.tip(name.to_owned()));
@@ -784,7 +785,7 @@ fn popup_frame(content: El) -> El {
     content
         .fill(lift(2))
         .stroke(hairline())
-        .stroke_width(1)
+        .stroke_width(HAIR)
         .pad(TIGHT)
         .appear(Appear::Slide(0., -TIGHT))
 }
@@ -824,7 +825,7 @@ pub fn sheet(ui: &mut Ui, id: &str, title_text: &str, content: El) -> Response {
     .max_size((TEXT * 36., TEXT * 40.))
     .fill(lift(1))
     .stroke(hairline())
-    .stroke_width(1)
+    .stroke_width(HAIR)
     .captures_wheel()
     .focusable()
     .named(title_text.to_owned())
@@ -857,12 +858,12 @@ pub fn strip(items: Vec<El>) -> El {
 
 /// A horizontal hairline.
 pub fn rule() -> El {
-    block(Len::Pct(100.), 1).fill(hairline()).shrink(0)
+    block(Len::Pct(100.), HAIR).fill(hairline()).shrink(0)
 }
 
 /// A vertical hairline.
 pub fn vrule() -> El {
-    block(1, Len::Pct(100.)).fill(hairline()).shrink(0)
+    block(HAIR, Len::Pct(100.)).fill(hairline()).shrink(0)
 }
 
 /// Padding per side, in CSS order.

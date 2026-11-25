@@ -8,7 +8,7 @@ use mui::prelude::*;
 use super::{Action, Part, View};
 use crate::keyboard::note_name;
 use crate::kit::{self, Icon, icon_button, latch, section};
-use crate::theme::{CONTROL, SPACE, TEXT, TIGHT, hairline, lift, part_color, secondary};
+use crate::theme::{CONTROL, HAIR, SPACE, TEXT, TIGHT, hairline, lift, part_color, secondary};
 
 /// A group's sound as the engine plays it.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -360,7 +360,7 @@ pub(super) fn view(ui: &mut Ui, p: &mut Part, n: usize, v: &mut View, out: &mut 
         row![prev.el, body(name).lines(1).min_w(0).w(TEXT * 14.), next.el]
             .gap(TIGHT)
             .align(Align::Center),
-        row![all.el, one.el].gap(1),
+        row![all.el, one.el].gap(HAIR),
         spacer(),
         caption(format!("Group {} of {count}", g + 1)).fill(secondary()),
     ]);
@@ -475,7 +475,7 @@ fn readouts(cells: Vec<(Param, f64)>) -> El {
         .into_iter()
         .map(|(p, v)| {
             col![section(p.label()), body(p.text(v)).reserve("00.00 kHz")]
-                .gap(1)
+                .gap(HAIR)
                 .align(Align::Start)
         })
         .collect::<Vec<_>>())
@@ -695,7 +695,7 @@ fn lower(ui: &mut Ui, p: &Part, n: usize, g: usize, v: &mut View, tint: Color) -
             "This group has no effects.",
         ),
     };
-    col![row(latches).gap(1), body]
+    col![row(latches).gap(HAIR), body]
         .gap(SPACE)
         .align(Align::Stretch)
 }

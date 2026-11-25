@@ -43,6 +43,9 @@ struct Shot {
     ui: Ui,
     app: App,
     size: (u16, u16),
+    /// Window points per layout point: 1 lays out at the window's size;
+    /// `KONTRA_SHOT_FIT` draws the old model, a 1180×780 tree zoomed to fit.
+    zoom: f64,
     out: PathBuf,
     actions: Vec<Action>,
 }
@@ -58,7 +61,10 @@ impl Shot {
         });
         let r = app::view(&mut self.ui, &mut self.app);
         self.actions.extend(r.changed);
-        let size = Size::new(f64::from(self.size.0), f64::from(self.size.1));
+        let size = Size::new(
+            f64::from(self.size.0) / self.zoom,
+            f64::from(self.size.1) / self.zoom,
+        );
         let f = self
             .ui
             .frame(r.el, Some(size), input, 1. / 60.)
@@ -144,7 +150,7 @@ impl Shot {
         costs.sort_unstable();
         let (w, h) = self.size;
         let file = self.out.join(format!("{state}-{w}.png"));
-        save(&file, w, h, &paint(&self.ui, w, h)?)?;
+        save(&file, w, h, &paint(&self.ui, w, h, self.zoom)?)?;
         let frame_us = costs.get(costs.len() / 2).copied().unwrap_or(0);
         println!(
             "{{\"state\":{state:?},\"width\":{w},\"frame_us\":{frame_us},\"settle_frames\":{settle},\"shot\":{file:?}}}"
@@ -357,11 +363,20 @@ fn main() -> Result<(), Box<dyn Error>> {
             .ok_or("usage: app_shot <out dir>")?,
     );
     std::fs::create_dir_all(&out)?;
-    for size in [(900, 600), (1180, 900)] {
+    let fit = std::env::var_os("KONTRA_SHOT_FIT").is_some();
+    // The smallest window, the default and about 1.8× it.
+    let smallest = if fit { (590, 390) } else { (940, 600) };
+    for size in [smallest, (1180, 780), (2124, 1404)] {
+        let zoom = if fit {
+            (f64::from(size.0) / 1180.).min(f64::from(size.1) / 780.)
+        } else {
+            1.
+        };
         let mut s = Shot {
             ui: kontra_ui::ui(),
             app: specimen(),
             size,
+            zoom,
             out: out.clone(),
             actions: Vec::new(),
         };
@@ -465,9 +480,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn paint(ui: &Ui, w: u16, h: u16) -> Result<Vec<u8>, Box<dyn Error>> {
+fn paint(ui: &Ui, w: u16, h: u16, zoom: f64) -> Result<Vec<u8>, Box<dyn Error>> {
     let scene = ui.scene().ok_or("no scene")?;
-    Ok(mui_headless::Raster::new(w, h).draw(scene, 1.0)?)
+    Ok(mui_headless::Raster::new(w, h).draw(scene, zoom)?)
 }
 
 fn save(file: &Path, w: u16, h: u16, rgba: &[u8]) -> Result<(), Box<dyn Error>> {

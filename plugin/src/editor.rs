@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -1026,15 +1026,35 @@ impl Drop for Kept {
     }
 }
 
-/// The size the editor is designed at, in logical points.
+/// The window a fresh editor opens at, in logical points at 100 %.
 const SIZE: (u32, u32) = (1180, 780);
+/// The smallest window, in logical points: the chrome still fits at 100 %.
+const MIN: (u32, u32) = (940, 600);
 
-fn request_scale(app: &mut App, previous: u8, percent: u32, resize: impl FnOnce(u32, u32) -> bool) {
-    // The tree fits its window, so changing this setting requests a window resize.
-    let accepted =
-        app::SCALES.contains(&percent) && resize(SIZE.0 * percent / 100, SIZE.1 * percent / 100);
-    if !accepted {
-        app.view.scale = u32::from(previous);
+/// The interface scale in percent: one of [`app::SCALES`], 0 or another
+/// value is 100.
+fn percent(scale: u32) -> u32 {
+    if app::SCALES.contains(&scale) {
+        scale
+    } else {
+        100
+    }
+}
+
+/// A new interface scale: the text and controls take it at once and the
+/// layout reflows into the window. The window, last laid out at `logical`
+/// points, is asked to grow or shrink by the same ratio so what fitted
+/// still fits (a host may refuse; the layout reflows either way).
+fn rescale(
+    zoom: &AtomicU32,
+    percent: u32,
+    logical: (f64, f64),
+    resize: impl FnOnce(u32, u32) -> bool,
+) {
+    let before = zoom.swap(percent, Ordering::AcqRel);
+    if before != percent && logical.0 > 0. && logical.1 > 0. {
+        let by = |v: f64, min: u32| ((v * f64::from(percent) / 100.).round() as u32).max(min);
+        let _ = resize(by(logical.0, MIN.0), by(logical.1, MIN.1));
     }
 }
 
@@ -1079,15 +1099,15 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     // clears any in-flight library-face gesture and macro drag.
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let on_cancelled = Arc::clone(&cancelled);
-    let initial_size = {
+    // The interface scale: text and controls at this percent of their size,
+    // laid out into whatever window the host gives (not zoomed to fit it).
+    let pct = {
         let saved = SavedView::read(&params.look.read().unwrap_or_else(PoisonError::into_inner));
-        let pct = u32::from(saved.scale);
-        if app::SCALES.contains(&pct) {
-            (SIZE.0 * pct / 100, SIZE.1 * pct / 100)
-        } else {
-            SIZE
-        }
+        percent(crate::look::scale_of(saved.scale))
     };
+    let initial_size = (SIZE.0 * pct / 100, SIZE.1 * pct / 100);
+    let zoom = Arc::new(AtomicU32::new(pct));
+    let zoomed = Arc::clone(&zoom);
     let editor = MuiEditor::new(params, kontra_ui::ui(), initial_size, move |ui, bridge| {
         let Kept {
             app, shown, mine, ..
@@ -1189,8 +1209,13 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 target = t;
                 p.shared.dirty.store(true, Ordering::Release);
             }
-            if let Action::Scale(percent) = action {
-                request_scale(app, look.scale, percent, |w, h| bridge.request_resize(w, h));
+            if let Action::Scale(scale) = action {
+                let logical = ui
+                    .scene()
+                    .map_or((0., 0.), |s| (s.layout.size.width, s.layout.size.height));
+                rescale(&zoom, percent(scale), logical, |w, h| {
+                    bridge.request_resize(w, h)
+                });
                 continue;
             }
             if let Action::Master(db) = action {
@@ -1351,9 +1376,11 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         }
         response.el
     })
-    // Down to the smallest step (50 %): below its design size the whole
-    // editor scales down evenly to the window, as it scales up above it.
-    .resizable((SIZE.0 / 2, SIZE.1 / 2))
+    // A resized window reflows: the browser and rack share the room, and
+    // text and controls keep the interface scale.
+    .fixed_zoom()
+    .user_zoom(move |_| f64::from(zoomed.load(Ordering::Acquire)) / 100.)
+    .resizable(MIN)
     .wheel_policy(wheel)
     .on_key(move |_, k| {
         use moose::mui::mui::host::NativeKey;
@@ -1685,25 +1712,25 @@ mod tests {
     }
 
     #[test]
-    fn resize_uses_design_points_and_rolls_back_when_rejected() {
-        let mut app = App::default();
-        app.view.scale = 125;
-        request_scale(&mut app, 100, 125, |w, h| {
-            assert_eq!((w, h), (1475, 975));
+    fn a_new_scale_zooms_and_asks_the_window_to_follow() {
+        let zoom = AtomicU32::new(100);
+        let mut asked = None;
+        rescale(&zoom, 125, (1000., 700.), |w, h| {
+            asked = Some((w, h));
+            false
+        });
+        // Refused or not, the scale holds: the layout reflows instead.
+        assert_eq!(
+            (zoom.load(Ordering::Acquire), asked),
+            (125, Some((1250, 875)))
+        );
+        let mut again = false;
+        rescale(&zoom, 125, (800., 560.), |_, _| {
+            again = true;
             true
         });
-        assert_eq!(app.view.scale, 125);
-
-        app.view.scale = 200;
-        request_scale(&mut app, 125, 200, |_, _| false);
-        assert_eq!(app.view.scale, 125);
-
-        let mut called = false;
-        request_scale(&mut app, 125, u32::MAX, |_, _| {
-            called = true;
-            true
-        });
-        assert!(!called);
+        assert!(!again, "the same scale asks for no resize");
+        assert_eq!((percent(0), percent(67), percent(7)), (100, 67, 100));
     }
 
     /// A drag's frames come faster than the rack's copy: a copy taken

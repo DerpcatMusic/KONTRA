@@ -5,7 +5,7 @@ use mui::prelude::*;
 
 use super::{Action, App, Build, Presentation, SCALES, Sheet};
 use crate::kit::{self, Icon, button, icon_button, interactive, latch, rule, section};
-use crate::theme::{self, CONTROL, Look, SPACE, TEXT, TIGHT, TOKENS, secondary};
+use crate::theme::{self, CONTROL, HAIR, Look, SPACE, TEXT, TIGHT, TOKENS, secondary};
 
 /// A labelled row: the label takes the room left, the control sits at the end.
 fn line(label: &str, control: El) -> El {
@@ -123,7 +123,7 @@ fn interface(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         ui,
         &mut app.view.menu,
         "scale",
-        (None, current, "Editor size"),
+        (None, current, "Interface scale"),
         &refs,
         at,
     );
@@ -170,7 +170,7 @@ fn interface(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     group(
         "Interface",
         vec![
-            line("Editor size", size.el),
+            line("Interface scale", size.el),
             line("Library view size", face.el),
             line("Library look", look.el),
         ],
@@ -235,7 +235,7 @@ fn appearance(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
                 block(TEXT, TEXT)
                     .fill(color)
                     .stroke(Role::Ink.alpha(0.3))
-                    .stroke_width(1),
+                    .stroke_width(HAIR),
                 caption(theme::hex(color)).fill(Role::Ink).lines(1),
             ]
             .gap(TIGHT)

@@ -8,7 +8,7 @@ use mui::prelude::*;
 use super::browser::Carried;
 use super::{Action, App, Part, PartTab, Presentation, db, part};
 use crate::kit::{self, Icon, icon_button, knob, latch, nudge, rule, tab};
-use crate::theme::{CONTROL, SIDEBAR, SMALL, SPACE, TEXT, TIGHT, lift, part_color, secondary};
+use crate::theme::{CONTROL, HAIR, MARK, SMALL, SPACE, TEXT, TIGHT, lift, part_color, secondary};
 
 /// A preset dropped on free rack space, or on its foot, adds a part. The
 /// rack holds the part headers, so it asks after them: a drop on a header
@@ -41,12 +41,10 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         .id("rack");
     }
     // What the rack has of the editor's width for a library's view.
-    let browser = if app.view.browser_hidden {
-        0.
-    } else {
-        SIDEBAR + 1.
-    };
-    let room = (app.width - browser - 2. * SPACE).max(0.);
+    let room = ui
+        .scene()
+        .and_then(|s| s.surface("rack"))
+        .map_or(0., |s| (s.frame.size.width - 2. * SPACE).max(0.));
     // Fit one open face inside the rack viewport with its two header rows,
     // its rule and the foot below it, so the rack itself never scrolls.
     let height = ui.scene().and_then(|s| s.surface("rack")).map_or(0., |s| {
@@ -67,7 +65,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         let over = ui.get(id.as_str()).drop_target && ui.dragging::<Carried>().is_some();
         let head = band(header(ui, app, n, out), art.clone(), 0);
         strips.push(
-            head.when(over, |e| e.stroke(Role::Ink).stroke_width(1))
+            head.when(over, |e| e.stroke(Role::Ink).stroke_width(HAIR))
                 .id(id),
         );
         if app.parts.get(n).is_some_and(|p| p.open) {
@@ -80,7 +78,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     }
     dropped_on_rack(ui, out);
     if app.loading == Some(super::Loading::New) {
-        let stripe = block(3, Len::Pct(100.)).fill(lift(3)).shrink(0);
+        let stripe = block(MARK, Len::Pct(100.)).fill(lift(3)).shrink(0);
         let row = row![stripe, chip(app.load_progress)].gap(SPACE);
         strips.push(band(row, None, 0));
         strips.push(rule());
@@ -91,13 +89,16 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
 
 /// What the load is doing, in words, over a bar that fills with it.
 fn chip(progress: kontra_protocol::LoadSnapshot) -> El {
-    let done = block(Len::Pct(f64::from(progress.percent)), 6).fill(Role::Ink.alpha(0.85));
-    let bar = row![done].w(Len::Pct(100.)).h(6).fill(Role::Ink.alpha(0.1));
+    let done = block(Len::Pct(f64::from(progress.percent)), MARK * 2.).fill(Role::Ink.alpha(0.85));
+    let bar = row![done]
+        .w(Len::Pct(100.))
+        .h(MARK * 2.)
+        .fill(Role::Ink.alpha(0.1));
     let said = progress.to_string();
     let text = caption(said.clone()).text_size(SMALL).lines(1);
     // Wide enough for its stage beside a part's name; the rest on hover.
     col![text, bar]
-        .gap(4)
+        .gap(TIGHT)
         .grow(1)
         .min_w(TEXT * 11.)
         .named("Loading")
@@ -211,7 +212,7 @@ pub(super) fn solo_mute(
         p.mute = !p.mute;
         out.push(Action::Mute(n, p.mute));
     }
-    row![solo.el, mute.el].gap(1).shrink(0)
+    row![solo.el, mute.el].gap(HAIR).shrink(0)
 }
 
 /// The output choices: the host's pick, then the stereo pairs with the
@@ -420,8 +421,8 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
     let readout = caption(format!("{:.1}", p.volume)).reserve("-00.0");
     let solo_mute = solo_mute(ui, p, n, &id("sm"), out);
     let playing = p.level.first().is_some_and(|l| l.iter().any(|&l| l > 0.));
-    let dot = block(6, 6)
-        .radius(3.)
+    let dot = block(MARK * 2., MARK * 2.)
+        .pill()
         .fill(if playing {
             Fill::from(part_color(n))
         } else {
@@ -442,7 +443,7 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
     if close.changed {
         out.push(Action::Remove(n));
     }
-    let edge = block(3, CONTROL + 2. * TIGHT)
+    let edge = block(MARK, CONTROL + 2. * TIGHT)
         .fill(Fill::from(part_color(n)))
         .shrink(0);
     let mut items = vec![
@@ -502,7 +503,11 @@ fn tabs(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
     let Some(p) = app.parts.get_mut(n) else {
         return spacer();
     };
-    let mut items = vec![block(3, CONTROL).fill(Fill::from(part_color(n))).shrink(0)];
+    let mut items = vec![
+        block(MARK, CONTROL)
+            .fill(Fill::from(part_color(n)))
+            .shrink(0),
+    ];
     for (which, label, there) in [
         (PartTab::Interface, "Interface", p.face.is_some()),
         (
@@ -633,7 +638,7 @@ fn foot(ui: &mut Ui, app: &mut App) -> El {
     .pad(SPACE)
     .h(FOOT)
     .w(Len::Pct(100.))
-    .when(over, |e| e.stroke(Role::Ink).stroke_width(1))
+    .when(over, |e| e.stroke(Role::Ink).stroke_width(HAIR))
     .focusable()
     .a11y(A11y::Button)
     .named("Add to rack")

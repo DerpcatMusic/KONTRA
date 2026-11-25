@@ -61,3 +61,20 @@ never committed (gitignored). A PR changes evidence and, when needed, the snapsh
 below the header) so independent additions merge. `tools/parity-board.py --check`
 (run by `sync-stack --check`) fails on a malformed or unsorted snapshot. The monorepo
 mirror job generates the board for the public site.
+
+## UI (the editor's chrome, `crates/app/ui`)
+
+Spec: [docs/specs/ui-lift.md](docs/specs/ui-lift.md). Every UI PR keeps these:
+
+1. **Intrinsic UI.** No hardcoded sizes unless truly necessary; a container's
+   minimum comes from its content. Lists of long names ellipsize and show the
+   full name on hover. A resized window reflows (the editor runs at the
+   interface scale, never zoomed to fit a design size).
+2. **Spacing tokens.** Spacing, gaps, padding, corners, stroke widths and type
+   come from `kontra_ui::theme` (`HAIR`, `NOTCH`, `MARK`, `TIGHT`, `SPACE`,
+   `INSET`, `TEXT`, `SMALL`, `CONTROL`). A token times a factor is fine; a bare
+   pixel count at a call site fails `crates/app/ui/tests/tokens.rs`. Missing a
+   token? Add it to the theme. MUI changes stay generic.
+3. **Measure everything.** Shots at the minimum window, the default and ~1.8×
+   the default, before and after (`crates/app/ui/examples/app_shot.rs`), with
+   the numbers that changed. Look at the PNGs before calling it done.

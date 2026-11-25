@@ -9,7 +9,7 @@ use super::rack::pan_text;
 use super::{Action, Part, View, Zone};
 use crate::keyboard::note_name;
 use crate::kit::{self, button, field, list_row, section};
-use crate::theme::{SPACE, TEXT, TIGHT, hairline, lift, part_color, secondary};
+use crate::theme::{HAIR, SPACE, TEXT, TIGHT, hairline, lift, part_color, secondary};
 
 pub(super) fn view(ui: &mut Ui, p: &Part, n: usize, v: &mut View, out: &mut Vec<Action>) -> El {
     if p.zones.is_empty() {
@@ -78,7 +78,7 @@ fn groups(ui: &mut Ui, p: &Part, n: usize, v: &mut View) -> El {
         rows.push(r.el);
     }
     col(rows)
-        .gap(1)
+        .gap(HAIR)
         .w(TEXT * 13.)
         .h(TEXT * 22.)
         .shrink(0)
@@ -242,7 +242,7 @@ fn under(ui: &mut Ui, p: &Part, n: usize, v: &mut View) -> El {
         }
         rows.push(r.el);
     }
-    col(rows).gap(1).w(Len::Pct(100.))
+    col(rows).gap(HAIR).w(Len::Pct(100.))
 }
 
 fn detail(ui: &mut Ui, p: &Part, n: usize, v: &View, out: &mut Vec<Action>) -> El {
@@ -269,7 +269,7 @@ fn detail(ui: &mut Ui, p: &Part, n: usize, v: &View, out: &mut Vec<Action>) -> E
                 .tip(zone.sample.clone()),
             caption(line).fill(secondary()),
         ]
-        .gap(1)
+        .gap(HAIR)
         .align(Align::Start)
         .grow(1)
         .min_w(0),

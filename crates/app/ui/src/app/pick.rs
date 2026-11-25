@@ -6,7 +6,7 @@ use mui::prelude::*;
 
 use super::{Action, App, FilePick};
 use crate::kit::{self, button, list_row};
-use crate::theme::{CONTROL, SPACE, secondary};
+use crate::theme::{CONTROL, HAIR, SPACE, secondary};
 
 /// The rows the list shows at once; more scroll.
 const ROWS: f64 = 8.;
@@ -36,7 +36,7 @@ pub(super) fn sheet(ui: &mut Ui, app: &mut App, pick: FilePick, out: &mut Vec<Ac
         .collect();
     let list = match rows.is_empty() {
         true => caption("Nothing saved for this instrument yet.").fill(secondary()),
-        false => (col(rows).gap(1).w(Len::Pct(100.)))
+        false => (col(rows).gap(HAIR).w(Len::Pct(100.)))
             .scroll()
             .id("pick-list")
             .h(ROWS * (CONTROL + 1.))

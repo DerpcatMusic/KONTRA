@@ -29,7 +29,7 @@ use mui::prelude::*;
 use crate::Pictures;
 use crate::keyboard::{self, Keys, note_name};
 use crate::kit::{self, Icon, button, icon_button, rule, section, strip, tab, vrule};
-use crate::theme::{CONTROL, INSET, SIDEBAR, SPACE, TEXT, TIGHT, quick, secondary};
+use crate::theme::{CONTROL, HAIR, INSET, MARK, SIDEBAR, SPACE, TEXT, TIGHT, quick, secondary};
 
 /// What About says about the build: all stamped when it was compiled.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -368,6 +368,8 @@ pub struct View {
     pub browser_hidden: bool,
     /// The library list's share of the browser's height; 0 is the default.
     pub split: f64,
+    /// The browser's width, dragged at its edge; 0 is the default.
+    pub browser_width: f64,
     pub library_view: LibraryView,
     pub format: Format,
     pub shelf: Shelf,
@@ -437,8 +439,8 @@ pub struct View {
     /// The pitch wheel (springs back to 0) and the mod wheel, -1..1 and 0..1.
     pub pitch: f64,
     pub modulation: f64,
-    /// The editor's size in percent of its design size, one of [`SCALES`];
-    /// 0 is 100.
+    /// The interface scale: text and controls at this percent of their
+    /// size, one of [`SCALES`]; 0 is 100 (the host's display scale).
     pub scale: u32,
     /// Which of [`FACE_SCALES`] a library's own view is drawn at.
     pub face_scale: usize,
@@ -455,9 +457,9 @@ impl View {
     }
 }
 
-/// The editor sizes on offer, in percent of its design size. Below 100 for
-/// small screens: the whole editor scales down evenly (Kontakt 8 offers 60
-/// to 200 %, Serum 75 to 200 %; 50 % is the smallest whose text still reads).
+/// The interface scales on offer, in percent. The layout reflows into the
+/// window at any of them; below 100 suits small screens (Kontakt 8 offers
+/// 60 to 200 %, Serum 75 to 200 %; 50 % is the smallest whose text reads).
 pub const SCALES: [u32; 7] = [50, 67, 75, 100, 125, 150, 200];
 
 /// A library's view sizes on offer: as wide as the rack (0, the default),
@@ -601,7 +603,7 @@ pub enum Action {
     ScanMachine,
     /// Stop the running scan.
     CancelScan,
-    /// Draw the editor at this percent of its design size.
+    /// Draw text and controls at this percent (the interface scale).
     Scale(u32),
     CopyDiagnostics,
     ExportReport,
@@ -619,14 +621,22 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
     // Another editor, or the host's saved prefs, may have changed the colours.
     crate::theme::sync(ui);
     // The window's width as last laid out: what a library's view fits.
-    if let Some(s) = ui.scene() {
-        app.width = s.layout.size.width;
+    // The browser, its grid and the keyboard reflow to it: a new width, or
+    // none laid out yet, asks for one more frame, laid out at it.
+    match ui.scene().map(|s| s.layout.size.width) {
+        Some(w) if (w - app.width).abs() <= 0.5 => {}
+        Some(w) => {
+            app.width = w;
+            ui.repaint_in(0.);
+        }
+        None => ui.repaint_in(0.),
     }
     let header = header(ui, app, &mut out);
-    let width = ui.tween(
-        "browser-width",
-        if app.view.browser_hidden { 0. } else { SIDEBAR },
+    let shown = ui.tween(
+        "browser-shown",
+        if app.view.browser_hidden { 0. } else { 1. },
     );
+    let width = shown * browser_edge(ui, app);
     let mut middle = Vec::new();
     if width > 0.5 {
         middle.push(
@@ -636,7 +646,7 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
                 .fill(Role::Surface)
                 .clip(),
         );
-        middle.push(vrule());
+        middle.push(edge(ui));
     }
     let modal = app.pick.is_some() || app.view.sheet.is_some();
     middle.push(main(ui, app, &mut out).grow(1).min_w(0).min_h(0));
@@ -677,20 +687,77 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
     Response { el, changed: out }
 }
 
+/// The browser's width: what the player dragged it to, else the sidebar
+/// plus a share of the room a window has beyond its design width. Never
+/// narrower than the sidebar, nor wider than half the window.
+pub fn browser_width(view: &View, window: f64) -> f64 {
+    let max = (window * 0.5).max(SIDEBAR);
+    let wanted = if view.browser_width > 0. {
+        view.browser_width
+    } else {
+        SIDEBAR + BROWSER_SHARE * (window - DESIGN_WIDTH).max(0.)
+    };
+    wanted.clamp(SIDEBAR, max)
+}
+
+/// The window width the editor was drawn for; past it the browser takes
+/// [`BROWSER_SHARE`] of the extra room and the rack the rest.
+const DESIGN_WIDTH: f64 = 1180.;
+const BROWSER_SHARE: f64 = 0.25;
+
+/// The browser's width this frame, after a drag of its edge.
+fn browser_edge(ui: &mut Ui, app: &mut App) -> f64 {
+    let r = ui.get("browser-edge");
+    let now = browser_width(&app.view, app.width);
+    if r.dragged {
+        app.view.browser_width = browser_width(
+            &View {
+                browser_width: now + r.drag_delta.x,
+                ..View::default()
+            },
+            app.width,
+        );
+    }
+    if r.double_clicked {
+        app.view.browser_width = 0.;
+    }
+    browser_width(&app.view, app.width)
+}
+
+/// The edge between the browser and the rack: a drag sets the browser's
+/// width, a double click resets it. A hairline at rest, lit under the hand.
+fn edge(ui: &mut Ui) -> El {
+    let r = ui.get("browser-edge");
+    let lit = r.hovered || r.held;
+    row![block(HAIR, Len::Pct(100.)).fill(if lit {
+        Fill::from(crate::theme::accent())
+    } else {
+        Role::Ink.alpha(0.08)
+    })]
+    .justify(Justify::Center)
+    .w(2. * TIGHT + 1.)
+    .h(Len::Pct(100.))
+    .shrink(0)
+    .cursor(Cursor::ResizeH)
+    .tip("Drag to widen the browser, double-click to reset")
+    .named("Resize the browser")
+    .id("browser-edge")
+}
+
 /// The line under the header, lit while a load is under way; the load's
 /// row in the rack shows how far it is.
 fn loading_bar(app: &App) -> El {
     if app.loading.is_none() {
         return rule();
     }
-    block(Len::Pct(100.), 1)
+    block(Len::Pct(100.), HAIR)
         .fill(Role::Ink.alpha(0.7))
         .shrink(0)
         .named("Loading")
 }
 
 fn main(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
-    let mut tabs = vec![block(SPACE, 1).shrink(0)];
+    let mut tabs = vec![block(SPACE, HAIR).shrink(0)];
     for (which, label) in [
         (Tab::Rack, "Rack"),
         (Tab::Mixer, "Mixer"),
@@ -736,25 +803,23 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .id(format!("stat-{label}"))
     };
     let ram = if s.ram_mb > 0 { s.ram_mb } else { s.samples_mb };
-    let load = row![
+    let cpu = || {
         stat(
             "CPU",
             format!("{:.0}%", s.cpu),
             "100%",
-            "The audio thread's time spent rendering".into()
-        ),
-        stat(
-            "Peak",
-            format!("{:.0}%", s.peak),
-            "100%",
-            "The slowest block of the last half second, in percent of its real time: past 100% the host hears a dropout".into()
-        ),
+            "The audio thread's time spent rendering".into(),
+        )
+    };
+    let voices = || {
         stat(
             "Voices",
             s.voices.to_string(),
             "000",
-            "Voices playing".into()
-        ),
+            "Voices playing".into(),
+        )
+    };
+    let memory = || {
         stat(
             "RAM",
             format!("{ram} MB"),
@@ -762,17 +827,41 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             format!(
                 "{} MB of samples in memory, of {ram} MB in all",
                 s.samples_mb
-            )
+            ),
+        )
+    };
+    let full = row![
+        cpu(),
+        stat(
+            "Peak",
+            format!("{:.0}%", s.peak),
+            "100%",
+            "The slowest block of the last half second, in percent of its real time: past 100% the host hears a dropout".into()
         ),
+        voices(),
+        memory(),
         stat(
             "Disk",
             format!("{:.1} MB/s", s.disk_mbs),
             "000.0 MB/s",
             format!("Streamed from disk, through a {} MB cache", s.cache_mb)
         ),
+    ];
+    // A narrow window keeps the three that matter most, then none, so the
+    // master, MIDI and the menu always stay on the bar.
+    let load = fits![
+        full.gap(SPACE * 1.5).center_x(),
+        row![
+            cpu().id("stat-CPU-short"),
+            voices().id("stat-Voices-short"),
+            memory().id("stat-RAM-short"),
+        ]
+        .gap(SPACE * 1.5)
+        .center_x(),
+        spacer(),
     ]
-    .gap(SPACE * 1.5)
-    .shrink(0)
+    .grow(1)
+    .min_w(0)
     .id("load");
     let mut master = app.master;
     let gain = kit::wedge(
@@ -808,14 +897,18 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let mut items = vec![
         side.el,
         body("KONTRA").text_weight(Weight::SEMIBOLD),
-        spacer(),
         load,
-        spacer(),
         vrule().h(CONTROL * 0.6),
-        section("Master"),
+        section("Master").shrink(0),
         gain.el,
-        caption(kit::wedge_text(app.master)).reserve("200% · -inf dB"),
-        meter(ui, "master-level", app.level).w(TEXT * 4.).h(3.).el(),
+        caption(kit::wedge_text(app.master))
+            .reserve("200% · -inf dB")
+            .lines(1)
+            .shrink(0),
+        meter(ui, "master-level", app.level)
+            .w(TEXT * 4.)
+            .h(MARK)
+            .el(),
         vrule().h(CONTROL * 0.6),
         keyboard.el,
         thru.el.tip("Pass MIDI through to the host"),
@@ -836,7 +929,7 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         items.push(warn.el);
     }
     let more = icon_button(ui, "app-menu", Icon::Menu, "Menu", false);
-    let mut header = vec![strip(items).grow(1).min_w(0), more.el];
+    let mut header = vec![strip(items).grow(1).shrink(1).min_w(0), more.el];
     if kit::toggle(ui, &mut app.view.menu, "app-menu", more.changed) {
         let picked = kit::menu(ui, "app-menu", &["Settings", "About"], 1, None);
         if let Some(n) = picked.changed {
@@ -852,6 +945,9 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
 }
 
 fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
+    // One octave per ~168 points of width: seven at the design width,
+    // more keys as the window widens, never past MIDI's top note.
+    let octaves = (app.width / 168.).round().clamp(3., 10.) as u8;
     let v = &mut app.view;
     let down = icon_button(ui, "octave-down", Icon::Left, "Octave down", false);
     let up = icon_button(ui, "octave-up", Icon::Right, "Octave up", false);
@@ -869,7 +965,7 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         return spacer().h(0);
     }
     let low = 12 * v.octave.clamp(0, 5) as u8;
-    let range = (low, low + 83);
+    let range = (low, (low + 12 * octaves - 1).min(127));
     let label = caption(format!("{} – {}", note_name(range.0), note_name(range.1)))
         .tip("Every part · the keys play channel 1 or Omni · click a part to focus it")
         .id("keys-range");

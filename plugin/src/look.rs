@@ -62,6 +62,18 @@ fn look_of(n: u8) -> Presentation {
     }
 }
 
+/// A saved interface scale in percent; 1 to 3 are the steps 125 to 200 %
+/// of before.
+pub fn scale_of(saved: u8) -> u32 {
+    match saved {
+        n @ 1..=3 => [125, 150, 200]
+            .get(usize::from(n) - 1)
+            .copied()
+            .unwrap_or(100),
+        n => u32::from(n),
+    }
+}
+
 /// What `app` shows, its parts in rack `slots`.
 pub fn saved(app: &App, slots: &[usize]) -> SavedView {
     let v = &app.view;
@@ -82,6 +94,7 @@ pub fn saved(app: &App, slots: &[usize]) -> SavedView {
         sort: index(&SORTS, &v.sort),
         library_filter: index(&FILTERS, &v.library_filter),
         split: v.split as f32,
+        browser_width: v.browser_width as f32,
         look: look_index(v.face_look),
         parts: (app.parts.iter().zip(slots))
             .map(|(p, &part)| SavedPartView {
@@ -104,14 +117,7 @@ pub fn apply(app: &mut App, s: &SavedView) {
         keys_hidden: s.keys_hidden,
         mixer_wide: s.mixer_wide,
         octave: s.octave,
-        // Saved as percent; 1 to 3 are the steps 125 to 200 % of before.
-        scale: match s.scale {
-            n @ 1..=3 => [125, 150, 200]
-                .get(usize::from(n) - 1)
-                .copied()
-                .unwrap_or(100),
-            n => u32::from(n),
-        },
+        scale: scale_of(s.scale),
         face_scale: usize::from(s.face_scale),
         library_view: if s.separated {
             LibraryView::Separated
@@ -128,6 +134,7 @@ pub fn apply(app: &mut App, s: &SavedView) {
         },
         library_filter: pick(&FILTERS, s.library_filter),
         split: f64::from(s.split),
+        browser_width: f64::from(s.browser_width),
         face_look: look_of(s.look),
         ..View::default()
     };
@@ -160,6 +167,7 @@ mod tests {
         app.view.octave = -1;
         app.view.scale = 75;
         app.view.split = 0.3;
+        app.view.browser_width = 420.;
         app.view.face_look = Presentation::Kontra;
         app.view.library_view = LibraryView::Separated;
         app.view.tiles = Tiles::Cards;
@@ -180,6 +188,10 @@ mod tests {
         );
         assert_eq!((again.view.octave, again.view.scale), (-1, 75));
         assert!((again.view.split - 0.3).abs() < 1e-6, "the browser's split");
+        assert!(
+            (again.view.browser_width - 420.).abs() < 1e-3,
+            "the browser's width"
+        );
         assert_eq!(again.view.face_look, Presentation::Kontra);
         assert_eq!(
             (

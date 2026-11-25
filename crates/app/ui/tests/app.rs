@@ -1515,3 +1515,51 @@ fn every_format_chip_sits_above_the_library_grid() {
     assert_eq!(app.view.format, Format::Uvi);
     assert_eq!(app.view.library_view, app::LibraryView::Separated);
 }
+
+/// A wider window reflows instead of zooming: the chrome's text keeps its
+/// height, the browser widens and its grid adds columns.
+#[test]
+fn a_wider_window_reflows_and_keeps_the_text_size() {
+    let mut app = App {
+        libraries: (0..8)
+            .map(|n| Library {
+                name: format!("Library {n}"),
+                format: Format::Kontakt,
+                presets: vec!["Preset".into()],
+                ..Library::default()
+            })
+            .collect(),
+        ..App::default()
+    };
+    let mut at = |width: f64| {
+        let mut ui = kontra_ui::ui();
+        for n in 0..240 {
+            let r = app::view(&mut ui, &mut app);
+            let f = ui.frame(
+                r.el,
+                Some(Size::new(width, 780.)),
+                Input::default(),
+                1. / 60.,
+            );
+            // The first frame lays out; the next reflows to its width.
+            if n > 0 && !f.is_ok_and(|f| f.animating) {
+                break;
+            }
+        }
+        let scene = ui.scene().expect("scene");
+        let frame = |id: &str| scene.surface(id).map(|s| s.frame).expect(id);
+        let per_row = (0..8)
+            .take_while(|n| frame(&format!("library-{n}")).y == frame("library-0").y)
+            .count();
+        (
+            frame("tab-Rack").size.height,
+            frame("browser-column").size.width,
+            per_row,
+        )
+    };
+    let (text, browser, per_row) = at(1180.);
+    let (text2, browser2, per_row2) = at(2360.);
+    assert!((text - text2).abs() < 0.5, "tab text {text} → {text2}");
+    assert!(browser2 > browser + 100., "browser {browser} → {browser2}");
+    assert!(per_row2 > per_row, "tiles per row {per_row} → {per_row2}");
+}

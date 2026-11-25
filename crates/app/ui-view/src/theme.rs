@@ -18,6 +18,12 @@ use mui::scene::TypeScale;
 pub const TEXT: f64 = 12.;
 /// Captions, readouts, section titles.
 pub const SMALL: f64 = TEXT - 1.;
+/// A hairline: a seam between listed rows, a rule's width.
+pub const HAIR: f64 = TEXT / 12.;
+/// A notch: an accent edge, a badge's inset and corner.
+pub const NOTCH: f64 = TEXT / 6.;
+/// A mark: a stripe, a dot's radius, a thin bar's height.
+pub const MARK: f64 = TEXT / 4.;
 /// Between the parts of one control.
 pub const TIGHT: f64 = TEXT / 3.;
 /// Between sibling controls.

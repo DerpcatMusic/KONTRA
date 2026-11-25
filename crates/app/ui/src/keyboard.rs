@@ -4,10 +4,10 @@
 use mui::prelude::*;
 
 use crate::kit::edges;
-use crate::theme::{SMALL, TEXT, TIGHT, accent};
+use crate::theme::{MARK, SMALL, TEXT, TIGHT, accent};
 
 /// The height of one part's band above the keys.
-const BAND: f64 = 3.;
+const BAND: f64 = MARK;
 
 /// What the keybed shows.
 #[derive(Clone, Debug, Default, PartialEq)]

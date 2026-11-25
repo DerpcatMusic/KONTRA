@@ -16,7 +16,9 @@ use super::find::{self, found};
 use super::{Action, App, Format, LibraryFilter, LibrarySort, LibraryView, Shelf, Tiles, tidy};
 use crate::Pictures;
 use crate::kit::{self, Icon, button, field, glyph, icon_button, interactive, rule};
-use crate::theme::{CONTROL, SIDEBAR, SMALL, SPACE, TEXT, TIGHT, accent, secondary};
+use crate::theme::{
+    CONTROL, HAIR, MARK, NOTCH, SIDEBAR, SMALL, SPACE, TEXT, TIGHT, accent, secondary,
+};
 
 pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     escape(ui, app);
@@ -65,7 +67,7 @@ fn split(ui: &mut Ui, app: &mut App) -> El {
         app.view.split = 0.;
     }
     let lit = r.hovered || r.held;
-    col![block(Len::Pct(100.), 1).fill(if lit {
+    col![block(Len::Pct(100.), HAIR).fill(if lit {
         Fill::from(accent())
     } else {
         Role::Ink.alpha(0.08)
@@ -232,7 +234,7 @@ fn shelf_chip(
         spacer(),
         row(parts).gap(TIGHT * 0.75).align(Align::Center),
         spacer(),
-        block(Len::Pct(100.), 1).fill(line),
+        block(Len::Pct(100.), HAIR).fill(line),
     ]
     .align(Align::Center)
     .pad((TIGHT * 1.5, 0.))
@@ -271,7 +273,7 @@ fn format_chip(ui: &mut Ui, id: &str, label: &str, count: usize, current: bool) 
     .pill()
     .shrink(0)
     .when(current, |e| {
-        e.fill(Role::Raised).stroke(accent()).stroke_width(1)
+        e.fill(Role::Raised).stroke(accent()).stroke_width(HAIR)
     })
     .focusable()
     .a11y(A11y::Button)
@@ -603,7 +605,7 @@ pub(super) fn scan_folder(f: &super::LibraryFolder, control: Option<El>) -> El {
         lines.push(caption(hint.clone()).fill(secondary()).min_w(0));
     }
     col(lines)
-        .gap(1)
+        .gap(HAIR)
         .align(Align::Stretch)
         .min_w(0)
         .w(Len::Pct(100.))
@@ -642,9 +644,9 @@ const CARD: f64 = 4.;
 const TILE: f64 = 2.75;
 /// Outer breathing room around the library grid so edge cards can pop out
 /// slightly without clipping.
-const GRID_PAD: f64 = 2.;
+const GRID_PAD: f64 = NOTCH;
 /// Gutter between library tiles.
-const GRID_GAP: f64 = 1.;
+const GRID_GAP: f64 = HAIR;
 /// Elevation pop-out in logical points for selected / hovered cards.
 const POP_SELECTED: f64 = 3.5;
 const POP_HOVERED: f64 = 3.0;
@@ -730,7 +732,7 @@ fn favorites_view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         parts.extend(fav_presets);
     }
     col(parts)
-        .gap(1)
+        .gap(HAIR)
         .scroll()
         .id("library-list")
         .min_h(0)
@@ -828,19 +830,20 @@ fn library_grid_content(ui: &mut Ui, app: &mut App, starred_only: bool) -> Optio
         }
     });
 
-    let (per_row, ratio): (usize, f64) = match tiles_mode {
+    // At the sidebar's width: two tiles, or one card, to a row. A wider
+    // browser adds a column for each tile's width of room it gains.
+    let (fit, ratio): (usize, f64) = match tiles_mode {
         Tiles::Grid => (2, TILE),
         Tiles::Cards => (1, CARD),
     };
-    let list_w = ui
-        .scene()
-        .and_then(|s| s.surface("library-list"))
-        .map(|s| s.frame.size.width)
-        .filter(|&w| w > 1.)
-        .unwrap_or(SIDEBAR);
+    // The browser's width this frame, not the list's last one: a resize
+    // reflows the grid in the frame that lays it out.
+    let list_w = super::browser_width(&app.view, app.width);
     let inner_w = (list_w - 2. * GRID_PAD).max(1.);
+    let tile_w = SIDEBAR / fit as f64;
+    let per_row = (((inner_w + GRID_GAP) / (tile_w + GRID_GAP)).floor() as usize).max(fit);
     let cell_w = (inner_w - GRID_GAP * (per_row.saturating_sub(1)) as f64) / per_row as f64;
-    let height = SIDEBAR / per_row as f64 / ratio;
+    let height = tile_w / ratio;
 
     let ids: Vec<String> = shown
         .iter()
@@ -1075,7 +1078,7 @@ fn favorites(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> Vec<El> {
 
 /// A list row that highlights search hits in both its label and library detail.
 fn searchable_row(id: &str, (label, detail): (&str, &str), query: &str, selected: bool) -> El {
-    let mark = block(2, Len::Pct(100.)).fill(if selected {
+    let mark = block(NOTCH, Len::Pct(100.)).fill(if selected {
         Fill::from(accent())
     } else {
         Role::Ink.alpha(0.)
@@ -1172,7 +1175,7 @@ fn card(
     } else {
         (TEXT * 1.15, SPACE)
     };
-    let mark = block(3, Len::Pct(100.)).fill(if chosen {
+    let mark = block(MARK, Len::Pct(100.)).fill(if chosen {
         Fill::from(accent())
     } else {
         Role::Ink.alpha(0.)
@@ -1197,8 +1200,8 @@ fn card(
                     .fill(Color::srgb(0.84, 0.84, 0.88))
             ]
             .align(Align::Center)
-            .pad((1., 4.))
-            .radius(2.)
+            .pad((HAIR, TIGHT))
+            .radius(NOTCH)
             .fill(Color::srgb(0.06, 0.06, 0.08).with_alpha(0.72))
             .shrink(0),
         );
@@ -1210,8 +1213,8 @@ fn card(
         top_badges.push(
             row![glyph(Icon::Lock, icon_size, Fill::from(amber))]
                 .align(Align::Center)
-                .pad((2., 4.))
-                .radius(3.)
+                .pad((NOTCH, TIGHT))
+                .radius(MARK)
                 .fill(badge_bg)
                 .shrink(0),
         );
@@ -1268,7 +1271,7 @@ fn card(
         .h(height)
         .cursor(Cursor::Hand)
         .on(State::FocusVisible, |s| {
-            s.stroke(Role::Primary.alpha(0.9)).stroke_width(1)
+            s.stroke(Role::Primary.alpha(0.9)).stroke_width(HAIR)
         })
         .focusable()
         .a11y(A11y::Button)
@@ -1303,7 +1306,7 @@ fn card(
         card_box = card_box
             .shadows([ambient, contact])
             .stroke(Color::srgb(1., 1., 1.).with_alpha(rim_alpha as f32))
-            .stroke_width(1);
+            .stroke_width(HAIR);
     }
     card_box
 }
@@ -1354,7 +1357,7 @@ fn recent(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         return empty_libraries(ui, app, msg);
     }
     col(rows)
-        .gap(1)
+        .gap(HAIR)
         .pad(TIGHT)
         .scroll()
         .id("recent-list")
@@ -1606,8 +1609,8 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         ]
         .gap(TIGHT * 0.5)
         .align(Align::Center)
-        .pad((2., 5.))
-        .radius(3.)
+        .pad((NOTCH, TIGHT))
+        .radius(MARK)
         .fill(Color::srgb(0.08, 0.08, 0.1).with_alpha(0.85))
         .tip(detail.clone())
         .shrink(0)
@@ -1738,7 +1741,7 @@ fn preset_row(
     on: bool,
     indent: f64,
 ) -> El {
-    let mark = block(2, Len::Pct(100.)).fill(if on {
+    let mark = block(NOTCH, Len::Pct(100.)).fill(if on {
         Fill::from(accent())
     } else {
         Role::Ink.alpha(0.)
