@@ -308,13 +308,13 @@ fn libraries(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if add.changed {
         out.push(Action::AddFolder);
     }
-    let scanning = app.scan;
+    let scanning = app.scan.clone();
     let machine = icon_button(
         ui,
         "browser-scan-machine",
         Icon::Search,
         "Scan my machine: find every library on this computer's drives",
-        scanning.is_some_and(|s| s.machine),
+        scanning.as_ref().is_some_and(|s| s.machine),
     );
     if machine.changed {
         out.push(if scanning.is_some() {
@@ -486,18 +486,15 @@ fn libraries(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         if cancel.changed {
             out.push(Action::CancelScan);
         }
-        let what = if s.machine {
-            "Scanning this machine"
-        } else {
-            "Scanning"
-        };
+        // Where on one line, how far on the next: a long folder name
+        // clips its own line, never the counts.
+        let (place, counts) = scan_line(&s);
         row![
-            caption(format!(
-                "{what}\u{2026} {} folders \u{b7} {} libraries",
-                s.folders, s.found
-            ))
-            .fill(secondary())
-            .lines(1)
+            col![
+                caption(place).fill(secondary()).lines(1).min_w(0),
+                caption(counts).fill(secondary()).lines(1).min_w(0),
+            ]
+            .align(Align::Start)
             .min_w(0)
             .grow(1)
             .id("scan-progress"),
@@ -533,6 +530,36 @@ fn libraries(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         col(progress.into_iter().collect::<Vec<_>>()),
         list.grow(1).min_h(0),
     ]
+}
+
+/// Where a scan is, "Scanning Kontakt…", and what it has counted so far,
+/// "1,204 files · 6 libraries".
+fn scan_line(s: &super::ScanProgress) -> (String, String) {
+    let grouped = |n: usize| {
+        let d = n.to_string();
+        let mut out = String::new();
+        for (i, c) in d.chars().enumerate() {
+            if i > 0 && (d.len() - i) % 3 == 0 {
+                out.push(',');
+            }
+            out.push(c);
+        }
+        out
+    };
+    let mut place = vec![
+        "Scanning",
+        if s.machine { "this machine" } else { "" },
+        &s.folder,
+    ];
+    place.retain(|p| !p.is_empty());
+    (
+        format!("{}\u{2026}", place.join(" ")),
+        format!(
+            "{} files \u{b7} {} libraries",
+            grouped(s.files),
+            grouped(s.found)
+        ),
+    )
 }
 
 /// One scanned folder: its path, an "auto" tag when discovery found it, and
@@ -1795,4 +1822,31 @@ pub(super) fn cover(covers: &mut Pictures, lib: usize, art: &[String]) -> Option
     let meta = ImageMeta::default();
     (art.iter().take(COVERS).enumerate())
         .find_map(|(k, path)| covers.frame(AssetRef(lib * COVERS + k), path, meta, 0, 1.))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{super::ScanProgress, scan_line};
+
+    #[test]
+    fn the_scan_line_says_where_and_how_far() {
+        let line = |folder: &str, files, found, machine| {
+            let (a, b) = scan_line(&ScanProgress {
+                folder: folder.into(),
+                files,
+                found,
+                machine,
+            });
+            format!("{a} | {b}")
+        };
+        assert_eq!(
+            line("Kontakt", 1204, 6, false),
+            "Scanning Kontakt… | 1,204 files · 6 libraries"
+        );
+        assert_eq!(line("", 0, 0, false), "Scanning… | 0 files · 0 libraries");
+        assert_eq!(
+            line("UVI", 1_234_567, 1000, true),
+            "Scanning this machine UVI… | 1,234,567 files · 1,000 libraries"
+        );
+    }
 }

@@ -232,6 +232,8 @@ pub struct Progress {
     /// Files listed, and of those, files of other types.
     pub files: AtomicUsize,
     pub other: AtomicUsize,
+    /// The root being walked now.
+    pub root: std::sync::Mutex<PathBuf>,
     /// Each library as it is catalogued, for the browser to show before the
     /// scan ends; the browser takes them.
     pub partial: std::sync::Mutex<Vec<Library>>,
@@ -353,6 +355,7 @@ pub fn scan_incremental(
     let mut seen = BTreeSet::new();
     let mut statuses = Vec::new();
     for root in roots {
+        (*progress.root.lock().unwrap_or_else(PoisonError::into_inner)).clone_from(&root.path);
         let before = (issues.len(), libraries.len());
         let counted = |p: &Progress| {
             (

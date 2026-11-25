@@ -5,9 +5,9 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
+use std::sync::{Arc, PoisonError};
 
 use std::time::{Duration, Instant};
 
@@ -176,13 +176,24 @@ impl Browser {
         }
     }
 
-    /// A running scan's progress: folders listed, libraries found, and
-    /// whether it walks the whole machine.
+    /// A running scan's progress: the folder it is in, files listed,
+    /// libraries found, and whether it walks the whole machine. `None` once
+    /// it ends or is canceled.
     #[must_use]
-    pub fn progress(&self) -> Option<(usize, usize, bool)> {
+    pub fn progress(&self) -> Option<(String, usize, usize, bool)> {
         let r = self.scan.as_ref()?;
+        let root = r
+            .progress
+            .root
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let folder = root.file_name().map_or_else(
+            || root.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
         Some((
-            r.progress.folders.load(Ordering::Relaxed),
+            folder,
+            r.progress.files.load(Ordering::Relaxed),
             r.progress.found.load(Ordering::Relaxed),
             r.find == Find::Machine,
         ))
@@ -838,7 +849,14 @@ mod tests {
         assert!(b.generation > before);
         assert!(!b.poll(), "nothing new since");
         assert!(b.scanning());
-        drop(b);
+        *progress.root.lock().unwrap() = "/libs/New".into();
+        assert_eq!(
+            b.progress().map(|p| p.0).as_deref(),
+            Some("New"),
+            "the folder it is in"
+        );
+        b.cancel();
+        assert_eq!(b.progress(), None, "a canceled scan shows no line");
         assert!(progress.cancel.load(Ordering::Relaxed));
     }
 }

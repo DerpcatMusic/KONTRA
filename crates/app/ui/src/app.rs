@@ -279,9 +279,11 @@ impl From<&str> for LibraryFolder {
 }
 
 /// A running library scan.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScanProgress {
-    pub folders: usize,
+    /// The folder it is in now; empty before the first.
+    pub folder: String,
+    pub files: usize,
     pub found: usize,
     /// It walks the whole machine ("Scan my machine").
     pub machine: bool,
