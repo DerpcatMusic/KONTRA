@@ -230,6 +230,13 @@ fn architecture_metric_ratchets_hold() {
         !read("drive.rs").contains("fn effect("),
         "drive::effect came back as a second dispatch on the module id; add a MODULES row"
     );
+    // KSP knob bindings are typed Rust rows (audit KT-18), not a TSV parsed
+    // from strings at load.
+    assert!(
+        !kontakt.join("../data/script_knobs.tsv").exists()
+            && !read("script_knobs.rs").contains("fn parse_law"),
+        "script_knobs.tsv and its string parser came back; add a row to script_knobs()"
+    );
 
     // 5. Kontakt's program, group and zone `ignored_fields` are typed fast
     // paths (13-IR-VNEXT Phase 0): no Debug reflection outside tests.
