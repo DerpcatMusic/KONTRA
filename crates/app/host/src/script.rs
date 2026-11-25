@@ -356,6 +356,15 @@ fn controls(script: &Script) -> Controls {
             *k = c.kind as u8;
         }
     }
+    let names = (script.variables.iter().zip(&kinds))
+        .map(|(v, &k)| {
+            if k == 0 {
+                "".into()
+            } else {
+                v.name.get(1..).unwrap_or("").into()
+            }
+        })
+        .collect();
     Controls {
         first: FIRST_UI_ID,
         by_cell,
@@ -381,6 +390,11 @@ fn controls(script: &Script) -> Controls {
         ]
         .map(|name| symbol(script, name)),
         laws: laws(script),
+        names,
+        named: NAMED
+            .iter()
+            .map(|&(name, kind)| (symbol(script, name), kind.map_or(0, |k| k as u8)))
+            .collect(),
     }
 }
 
@@ -471,6 +485,26 @@ const LAWS: &[(&str, Option<ControlKind>, i32, ParWrite, Read)] = {
         ("$CONTROL_PAR_WAVETABLE_END_ALPHA", Some(Wavetable), 0, Keep, Unset),
         ("$CONTROL_PAR_MOUSE_BEHAVIOUR_X", Some(Xy), 1000, Keep, Stored),
         ("$CONTROL_PAR_MOUSE_BEHAVIOUR_Y", Some(Xy), 1000, Keep, Stored),
+        // A label keeps any value; a knob ignores both (control_pars_8).
+        ("$CONTROL_PAR_DND_BEHAVIOUR", Some(Knob), 0, Keep, Unset),
+        ("$CONTROL_PAR_MIDI_EXPORT_AREA_IDX", Some(Knob), 0, Keep, Unset),
+        ("$CONTROL_PAR_NONE", None, 0, Keep, Unset),
+    ]
+};
+
+/// Text parameters that read the control's declared name until set, by
+/// control type (`None`: every type), as Kontakt 8.13 answers
+/// `get_control_par_str` (control_pars_7); a text edit's text reads empty.
+const NAMED: &[(&str, Option<ControlKind>)] = {
+    use ControlKind::{Button, Knob, Label, Switch, ValueEdit};
+    &[
+        ("$CONTROL_PAR_IDENTIFIER", None),
+        ("$CONTROL_PAR_TEXT", Some(Knob)),
+        ("$CONTROL_PAR_TEXT", Some(Button)),
+        ("$CONTROL_PAR_TEXT", Some(Switch)),
+        ("$CONTROL_PAR_TEXT", Some(Label)),
+        ("$CONTROL_PAR_TEXT", Some(ValueEdit)),
+        ("$CONTROL_PAR_AUTOMATION_NAME", Some(Knob)),
     ]
 };
 
@@ -556,6 +590,7 @@ fn look(script: &Script) -> LookPars {
         wf_prop_cursor: par("$UI_WF_PROP_PLAY_CURSOR"),
         wf_prop_flags: par("$UI_WF_PROP_FLAGS"),
         filepath: par("$CONTROL_PAR_FILEPATH"),
+        basepath: par("$CONTROL_PAR_BASEPATH"),
         wallpaper: id("$INST_WALLPAPER_ID"),
         icon: id("$INST_ICON_ID"),
     }

@@ -1,0 +1,21 @@
+# Kontakt 8.13, after control_pars_4 (a knob without a picture reads 87 x 18 whatever it is given):
+# a knob's size once it has a picture: tools/ksp-ui's "kp_knob", 40 x 40 frames, lent with
+# ORACLE_PROBE_NKR=tools/ksp-ui/lib/probes.nkr. `one` checks the run encodes results.
+# Run: ORACLE_PROBE_NKR=... ksp_probe.py "ANALOG STRINGS.nki" this-file > control_pars_9.measured
+# KONTRA replays it: crates/app/host/tests/oracle_probes.rs.
+R one 1
+S declare ui_knob $kp(0, 100, 1)
+S declare ui_knob $kq(0, 100, 1)
+S declare ui_knob $kr(0, 100, 1)
+S set_control_par_str(get_ui_id($kp), $CONTROL_PAR_PICTURE, "kp_knob")
+R pic_width get_control_par(get_ui_id($kp), $CONTROL_PAR_WIDTH)
+R pic_height get_control_par(get_ui_id($kp), $CONTROL_PAR_HEIGHT)
+R pic_grid_width get_control_par(get_ui_id($kp), $CONTROL_PAR_GRID_WIDTH)
+S set_control_par(get_ui_id($kp), $CONTROL_PAR_WIDTH, 200)
+R pic_w200 get_control_par(get_ui_id($kp), $CONTROL_PAR_WIDTH)
+R pic_w200_height get_control_par(get_ui_id($kp), $CONTROL_PAR_HEIGHT)
+S set_control_par(get_ui_id($kq), $CONTROL_PAR_WIDTH, 200)
+S set_control_par_str(get_ui_id($kq), $CONTROL_PAR_PICTURE, "kp_knob")
+R w200_then_pic get_control_par(get_ui_id($kq), $CONTROL_PAR_WIDTH)
+S set_control_par_str(get_ui_id($kr), $CONTROL_PAR_PICTURE, "no_such_picture")
+R missing_pic_width get_control_par(get_ui_id($kr), $CONTROL_PAR_WIDTH)

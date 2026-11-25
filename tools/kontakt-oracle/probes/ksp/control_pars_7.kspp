@@ -1,0 +1,57 @@
+# Kontakt 8.13: string control parameters, read with get_control_par_str (T lines: saved with
+# save_array_str, printed verbatim). Defaults per control type, a write read back, and what the
+# text commands (set_text, set_knob_label, add_text_line) leave in $CONTROL_PAR_TEXT / _LABEL.
+# fs_get_filename in on init fails the whole script in Kontakt, so it is not read here.
+# Run: ksp_probe.py "ANALOG STRINGS.nki" this-file > control_pars_7.measured
+# KONTRA replays it: crates/app/host/tests/oracle_probes.rs.
+R one 1
+S declare ui_knob $kn(0, 100, 1)
+S declare ui_button $bt
+S declare ui_switch $sw
+S declare ui_label $lb(1, 1)
+S declare ui_menu $mn
+S declare ui_slider $sl(0, 100)
+S declare ui_value_edit $ve(0, 100, 1)
+S declare ui_file_selector $fs
+S declare ui_text_edit @te
+T knob_label get_control_par_str(get_ui_id($kn), $CONTROL_PAR_LABEL)
+T knob_text get_control_par_str(get_ui_id($kn), $CONTROL_PAR_TEXT)
+T knob_help get_control_par_str(get_ui_id($kn), $CONTROL_PAR_HELP)
+T knob_short get_control_par_str(get_ui_id($kn), $CONTROL_PAR_SHORT_NAME)
+T knob_ident get_control_par_str(get_ui_id($kn), $CONTROL_PAR_IDENTIFIER)
+T knob_auto_name get_control_par_str(get_ui_id($kn), $CONTROL_PAR_AUTOMATION_NAME)
+T knob_picture get_control_par_str(get_ui_id($kn), $CONTROL_PAR_PICTURE)
+T button_text get_control_par_str(get_ui_id($bt), $CONTROL_PAR_TEXT)
+T button_label get_control_par_str(get_ui_id($bt), $CONTROL_PAR_LABEL)
+T switch_text get_control_par_str(get_ui_id($sw), $CONTROL_PAR_TEXT)
+T switch_ident get_control_par_str(get_ui_id($sw), $CONTROL_PAR_IDENTIFIER)
+T label_text get_control_par_str(get_ui_id($lb), $CONTROL_PAR_TEXT)
+T menu_ident get_control_par_str(get_ui_id($mn), $CONTROL_PAR_IDENTIFIER)
+T slider_short get_control_par_str(get_ui_id($sl), $CONTROL_PAR_SHORT_NAME)
+T vedit_text get_control_par_str(get_ui_id($ve), $CONTROL_PAR_TEXT)
+T fs_filepath get_control_par_str(get_ui_id($fs), $CONTROL_PAR_FILEPATH)
+T fs_basepath get_control_par_str(get_ui_id($fs), $CONTROL_PAR_BASEPATH)
+T te_text get_control_par_str(get_ui_id(@te), $CONTROL_PAR_TEXT)
+S set_control_par_str(get_ui_id($kn), $CONTROL_PAR_LABEL, "lab")
+T knob_label_set get_control_par_str(get_ui_id($kn), $CONTROL_PAR_LABEL)
+S set_knob_label($kn, "kl")
+T knob_label_cmd get_control_par_str(get_ui_id($kn), $CONTROL_PAR_LABEL)
+T knob_text_cmd get_control_par_str(get_ui_id($kn), $CONTROL_PAR_TEXT)
+S set_control_par_str(get_ui_id($kn), $CONTROL_PAR_HELP, "help me")
+T knob_help_set get_control_par_str(get_ui_id($kn), $CONTROL_PAR_HELP)
+S set_control_par_str(get_ui_id($kn), $CONTROL_PAR_SHORT_NAME, "sn")
+T knob_short_set get_control_par_str(get_ui_id($kn), $CONTROL_PAR_SHORT_NAME)
+S set_control_par_str(get_ui_id($sl), $CONTROL_PAR_AUTOMATION_NAME, "an")
+T slider_auto_set get_control_par_str(get_ui_id($sl), $CONTROL_PAR_AUTOMATION_NAME)
+S set_text($lb, "one")
+T label_set_text get_control_par_str(get_ui_id($lb), $CONTROL_PAR_TEXT)
+S add_text_line($lb, "two")
+T label_add_line get_control_par_str(get_ui_id($lb), $CONTROL_PAR_TEXT)
+S set_text($bt, "press")
+T button_set_text get_control_par_str(get_ui_id($bt), $CONTROL_PAR_TEXT)
+S set_control_par_str(get_ui_id($sw), $CONTROL_PAR_TEXT, "sw on")
+T switch_text_set get_control_par_str(get_ui_id($sw), $CONTROL_PAR_TEXT)
+S set_control_par_str(get_ui_id($fs), $CONTROL_PAR_FILEPATH, "Z:/tmp/x.wav")
+T fs_filepath_set get_control_par_str(get_ui_id($fs), $CONTROL_PAR_FILEPATH)
+S set_control_par_str(get_ui_id($kn), $CONTROL_PAR_TEXT, "tx")
+T knob_text_set get_control_par_str(get_ui_id($kn), $CONTROL_PAR_TEXT)

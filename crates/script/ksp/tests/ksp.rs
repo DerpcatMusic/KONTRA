@@ -780,7 +780,7 @@ fn every_oracle_probe_compiles() {
         if path.extension().is_none_or(|e| e != "kspp") {
             continue;
         }
-        let mut src = String::from("on init\n declare $v\n");
+        let mut src = String::from("on init\n declare $v\n declare @t\n");
         let mut extra = String::new();
         for line in std::fs::read_to_string(&path).unwrap().lines() {
             let line = line.trim();
@@ -788,6 +788,9 @@ fn every_oracle_probe_compiles() {
                 Some(("S", rest)) => src += &format!(" {rest}\n"),
                 Some(("R", rest)) => {
                     src += &format!(" $v := ({})\n", rest.split_once(' ').unwrap().1)
+                }
+                Some(("T", rest)) => {
+                    src += &format!(" @t := {}\n", rest.split_once(' ').unwrap().1)
                 }
                 Some(("X", rest)) => extra += &format!("{rest}\n"),
                 _ => {}

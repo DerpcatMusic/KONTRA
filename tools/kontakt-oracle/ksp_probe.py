@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Runs a KSP probe in real Kontakt and prints what it measured.
 
-ksp_probe.py <instrument.nki> <probe.kspp> [work dir]
+ksp_probe.py <instrument.nki> <probe.kspp> [work dir]   (ORACLE_PROBE_NKR=<.nkr> lends it pictures)
 
 A probe file has one line per step (`#` starts a comment):
 
     S <statement>     run in `on init`, in order (declarations too)
     R <label> <expr>  record the integer `expr` (evaluated in order with the statements)
+    T <label> <expr>  record the string `expr`: saved with save_array_str at the end of init and
+                      printed verbatim (KSP has no string length or comparison to encode it)
     C <name> <expr>   a callback script: `<name>` is the callback's header line, e.g.
                       `C on async_complete` followed by indented `S`/`R` lines is NOT supported;
                       use `X <text>` lines instead: raw KSP appended after `on init ... end on`.
@@ -38,8 +40,8 @@ HEAD = [
 OFFSET = 1_000_000
 
 
-def script(lines):
-    init, extra, labels = ["on init", "  declare $v"], [], []
+def script(lines, nka=None):
+    init, extra, labels, texts = ["on init", "  declare $v"], [], [], []
     for raw in lines:
         line = raw.rstrip("\n")
         if not line.strip() or line.lstrip().startswith("#"):
@@ -56,21 +58,36 @@ def script(lines):
                 init.append(
                     f"  set_engine_par($ENGINE_PAR_TUNE, 500000 + 5000 * (($v / {100 ** d}) mod 100), {5 * k + d}, -1, -1)"
                 )
+        elif kind == "T":
+            label, _, expr = rest.partition(" ")
+            init.append(f"  !oracle_t[{len(texts)}] := {expr}")
+            texts.append(label)
         elif kind == "X":
             extra.append(rest)
         else:
             raise SystemExit(f"bad probe line: {line}")
+    if texts:
+        init.insert(2, f"  declare !oracle_t[{len(texts)}]")
+        init.append(f'  save_array_str(!oracle_t, "Z:{nka}")')
     init.append("end on")
-    return "\n".join(init + extra) + "\n", labels
+    return "\n".join(init + extra) + "\n", labels, texts
 
 
 def main():
     nki, probe = sys.argv[1], sys.argv[2]
     work = sys.argv[3] if len(sys.argv) > 3 else "/tmp/ksp-probe"
     os.makedirs(work, exist_ok=True)
+    nka = os.path.abspath(os.path.join(work, os.path.basename(probe) + ".nka"))
+    if os.path.exists(nka):
+        os.remove(nka)
     with open(probe) as f:
-        src, labels = script(f)
+        src, labels, texts = script(f, nka)
     lua = list(HEAD)
+    # ORACLE_PROBE_NKR=<.nkr>: give the instrument that resource container (pictures, fonts).
+    nkr = os.environ.get("ORACLE_PROBE_NKR")
+    if nkr:
+        win = "Z:" + os.path.abspath(nkr).replace("/", "\\")
+        lua.append(f"pcall(kt.create_resource_container, i, [[{win}]])")
     lua.append(f"local src = [[\n{src}]]")
     lua.append("pcall(kt.set_instrument_script_source, i, 0, src)")
     lua += [
@@ -86,7 +103,9 @@ def main():
         f.write("\n".join(lua) + "\n")
     env = dict(os.environ, ORACLE_LUA=name + ".lua", ORACLE_TIMEOUT="300")
     subprocess.run(
-        [os.path.join(HERE, "../oracle/oracle-slot"), "python3", "dump.py", name + ".jsonl", nki],
+        # The slot goes to stderr: a broken slot reads every result as -1000000.
+        [os.path.join(HERE, "../oracle/oracle-slot"), "bash", "-c",
+         'echo "oracle slot $ORACLE_SLOT" >&2; exec python3 dump.py "$@"', "-", name + ".jsonl", nki],
         cwd=HERE,
         env=env,
         check=False,
@@ -103,6 +122,11 @@ def main():
             print(f"{label}\tmissing")
             continue
         print(f"{label}\t{sum(d * 100 ** i for i, d in enumerate(digits)) - OFFSET}")
+    if texts:
+        # save_array_str: a header line, then one element per line.
+        saved = open(nka, encoding="latin-1").read().replace("\r", "").split("\n")[1:] if os.path.exists(nka) else []
+        for k, label in enumerate(texts):
+            print(f"{label}\t{saved[k] if k < len(saved) else 'missing'}")
 
 
 if __name__ == "__main__":
