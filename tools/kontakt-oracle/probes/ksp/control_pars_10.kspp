@@ -1,0 +1,31 @@
+# Kontakt 8.13, after control_pars_6 (move_control with a coordinate <= 0 keeps the position and
+# sets $CONTROL_PAR_HIDE to $HIDE_WHOLE_CONTROL): whether a later move_control, or a HIDE write,
+# shows the control again, and whether a hide part survives.
+# Run: ksp_probe.py "ANALOG STRINGS.nki" this-file > control_pars_10.measured
+# KONTRA replays it: crates/app/host/tests/oracle_probes.rs.
+R one 1
+S declare ui_knob $a(0, 100, 1)
+S declare ui_knob $b(0, 100, 1)
+S declare ui_knob $c(0, 100, 1)
+S declare ui_knob $d(0, 100, 1)
+S move_control($a, 0, 0)
+S move_control($a, 2, 3)
+R a_hide get_control_par(get_ui_id($a), $CONTROL_PAR_HIDE)
+R a_grid_x get_control_par(get_ui_id($a), $CONTROL_PAR_GRID_X)
+R a_pos_y get_control_par(get_ui_id($a), $CONTROL_PAR_POS_Y)
+S set_control_par(get_ui_id($b), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)
+S move_control($b, 2, 3)
+R b_hide get_control_par(get_ui_id($b), $CONTROL_PAR_HIDE)
+S set_control_par(get_ui_id($c), $CONTROL_PAR_HIDE, $HIDE_PART_BG)
+S move_control($c, 0, 0)
+R c_hide get_control_par(get_ui_id($c), $CONTROL_PAR_HIDE)
+S move_control($c, 1, 1)
+R c_hide_back get_control_par(get_ui_id($c), $CONTROL_PAR_HIDE)
+S move_control($d, 3, 2)
+S set_control_par(get_ui_id($d), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)
+S set_control_par(get_ui_id($d), $CONTROL_PAR_HIDE, $HIDE_PART_NOTHING)
+R d_hide get_control_par(get_ui_id($d), $CONTROL_PAR_HIDE)
+S move_control_px($d, 0, 0)
+R d_px0_hide get_control_par(get_ui_id($d), $CONTROL_PAR_HIDE)
+R d_px0_pos_x get_control_par(get_ui_id($d), $CONTROL_PAR_POS_X)
+R d_px0_grid_x get_control_par(get_ui_id($d), $CONTROL_PAR_GRID_X)

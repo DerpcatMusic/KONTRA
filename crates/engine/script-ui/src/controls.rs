@@ -9,7 +9,7 @@
 //! as an argument. Other parameters (hide, picture state, range) are kept per
 //! control as the script sets them.
 
-use kontra_vm::{Action, HostCall, HostValue};
+use kontra_vm::{Action, HostCall, HostValue, Text};
 
 use crate::{LookPars, Store};
 
@@ -51,6 +51,12 @@ pub struct Controls {
     /// Parameters that read something other than 0 before their script sets
     /// them, or that do not keep every write as written.
     pub laws: Vec<ParLaw>,
+    /// By UI id, each control's name without its type mark, what
+    /// `$CONTROL_PAR_IDENTIFIER` reads; empty for a variable.
+    pub names: Vec<Box<str>>,
+    /// Text parameters that read the control's name until its script sets
+    /// them, by control-type constant (0: every type).
+    pub named: Vec<(i32, u8)>,
 }
 
 /// What parameter `par` of a control of type `kind` (a control-type constant;
@@ -129,6 +135,15 @@ impl Controls {
     fn law(&self, n: usize, par: i32) -> Option<&ParLaw> {
         let kind = self.kinds.get(n).copied().filter(|&k| k != 0)?;
         (self.laws.iter()).find(|l| l.par == par && (l.kind == kind || l.kind == 0))
+    }
+
+    /// The name control `n` reads for text parameter `par` until set.
+    fn named(&self, n: usize, par: i32) -> Option<&str> {
+        let kind = self.kinds.get(n).copied().filter(|&k| k != 0)?;
+        (self.named.iter())
+            .any(|&(p, k)| p == par && (k == kind || k == 0))
+            .then(|| self.names.get(n).map(|s| &**s))
+            .flatten()
     }
 
     /// Index of the control with UI id `id`.
@@ -302,10 +317,12 @@ impl Store {
                 let look = &c.look;
                 // A grid size sizes the control in 92 by 21 cells; a pixel
                 // size leaves it (control_pars_4: a label's 3 by 2 cells read
-                // 276 by 42, a 200 px label grid width 1).
+                // 276 by 42, a 200 px label grid width 1); 0 and below size
+                // one cell (control_pars_6).
                 let sizes = [(look.grid_width, 1, 92), (look.grid_height, 2, 21)];
                 if let Some(&(_, at, pitch)) = sizes.iter().find(|s| s.0 == par) {
                     let px = c.shape_pars.get(at).copied().unwrap_or(i32::MIN);
+                    let value = value.max(1);
                     self.keep(slot, n, par, value);
                     self.keep(slot, n, px, value.saturating_mul(pitch));
                     return;
@@ -377,6 +394,27 @@ impl Store {
         let look: &LookPars = &c.look;
         // A menu selects its first entry as it gets it (Kontakt 8.13 oracle).
         let first = call.action == Action::AddMenuItem && self.menu(slot, n).is_empty();
+        match call.action {
+            Action::GetControlParStr => {
+                let set = n.is_some_and(|n| self.texts(slot, n).iter().any(|t| t.0 == a));
+                if let Some(name) = n.filter(|_| !set).and_then(|n| c.named(n, a)) {
+                    *call.text_out = Text::from_str_cut(name).0;
+                    return Some(HostValue::Text);
+                }
+            }
+            // A file selector keeps a path under its basepath (reference
+            // manual); with none set, the reference ignores it (control_pars_7).
+            Action::SetControlParStr if a == look.filepath => {
+                let path = call.texts.first().map_or("", Text::as_str);
+                let base =
+                    n.and_then(|n| self.texts(slot, n).iter().find(|t| t.0 == look.basepath));
+                if !base.is_some_and(|b| !b.1.as_str().is_empty() && path.starts_with(b.1.as_str()))
+                {
+                    return Some(HostValue::Nothing);
+                }
+            }
+            _ => {}
+        }
         if let Some(value) = self.call(slot, n, Some(look), call) {
             if first && !self.menu(slot, n).is_empty() {
                 self.set_control_par(c, slot, call.cells, id, c.value_par, 0);
@@ -413,21 +451,32 @@ impl Store {
             Action::AttachZone => &[(look.wf_zone, a), (look.wf_flags, b)],
             Action::SetUiWfProperty if a == look.wf_prop_cursor => &[(look.wf_cursor, int(3))],
             Action::SetUiWfProperty if a == look.wf_prop_flags => &[(look.wf_flags, int(3))],
-            // The position reads back on Kontakt's grid without the first
-            // cell's corner, -1 when (0, 0) hides it (Kontakt 8 oracle,
-            // The UI geometry tool page: (3, 2) reads 184, 21). Stored as
-            // is: a cell set through `set_control_par` follows another law.
-            // ponytail: one of x, y at 0 reads -1 too; only (0, 0) probed.
+            // Cells from 1 move the control and show it: the position reads
+            // back on the reference grid without the first cell's corner
+            // ((3, 2) reads 184, 21; the UI geometry tool page). A cell below 1
+            // leaves the position and hides the whole control; hide parts
+            // stay (control_pars_6, control_pars_10).
             Action::MoveControl => {
+                let Some(n) = n else {
+                    return Some(HostValue::Nothing);
+                };
+                let hide = self
+                    .pars(slot, n)
+                    .iter()
+                    .find(|p| p.0 == look.hide)
+                    .map_or(0, |p| p.1);
+                if a < 1 || b < 1 {
+                    self.keep(slot, n, look.hide, hide | HIDE_WHOLE_CONTROL);
+                    return Some(HostValue::Nothing);
+                }
                 for (par, value) in [
                     (look.grid_x, a),
                     (look.grid_y, b),
                     (look.pos_x, grid_pos(a, 92)),
                     (look.pos_y, grid_pos(b, 21)),
+                    (look.hide, hide & !HIDE_WHOLE_CONTROL),
                 ] {
-                    if let Some(n) = n {
-                        self.keep(slot, n, par, value);
-                    }
+                    self.keep(slot, n, par, value);
                 }
                 return Some(HostValue::Nothing);
             }
@@ -441,11 +490,10 @@ impl Store {
     }
 }
 
-/// Where grid cell `cell` (from 1) of `pitch` reads; -1 off the grid.
+/// `$HIDE_WHOLE_CONTROL`, the bit `move_control` sets and clears.
+const HIDE_WHOLE_CONTROL: i32 = 16;
+
+/// Where grid cell `cell` (from 1) of `pitch` reads.
 fn grid_pos(cell: i32, pitch: i32) -> i32 {
-    if cell >= 1 {
-        (cell - 1).saturating_mul(pitch)
-    } else {
-        -1
-    }
+    (cell - 1).saturating_mul(pitch)
 }

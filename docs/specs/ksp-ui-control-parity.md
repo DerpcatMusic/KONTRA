@@ -28,7 +28,7 @@ evidence_freshness_days: 180
 
 | Standard / Vendor API | Pinned Version / Spec Rev | Primary-Source URL | Verified Date | Key Invariants / Deprecations Checked |
 |---|---|---|---|---|
-| Kontakt KSP `get_control_par` / `set_control_par` | Kontakt 8.13 (Wine oracle) | https://www.native-instruments.com/fileadmin/ni_media/downloads/manuals/kontakt/KSP_Reference_Manual.pdf | 2026-11-25 | measured reads/writes in `tools/kontakt-oracle/probes/ksp/control_pars_{1..5}.measured` (`ksp_probe.py`, `ANALOG STRINGS.nki`); par names and documented ranges from the manual |
+| Kontakt KSP `get_control_par` / `set_control_par` | Kontakt 8.13 (Wine oracle) | https://www.native-instruments.com/fileadmin/ni_media/downloads/manuals/kontakt/KSP_Reference_Manual.pdf | 2026-11-25 | measured reads/writes in `tools/kontakt-oracle/probes/ksp/control_pars_{1..10}.measured` (`ksp_probe.py`, `ANALOG STRINGS.nki`); par names and documented ranges from the manual |
 
 ## Pinned Crate & SDK Ground Truth
 
@@ -44,10 +44,15 @@ evidence_freshness_days: 180
 - Laws apply only to controls; a variable id (kind 0) stores as before.
 - The face still reads GRID_X/Y as 1-based cells and pixel sizes it was given.
 
+- Text pars read the control's declared name where Kontakt does (`NAMED`:
+  IDENTIFIER on every type; TEXT on knob, button, switch, label and value
+  edit; AUTOMATION_NAME on a knob), until the script sets them.
+- `move_control` with a cell below 1 keeps the position and sets
+  `$HIDE_WHOLE_CONTROL`; cells from 1 move the control and clear that bit,
+  leaving hide parts.
+
 ### Non-Goals
-- String pars (LABEL, HELP, IDENTIFIER, …): KSP cannot measure string
-  length, so they need the ksp-ui trace (next batch).
-- Mouse/drag/wheel behaviour and drawing.
+- Mouse/drag/wheel behaviour and drawing (next batches).
 
 ## API / Data / File Contract
 
@@ -58,6 +63,9 @@ evidence_freshness_days: 180
   `.measured` file and compares each value. Lines marked `unstable` are not
   compared.
 - `tools/ksp-manual-coverage.py` counts a measured `.kspp` as test text.
+- `ksp_probe.py`: `T <label> <expr>` records a string (saved with
+  `save_array_str`, printed verbatim); `ORACLE_PROBE_NKR` lends the
+  instrument a resource container; stderr names the oracle slot.
 
 ## Tasks
 
@@ -70,18 +78,25 @@ evidence_freshness_days: 180
 | Check | Tier | Target / OS | Exact Command | Pass Criterion | Status / Observed Evidence |
 |---|---|---|---|---|---|
 | Spec proof gate | Doc | any | `python3 tools/check-spec-proof.py plugins/kontra/docs/specs/ksp-ui-control-parity.md` | Exit 0 | PASS (2026-11-25, linux-x86_64) |
-| Oracle replay | Validator/Runtime | linux-x86_64 | `matari fast kontra -p kontra-host -- -E 'test(every_measured_probe_reads_as_kontakt_measured)'` | 181 values match, 9 unstable skipped | PASS (2026-11-25, linux-x86_64) |
+| Oracle replay | Validator/Runtime | linux-x86_64 | `matari fast kontra -p kontra-host -- -E 'test(every_measured_probe_reads_as_kontakt_measured)'` | 282 values match, 9 unstable skipped | PASS (2026-11-25, linux-x86_64) |
 | Host tests | Compile/ABI | linux-x86_64 | `matari fast kontra -p kontra-host` | Exit 0 | PASS (2026-11-25, linux-x86_64) |
 | Probes compile | Compile/ABI | linux-x86_64 | `matari fast kontra -p kontra-ksp -- -E 'test(every_oracle_probe_compiles)'` | Exit 0 | PASS (2026-11-25, linux-x86_64) |
 | Full PR verification gate | Validator/Runtime | linux-x86_64 | CI `verify` | Green | PENDING |
 
 ## Unverified Boundaries & Promotion Gate
 
-- Knob WIDTH/HEIGHT read 87/18 whatever was written; measured only on a knob
-  without a picture. A knob with a picture may read its written size.
+- Knob WIDTH/HEIGHT read 87/18 with or without a picture (control_pars_9,
+  `kp_knob` lent through `ORACLE_PROBE_NKR`). The probe cannot see whether
+  the lent picture resolved; a shot of it would.
 - An untouched wavetable's WAVE_END_COLOR/ALPHA read uninitialised memory
   (different across runs); those 9 lines are `unstable`, and KONTRA reads
   the inherited value.
-- `move_control` with one coordinate 0 and the other non-zero, and grid
-  sizes 0 or negative, are not measured.
-- String pars are not measured.
+- FILEPATH writes are kept only under a non-empty BASEPATH, by prefix. Only
+  the no-basepath case is measured; case and separator rules under a
+  basepath are not.
+- A label's TEXT reads its last line after `add_text_line` (control_pars_7).
+  Whether a button or a knob does the same is not measured.
+- `$CONTROL_PAR_NONE`, `_DND_BEHAVIOUR` and `_MIDI_EXPORT_AREA_IDX` measured
+  0, 40 and 105; KONTRA keeps CONTROL_PAR constants opaque.
+- `$CONTROL_PAR_WAVETABLE` in the coverage report is a wrapped table row of
+  the manual (`_END_COLOR`), not a parameter.

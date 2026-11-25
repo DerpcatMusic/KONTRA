@@ -140,8 +140,10 @@ pub struct LookPars {
     /// The `set_ui_wf_property` properties for the cursor and the flags.
     pub wf_prop_cursor: i32,
     pub wf_prop_flags: i32,
-    /// `$CONTROL_PAR_FILEPATH`: the file a file selector picked last.
+    /// `$CONTROL_PAR_FILEPATH`: the file a file selector picked last, and
+    /// `$CONTROL_PAR_BASEPATH`, the folder it may pick under.
     pub filepath: i32,
+    pub basepath: i32,
     /// The UI ids that address the instrument's wallpaper and icon.
     pub wallpaper: i32,
     pub icon: i32,
@@ -673,7 +675,14 @@ impl Store {
                 let found = n
                     .and_then(|n| self.texts(slot, n).iter().find(|(p, _)| *p == par))
                     .map_or(Text::EMPTY, |&(_, t)| t);
-                out(found)
+                // A label's text reads its last line (control_pars_7: "one"
+                // then add_text_line "two" reads "two").
+                match found.as_str().rsplit_once('\n') {
+                    Some((_, last)) if look.is_some_and(|l| l.text == par) => {
+                        out(Text::from_str_cut(last).0)
+                    }
+                    _ => out(found),
+                }
             }
             Action::SetKeyColor
             | Action::SetKeyType

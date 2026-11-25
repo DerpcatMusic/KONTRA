@@ -1,0 +1,31 @@
+one	1
+knob_label	
+knob_text	kn
+knob_help	
+knob_short	
+knob_ident	kn
+knob_auto_name	kn
+knob_picture	
+button_text	bt
+button_label	
+switch_text	sw
+switch_ident	sw
+label_text	lb
+menu_ident	mn
+slider_short	
+vedit_text	ve
+fs_filepath	
+fs_basepath	
+te_text	
+knob_label_set	lab
+knob_label_cmd	kl
+knob_text_cmd	kn
+knob_help_set	help me
+knob_short_set	sn
+slider_auto_set	an
+label_set_text	one
+label_add_line	two
+button_set_text	press
+switch_text_set	sw on
+fs_filepath_set	
+knob_text_set	tx
