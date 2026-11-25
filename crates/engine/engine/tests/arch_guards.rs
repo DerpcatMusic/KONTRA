@@ -352,11 +352,11 @@ fn uvi_effects_load_through_their_module_tables() {
         "a UVI effect grew a second builder beside its UviModule"
     );
     // 6,966 on b19c21ca3, 6,613 after the tables (06-FORMATS.md §3), 6,607
-    // on c63dea078, 6,609 with the mono pan law.
+    // on c63dea078, 6,609 with the mono pan law, 6,619 with bank folder links (#258).
     let lines: usize = files.iter().map(|p| production_lines(p)).sum();
     assert!(
-        lines <= 6_609,
-        "format/uvi code lines rose to {lines}; ratchet is 6,609"
+        lines <= 6_619,
+        "format/uvi code lines rose to {lines}; ratchet is 6,619"
     );
 }
 
