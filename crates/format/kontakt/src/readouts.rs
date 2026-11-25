@@ -20,9 +20,11 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
     };
     use kontra_law::FormulaId::{
         BassProGainDb, BassProGeqDb, BassProGeqVolumeDb, BassProMasterDb, BassProMidDb, BiteBits,
-        BiteFrequencyHz, ChoralRateHz, FlairRateHz, FreakBandPassHz, FreakCarrierHz,
-        FreakFrequencyHz, PhasisCenterHz, PhasisRateHz, PsycheDetuneCents, PsychePitchSemitones,
-        RaumDecayMs, RaumRateHz, RotatorFast, RotatorMixDb, TwinDelayTimeMs,
+        BiteFrequencyHz, BusCompMakeupDb, BusCompThresholdDb, ChoralRateHz, FlairRateHz,
+        FreakBandPassHz, FreakCarrierHz, FreakFrequencyHz, PhasisCenterHz, PhasisRateHz,
+        PsycheDetuneCents, PsychePitchSemitones, RaumDecayMs, RaumRateHz, RotatorFast,
+        RotatorMixDb, SolidEqHfHz, SolidEqHmfHz, SolidEqLfHz, SolidEqLmfHz, SolidEqQ,
+        TwinDelayTimeMs,
     };
     let lin = |lo, hi| ir::Law::Linear { lo, hi };
     let exp = |lo, hi| ir::Law::Exp { lo, hi };
@@ -65,6 +67,14 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
         "$ENGINE_PAR_JMP_BASS",
         "$ENGINE_PAR_JMP_MID",
         "$ENGINE_PAR_JMP_TREBLE",
+        "$ENGINE_PAR_FILTER_BYPA",
+        "$ENGINE_PAR_FILTER_BYPB",
+        "$ENGINE_PAR_FILTER_BYPC",
+        "$ENGINE_PAR_FILTER_RESB",
+        "$ENGINE_PAR_FILTER_RESC",
+        "$ENGINE_PAR_FORMANT_TALK",
+        "$ENGINE_PAR_FORMANT_SHARP",
+        "$ENGINE_PAR_FORMANT_SIZE",
     ];
     let none = [None; 2];
     let mut rows: Vec<_> = percent
@@ -75,6 +85,46 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
         // MIDI note 0 (8.176 Hz) to note 145, a semitone per 1/145.
         ("$ENGINE_PAR_CUTOFF", exp(8.176, 35_485.0), Padded, none),
         ("$ENGINE_PAR_SHAPE", lin(-100.0, 100.0), Decimal, none),
+        // Filter: Gain `60·x − 30`, Shift `80·x` and Type
+        // `x`, all `%3.1f`; EQ bandwidth `0.33333334 + 2.6666667·x`
+        // through the `k` formatter [ref].
+        ("$ENGINE_PAR_FILTER_GAIN", lin(-30.0, 30.0), Decimal, none),
+        ("$ENGINE_PAR_FILTER_SHIFTB", lin(0.0, 80.0), Decimal, none),
+        ("$ENGINE_PAR_FILTER_SHIFTC", lin(0.0, 80.0), Decimal, none),
+        ("$ENGINE_PAR_FILTER_TYPEA", lin(0.0, 1.0), Decimal, none),
+        ("$ENGINE_PAR_FILTER_TYPEB", lin(0.0, 1.0), Decimal, none),
+        ("$ENGINE_PAR_FILTER_TYPEC", lin(0.0, 1.0), Decimal, none),
+        ("$ENGINE_PAR_BW1", lin(0.333_333_34, 3.0), Padded, none),
+        ("$ENGINE_PAR_BW2", lin(0.333_333_34, 3.0), Padded, none),
+        ("$ENGINE_PAR_BW3", lin(0.333_333_34, 3.0), Padded, none),
+        // Solid G-EQ: frequencies and Qs through its parameter objects ([ref] →
+        // [ref]) and the `k` formatter.
+        (
+            "$ENGINE_PAR_SEQ_HF_FREQ",
+            formula(SolidEqHfHz),
+            Padded,
+            none,
+        ),
+        (
+            "$ENGINE_PAR_SEQ_HMF_FREQ",
+            formula(SolidEqHmfHz),
+            Padded,
+            none,
+        ),
+        (
+            "$ENGINE_PAR_SEQ_LMF_FREQ",
+            formula(SolidEqLmfHz),
+            Padded,
+            none,
+        ),
+        (
+            "$ENGINE_PAR_SEQ_LF_FREQ",
+            formula(SolidEqLfHz),
+            Padded,
+            none,
+        ),
+        ("$ENGINE_PAR_SEQ_HMF_Q", formula(SolidEqQ), Padded, none),
+        ("$ENGINE_PAR_SEQ_LMF_Q", formula(SolidEqQ), Padded, none),
         (
             "$ENGINE_PAR_STEREO",
             lin(-100.0, 100.0),
@@ -119,17 +169,20 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
         ),
         ("$ENGINE_PAR_FCOMP_RATIO", lin(1.0, 20.0), Padded, none),
         ("$ENGINE_PAR_FCOMP_MIX", lin(0.0, 100.0), Padded, none),
-        // Bus Compressor: lines and six-entry menus, as a 101-point sweep reads them (its
-        // converter [ref] goes through a parameter object not read yet).
+        // Bus Compressor: its levels through a parameter object ([ref] →
+        // [ref]), its menus six entries picked by `floor(6x)` (a 101-point sweep).
         (
             "$ENGINE_PAR_SCOMP_THRESHOLD",
-            lin(-20.0, 20.0),
+            formula(BusCompThresholdDb),
             Padded,
             none,
         ),
-        // Makeup is −5..20 dB but rounds the other way at 1, 3.25 and 3.75 (the reference
-        // prints "1.00", "3.3", "3.7"): the object's own arithmetic, still pending.
-        ("$ENGINE_PAR_SCOMP_MAKEUP", lin(-5.0, 20.0), Padded, none),
+        (
+            "$ENGINE_PAR_SCOMP_MAKEUP",
+            formula(BusCompMakeupDb),
+            Padded,
+            none,
+        ),
         (
             "$ENGINE_PAR_SCOMP_RATIO",
             lin(0.0, 1.0),

@@ -3,7 +3,8 @@
 
     disp_sweep.py OUT.tsv [--points N] TYPE:PAR,PAR,... [TYPE:PAR,...]...
 
-TYPE is an `$EFFECT_TYPE_*` name without the prefix (RAUM, REPLIKA, ...),
+TYPE is an `$EFFECT_TYPE_*` name without the prefix (RAUM, REPLIKA, ...), or
+TYPE/SUB to set its subtype too (FILTER/EQ3BAND sets `$FILTER_TYPE_EQ3BAND`),
 loaded into instrument insert slot n in argument order (up to 8); PARs are
 full `$ENGINE_PAR_*` names without `$ENGINE_PAR_` (BASSPRO_GAIN, not GAIN),
 from the KSP manual. An unknown name is a silent KSP compile error in Kontakt;
@@ -29,7 +30,9 @@ def ksp(specs, nka, ran, X):
         f"    set_engine_par($p, %x[$i], -1, {s}, 1)\n"
         f"    !out[$j] := get_engine_par_disp($p, -1, {s}, 1)\n    inc($j)\n    inc($i)\n  end while\n"
         for s, (_, pars) in enumerate(specs) for p in pars)
-    loads = "".join(f"    set_engine_par($ENGINE_PAR_EFFECT_TYPE, $EFFECT_TYPE_{t}, -1, {s}, 1)\n"
+    loads = "".join(f"    set_engine_par($ENGINE_PAR_EFFECT_TYPE, $EFFECT_TYPE_{t.split('/')[0]}, -1, {s}, 1)\n"
+                    + "".join(f"    set_engine_par($ENGINE_PAR_EFFECT_SUBTYPE, ${t.split('/')[0]}_TYPE_{sub}, -1, {s}, 1)\n"
+                              for sub in t.split("/")[1:])
                     for s, (t, _) in enumerate(specs))
     return (f"on init\n  pgs_create_key(READ, 1)\n  declare $tick := 0\n  declare $i\n  declare $j\n  declare $p\n"
             f"  declare %x[{len(X)}] := ({', '.join(map(str, X))})\n  declare !out[{cells}]\n"
