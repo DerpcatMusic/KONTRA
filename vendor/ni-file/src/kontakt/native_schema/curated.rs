@@ -48,14 +48,77 @@ pub(super) static CURATED_PROGRAMS: &[ProgramSrc] = &[
 (throw native-throw)
 (ret)",
     },
+    // BInsertBus public reader: vtable 0x144e980c0 slot 10 (installed at +0x10 by the
+    // constructor FUN_1407f7680; id 0x45 from slot 1, current version 0x12 from slot 2).
+    // Its private reader (slot 11, FUN_140d095e0) checks the version and reads nothing.
+    ProgramSrc {
+        name: "FUN_140d0d300",
+        params: &["param_1", "param_2", "param_3", "param_4"],
+        frame: 32,
+        ops: "\
+(br (== param_3 1) L1)
+(jmp L4)
+(label L4)
+(br (== param_3 16) L1)
+(jmp L2)
+(label L1)
+(call FUN_140cfbaf0 t1 (param_2 (+ param_1 48) param_4))
+(set uVar2 (rd F))
+(st 4 (+ param_1 20) uVar2)
+(set uVar2 (rd F))
+(st 4 (+ param_1 24) uVar2)
+(ret)
+(label L2)
+(br (== param_3 17) L5)
+(jmp L6)
+(label L5)
+(call FUN_140cfbaf0 t4 (param_2 (+ param_1 48) param_4))
+(set uVar2 (rd F))
+(st 4 (+ param_1 20) uVar2)
+(set uVar2 (rd F))
+(st 4 (+ param_1 24) uVar2)
+(set uVar2 (rd I))
+(st 4 (+ param_1 92) uVar2)
+(ret)
+(label L6)
+(br (== param_3 18) L8)
+(jmp L9)
+(label L8)
+(call FUN_140cfbaf0 t8 (param_2 (+ param_1 48) param_4))
+(set uVar2 (rd F))
+(st 4 (+ param_1 20) uVar2)
+(set uVar2 (rd F))
+(st 4 (+ param_1 24) uVar2)
+(set uVar2 (rd I))
+(st 4 (+ param_1 92) uVar2)
+(set uVar1 (rd B))
+(st 1 (+ param_1 28) uVar1)
+(set uVar1 (rd B))
+(st 1 (+ param_1 29) uVar1)
+(ret)
+(label L9)
+(throw native-throw)
+(ret)",
+    },
 ];
 
-pub(super) static CURATED_READERS: &[ReaderSrc] = &[ReaderSrc {
-    sertype: 0x07,
-    class: "BParEnv",
-    program: "FUN_140d0d420",
-    current: 0x90,
-    versions: &[(0x90, 0x90)],
-    element: 0,
-    status: "typed",
-}];
+pub(super) static CURATED_READERS: &[ReaderSrc] = &[
+    ReaderSrc {
+        sertype: 0x07,
+        class: "BParEnv",
+        program: "FUN_140d0d420",
+        current: 0x90,
+        versions: &[(0x90, 0x90)],
+        element: 0,
+        status: "typed",
+    },
+    ReaderSrc {
+        sertype: 0x45,
+        class: "BInsertBus",
+        program: "FUN_140d0d300",
+        current: 0x12,
+        versions: &[(0x01, 0x01), (0x10, 0x12)],
+        element: 0,
+        status: "typed",
+    },
+];
