@@ -339,3 +339,46 @@ data.
 
 Next: per-class children readers (slot 12) for 0x35, 0x38 and 0x39 and the
 BGroup v0x95 trailing bytes; then FNTableImpl and SlotList; then Program and Bank.
+
+## Batch 8: loops and automation lists
+
+**LoopArray (0x39).** A BZone child that BZone's children reader FUN_140d06a30
+reads with FUN_140cf10e0 from the chunk header on: id 0x39, length, an 8-bit
+mask, then each present loop's flag, version and body. The elements (BZone
++0x7C8) are built by FUN_1407b0490, which installs vtable 0x144e91240: BLoop,
+id 0x05, version 0x60, flag 0, inline reader FUN_140cff510. It is now a
+`CURATED_UNFRAMED` record, and a child chunk of such a record decodes with it.
+
+**BGroup v0x95 trailing bytes.** FUN_140cefcf0 reads the automation list: a size
+the array is resized to (FUN_14073c3a0), a count, then each element's flag,
+version and body. Both callers pass a BHeapArray<BAutomationObject> (BGroup's
+private reader at +0xD0; FUN_140d0a2c0 at +0x1CED0), so the elements are
+BAutomationObject (0x01, inline reader FUN_140cfec70). The element class was
+unnamed, so the search took the branch that reads no element, leaving the 50
+bytes of one automation object (v0x71) unread. Named in `BODIES`, all 100 such
+groups in unencrypted files read exactly.
+
+| | Full | Partial | Unaccounted bytes |
+| --- | ---: | ---: | ---: |
+| Before (f158515c7) | 18461678 | 4874 | 2860553954 |
+| After | 18461678 | 4874 | 2809108471 |
+
+- 0x34 → 0x39: 51251283 → 0.
+- 0x33 → 0x04 trailing: 194200 → 0.
+
+**Still unread:**
+
+- **0x35 (541843820 bytes, every ZoneList):** the zone's sample object. BZone's
+  children reader reads it only when the public reader's byte at +0x9F8 is set.
+  If the zone holds no sample object (+0x98, set by FUN_140820ea0 when a sample
+  loads), FUN_140d1ecf0 reads the header (id 0x35, length) and skips the body.
+  Otherwise FUN_14093d6c0 reads it with that object's reader, then
+  FUN_14094fcf0 reads a table. Which branch Kontakt takes depends on host
+  state, and the sample class and its reader are not identified yet. Note that
+  0x144f160c0, the only table naming id 0x35, is a descriptor of
+  function-pointer getters, not the object's vtable.
+- **0x38 StartCriteriaList (206184 bytes):** read only inline by BGroup's
+  children reader FUN_140d056a0, each element through its own virtual reader.
+  This needs per-class children readers (slot 12) in the VM.
+
+Next: FNTableImpl and SlotList; then Program and Bank.

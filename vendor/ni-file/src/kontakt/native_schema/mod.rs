@@ -60,6 +60,30 @@ mod tests {
         );
     }
 
+    /// curated.rs LoopArray (FUN_140cf10e0): an 8-bit mask, then per present BLoop (0x05)
+    /// its flag 0, version 0x60 and inline body, from the chunk header on.
+    #[test]
+    fn curated_loop_array_reads_present_loops() {
+        let mut lp = vec![0u8];
+        lp.extend(0x60u16.to_le_bytes());
+        lp.extend(synthesize(0x05, 0x60).unwrap());
+        for mask in [0u8, 0b1, 0b1010_0001] {
+            let mut body = vec![mask];
+            for _ in 0..mask.count_ones() {
+                body.extend(&lp);
+            }
+            let d = decode_unframed(0x39, &body).unwrap();
+            assert_eq!(
+                (d.consumed, d.opaque.len()),
+                (body.len() + 6, 0),
+                "{mask:#b}"
+            );
+            if mask != 0 {
+                assert!(decode_unframed(0x39, &body[..body.len() - 1]).is_err());
+            }
+        }
+    }
+
     /// Kontakt's string reads take any length: a BParScript v0x60 whose source is longer
     /// than 16 MiB (152 saved presets hold one of 19264696 bytes) reads in full.
     #[test]

@@ -5055,6 +5055,20 @@ pub(super) static CURATED_UNFRAMED: &[ReaderSrc] = &[
         element: 0x04,
         status: "typed",
     },
+    // LoopArray (0x39), a BZone child: its children reader FUN_140d06a30 reads it with
+    // FUN_140cf10e0 from the chunk header on (id 0x39, length, an 8-bit mask, then each
+    // present loop's flag, version and body). The elements at BZone +0x7C8 are built by
+    // FUN_1407b0490, which installs vtable 0x144e91240: BLoop (slot 1 returns 0x05, slot 2
+    // 0x60, slot 3 flag 0, an inline body read by slot 8 FUN_140cff510).
+    ReaderSrc {
+        sertype: 0x39,
+        class: "LoopArray",
+        program: "FUN_140cf10e0",
+        current: 0,
+        versions: &[],
+        element: 0x05,
+        status: "typed",
+    },
     ReaderSrc {
         sertype: 0x34,
         class: "ZoneList",
