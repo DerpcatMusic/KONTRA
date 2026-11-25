@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use super::curated::{CURATED_PROGRAMS, CURATED_READERS};
+use super::curated::{CURATED_PRIVATE, CURATED_PROGRAMS, CURATED_READERS, CURATED_UNFRAMED};
 use super::programs::{ProgramSrc, ReaderSrc, PROGRAMS, READERS};
 
 /// The generated programs and the curated ones (curated.rs).
@@ -43,7 +43,12 @@ fn all_readers() -> &'static [&'static ReaderSrc] {
 ///   bodies are BGroupSnapshot (0x50, v1–v4): the hand reader (objects/snapshot.rs) reads them
 ///   as compact group snapshots, and every snapshot in the corpus decodes exactly with it
 ///   (docs/re/NI_FILE_PARITY.md).
-const BODIES: &[(&str, u16)] = &[("FUN_140d1d860", 0x50)];
+/// - `FUN_140cf1330`, called by BZone's private reader (curated.rs) on the member at +0x510:
+///   up to 16 elements, 0x28 bytes apart, present by a bit mask. BZone's constructor
+///   FUN_1407face0 builds them at complete-object slot 0xA4 (+0x520 = +0x10 + 0x510) with
+///   FUN_1407fb000, which installs vtable 0x144e974f0: BZoneLevelEnv (0x2D, catalog
+///   vtable 0x4e974f0), whose slot 8 is its reader FUN_140d04c10 (an inline body).
+const BODIES: &[(&str, u16)] = &[("FUN_140d1d860", 0x50), ("FUN_140cf1330", 0x2d)];
 
 /// Nested objects whose class the stream does not name, by reader call site: (program,
 /// `(rd O)` sites in IR order, SerType).
@@ -55,6 +60,11 @@ const BODIES: &[(&str, u16)] = &[("FUN_140d1d860", 0x50)];
 /// - `FUN_140cff070`, BGroupSnapshot v1 / v2–v3 / v4 (one branch each): the group's FX rack
 ///   (0x3A), its source (0x0E BParSrcMode), its internal (0x3B) and external (0x3C)
 ///   modulator arrays, the order objects/snapshot_group.rs reads.
+/// - `FUN_140d07580`, BGroup's private reader (curated.rs), versions 0x90–0x96 (seven
+///   cases): each reads the member at +0x8B0 then the one at +0xB90 of the serializable
+///   subobject. The constructor FUN_1407f6fc0 installs BParameterArraySer<BParFX, 8> (0x3A)
+///   at complete-object slot 0x118 (+0x8C0 = +0x10 + 0x8B0) and BParSrcMode (0x0E) at slot
+///   0x174 (+0xBA0).
 const OBJECTS: &[(&str, &[u16], u16)] = &[
     ("FUN_140d04600", &[0, 1, 3, 4, 6, 7, 8, 10], 0x3a),
     ("FUN_140d04600", &[2, 5, 9], 0x45),
@@ -62,6 +72,8 @@ const OBJECTS: &[(&str, &[u16], u16)] = &[
     ("FUN_140cff070", &[1, 5, 9], 0x0e),
     ("FUN_140cff070", &[2, 6, 10], 0x3b),
     ("FUN_140cff070", &[3, 7, 11], 0x3c),
+    ("FUN_140d07580", &[0, 2, 4, 6, 8, 10, 12], 0x3a),
+    ("FUN_140d07580", &[1, 3, 5, 7, 9, 11, 13], 0x0e),
 ];
 
 /// Whether the reader of `sertype` reads nested objects these tables name (beyond what the
@@ -73,6 +85,14 @@ pub(super) fn names_nested(sertype: u16) -> bool {
                 || BODIES.iter().any(|(at, _)| *at == r.program))
     })
 }
+
+/// Classes whose vtable slot 8 (the body read `(rdbody ..)` calls after the flag and version)
+/// is the framed read 0x140756e50: private, public and children areas, each u32-length
+/// framed, dispatched to slots 11, 10 and 12. Slot 8 of each vtable, Kontakt 8.13.1:
+/// BGroup 0x04 (0x144e97ab0), BParEnv 0x07 (0x144e749f0), BZone 0x2C (0x144e97560),
+/// BInsertBus 0x45 (0x144e980c0). A class not listed reads its body inline, as
+/// BGroupSnapshot (0x50, slot 8 is its reader 0x140cff070).
+const SLOT8_FRAMED: &[u16] = &[0x04, 0x07, 0x2c, 0x45];
 
 /// Virtual reads the IR leaves as `(callx ..)`, proven from the vtable the constructor
 /// installs: (program, read kind).
@@ -901,6 +921,18 @@ impl<'a> Machine<'a> {
             self.record('O', start, 3, Some(u64::from(ver)));
             return self.run_named(prog, ver, named);
         }
+        self.areas(start, ver, reader, named)
+    }
+
+    /// The three length-framed areas (private, public, children) of an object at `start`
+    /// whose flag and version are read: Kontakt's framed read, vtable slot 8 0x140756e50.
+    fn areas(
+        &mut self,
+        start: usize,
+        ver: u16,
+        reader: Option<(usize, u16, u16)>,
+        named: Option<u16>,
+    ) -> Result<(), Stop> {
         let id = self.record('O', start, 0, Some(u64::from(ver)));
         if let Some(data) = self.stream.data {
             let mut areas = Vec::new();
@@ -976,6 +1008,10 @@ impl<'a> Machine<'a> {
         private: (&[u8], usize),
         public: (&[u8], usize),
     ) -> Result<(), Stop> {
+        if has_private_reader(sertype) {
+            self.block(sertype, ver, true, private)?;
+            return self.block(sertype, ver, false, public);
+        }
         let (body, at) = if public.0.is_empty() && !private.0.is_empty() {
             private
         } else {
@@ -987,9 +1023,28 @@ impl<'a> Machine<'a> {
             );
             public
         };
-        // Its framing bounds it, so an object its reader does not decode is opaque bytes
-        // for the census, not a stop for the parent's search (which would replay it).
-        let d = match nested_decode(sertype, ver, body) {
+        self.block(
+            sertype,
+            ver,
+            at == private.1 && !private.0.is_empty(),
+            (body, at),
+        )
+    }
+
+    /// One block of a framed object, decoded with its own search; what it does not decode is
+    /// opaque. Its framing bounds it, so that is opaque bytes for the census, not a stop for
+    /// the parent's search (which would replay it).
+    fn block(
+        &mut self,
+        sertype: u16,
+        ver: u16,
+        private: bool,
+        (body, at): (&[u8], usize),
+    ) -> Result<(), Stop> {
+        if body.is_empty() {
+            return Ok(());
+        }
+        let d = match nested_decode(sertype, ver, private, body) {
             Ok(d) => d,
             Err(e) => {
                 hide(&mut self.opaque, Some(sertype), cause(&e), body.len());
@@ -1291,13 +1346,17 @@ impl<'a> Machine<'a> {
                         Some(sertype) => self.reader_of(sertype),
                         None => self.class_reader(),
                     };
-                    let (prog, _, _) = reader.ok_or_else(|| {
+                    let (prog, sertype, _) = reader.ok_or_else(|| {
                         Stop::Unresolved("embedded object of unknown class".into())
                     })?;
                     let Some((ver, _)) = ver else {
                         return Err(Stop::Unresolved("embedded object version".into()));
                     };
-                    self.run_named(prog, ver as u16, named)?;
+                    if SLOT8_FRAMED.contains(&sertype) {
+                        self.areas(self.stream.pos, ver as u16, reader, named)?;
+                    } else {
+                        self.run_named(prog, ver as u16, named)?;
+                    }
                 }
                 Op::Call(q, dst, a) => {
                     let mut vals = Vec::with_capacity(a.len());
@@ -1326,6 +1385,21 @@ pub(super) fn readers_for(sertype: u16) -> impl Iterator<Item = &'static ReaderS
         .iter()
         .copied()
         .filter(move |r| r.sertype == sertype)
+}
+
+/// The private-block reader curated.rs holds for `sertype`, else its catalog reader.
+fn private_reader_for(sertype: u16, version: u16) -> Option<&'static ReaderSrc> {
+    CURATED_PRIVATE
+        .iter()
+        .find(|r| {
+            r.sertype == sertype && r.versions.iter().any(|&(a, b)| (a..=b).contains(&version))
+        })
+        .or_else(|| reader_for(sertype, version))
+}
+
+/// Whether curated.rs holds a separate private-block reader for `sertype`.
+fn has_private_reader(sertype: u16) -> bool {
+    CURATED_PRIVATE.iter().any(|r| r.sertype == sertype)
 }
 
 fn reader_for(sertype: u16, version: u16) -> Option<&'static ReaderSrc> {
@@ -1438,16 +1512,31 @@ fn next_prefix(c: &Chooser) -> Option<Vec<usize>> {
 ///
 /// Ok means Kontakt's own reader accepts exactly these bytes. The error names what stops it.
 pub fn decode(sertype: u16, version: u16, bytes: &[u8]) -> Result<Decoded, Undecoded> {
-    decode_inner(sertype, version, bytes, true)
+    decode_inner(reader_for(sertype, version), version, bytes, true)
+}
+
+/// Decode a record that is not a serialized object (curated.rs `CURATED_UNFRAMED`), from its
+/// chunk header (u16 id, u32 length) on, as Kontakt reads it.
+pub fn decode_unframed(id: u16, data: &[u8]) -> Result<Decoded, Undecoded> {
+    let reader = CURATED_UNFRAMED.iter().find(|r| r.sertype == id);
+    let len = u32::try_from(data.len()).map_err(|_| Undecoded::Rejected)?;
+    let chunk = [&id.to_le_bytes()[..], &len.to_le_bytes(), data].concat();
+    decode_inner(reader, 0, &chunk, true)
+}
+
+/// [`decode`] of an object's private block: with its private reader where curated.rs has
+/// one (Kontakt reads the two blocks with separate readers), else the catalog reader.
+pub fn decode_private(sertype: u16, version: u16, bytes: &[u8]) -> Result<Decoded, Undecoded> {
+    decode_inner(private_reader_for(sertype, version), version, bytes, true)
 }
 
 /// Like [`decode`] but the object may be followed by other data: `consumed` says how much
 /// Kontakt's reader took. For readers embedded in a larger record.
 pub fn decode_prefix(sertype: u16, version: u16, bytes: &[u8]) -> Result<Decoded, Undecoded> {
-    decode_inner(sertype, version, bytes, false)
+    decode_inner(reader_for(sertype, version), version, bytes, false)
 }
 
-type NestedKey = (u16, u16, usize, usize);
+type NestedKey = (u16, u16, bool, usize, usize);
 /// Decode depth, and the nested decodes memoized at it.
 type Memo = (u32, HashMap<NestedKey, Result<Decoded, Undecoded>>);
 
@@ -1459,24 +1548,40 @@ std::thread_local! {
 }
 
 /// [`decode`] of an object nested in the stream being decoded, memoized by where it lies.
-fn nested_decode(sertype: u16, version: u16, bytes: &[u8]) -> Result<Decoded, Undecoded> {
-    let key = (sertype, version, bytes.as_ptr() as usize, bytes.len());
+fn nested_decode(
+    sertype: u16,
+    version: u16,
+    private: bool,
+    bytes: &[u8],
+) -> Result<Decoded, Undecoded> {
+    let key = (
+        sertype,
+        version,
+        private,
+        bytes.as_ptr() as usize,
+        bytes.len(),
+    );
     if let Some(hit) = DECODED.with(|n| n.borrow().1.get(&key).cloned()) {
         return hit;
     }
-    let r = decode(sertype, version, bytes);
+    let r = if private {
+        decode_private(sertype, version, bytes)
+    } else {
+        decode(sertype, version, bytes)
+    };
     DECODED.with(|n| n.borrow_mut().1.insert(key, r.clone()));
     r
 }
 
 fn decode_inner(
-    sertype: u16,
+    reader: Option<&'static ReaderSrc>,
     version: u16,
     bytes: &[u8],
     exact: bool,
 ) -> Result<Decoded, Undecoded> {
+    let reader = reader.ok_or(Undecoded::NoReader)?;
     DECODED.with(|n| n.borrow_mut().0 += 1);
-    let r = decode_search(sertype, version, bytes, exact);
+    let r = decode_search(reader, version, bytes, exact);
     DECODED.with(|n| {
         let mut n = n.borrow_mut();
         n.0 -= 1;
@@ -1488,12 +1593,11 @@ fn decode_inner(
 }
 
 fn decode_search(
-    sertype: u16,
+    r: &'static ReaderSrc,
     version: u16,
     bytes: &[u8],
     exact: bool,
 ) -> Result<Decoded, Undecoded> {
-    let r = reader_for(sertype, version).ok_or(Undecoded::NoReader)?;
     let mut prefix = Vec::new();
     let mut worst: Option<Undecoded> = None;
     for _ in 0..4096 {

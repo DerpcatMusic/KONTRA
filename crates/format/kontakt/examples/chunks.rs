@@ -198,56 +198,63 @@ impl Census {
                 false
             }
         };
-        let verdict = match &object {
-            Some(o) => {
-                t.bytes += o.public_data.len() + o.private_data.len();
-                // Kontakt reads the public and private blocks with separate
-                // readers (docs/re/NI_FILE_BINARY_RECORDS.md §2); a class keeps
-                // its fields in one, and the catalog reader is that one's.
-                let mut blocks: Vec<&[u8]> = [&o.public_data, &o.private_data]
-                    .into_iter()
-                    .filter(|b| !b.is_empty())
-                    .map(Vec::as_slice)
-                    .collect();
-                if blocks.is_empty() {
-                    blocks.push(&[]);
+        // How much of one decoded stream is not accounted for, and why.
+        let mut judge = |r: Result<native_schema::Decoded, Undecoded>, len: usize| match r {
+            Ok(d) if d.opaque.is_empty() => None,
+            Ok(d) => {
+                for o in &d.opaque {
+                    let e = self.nested.entry((chunk.id, o.sertype, o.why)).or_default();
+                    e.0 += 1;
+                    e.1 += o.bytes;
                 }
-                let mut why = None;
-                let mut miss = 0;
-                for block in blocks {
-                    let (w, n) = match native_schema::decode(chunk.id, o.version, block) {
-                        Ok(d) if d.opaque.is_empty() => continue,
-                        Ok(d) => {
-                            for o in &d.opaque {
-                                let e =
-                                    self.nested.entry((chunk.id, o.sertype, o.why)).or_default();
-                                e.0 += 1;
-                                e.1 += o.bytes;
-                            }
-                            ("nested object not decoded", d.opaque_bytes())
-                        }
-                        Err(Undecoded::Trailing(n)) => ("trailing bytes", n),
-                        Err(Undecoded::NoReader) if hand_typed => ("hand reader only", block.len()),
-                        Err(Undecoded::NoReader) => ("", block.len()),
-                        Err(e) => (reason(&e), block.len()),
-                    };
+                Some(("nested object not decoded", d.opaque_bytes()))
+            }
+            Err(Undecoded::Trailing(n)) => Some(("trailing bytes", n)),
+            Err(Undecoded::NoReader) if hand_typed => Some(("hand reader only", len)),
+            Err(Undecoded::NoReader) => Some(("", len)),
+            Err(e) => Some((reason(&e), len)),
+        };
+        let (bytes, verdict) = match &object {
+            Some(o) => {
+                // Kontakt reads the public and private blocks with separate
+                // readers (docs/re/NI_FILE_BINARY_RECORDS.md §2). Where only the
+                // catalog reader is known, a class keeps its fields in one block.
+                let mut blocks = Vec::new();
+                if !o.public_data.is_empty() || o.private_data.is_empty() {
+                    let r = native_schema::decode(chunk.id, o.version, &o.public_data);
+                    blocks.push(judge(r, o.public_data.len()));
+                }
+                if !o.private_data.is_empty() {
+                    let r = native_schema::decode_private(chunk.id, o.version, &o.private_data);
+                    blocks.push(judge(r, o.private_data.len()));
+                }
+                let (mut why, mut miss) = (None, 0);
+                for (w, n) in blocks.into_iter().flatten() {
                     why.get_or_insert(w);
                     miss += n;
                 }
-                why.map_or(Ok(()), |w| Err((w, miss)))
+                (
+                    o.public_data.len() + o.private_data.len(),
+                    why.map_or(Ok(()), |w| Err((w, miss))),
+                )
             }
             None => {
-                t.bytes += chunk.data.len();
-                Err((
-                    if hand_typed {
-                        "raw, hand reader only"
-                    } else {
-                        ""
-                    },
-                    chunk.data.len(),
-                ))
+                let n = chunk.data.len();
+                let verdict = match native_schema::decode_unframed(chunk.id, &chunk.data) {
+                    Err(Undecoded::NoReader) => Err((
+                        if hand_typed {
+                            "raw, hand reader only"
+                        } else {
+                            ""
+                        },
+                        n,
+                    )),
+                    r => judge(r, n).map_or(Ok(()), Err),
+                };
+                (n, verdict)
             }
         };
+        t.bytes += bytes;
         match verdict {
             Ok(()) => t.full += 1,
             Err(("", n)) => {

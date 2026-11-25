@@ -11,13 +11,54 @@ mod programs;
 mod vm;
 
 pub use vm::{
-    accepts, class_of, decode, decode_prefix, readers, synthesize, synthesize_all, Decoded, Field,
-    ReaderInfo, Undecoded,
+    accepts, class_of, decode, decode_prefix, decode_private, decode_unframed, readers, synthesize,
+    synthesize_all, Decoded, Field, ReaderInfo, Undecoded,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// curated.rs GroupList / ZoneList (FUN_140d1d6a0 / FUN_140d1e550): a u32 count, then
+    /// per element (ZoneList: a u32 group index first) a flag, a version and the element's
+    /// framed areas (BGroup / BZone vtable slot 8 0x140756e50), from the chunk header on.
+    #[test]
+    fn curated_lists_read_framed_elements() {
+        for (list, element, version, index) in
+            [(0x33u16, 0x04u16, 0x96u16, false), (0x34, 0x2c, 0x9c, true)]
+        {
+            let public = synthesize(element, version).unwrap();
+            let framed = [
+                &[1u8][..],
+                &version.to_le_bytes(),
+                &0u32.to_le_bytes(),
+                &u32::try_from(public.len()).unwrap().to_le_bytes(),
+                &public,
+                &0u32.to_le_bytes(),
+            ]
+            .concat();
+            let entry = if index {
+                [&0u32.to_le_bytes()[..], &framed].concat()
+            } else {
+                framed
+            };
+            let body = [&1u32.to_le_bytes()[..], &entry].concat();
+            let d = decode_unframed(list, &body).unwrap();
+            assert_eq!(
+                (d.consumed, d.opaque.len()),
+                (body.len() + 6, 0),
+                "{list:#x}"
+            );
+            assert!(
+                decode_unframed(list, &body[..body.len() - 1]).is_err(),
+                "{list:#x}"
+            );
+        }
+        assert_eq!(
+            decode_unframed(0x33, &0u32.to_le_bytes()).unwrap().consumed,
+            10
+        );
+    }
 
     /// curated.rs BInsertBus (FUN_140d0d300): a name, two floats, then a u32 from 0x11
     /// and two bytes from 0x12.
