@@ -8,25 +8,12 @@ use kontra_face::LOOK;
 use kontra_ksp::ControlKind;
 use kontra_ksp::{CallbackKind, Cells, FIRST_UI_ID, SYMBOL_BASE, Script};
 
+/// The log kinds `disable_logging` takes (KONTRA shows no script log); the
+/// control parameters the engine only carries are [`crate::ui::mapped`].
+const CARRIED: [&str; 3] = ["$NI_LOG_MESSAGE", "$NI_LOG_WARNING", "$NI_LOG_WATCHING"];
+
 /// Whether the engine or the UI tree understands catalog name `name`
 /// (every other one is an opaque symbol nothing acts on), for coverage
-/// Names the engine reads without a table: a control's custom id, list ids, the modifier keys a
-/// click held, a text line added through a parameter, and the log kinds
-/// `disable_logging` takes (KONTRA shows no script log).
-const CARRIED: [&str; 10] = [
-    // Stored as set and read back (Conflux's effect menus).
-    "$CONTROL_PAR_CUSTOM_ID",
-    "$CONTROL_PAR_NUM_ITEMS",
-    "$CONTROL_PAR_SELECTED_ITEM_IDX",
-    "$CONTROL_PAR_KEY_SHIFT",
-    "$CONTROL_PAR_KEY_ALT",
-    "$CONTROL_PAR_KEY_CONTROL",
-    "$CONTROL_PAR_TEXTLINE",
-    "$NI_LOG_MESSAGE",
-    "$NI_LOG_WARNING",
-    "$NI_LOG_WATCHING",
-];
-
 /// reports.
 #[must_use]
 pub fn understood(name: &str) -> bool {

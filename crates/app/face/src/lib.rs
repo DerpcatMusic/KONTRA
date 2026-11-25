@@ -123,6 +123,20 @@ const COLORS: [(&str, ColorSlot); 13] = [
 ];
 
 /// The parameters the tree carries; any other a script set is reported.
+/// Control parameters the engine stores and reads back with no look of their
+/// own: a control's custom id, list ids, the modifier keys a click held and a
+/// text line added through a parameter.
+const CARRIED: &[&str] = &[
+    // Stored as set and read back (Conflux's effect menus).
+    "$CONTROL_PAR_CUSTOM_ID",
+    "$CONTROL_PAR_NUM_ITEMS",
+    "$CONTROL_PAR_SELECTED_ITEM_IDX",
+    "$CONTROL_PAR_KEY_SHIFT",
+    "$CONTROL_PAR_KEY_ALT",
+    "$CONTROL_PAR_KEY_CONTROL",
+    "$CONTROL_PAR_TEXTLINE",
+];
+
 const MAPPED: &[&str] = &[
     "$CONTROL_PAR_VALUE",
     "$CONTROL_PAR_TEXT",
@@ -206,6 +220,7 @@ const STATE_FONTS: [&str; 6] = [
 /// Komplete Kontrol hardware and have no view or sound of their own.
 pub fn mapped(par: &str) -> bool {
     MAPPED.contains(&par)
+        || CARRIED.contains(&par)
         || STATE_FONTS.contains(&par)
         || COLORS.iter().any(|(c, _)| *c == par)
         || par.starts_with("$CONTROL_PAR_NKS_")

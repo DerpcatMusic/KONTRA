@@ -5,7 +5,7 @@ on:
   # Engine PRs skip it (it was every PR's slowest job): the site builds when they reach main.
   pull_request:
     branches: [main]
-    paths: ['website/**', 'tools/coverage/**', 'docs/PARITY.html', '.github/workflows/pages.yml']
+    paths: ['website/**', 'tools/parity-board.py', 'docs/parity/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -26,9 +26,8 @@ jobs:
         run: |
           python3 website/check.py
           node website/test-releases.cjs
-          node website/test-compatibility.cjs
           python3 website/test_build_site.py
-      - name: Build site and live compatibility table
+      - name: Build site and compatibility table
         run: python3 website/build_site.py "$RUNNER_TEMP/kontra-site"
       - name: Check built site
         run: python3 website/check.py "$RUNNER_TEMP/kontra-site"

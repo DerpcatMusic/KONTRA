@@ -123,4 +123,4 @@ Dates matter. The corpus numbers are from the full-tier survey of 2026-10-23 (ba
 - **KSP**: most of the 1,605 manual identifiers are not implemented. The default for each is missing.
 - **Performance**: 300 voices at 1% of the meter not achieved. The Kontakt and Falcon comparison is not measured.
 
-Feature inventory pages in [docs/FEATURES.md](docs/FEATURES.md) and [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) predate this review. The [website feature table](https://derpcatmusic.github.io/KONTRA/features.html) is generated from committed probes on each main commit.
+The [compatibility table](https://derpcatmusic.github.io/KONTRA/features.html) lists every feature with its status and the change that brought it; it is generated from the parity board on each main commit.

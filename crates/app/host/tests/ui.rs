@@ -480,6 +480,8 @@ fn waveform_text_lines_custom_ids_and_messages_reach_the_tree() {
     assert_eq!(widget(&ui, "$list").text, "1 Cutoff\n2 Drive");
     assert_eq!(widget(&ui, "$echo").text, "12");
     assert_eq!(ui.message, "Loading done");
+    // Carried parameters have no look, so the tree does not report them as unsupported.
+    assert_eq!(ui.unsupported, []);
 }
 
 /// `get_ui_wf_property` reads back what `set_ui_wf_property` stored.

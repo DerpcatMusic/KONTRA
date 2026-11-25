@@ -586,15 +586,15 @@ def attribute(rows, refresh):
 
 # ------------------------------------------------------------------ the board
 AREAS = [  # area, title, format
-    ("kontakt.ksp", "Kontakt KSP: commands, callbacks, variables", "Kontakt"),
-    ("kontakt.par", "Kontakt parameters", "Kontakt"),
-    ("kontakt.ui", "Kontakt UI: control type × control parameter", "Kontakt"),
-    ("kontakt.dsp", "Kontakt DSP: effects and modulators", "Kontakt"),
-    ("kontakt.format", "Kontakt format (ni-file)", "Kontakt"),
-    ("uvi.api", "UVI Falcon script API", "UVI"),
-    ("uvi.ui", "UVI Falcon UI widgets", "UVI"),
-    ("uvi.dsp", "UVI Falcon DSP: elements", "UVI"),
-    ("uvi.par", "UVI Falcon parameters", "UVI"),
+    ("kontakt.ksp", "Scripting (KSP): commands, callbacks and variables", "Kontakt"),
+    ("kontakt.par", "Script parameters: engine, control and zone", "Kontakt"),
+    ("kontakt.ui", "Instrument panels: each control type and property", "Kontakt"),
+    ("kontakt.dsp", "Effects and modulators", "Kontakt"),
+    ("kontakt.format", "File loading: every saved object type", "Kontakt"),
+    ("uvi.api", "Scripting (Lua API)", "UVI"),
+    ("uvi.ui", "Instrument panels: widgets", "UVI"),
+    ("uvi.dsp", "Effects and elements", "UVI"),
+    ("uvi.par", "Parameters", "UVI"),
 ]
 
 
@@ -718,7 +718,7 @@ def render_md(rows, sums, fmt_extra, flagged):
 def render_html(rows, sums):
     data = [[r["id"], r["area"], r["group"], r["name"], r["status"], r["ev"][0] if r["ev"] and r["ev"][0] else "",
              r["pr"], r["date"], r["note"]] for r in rows]
-    areas = [[a, t] for a, t, _ in AREAS]
+    areas = [list(a) for a in AREAS]
     summ = [[label.replace("**", "").strip(), c, label.startswith("  ")] for label, c in sums]
     page = HTML.replace("__FRAGMENT__", FRAGMENT).replace("__DATA__", json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/"))
     page = page.replace("__AREAS__", json.dumps(areas)).replace("__SUMMARY__", json.dumps(summ)).replace("__REPO__", REPO)
@@ -726,43 +726,55 @@ def render_html(rows, sums):
 
 
 FRAGMENT = """<!-- board:start --><div class="pboard"><style>
-.pboard{--bg:#fafaf8;--fg:#1b1b1b;--mute:#6b6b6b;--line:#e2e2dc;--card:#fff;--tested:#2f7d4f;--done:#7aa95c;--partial:#d39b2a;--missing:#c4c4bc}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .pboard{--bg:#161616;--fg:#ececec;--mute:#9a9a9a;--line:#2c2c2c;--card:#1e1e1e;--missing:#4a4a4a}}
-:root[data-theme="dark"] .pboard{--bg:#161616;--fg:#ececec;--mute:#9a9a9a;--line:#2c2c2c;--card:#1e1e1e;--missing:#4a4a4a}
+.pboard{--bg:#fafaf8;--fg:#1b1b1b;--mute:#6b6b6b;--line:#e2e2dc;--card:#fff;--tested:#2f7d4f;--done:#7aa95c;--partial:#d39b2a;--missing:#c4c4bc;--badge:#eef1f5;--badge-fg:#1f4f8a}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .pboard{--bg:#161616;--fg:#ececec;--mute:#9a9a9a;--line:#2c2c2c;--card:#1e1e1e;--missing:#4a4a4a;--badge:#1f2a38;--badge-fg:#8cb8f0}}
+:root[data-theme="dark"] .pboard{--bg:#161616;--fg:#ececec;--mute:#9a9a9a;--line:#2c2c2c;--card:#1e1e1e;--missing:#4a4a4a;--badge:#1f2a38;--badge-fg:#8cb8f0}
 .pboard,.pboard *{box-sizing:border-box}.pboard{color:var(--fg);font:15px/1.45 system-ui,sans-serif}
-.pboard .sum{display:grid;gap:6px;margin-bottom:24px}.pboard .srow{display:grid;grid-template-columns:minmax(120px,280px) 1fr 70px;gap:10px;align-items:center}
-.pboard .srow.sub .lab{padding-left:16px;color:var(--mute);font-size:13px}.pboard .srow.tot .lab{font-weight:600}
-.pboard .bar{display:flex;height:14px;border-radius:3px;overflow:hidden;background:var(--missing)}.pboard .bar span{display:block;height:100%}
-.pboard .pct{text-align:right;font-variant-numeric:tabular-nums}.pboard .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:var(--mute);margin:8px 0 20px}
-.pboard .dot{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.pboard .heads{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin:0 0 20px}
+.pboard .head{border:1px solid var(--line);border-radius:8px;background:var(--card);padding:12px 14px}
+.pboard .head b{display:block;font-size:28px;line-height:1.1;font-variant-numeric:tabular-nums}.pboard .head span{color:var(--mute);font-size:13px}
+.pboard .bar{display:flex;height:8px;border-radius:4px;overflow:hidden;background:var(--missing);margin-top:8px}.pboard .bar span{display:block;height:100%}
 .pboard .controls{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;position:sticky;top:0;background:var(--bg);padding:8px 0;z-index:1}
-.pboard .controls input,.pboard .controls select{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:4px;background:var(--card);color:var(--fg)}
-.pboard .controls input{flex:1;min-width:160px}.pboard details{border:1px solid var(--line);border-radius:6px;margin-bottom:8px;background:var(--card)}
-.pboard summary{cursor:pointer;padding:10px 12px;font-weight:600}.pboard summary small{font-weight:400;color:var(--mute)}
-.pboard .wrap{overflow-x:auto}.pboard table{border-collapse:collapse;width:100%;font-size:13px}.pboard td,.pboard th{padding:4px 8px;border-top:1px solid var(--line);text-align:left;vertical-align:top}
-.pboard th{color:var(--mute);font-weight:500}.pboard td.id{font-family:ui-monospace,monospace;font-size:12px;word-break:break-all}.pboard a{color:inherit}
-.pboard .st{white-space:nowrap}.pboard .more{padding:8px 12px}.pboard .more button{font:inherit;padding:4px 10px}
+.pboard .controls input,.pboard .controls select{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--fg)}
+.pboard .controls input{flex:1;min-width:160px}.pboard h2{font-size:20px;margin:24px 0 8px}
+.pboard details{border:1px solid var(--line);border-radius:8px;margin-bottom:8px;background:var(--card)}
+.pboard summary{cursor:pointer;padding:10px 12px;display:grid;grid-template-columns:1fr minmax(80px,200px) auto;gap:12px;align-items:center}
+.pboard summary .t{font-weight:600}.pboard summary small{color:var(--mute);font-variant-numeric:tabular-nums;white-space:nowrap}
+.pboard .wrap{overflow-x:auto}.pboard table{border-collapse:collapse;width:100%;font-size:13px}
+.pboard td,.pboard th{padding:6px 10px;border-top:1px solid var(--line);text-align:left;vertical-align:top}.pboard th{color:var(--mute);font-weight:500}
+.pboard td.cat{color:var(--mute);white-space:nowrap}.pboard a{color:inherit}
+.pboard .st{display:inline-block;white-space:nowrap;border-radius:999px;padding:1px 8px;font-size:12px;font-weight:600;color:#fff}
+.pboard .st.tested{background:var(--tested)}.pboard .st.done{background:var(--done)}.pboard .st.partial{background:var(--partial)}.pboard .st.missing{background:var(--missing);color:var(--fg)}
+.pboard .pr{display:inline-block;margin:0 4px 2px 0;padding:1px 7px;border-radius:6px;background:var(--badge);color:var(--badge-fg);font:12px ui-monospace,monospace;text-decoration:none;white-space:nowrap}
+.pboard .pr:hover{text-decoration:underline}.pboard .when{color:var(--mute);font-size:12px;white-space:nowrap}
+.pboard .more{padding:8px 12px}.pboard .more button{font:inherit;padding:4px 10px}.pboard .none{padding:10px 12px;color:var(--mute)}
+@media (max-width:600px){.pboard summary{grid-template-columns:1fr auto}.pboard summary .bar{display:none}.pboard td.cat,.pboard th.cat{display:none}}
 </style>
-<div class="legend"><span><i class="dot" style="background:var(--tested)"></i>tested: done and checked by a test, probe or oracle measurement</span><span><i class="dot" style="background:var(--done)"></i>done</span><span><i class="dot" style="background:var(--partial)"></i>partial</span><span><i class="dot" style="background:var(--missing)"></i>missing</span></div>
-<div class="sum" id="sum"></div>
-<div class="controls"><input id="q" type="search" placeholder="Filter rows (id, name, note)" aria-label="Filter rows"><select id="st" aria-label="Status"><option value="">All statuses</option><option>tested</option><option>done</option><option>partial</option><option>missing</option></select></div>
+<div class="heads" id="heads"></div>
+<div class="controls"><input id="q" type="search" placeholder="Search features" aria-label="Search features"><select id="fmt" aria-label="Sampler"><option value="">Kontakt and UVI</option><option>Kontakt</option><option>UVI</option></select><select id="st" aria-label="Status"><option value="">Any status</option><option value="tested">Done and verified</option><option value="done">Done</option><option value="partial">Partial</option><option value="missing">Not done</option></select></div>
 <div id="areas"></div>
 <script>
 const ROWS=__DATA__,AREAS=__AREAS__,SUM=__SUMMARY__,REPO="__REPO__";
-const C={tested:"var(--tested)",done:"var(--done)",partial:"var(--partial)",missing:"var(--missing)"};
+const C={tested:"var(--tested)",done:"var(--done)",partial:"var(--partial)"},L={tested:"Done ✓",done:"Done",partial:"Partial",missing:"Not done"};
+const T={tested:"Done, and a test, probe or measurement against the original checks it",done:"Done",partial:"Some of it works",missing:"Not implemented yet"};
 const e=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"})[c]);
-document.getElementById("sum").innerHTML=SUM.map(([l,c,sub])=>{const n=c[0]||1;const segs=["tested","done","partial"].map((s,i)=>`<span style="width:${100*c[i+1]/n}%;background:${C[s]}" title="${s} ${c[i+1]}"></span>`).join("");
-return `<div class="srow${sub?" sub":""}${/overall|^All$/.test(l)?" tot":""}"><div class="lab">${e(l)} <small>(${c[0]})</small></div><div class="bar" role="img" aria-label="${c[6]}% passing">${segs}</div><div class="pct">${c[6]}%</div></div>`}).join("");
+const bar=c=>`<div class="bar" aria-hidden="true">${["tested","done","partial"].map((s,i)=>`<span style="width:${100*c[i+1]/(c[0]||1)}%;background:${C[s]}"></span>`).join("")}</div>`;
+document.getElementById("heads").innerHTML=SUM.filter(([l])=>/overall|corpus/i.test(l)).map(([l,c])=>{const corpus=/corpus/i.test(l);
+return `<div class="head"><b>${c[6]}%</b><span>${e(corpus?l.replace(/\\s*\\(.*/,"").replace("corpus","instruments that fully work"):l.replace("overall","features done"))}: ${c[1]+c[2]} of ${c[0]}</span>${bar(c)}</div>`}).join("");
+const prs=p=>p?p.split(",").map(n=>n[0]==="K"?`<a class="pr" href="https://github.com/DerpcatMusic/KONTRA/pull/${e(n.slice(1))}">KONTRA#${e(n.slice(1))}</a>`:`<a class="pr" href="https://github.com/DerpcatMusic/KONTRA/search?q=%23${e(n)}&type=commits" title="Commits from change #${e(n)}">#${e(n)}</a>`).join(""):"";
 const PAGE=200;
-function draw(){const q=document.getElementById("q").value.toLowerCase(),st=document.getElementById("st").value;
-document.getElementById("areas").innerHTML=AREAS.map(([a,t])=>{const rs=ROWS.filter(r=>r[1]===a&&(!st||r[4]===st)&&(!q||(r[0]+" "+r[3]+" "+r[8]).toLowerCase().includes(q)));
-return `<details data-a="${a}"${q||st?" open":""}><summary>${e(t)} <small>${rs.length} rows</small></summary><div class="wrap"><table><thead><tr><th>Status</th><th>Row</th><th>Item</th><th>Evidence</th><th>PR</th><th>Changed</th><th>Note</th></tr></thead><tbody data-n="0"></tbody></table></div><div class="more"></div></details>`}).join("");
-document.querySelectorAll("#areas details").forEach(d=>{const fill=()=>{const a=d.dataset.a,tb=d.querySelector("tbody");const rs=ROWS.filter(r=>r[1]===a&&(!st||r[4]===st)&&(!q||(r[0]+" "+r[3]+" "+r[8]).toLowerCase().includes(q)));
-const n=+tb.dataset.n,m=Math.min(rs.length,n+PAGE);tb.insertAdjacentHTML("beforeend",rs.slice(n,m).map(r=>`<tr><td class="st"><i class="dot" style="background:${C[r[4]]}"></i>${r[4]}</td><td class="id">${e(r[0])}</td><td>${e(r[3])}</td><td>${r[5]?`<a href="${REPO}${e(r[5])}">${e(r[5].split("/").pop())}</a>`:""}</td><td>${r[6]?r[6].split(",").map(p=>p[0]==="K"?`<a href="https://github.com/DerpcatMusic/KONTRA/pull/${e(p.slice(1))}">KONTRA#${e(p.slice(1))}</a>`:"#"+e(p)).join(", "):""}</td><td>${e(r[7])}</td><td>${e(r[8])}</td></tr>`).join(""));
+function match(r,q,st,fmt,a){return r[1]===a&&(!st||r[4]===st)&&(!q||(r[0]+" "+r[2]+" "+r[3]+" "+r[8]).toLowerCase().includes(q))}
+function draw(){const q=document.getElementById("q").value.toLowerCase(),st=document.getElementById("st").value,fmt=document.getElementById("fmt").value;let html="",last="";
+for(const [a,t,f] of AREAS){if(fmt&&f!==fmt)continue;const all=ROWS.filter(r=>r[1]===a),rs=all.filter(r=>match(r,q,st,fmt,a));if((q||st)&&!rs.length)continue;
+if(f!==last){html+=`<h2>${e(f)}</h2>`;last=f}const c=[all.length,...["tested","done","partial","missing"].map(s=>all.filter(r=>r[4]===s).length)];
+html+=`<details data-a="${a}"${q||st?" open":""}><summary><span class="t">${e(t)}</span>${bar(c)}<small>${c[1]+c[2]} of ${c[0]} done${q||st?` · ${rs.length} shown`:""}</small></summary><div class="wrap"><table><thead><tr><th>Feature</th><th class="cat">Category</th><th>Status</th><th>Changes</th><th>Proof</th><th>Note</th></tr></thead><tbody data-n="0"></tbody></table></div><div class="more"></div></details>`}
+document.getElementById("areas").innerHTML=html||'<p class="none">No features match.</p>';
+document.querySelectorAll("#areas details").forEach(d=>{const fill=()=>{const a=d.dataset.a,tb=d.querySelector("tbody");const rs=ROWS.filter(r=>match(r,q,st,fmt,a));
+const n=+tb.dataset.n,m=Math.min(rs.length,n+PAGE);tb.insertAdjacentHTML("beforeend",rs.slice(n,m).map(r=>`<tr id="${e(r[0])}"><td title="${e(r[0])}">${e(r[3])}</td><td class="cat">${e(r[2])}</td><td><span class="st ${r[4]}" title="${T[r[4]]}">${L[r[4]]}</span></td><td>${prs(r[6])}${r[7]?`<span class="when">${e(r[7])}</span>`:""}</td><td>${r[5]?`<a href="${REPO}${e(r[5])}">${e(r[5].split("/").pop())}</a>`:""}</td><td>${e(r[8])}</td></tr>`).join(""));
 tb.dataset.n=m;const more=d.querySelector(".more");more.innerHTML=m<rs.length?`<button>Show ${Math.min(PAGE,rs.length-m)} more of ${rs.length-m}</button>`:"";const b=more.querySelector("button");if(b)b.onclick=fill};
 if(d.open)fill();else d.addEventListener("toggle",()=>{if(d.open&&d.querySelector("tbody").dataset.n==="0")fill()},{once:true})})}
-document.getElementById("q").addEventListener("input",draw);document.getElementById("st").addEventListener("change",draw);draw();
-</script></div><!-- board:end -->"""
+for(const id of ["q","st","fmt"])document.getElementById(id).addEventListener(id==="q"?"input":"change",draw);draw();
+</script><noscript><p>The table needs JavaScript; <a href="https://github.com/DerpcatMusic/KONTRA/blob/main/docs/PARITY.md">the same list as Markdown</a>.</p></noscript></div><!-- board:end -->"""
 
 HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

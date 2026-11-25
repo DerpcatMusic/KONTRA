@@ -10,11 +10,7 @@ python3 website/build_site.py /mnt/Windows11/DEV_WORKSPACE/RunScratch/kontra-sit
 python3 -m http.server 4173 --directory /mnt/Windows11/DEV_WORKSPACE/RunScratch/kontra-site
 ```
 
-The build copies public assets and renders `features.html` with the recorded compatibility observations and embedded data. JavaScript adds search, sampler/category/status filters, semantic status sorting and 25-row pagination. Without JavaScript, the recorded observations and source links remain available. Filtered views can be linked with `?sampler=Kontakt` or `?sampler=UVI`, plus `category`, `status` and `q`. The same data is published as `compatibility.json`. The old `/tracker/` URL redirects to the table.
-
-## Compatibility data
-
-`build_site.py` reads the committed `tools/coverage/v3-facts.json` snapshot: the v3 load census, KSP census and Kontakt/UVI law audit. The snapshot records its source and scope. Results are partial, dated 29 October 2026 and may be stale; they do not establish whole-library compatibility. No private library paths or program names are published.
+The build copies public assets and renders `features.html` (Compatibility) from the parity board: `tools/parity-board.py` writes `docs/PARITY.html`, and its board fragment goes into the site's chrome. It shows headline numbers, collapsible categories per sampler, each feature's status, its change badges and proof, with search and sampler and status filters. The board is the one compatibility list; there is no other. The old `/tracker/` and `parity.html` URLs redirect to it.
 
 `ROADMAP.md` and `roadmap.html` record the current sampler priorities: Kontakt and UVI/Falcon in parallel; Opus/EastWest, HALion, HISE and other sampler frontends next. Keep those two files synchronized. Historical architecture checkpoints do not override these priorities.
 
@@ -23,7 +19,6 @@ The build copies public assets and renders `features.html` with the recorded com
 ```sh
 python3 website/check.py
 python3 website/test_build_site.py
-node website/test-compatibility.cjs
 node website/test-releases.cjs
 python3 website/check.py /mnt/Windows11/DEV_WORKSPACE/RunScratch/kontra-site
 ```

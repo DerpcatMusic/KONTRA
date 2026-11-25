@@ -3,7 +3,6 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlsplit, unquote
 import sys
-import json
 import re
 
 root = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parent
@@ -28,6 +27,8 @@ footers = []
 for path in root.glob('*.html'):
     page = Page(path)
     source = path.read_text()
+    if 'http-equiv="refresh"' in source:  # an old address that redirects
+        continue
     page.feed(source)
     footer = re.search(r'<footer\b.*?</footer>', source, re.S)
     assert footer, f'missing shared footer: {path}'
@@ -50,9 +51,4 @@ for path, page in pages.items():
             assert target in pages and unquote(parsed.fragment) in pages[target].ids, f'broken anchor: {link}'
 assert (root / 'assets/FONT-LICENSE.txt').is_file()
 assert (root / 'assets/PROVENANCE.md').is_file()
-if (root / 'compatibility.json').exists():
-    data = json.loads((root / 'compatibility.json').read_text())
-    assert len(data['rows']) + 1 == pages[root / 'features.html'].rows, 'HTML/JSON table mismatch'
-    assert len({row['id'] for row in data['rows']}) == len(data['rows']), 'duplicate feature IDs'
-    assert all('/' + data['revision'] + '/' in row['source'] for row in data['rows'] if row['source']), 'source links must pin the build revision'
 print(f'Checked {len(pages)} pages: assets, internal links, anchors, image text and project-relative paths.')

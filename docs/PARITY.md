@@ -10,10 +10,10 @@ PR: the squash merge that last changed each row's evidence line (`Parity: <row-i
 
 | Criterion | Items | tested | done | partial | missing | % tested | % passing |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Kontakt KSP: commands, callbacks, variables | 714 | 700 | 1 | 7 | 6 | 98.0 | 98.2 |
-| Kontakt parameters | 966 | 164 | 326 | 443 | 33 | 17.0 | 50.7 |
-| Kontakt UI: control type × control parameter | 290 | 100 | 70 | 92 | 28 | 34.5 | 58.6 |
-| Kontakt DSP: effects and modulators | 207 | 18 | 65 | 17 | 107 | 8.7 | 40.1 |
+| Scripting (KSP): commands, callbacks and variables | 714 | 700 | 1 | 7 | 6 | 98.0 | 98.2 |
+| Script parameters: engine, control and zone | 966 | 164 | 326 | 443 | 33 | 17.0 | 50.7 |
+| Instrument panels: each control type and property | 290 | 100 | 70 | 92 | 28 | 34.5 | 58.6 |
+| Effects and modulators | 207 | 18 | 65 | 17 | 107 | 8.7 | 40.1 |
 |   Kontakt DSP: EQ | 3 | 1 | 1 | 1 | 0 | 33.3 | 66.7 |
 |   Kontakt DSP: LFO | 3 | 0 | 2 | 0 | 1 | 0.0 | 66.7 |
 |   Kontakt DSP: convolution | 3 | 0 | 1 | 1 | 1 | 0.0 | 33.3 |
@@ -27,10 +27,10 @@ PR: the squash merge that last changed each row's evidence line (`Parity: <row-i
 |   Kontakt DSP: reverb | 12 | 0 | 5 | 1 | 6 | 0.0 | 41.7 |
 |   Kontakt DSP: time-stretch / slicing | 15 | 0 | 0 | 0 | 15 | 0.0 | 0.0 |
 |   Kontakt DSP: utility | 12 | 0 | 4 | 2 | 6 | 0.0 | 33.3 |
-| Kontakt format (ni-file) | 118 | 44 | 61 | 1 | 12 | 37.3 | 89.0 |
-| UVI Falcon script API | 123 | 7 | 49 | 0 | 67 | 5.7 | 45.5 |
-| UVI Falcon UI widgets | 158 | 154 | 0 | 0 | 4 | 97.5 | 97.5 |
-| UVI Falcon DSP: elements | 546 | 34 | 19 | 19 | 474 | 6.2 | 9.7 |
+| File loading: every saved object type | 118 | 44 | 61 | 1 | 12 | 37.3 | 89.0 |
+| Scripting (Lua API) | 123 | 7 | 49 | 0 | 67 | 5.7 | 45.5 |
+| Instrument panels: widgets | 158 | 154 | 0 | 0 | 4 | 97.5 | 97.5 |
+| Effects and elements | 546 | 34 | 19 | 19 | 474 | 6.2 | 9.7 |
 |   UVI DSP: EQ | 15 | 2 | 2 | 0 | 11 | 13.3 | 26.7 |
 |   UVI DSP: convolution | 6 | 2 | 1 | 1 | 2 | 33.3 | 50.0 |
 |   UVI DSP: delay | 18 | 1 | 1 | 0 | 16 | 5.6 | 11.1 |
@@ -46,7 +46,7 @@ PR: the squash merge that last changed each row's evidence line (`Parity: <row-i
 |   UVI DSP: reverb | 15 | 1 | 1 | 2 | 11 | 6.7 | 13.3 |
 |   UVI DSP: time-stretch / slicing | 12 | 0 | 0 | 0 | 12 | 0.0 | 0.0 |
 |   UVI DSP: utility | 51 | 5 | 3 | 2 | 41 | 9.8 | 15.7 |
-| UVI Falcon parameters | 3065 | 10 | 94 | 928 | 2033 | 0.3 | 3.4 |
+| Parameters | 3065 | 10 | 94 | 928 | 2033 | 0.3 | 3.4 |
 | **Kontakt overall** | 2295 | 1026 | 523 | 560 | 186 | 44.7 | 67.5 |
 | **UVI overall** | 3892 | 205 | 162 | 947 | 2578 | 5.3 | 9.4 |
 | **All** | 6187 | 1231 | 685 | 1507 | 2764 | 19.9 | 31.0 |
@@ -80,7 +80,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | `kontakt.dsp.delay.measured` | #288 |
 | `kontakt.dsp.reverb.measured` | #288 |
 
-## Kontakt KSP: commands, callbacks, variables
+## Scripting (KSP): commands, callbacks and variables
 
 ### built-in variables (299 tested, 0 done, 0 partial, 0 missing)
 
@@ -813,7 +813,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | tested | `kontakt.ksp.const.NI_MATH_E` | ~NI_MATH_E | [cases.py](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-conformance/cases.py) | #212 | 2026-11-25 | Built-in Variables and Constants |
 | tested | `kontakt.ksp.const.NI_MATH_PI` | ~NI_MATH_PI | [cases.py](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-conformance/cases.py) | #212 | 2026-11-25 | Built-in Variables and Constants |
 
-## Kontakt parameters
+## Script parameters: engine, control and zone
 
 ### $CONTROL_PAR (88 tested, 0 done, 0 partial, 0 missing)
 
@@ -829,7 +829,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | tested | `kontakt.par.CONTROL_PAR_BG_COLOR` | $CONTROL_PAR_BG_COLOR | [control_pars_2.kspp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/kontakt-oracle/probes/ksp/control_pars_2.kspp) | #211 | 2026-11-25 | law ✓ acts ✓ |
 | tested | `kontakt.par.CONTROL_PAR_COLUMN_WIDTH` | $CONTROL_PAR_COLUMN_WIDTH | [control_pars_1.kspp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/kontakt-oracle/probes/ksp/control_pars_1.kspp) | #211 | 2026-11-25 | law ✓ acts ✓ |
 | tested | `kontakt.par.CONTROL_PAR_CURSOR_PICTURE` | $CONTROL_PAR_CURSOR_PICTURE | [gen.py](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/gen.py) | [KONTRA#1559](https://github.com/DerpcatMusic/KONTRA/pull/1559) | 2026-11-14 | law ✓ acts ✓ |
-| tested | `kontakt.par.CONTROL_PAR_CUSTOM_ID` | $CONTROL_PAR_CUSTOM_ID | [ui.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/ui.rs) | [KONTRA#1321](https://github.com/DerpcatMusic/KONTRA/pull/1321) | 2026-11-12 | law ✓ acts ✓ |
+| tested | `kontakt.par.CONTROL_PAR_CUSTOM_ID` | $CONTROL_PAR_CUSTOM_ID | [ui.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/ui.rs) | #312, [KONTRA#1321](https://github.com/DerpcatMusic/KONTRA/pull/1321) | 2026-11-12 | law ✓ acts ✓ |
 | tested | `kontakt.par.CONTROL_PAR_DEFAULT_VALUE` | $CONTROL_PAR_DEFAULT_VALUE | [cases.py](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-conformance/cases.py) | [KONTRA#686](https://github.com/DerpcatMusic/KONTRA/pull/686) | 2026-10-24 | law ✓ acts ✓ |
 | tested | `kontakt.par.CONTROL_PAR_DISABLE_TEXT_SHIFTING` | $CONTROL_PAR_DISABLE_TEXT_SHIFTING | [control_pars_1.kspp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/kontakt-oracle/probes/ksp/control_pars_1.kspp) | #211 | 2026-11-25 | law ✓ acts ✓ |
 | tested | `kontakt.par.CONTROL_PAR_DND_ACCEPT_ARRAY` | $CONTROL_PAR_DND_ACCEPT_ARRAY | [data.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/data.ksp) | [KONTRA#1559](https://github.com/DerpcatMusic/KONTRA/pull/1559) | 2026-11-14 | law ✓ acts ✓ |
@@ -1802,7 +1802,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | partial | `kontakt.par.MOD_stereoPan` | stereoPan (target 95) | [modulation-targets.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/modulation-targets.tsv) |  |  | law ✓ range ✗ acts ✗ |
 | done | `kontakt.par.MOD_shaper` | shaper (target 98) | [drive.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/drive.rs) | [KONTRA#1579](https://github.com/DerpcatMusic/KONTRA/pull/1579) | 2026-11-15 | law ✓ range ✗ acts ✓ |
 
-## Kontakt UI: control type × control parameter
+## Instrument panels: each control type and property
 
 ### ui_button (5 tested, 12 done, 3 partial, 2 missing)
 
@@ -2159,7 +2159,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `kontakt.ui.ui_xy.CONTROL_PAR_WAVETABLE_END_ALPHA` | ui_xy × $CONTROL_PAR_WAVETABLE_END_ALPHA |  |  |  |  |
 | partial | `kontakt.ui.ui_xy.CONTROL_PAR_WIDTH` | ui_xy × $CONTROL_PAR_WIDTH | [data.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/data.ksp) |  |  |  |
 
-## Kontakt DSP: effects and modulators
+## Effects and modulators
 
 ### EQ (1 tested, 1 done, 1 partial, 0 missing)
 
@@ -2421,7 +2421,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | partial | `kontakt.dsp.stereo_modeller.driven` | Stereo Modeller: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  | held: ENGINE_PAR_STEREO_PSEUDO |
 | missing | `kontakt.dsp.stereo_modeller.measured` | Stereo Modeller: output vs oracle |  |  |  |  |
 
-## Kontakt format (ni-file)
+## File loading: every saved object type
 
 ### serialized classes (44 tested, 61 done, 1 partial, 12 missing)
 
@@ -2546,7 +2546,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `kontakt.format.0x2710.BApp_BSplashDialog` | 0x2710 BApp::BSplashDialog |  |  |  | not in the corpus, no reader |
 | missing | `kontakt.format.0x2710.NI_NGL_StandardSplashDialog2` | 0x2710 NI::NGL::StandardSplashDialog2 |  |  |  | not in the corpus, no reader |
 
-## UVI Falcon script API
+## Scripting (Lua API)
 
 ### Async (0 tested, 7 done, 0 partial, 9 missing)
 
@@ -2768,7 +2768,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | done | `uvi.api.sendScriptModulation2` | sendScriptModulation2 | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#849](https://github.com/DerpcatMusic/KONTRA/pull/849) | 2026-10-28 | https://lua.uvi.net/group___voice.html |
 | done | `uvi.api.setSampleOffset` | setSampleOffset | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#1569](https://github.com/DerpcatMusic/KONTRA/pull/1569) | 2026-11-15 | https://lua.uvi.net/group___voice.html |
 
-## UVI Falcon UI widgets
+## Instrument panels: widgets
 
 ### AudioMeter (7 tested, 0 done, 0 partial, 0 missing)
 
@@ -3049,7 +3049,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | tested | `uvi.ui.XY.canOnlyDragHandle` | XY.canOnlyDragHandle | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_x_y.html |
 | tested | `uvi.ui.XY.handleColour` | XY.handleColour | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_x_y.html |
 
-## UVI Falcon DSP: elements
+## Effects and elements
 
 ### EQ (2 tested, 2 done, 0 partial, 11 missing)
 
@@ -3658,7 +3658,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.dsp.Widener.driven` | UVI Wide: driven |  |  |  | no-specific-translation-read-found |
 | missing | `uvi.dsp.Widener.measured` | UVI Wide: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 
-## UVI Falcon parameters
+## Parameters
 
 ### Event Processor (0 tested, 1 done, 9 partial, 672 missing)
 
