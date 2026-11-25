@@ -84,8 +84,11 @@ const KAISER_BETA: f64 = 6.5;
 const MAX_SINC_HALF: usize = 32;
 /// Lookup table resolution over `[0, SINC_LOBES]`.
 const SINC_TABLE_LEN: usize = 2048;
+/// The table's stored length: zeros past [`SINC_TABLE_LEN`], a power of two
+/// so a masked index needs no bounds check.
+const SINC_STORED: usize = 2 * SINC_TABLE_LEN;
 
-static SINC_TABLE: std::sync::LazyLock<[f32; SINC_TABLE_LEN + 1]> =
+static SINC_TABLE: std::sync::LazyLock<[f32; SINC_STORED]> =
     std::sync::LazyLock::new(build_sinc_table);
 
 /// Per-frame one-pole gain smoothing coefficient for [`GAIN_SMOOTH_MS`] at `rate` Hz.
@@ -116,13 +119,13 @@ fn bessel_i0(x: f64) -> f64 {
 }
 
 /// Precomputes the half-sided Kaiser-windowed sinc table over `u in [0, SINC_LOBES]`.
-fn build_sinc_table() -> [f32; SINC_TABLE_LEN + 1] {
+fn build_sinc_table() -> [f32; SINC_STORED] {
     let inv_i0 = 1.0 / bessel_i0(KAISER_BETA);
     std::array::from_fn(|i| {
         if i == 0 {
             return 1.0;
         }
-        if i == SINC_TABLE_LEN {
+        if i >= SINC_TABLE_LEN {
             return 0.0;
         }
         let u = (i as f64 / SINC_TABLE_LEN as f64) * SINC_LOBES as f64;
@@ -134,17 +137,19 @@ fn build_sinc_table() -> [f32; SINC_TABLE_LEN + 1] {
     })
 }
 
-/// Evaluates the precomputed Kaiser-windowed sinc at `u >= 0` using linear interpolation.
+/// The windowed sinc at `u >= 0` source frames from the read position, with
+/// `k` table entries per frame: linear between the table's entries, 0 past
+/// [`SINC_LOBES`].
 #[inline]
-fn sinc_lookup(table: &[f32; SINC_TABLE_LEN + 1], u: f64) -> f32 {
-    let pos = u * (SINC_TABLE_LEN as f64 / SINC_LOBES as f64);
-    if !pos.is_finite() || pos < 0.0 || pos >= SINC_TABLE_LEN as f64 {
-        return 0.0;
-    }
+fn sinc_at(table: &[f32; SINC_STORED], k: f32, u: f32) -> f32 {
+    let pos = (u * k).min(SINC_TABLE_LEN as f32);
     let idx = pos as usize;
-    let frac = (pos - idx as f64) as f32;
-    let a = table.get(idx).copied().unwrap_or(0.0);
-    let b = table.get(idx + 1).copied().unwrap_or(0.0);
+    let frac = pos - idx as f32;
+    let a = table.get(idx & (SINC_STORED - 1)).copied().unwrap_or(0.0);
+    let b = table
+        .get((idx + 1) & (SINC_STORED - 1))
+        .copied()
+        .unwrap_or(0.0);
     a + (b - a) * frac
 }
 
@@ -1309,6 +1314,9 @@ impl Voice {
             }
         }
         let sinc_table = &*SINC_TABLE;
+        // The kernel's radius and scale for the last step seen: a flat
+        // ramp keeps one for the whole chunk.
+        let mut kernel = (f64::NAN, (0, 0.0));
         let mut filled = 0;
         for (i, frame) in scratch.raw.iter_mut().take(n).enumerate() {
             let cur_step = ramp.step_at(first_step, frames + i as u64);
@@ -1317,7 +1325,10 @@ impl Voice {
                 break;
             }
             if cur_step > 1.0 {
-                let (half, scale) = sinc_params(cur_step);
+                if kernel.0 != cur_step {
+                    kernel = (cur_step, sinc_params(cur_step));
+                }
+                let (half, scale) = kernel.1;
                 let center_i = x.round() as isize;
                 let frac = x - center_i as f64;
                 let Ok(center) = usize::try_from(center_i) else {
@@ -1326,34 +1337,22 @@ impl Voice {
                 if center < half || center + half >= window.len() {
                     break;
                 }
-                let w0 = f64::from(sinc_lookup(sinc_table, frac.abs() * scale));
-                let Some(&c_frame) = window.get(center) else {
+                // Each tap weighs the sinc at its distance from `x`, one row
+                // over a slice checked once, in f32.
+                let Some(taps) = window.get(center - half..=center + half) else {
                     break;
                 };
-                let mut acc_l = f64::from(c_frame[0]) * w0;
-                let mut acc_r = f64::from(c_frame[1]) * w0;
-                let mut w_sum = w0;
-                for d in 1..=half {
-                    let (Some(&lo_f), Some(&hi_f)) =
-                        (window.get(center - d), window.get(center + d))
-                    else {
-                        break;
-                    };
-                    if frac == 0.0 {
-                        let w = f64::from(sinc_lookup(sinc_table, d as f64 * scale));
-                        acc_l += (f64::from(lo_f[0]) + f64::from(hi_f[0])) * w;
-                        acc_r += (f64::from(lo_f[1]) + f64::from(hi_f[1])) * w;
-                        w_sum += 2.0 * w;
-                    } else {
-                        let w_lo = f64::from(sinc_lookup(sinc_table, (d as f64 + frac) * scale));
-                        let w_hi = f64::from(sinc_lookup(sinc_table, (d as f64 - frac) * scale));
-                        acc_l += f64::from(lo_f[0]) * w_lo + f64::from(hi_f[0]) * w_hi;
-                        acc_r += f64::from(lo_f[1]) * w_lo + f64::from(hi_f[1]) * w_hi;
-                        w_sum += w_lo + w_hi;
-                    }
+                let k = (SINC_TABLE_LEN as f64 / SINC_LOBES as f64 * scale) as f32;
+                let (frac, half) = (frac as f32, half as f32);
+                let (mut acc_l, mut acc_r, mut w_sum) = (0.0f32, 0.0f32, 0.0f32);
+                for (j, t) in taps.iter().enumerate() {
+                    let w = sinc_at(sinc_table, k, (j as f32 - half - frac).abs());
+                    acc_l += t[0] * w;
+                    acc_r += t[1] * w;
+                    w_sum += w;
                 }
                 *frame = if w_sum.abs() > 1e-12 {
-                    [(acc_l / w_sum) as f32, (acc_r / w_sum) as f32]
+                    [acc_l / w_sum, acc_r / w_sum]
                 } else {
                     [0.0, 0.0]
                 };
