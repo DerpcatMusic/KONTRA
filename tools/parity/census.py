@@ -31,11 +31,27 @@ def instruments():
     return sorted(files)
 
 def one(p):
+    """A row for `p`. A silent C3 on a key the script leaves unmapped (outside its playable keys, as
+    Kontakt colours them) is no failure: the row is replayed on the playable key nearest C3."""
+    row=play(p,SCENARIO)
+    keys=row.pop('playable_keys',None)
+    if 'error' not in row and (row.get('rms') or 0)<SILENT and keys and 60 not in keys:
+        key=min(keys,key=lambda k:abs(k-60))
+        ev=json.load(open(SCENARIO))
+        for e in ev['events']:
+            if e.get('key')==60: e['key']=key
+        fd,sc=tempfile.mkstemp(dir=os.path.dirname(OUT),suffix='.scenario.json')
+        with os.fdopen(fd,'w') as f: json.dump(ev,f)
+        try: row=play(p,sc); row.pop('playable_keys',None); row['key']=key
+        finally: os.remove(sc)
+    return row
+
+def play(p,scenario):
     t=time.time()
     fd,tmp=tempfile.mkstemp(dir=os.path.dirname(OUT),suffix='.json'); os.close(fd)
     row={'path':p}
     try:
-        r=subprocess.run(['nice','-n','19',BIN,'play',p,'--scenario',SCENARIO,'--json',tmp],capture_output=True,timeout=300,env={**os.environ,'KONTRA_INSPECT_LEAN':'1'})
+        r=subprocess.run(['nice','-n','19',BIN,'play',p,'--scenario',scenario,'--json',tmp],capture_output=True,timeout=300,env={**os.environ,'KONTRA_INSPECT_LEAN':'1'})
         try: res=json.load(open(tmp))['result']
         except Exception: raise RuntimeError(r.stderr.decode(errors='replace').strip()[-200:] or f'exit {r.returncode}')
         row['diag']=res.get('diagnostics',[])
@@ -48,6 +64,7 @@ def one(p):
         row['complete']=res.get('render_complete')
         row['load_s']=res['load_ms']/1e3 if res.get('load_ms') is not None else None
         row['ui']=res.get('ui_build',[])
+        row['playable_keys']=res.get('playable_keys')
     except Exception as e:
         row['error']=str(e)[:200]
     finally:
