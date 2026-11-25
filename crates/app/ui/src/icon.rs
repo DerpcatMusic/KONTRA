@@ -23,10 +23,8 @@ pub enum Icon {
     Unified,
     /// Tabbed panel: libraries separated by format.
     Separated,
-    /// Collapse every open folder.
-    FoldAll,
-    /// Expand every folded folder.
-    UnfoldAll,
+    /// A folder: a browser row that opens on its contents.
+    Folder,
     Menu,
     Warning,
     Grip,
@@ -119,14 +117,17 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
                 line(&[(8.5, 6.), (8.5, 3.), (13.5, 3.), (13.5, 6.)], false),
                 line(&[(2.5, 6.), (13.5, 6.), (13.5, 13.), (2.5, 13.)], true),
             ],
-            Icon::FoldAll => vec![
-                line(&[(4., 7.5), (8., 4.), (12., 7.5)], false),
-                line(&[(4., 12.), (8., 8.5), (12., 12.)], false),
-            ],
-            Icon::UnfoldAll => vec![
-                line(&[(4., 4.), (8., 7.5), (12., 4.)], false),
-                line(&[(4., 8.5), (8., 12.), (12., 8.5)], false),
-            ],
+            Icon::Folder => vec![line(
+                &[
+                    (2.5, 4.),
+                    (6.5, 4.),
+                    (8., 5.5),
+                    (13.5, 5.5),
+                    (13.5, 12.5),
+                    (2.5, 12.5),
+                ],
+                true,
+            )],
             Icon::Menu => [4.5, 8., 11.5]
                 .map(|y| line(&[(3., y), (13., y)], false))
                 .into(),

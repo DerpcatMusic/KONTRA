@@ -1,11 +1,10 @@
 //! The preset browser: libraries above (search, shelves, sort, filter,
 //! unified/separated format view, grid/cards layout) and the selected
-//! library's presets below as a collapsible folder tree.
+//! library's presets below, drilled into one folder at a time.
 
 use mui::prelude::*;
 
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,9 +24,17 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let top = libraries(ui, app, out);
     let bottom = presets(ui, app, out);
     let edge = split(ui, app);
-    // Percentage height avoids both a 1-frame jump on open/resize and a
-    // flex-share collapse when the presets list is taller than the column.
-    let top = top.h(Len::Pct(shared(app.view.split) * 100.)).shrink(0);
+    // A dragged split holds its share (a percentage: no 1-frame jump on
+    // open or resize). At rest the libraries take what they need, up to the
+    // default share, and the presets fill the rest.
+    let top = match (app.view.split > 0., column_height(ui)) {
+        (true, _) | (false, None) => top.h(Len::Pct(shared(app.view.split) * 100.)),
+        (false, Some(h)) => top.max_size(Size::new(
+            super::browser_width(&app.view, app.width),
+            h * SPLIT,
+        )),
+    }
+    .shrink(0);
     col![top, edge, bottom.grow(1).min_h(0)]
         .h(Len::Pct(100.))
         .id("browser-column")
@@ -60,7 +67,15 @@ fn split(ui: &mut Ui, app: &mut App) -> El {
     let r = ui.get(id);
     let height = column_height(ui).unwrap_or(600.);
     if r.dragged {
-        let now = shared(app.view.split) + r.drag_delta.y / height.max(1.);
+        // From where the edge is: at rest the libraries may hold less than
+        // the default share.
+        let at = (ui.scene())
+            .filter(|_| app.view.split <= 0.)
+            .and_then(|s| Some((s.surface(id)?.frame.y, s.surface("browser-column")?.frame.y)))
+            .map_or(shared(app.view.split), |(edge, top)| {
+                (edge - top) / height.max(1.)
+            });
+        let now = at + r.drag_delta.y / height.max(1.);
         app.view.split = now.clamp(SPLIT_MIN, SPLIT_MAX);
     }
     if r.double_clicked {
@@ -249,36 +264,48 @@ fn shelf_chip(
     (interactive(el), changed)
 }
 
-/// A format filter: a small pill with its count, lit when current.
-fn format_chip(ui: &mut Ui, id: &str, label: &str, count: usize, current: bool) -> (El, bool) {
+/// A format filter: a flat tag with its count, a subtle fill at rest and a
+/// stronger one when current; no outline.
+fn format_chip(
+    ui: &mut Ui,
+    id: &str,
+    label: &str,
+    count: Option<usize>,
+    current: bool,
+) -> (El, bool) {
     let hit = ui.get(id).activated();
     let ink = if current {
         Fill::from(Role::Ink)
     } else {
         secondary()
     };
-    let el = row![
+    let mut parts = vec![
         caption(label.to_owned())
             .text_size(SMALL)
             .fill(ink)
             .lines(1),
-        caption(count.to_string())
+    ];
+    parts.extend(count.map(|n| {
+        caption(n.to_string())
             .text_size(SMALL * 0.9)
             .fill(secondary())
-            .lines(1),
-    ]
-    .gap(TIGHT * 0.75)
-    .align(Align::Center)
-    .pad((TIGHT * 1.5, TIGHT * 0.5))
-    .pill()
-    .shrink(0)
-    .when(current, |e| {
-        e.fill(Role::Raised).stroke(accent()).stroke_width(HAIR)
-    })
-    .focusable()
-    .a11y(A11y::Button)
-    .named(format!("{label} ({count})"))
-    .id(id.to_owned());
+            .lines(1)
+    }));
+    let named = match count {
+        Some(n) => format!("{label} ({n})"),
+        None => label.to_owned(),
+    };
+    let el = row(parts)
+        .gap(TIGHT)
+        .align(Align::Center)
+        .pad((TIGHT * 1.5, TIGHT))
+        .radius(NOTCH)
+        .shrink(0)
+        .fill(Role::Ink.alpha(if current { 0.16 } else { 0.05 }))
+        .focusable()
+        .a11y(A11y::Button)
+        .named(named)
+        .id(id.to_owned());
     (interactive(el), hit)
 }
 
@@ -437,19 +464,13 @@ fn libraries(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         };
     }
 
-    // Unified vs separated: "All formats" is the unified list, a format tab
-    // separates the libraries down to that format.
+    // Unified vs separated: a small "All" first is the unified list, a
+    // format tag separates the libraries down to that format.
     let format_bar = {
         let count = |f: Format| app.libraries.iter().filter(|l| l.format == f).count();
         let unified = v.library_view == LibraryView::Unified;
         let mut chips = Vec::new();
-        let (all, hit) = format_chip(
-            ui,
-            "format-All",
-            "All formats",
-            app.libraries.len(),
-            unified,
-        );
+        let (all, hit) = format_chip(ui, "format-All", "All", None, unified);
         if hit {
             v.library_view = LibraryView::Unified;
         }
@@ -460,7 +481,7 @@ fn libraries(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
                 ui,
                 &format!("format-{label}"),
                 label,
-                count(format),
+                Some(count(format)),
                 current,
             );
             if hit && !current {
@@ -504,7 +525,7 @@ fn libraries(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         ]
         .gap(SPACE)
         .align(Align::Center)
-        .pad(kit::edges(0., SPACE, 0., SPACE))
+        .pad((SPACE, TIGHT))
     });
     // Search, then the shelves (the primary scope) with their view
     // options, then the format filter: one gap between the three.
@@ -605,7 +626,7 @@ pub(super) fn scan_folder(f: &super::LibraryFolder, control: Option<El>) -> El {
         lines.push(caption(hint.clone()).fill(secondary()).min_w(0));
     }
     col(lines)
-        .gap(HAIR)
+        .gap(NOTCH)
         .align(Align::Stretch)
         .min_w(0)
         .w(Len::Pct(100.))
@@ -640,8 +661,8 @@ fn empty(ui: &mut Ui, app: &App, out: &mut Vec<Action>) -> El {
 /// A library card's width over its height, one to a row: the picture
 /// reads large.
 const CARD: f64 = 4.;
-/// A grid tile's, two to a row: about ten libraries show at once.
-const TILE: f64 = 2.75;
+/// A grid tile's, two to a row at the sidebar's width.
+const TILE: f64 = 2.;
 /// Outer breathing room around the library grid so edge cards can pop out
 /// slightly without clipping.
 const GRID_PAD: f64 = NOTCH;
@@ -843,7 +864,9 @@ fn library_grid_content(ui: &mut Ui, app: &mut App, starred_only: bool) -> Optio
     let tile_w = SIDEBAR / fit as f64;
     let per_row = (((inner_w + GRID_GAP) / (tile_w + GRID_GAP)).floor() as usize).max(fit);
     let cell_w = (inner_w - GRID_GAP * (per_row.saturating_sub(1)) as f64) / per_row as f64;
-    let height = tile_w / ratio;
+    // A tile's height follows its cell's width, never below what its name,
+    // count and badges need.
+    let height = (cell_w / ratio).max(CONTROL * 2.5);
 
     let ids: Vec<String> = shown
         .iter()
@@ -1007,6 +1030,7 @@ fn library_grid_content(ui: &mut Ui, app: &mut App, starred_only: bool) -> Optio
     if let Some(n) = picked {
         if v.library != Some(n) {
             v.preset_search.clear();
+            v.folder.clear();
         }
         v.library = Some(n);
         let last = v.last.iter().find(|l| l.0 == n).copied();
@@ -1170,9 +1194,9 @@ fn card(
         pop,
         dim,
     } = state;
-    let small = height < SIDEBAR / CARD;
+    let small = height < CONTROL * 3.;
     let (size, pad) = if small {
-        (SMALL, TIGHT * 1.5)
+        (TEXT, TIGHT * 1.5)
     } else {
         (TEXT * 1.15, SPACE)
     };
@@ -1189,7 +1213,7 @@ fn card(
             .fill(Color::srgb(0.88, 0.88, 0.88))
             .shrink(0),
     ]
-    .gap(TIGHT)
+    .gap(SPACE)
     .align(Align::Center);
 
     let mut top_badges = Vec::new();
@@ -1228,7 +1252,7 @@ fn card(
         let mut top_row = vec![spacer()];
         top_row.extend(top_badges);
         inner.push(row(top_row).gap(TIGHT * 0.75).align(Align::Center));
-        TIGHT
+        pad
     };
     inner.push(spacer());
     inner.push(foot);
@@ -1236,7 +1260,7 @@ fn card(
     let label = row![
         mark,
         col(inner)
-            .pad(kit::edges(top_pad, pad, TIGHT * 1.5, pad))
+            .pad(kit::edges(top_pad, pad, pad, pad))
             .grow(1)
             .min_w(0)
             .h(Len::Pct(100.)),
@@ -1366,7 +1390,7 @@ fn recent(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
 }
 
 /// The chosen library's presets under a compact single-row header (no
-/// duplicate cover banner), grouped into collapsible folders.
+/// duplicate cover banner), one folder at a time.
 fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let loading = app.loading.is_some();
     let load_label = format!("{} %", app.load_progress.percent);
@@ -1422,104 +1446,113 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let shown = tidy::presets(&l.name, &l.presets);
     let loaded: Vec<&str> = app.parts.iter().map(|p| p.name.as_str()).collect();
 
-    let mut folders: Vec<Folder<'_>> = Vec::new();
-    let mut folder_keys: BTreeSet<String> = BTreeSet::new();
+    // A library opened again walks to its last pick's folder; a folder a
+    // rescan emptied walks back to the top.
+    if v.reveal
+        && let Some(s) = (v.picked.filter(|p| p.0 == lib)).and_then(|p| shown.get(p.1))
+    {
+        v.folder.clone_from(&s.crumbs);
+    }
+    if !shown.iter().any(|s| s.crumbs.starts_with(&v.folder)) {
+        v.folder.clear();
+    }
+    let depth = v.folder.len();
+    // Here: its subfolders (each with how many presets it holds, in the
+    // library's order), then its own presets. A search lists every hit in
+    // the library, flat, each with its folder.
+    let mut subfolders: Vec<(&str, usize)> = Vec::new();
+    let mut hits: Vec<(usize, &tidy::Shown)> = Vec::new();
     for (n, s) in shown.iter().enumerate() {
-        if !s.crumbs.is_empty() {
-            folder_keys.insert(s.crumbs.join("/"));
-        }
-        let mut texts: Vec<&str> = s.crumbs.iter().map(String::as_str).collect();
-        texts.push(&s.name);
-        if !found(&texts, &query) {
+        if !query.is_empty() {
+            let mut texts: Vec<&str> = s.crumbs.iter().map(String::as_str).collect();
+            texts.push(&s.name);
+            if found(&texts, &query) {
+                hits.push((n, s));
+            }
             continue;
         }
-        match folders.iter_mut().find(|f| f.0 == s.crumbs.as_slice()) {
-            Some(f) => f.1.push((n, s)),
-            None => folders.push((&s.crumbs, vec![(n, s)])),
+        if !s.crumbs.starts_with(&v.folder) {
+            continue;
+        }
+        match s.crumbs.get(depth) {
+            Some(sub) => match subfolders.iter_mut().find(|f| f.0 == sub) {
+                Some(f) => f.1 += 1,
+                None => subfolders.push((sub, 1)),
+            },
+            None => hits.push((n, s)),
         }
     }
 
-    // Collapse / expand all folders button in the slim header when the library
-    // has folders and no search query is forcing them open.
-    let all_folded = !folder_keys.is_empty() && folder_keys.iter().all(|k| v.folded.contains(k));
-    let fold_all = (!folder_keys.is_empty() && query.is_empty()).then(|| {
-        let (icon, tip) = if all_folded {
-            (Icon::UnfoldAll, "Expand all folders")
-        } else {
-            (Icon::FoldAll, "Collapse all folders")
-        };
-        let b = icon_button(ui, "preset-fold-all", icon, tip, all_folded);
-        if b.changed {
-            if all_folded {
-                v.folded.retain(|k| !folder_keys.contains(k));
-            } else {
-                for key in &folder_keys {
-                    if !v.folded.contains(key) {
-                        v.folded.push(key.clone());
-                    }
-                }
-            }
-        }
-        b.el
-    });
-
-    let matched: usize = folders.iter().map(|f| f.1.len()).sum();
+    let matched = hits.len();
     let mut rows = Vec::new();
-    let mut order: Vec<(usize, usize)> = Vec::new();
-    let mut fold = None;
+    // Each row the keys walk: its id, its preset (none for a folder), its
+    // top in the list and its height.
+    let mut order: Vec<(String, Option<usize>, f64, f64)> = Vec::new();
+    let mut y = 0.;
+    let mut open = None;
+    if depth > 0 && query.is_empty() {
+        let id = "folder-up";
+        if ui.get(id).activated() {
+            open = v.folder.split_last().map(|(_, up)| up.to_vec());
+        }
+        rows.push(back_row(id, tidy::library(&l.name), &v.folder));
+        order.push((id.to_owned(), None, y, FOLDER));
+        y += FOLDER;
+    }
+    for &(name, count) in &subfolders {
+        let mut path = v.folder.clone();
+        path.push(name.to_owned());
+        let id = format!("folder-{}", path.join("/"));
+        if ui.get(id.as_str()).activated() {
+            open = Some(path.clone());
+        }
+        rows.push(folder_row(&id, name, &path, count));
+        order.push((id, None, y, FOLDER));
+        y += FOLDER;
+    }
     let mut starred = None;
-    for (crumbs, items) in &folders {
-        let key = crumbs.join("/");
-        if !crumbs.is_empty() {
-            let id = format!("folder-{key}");
-            // A search opens every folder its hits are in.
-            let shut = query.is_empty() && v.folded.contains(&key);
-            if ui.get(id.as_str()).activated() {
-                fold = Some(key.clone());
+    for &(n, s) in &hits {
+        let id = format!("preset-{n}");
+        let at = (lib, n);
+        let path = l.presets.get(n).map_or("", String::as_str);
+        let file = path.rsplit('/').next().unwrap_or(path);
+        let on = loaded.contains(&file) || v.picked == Some(at);
+        let busy = loading && v.picked == Some(at);
+        let place = s.crumbs.join(" \u{203a} ");
+        let detail = match (busy, query.is_empty()) {
+            (true, _) => load_label.as_str(),
+            (false, false) => place.as_str(),
+            (false, true) => "",
+        };
+        order.push((id.clone(), Some(n), y, CONTROL));
+        y += CONTROL;
+        let row = preset_row(&id, (&s.name, path, detail), &query, on);
+        pick(
+            ui,
+            &id,
+            (&mut v.picked, &mut v.clicked),
+            at,
+            into,
+            loading,
+            out,
+        );
+        let fav = l.favorites.contains(&n);
+        let star = (v.picked == Some(at) || fav).then(|| {
+            let tip = if fav {
+                "Unstar this preset"
+            } else {
+                "Star this preset"
+            };
+            let b = icon_button(ui, format!("fav-{n}"), Icon::Star, tip, fav);
+            if b.changed {
+                starred = Some((n, !fav));
             }
-            rows.push(folder_row(id, crumbs, items.len(), shut));
-            if shut {
-                continue;
-            }
-        }
-        for &(n, s) in items {
-            let id = format!("preset-{n}");
-            let at = (lib, n);
-            let path = l.presets.get(n).map_or("", String::as_str);
-            let file = path.rsplit('/').next().unwrap_or(path);
-            let on = loaded.contains(&file) || v.picked == Some(at);
-            let busy = loading && v.picked == Some(at);
-            let detail = if busy { load_label.as_str() } else { "" };
-            order.push((n, rows.len()));
-            let indent = if crumbs.is_empty() { SPACE } else { SPACE * 2. };
-            let row = preset_row(&id, (&s.name, path, detail), &query, on, indent);
-            pick(
-                ui,
-                &id,
-                (&mut v.picked, &mut v.clicked),
-                at,
-                into,
-                loading,
-                out,
-            );
-            let fav = l.favorites.contains(&n);
-            let star = (v.picked == Some(at) || fav).then(|| {
-                let tip = if fav {
-                    "Unstar this preset"
-                } else {
-                    "Star this preset"
-                };
-                let b = icon_button(ui, format!("fav-{n}"), Icon::Star, tip, fav);
-                if b.changed {
-                    starred = Some((n, !fav));
-                }
-                b.el
-            });
-            rows.push(match star {
-                Some(star) => row![row.grow(1).min_w(0), star].align(Align::Center),
-                None => row,
-            });
-        }
+            b.el
+        });
+        rows.push(match star {
+            Some(star) => row![row.grow(1).min_w(0), star].align(Align::Center),
+            None => row,
+        });
     }
     if let Some((n, on)) = starred {
         l.favorites.retain(|&f| f != n);
@@ -1528,46 +1561,45 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         }
         out.push(Action::StarPreset(lib, n, on));
     }
-    if let Some(f) = fold {
-        match v.folded.iter().position(|x| *x == f) {
-            Some(at) => {
-                v.folded.remove(at);
-            }
-            None => v.folded.push(f),
-        }
-    }
 
     // Keys: Down from the field into the list, Up and Down along it
-    // (selecting as they go), Enter loads (`pick`), typing searches.
+    // (selecting presets as they go), Left back up a folder, Enter opens a
+    // folder or loads (`pick`), typing searches.
     let mut to = (ui.keys("preset-search").iter())
         .any(|k| k.key == Key::Down)
         .then_some(0);
     let mut typed = String::new();
-    for (k, &(n, _)) in order.iter().enumerate() {
-        let id = format!("preset-{n}");
+    for (k, (id, _, _, _)) in order.iter().enumerate() {
         for key in ui.keys(id.as_str()) {
             match key.key {
                 Key::Down => to = Some(k + 1),
                 Key::Up => to = k.checked_sub(1),
+                Key::Left if query.is_empty() && depth > 0 => {
+                    open = v.folder.split_last().map(|(_, up)| up.to_vec());
+                }
                 _ => {}
             }
         }
         typed.push_str(ui.text(id.as_str()));
     }
     type_into(ui, "preset-search", &mut v.preset_search, &typed);
-    if let Some(&(n, row)) = to.and_then(|k| order.get(k)) {
-        v.picked = Some((lib, n));
-        ui.focus(format!("preset-{n}"));
-        follow(ui, "preset-list", row as f64 * CONTROL, CONTROL);
+    if let Some((id, n, top, h)) = to.and_then(|k| order.get(k)) {
+        if let Some(n) = n {
+            v.picked = Some((lib, *n));
+        }
+        ui.focus(id.as_str());
+        follow(ui, "preset-list", *top, *h);
+    }
+    if let Some(path) = open {
+        v.folder = path;
+        ui.set_scroll("preset-list", [0., 0.]);
     }
     // A library opened again shows its last pick once its scene is ready, then
     // clears the flag so it never fights the user's subsequent scrolling.
     if v.reveal && ui.scene().is_some() {
         let want = v.picked.filter(|p| p.0 == lib).map(|p| p.1);
-        let at = order.iter().find(|o| Some(o.0) == want).or(order.first());
-        if let Some(&(_, row)) = at {
-            let y = (row as f64 - 3.).max(0.) * CONTROL;
-            ui.set_scroll("preset-list", [0., y]);
+        if let Some((_, _, top, _)) = order.iter().find(|o| o.1.is_some() && o.1 == want) {
+            ui.set_scroll("preset-list", [0., (top - CONTROL * 3.).max(0.)]);
         }
         v.reveal = false;
     }
@@ -1617,9 +1649,6 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         .shrink(0)
         .id("library-protection-badge");
         head_items.push(pill);
-    }
-    if let Some(fold_btn) = fold_all {
-        head_items.push(fold_btn);
     }
     if let Some(why) = &l.offline {
         head_items.push(
@@ -1684,64 +1713,89 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     col![header, search_el, list]
 }
 
-/// A folder's path and its presets, as (index, shown).
-type Folder<'a> = (&'a [String], Vec<(usize, &'a tidy::Shown)>);
+/// A folder row's height: a step taller than a preset's.
+const FOLDER: f64 = CONTROL + TIGHT;
 
-/// A folder's header: its path as breadcrumbs, the folder itself brightest.
-fn folder_row(id: String, crumbs: &[String], count: usize, shut: bool) -> El {
-    let chevron = if shut { Icon::Right } else { Icon::Down };
-    let mut parts = vec![glyph(chevron, TEXT * 0.8, secondary())];
-    if let Some((last, parents)) = crumbs.split_last() {
-        // Deep paths keep their two nearest folders; the tooltip has all.
-        if parents.len() > 1 {
-            parts.push(caption("…").fill(secondary()).shrink(0));
-            parts.push(caption("›").fill(secondary()).shrink(0));
-        }
-        if let Some(p) = parents.last() {
-            parts.push(
-                caption(p.clone())
-                    .fill(secondary())
-                    .lines(1)
-                    .min_w(0)
-                    .shrink(3),
-            );
-            parts.push(caption("›").fill(secondary()).shrink(0));
-        }
-        parts.push(
-            body(last.clone())
-                .text_size(SMALL)
+/// A folder here: its icon, its name a size up and bold, how many presets
+/// it holds. A click opens it.
+fn folder_row(id: &str, name: &str, path: &[String], count: usize) -> El {
+    interactive(
+        row![
+            glyph(Icon::Folder, TEXT, secondary()),
+            body(name.to_owned())
+                .text_size(TEXT + HAIR)
                 .text_weight(Weight::SEMIBOLD)
+                .fill(Role::Ink)
                 .lines(1)
                 .min_w(0)
                 .grow(1),
-        );
+            caption(count.to_string()).fill(secondary()).shrink(0),
+        ]
+        .gap(SPACE)
+        .align(Align::Center)
+        .h(FOLDER)
+        .w(Len::Pct(100.))
+        .pad((SPACE, 0.)),
+    )
+    .focusable()
+    .a11y(A11y::Button)
+    .named(name.to_owned())
+    .tip(path.join(" \u{203a} "))
+    .id(id.to_owned())
+}
+
+/// The breadcrumb over a folder's contents: back, then the path from the
+/// library down, the folder itself brightest. A click walks up one.
+fn back_row(id: &str, library: &str, path: &[String]) -> El {
+    let mut parts = vec![glyph(Icon::Left, TEXT, secondary())];
+    let Some((here, parents)) = path.split_last() else {
+        return spacer();
+    };
+    // Deep paths keep the nearest parent; the tooltip has all of it.
+    let parent = parents.last().map_or(library, String::as_str);
+    if parents.len() > 1 {
+        parts.push(caption("\u{2026} \u{203a}").fill(secondary()).shrink(0));
     }
-    parts.push(caption(count.to_string()).fill(secondary()).shrink(0));
-    let path = crumbs.join(" › ");
+    parts.push(
+        caption(parent.to_owned())
+            .fill(secondary())
+            .lines(1)
+            .min_w(0)
+            .shrink(3),
+    );
+    parts.push(caption("\u{203a}").fill(secondary()).shrink(0));
+    parts.push(
+        body(here.clone())
+            .text_size(TEXT + HAIR)
+            .text_weight(Weight::SEMIBOLD)
+            .fill(Role::Ink)
+            .lines(1)
+            .min_w(0)
+            .grow(1),
+    );
+    let whole = std::iter::once(library)
+        .chain(path.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" \u{203a} ");
     interactive(
         row(parts)
             .gap(TIGHT)
             .align(Align::Center)
-            .h(CONTROL)
+            .h(FOLDER)
             .w(Len::Pct(100.))
-            .pad(kit::edges(0., SPACE, 0., SPACE)),
+            .pad((SPACE, 0.))
+            .fill(Role::Ink.alpha(0.04)),
     )
     .focusable()
     .a11y(A11y::Button)
-    .named(path.clone())
-    .tip(path)
-    .id(id)
+    .named(format!("Back to {parent}"))
+    .tip(whole)
+    .id(id.to_owned())
 }
 
 /// A preset's row: its name with the search's hits marked, the load's
-/// progress at its end; `path` is its tooltip.
-fn preset_row(
-    id: &str,
-    (name, path, detail): (&str, &str, &str),
-    query: &str,
-    on: bool,
-    indent: f64,
-) -> El {
+/// progress (or, in a search, its folder) at its end; `path` is its tooltip.
+fn preset_row(id: &str, (name, path, detail): (&str, &str, &str), query: &str, on: bool) -> El {
     let mark = block(NOTCH, Len::Pct(100.)).fill(if on {
         Fill::from(accent())
     } else {
@@ -1755,9 +1809,10 @@ fn preset_row(
         caption(detail.to_owned())
             .fill(secondary())
             .lines(1)
-            .shrink(0),
+            .min_w(0)
+            .shrink(2),
     ]
-    .gap(indent - 2.)
+    .gap(SPACE - NOTCH)
     .align(Align::Center)
     .pad(kit::edges(0., SPACE, 0., 0.))
     .h(CONTROL)

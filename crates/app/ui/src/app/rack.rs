@@ -63,16 +63,26 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             });
         }
         let over = ui.get(id.as_str()).drop_target && ui.dragging::<Carried>().is_some();
-        let head = band(header(ui, app, n, out), art.clone(), 0);
+        let open = app.parts.get(n).is_some_and(|p| p.open);
+        // One header, one or two rows: a single colour edge and artwork
+        // behind both, the tabs under the name, no seam between them.
+        let head = header(ui, app, n, out).h(ROW).shrink(1).min_w(0);
+        let head = if open {
+            col![head, tabs(ui, app, n, out).h(ROW).shrink(1).min_w(0)]
+        } else {
+            head
+        };
+        let edge = block(MARK, Len::Pct(100.))
+            .fill(Fill::from(part_color(n)))
+            .shrink(0);
+        let rows = if open { 2 } else { 1 };
         strips.push(
-            head.when(over, |e| e.stroke(Role::Ink).stroke_width(HAIR))
+            band(row![edge, head.grow(1).min_w(0)].gap(TIGHT), art, rows)
+                .when(over, |e| e.stroke(Role::Ink).stroke_width(HAIR))
                 .id(id),
         );
-        if app.parts.get(n).is_some_and(|p| p.open) {
-            strips.push(band(tabs(ui, app, n, out), art, 1));
-            if let Some(p) = app.parts.get_mut(n) {
-                strips.push(part::view(ui, p, n, (room, height), &mut app.view, out));
-            }
+        if open && let Some(p) = app.parts.get_mut(n) {
+            strips.push(part::view(ui, p, n, (room, height), &mut app.view, out));
         }
         strips.push(rule());
     }
@@ -80,7 +90,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if app.loading == Some(super::Loading::New) {
         let stripe = block(MARK, Len::Pct(100.)).fill(lift(3)).shrink(0);
         let row = row![stripe, chip(app.load_progress)].gap(SPACE);
-        strips.push(band(row, None, 0));
+        strips.push(band(row, None, 1));
         strips.push(rule());
     }
     strips.push(foot(ui, app));
@@ -127,11 +137,10 @@ fn art(app: &mut App, n: usize) -> Option<Arc<Image>> {
     super::browser::cover(app.banners.as_mut()?, lib, art)
 }
 
-/// Header row `row` (0 or 1) of a part on its library's artwork, as v2
-/// drew it: both rows show one two-row image, offset, so the header reads
-/// as one surface; the names sit on a wash that fades out quickly.
-fn band(content: El, art: Option<Arc<Image>>, row: u8) -> El {
-    let y = -f64::from(row) * ROW;
+/// A part's header, `rows` rows tall, on its library's artwork, as v2 drew
+/// it: one image behind both rows, so the header reads as one surface; the
+/// names sit on a wash that fades out quickly.
+fn band(content: El, art: Option<Arc<Image>>, rows: u8) -> El {
     let mut layers = Vec::new();
     if let Some(img) = art {
         // v2's light wash over the dimmed banner, fading out quickly.
@@ -146,14 +155,14 @@ fn band(content: El, art: Option<Arc<Image>>, row: u8) -> El {
         layers.push(
             block(BANNER, ROW * 2.)
                 .fill(Fill::Image(img, Fit::Cover))
-                .at(0., y),
+                .at(0., 0.),
         );
-        layers.push(block(BANNER * 0.75, ROW * 2.).fill(wash).at(0., y));
+        layers.push(block(BANNER * 0.75, ROW * 2.).fill(wash).at(0., 0.));
     }
     layers.push(content.w(Len::Pct(100.)).h(Len::Pct(100.)));
     stack(layers)
         .w(Len::Pct(100.))
-        .h(ROW)
+        .h(ROW * f64::from(rows))
         .fill(Role::Surface)
         .clip()
         .shrink(0)
@@ -443,11 +452,7 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
     if close.changed {
         out.push(Action::Remove(n));
     }
-    let edge = block(MARK, CONTROL + 2. * TIGHT)
-        .fill(Fill::from(part_color(n)))
-        .shrink(0);
     let mut items = vec![
-        edge,
         fold.el,
         name,
         preset.el.w(TEXT * 16.).min_w(CONTROL * 4.).shrink(1),
@@ -503,11 +508,8 @@ fn tabs(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
     let Some(p) = app.parts.get_mut(n) else {
         return spacer();
     };
-    let mut items = vec![
-        block(MARK, CONTROL)
-            .fill(Fill::from(part_color(n)))
-            .shrink(0),
-    ];
+    // Under the name: past the fold chevron.
+    let mut items = vec![block(CONTROL, 0).shrink(0)];
     for (which, label, there) in [
         (PartTab::Interface, "Interface", p.face.is_some()),
         (

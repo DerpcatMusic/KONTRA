@@ -410,12 +410,20 @@ fn a_preset_dragged_onto_a_part_replaces_it_and_onto_free_space_adds_one() {
 fn the_browser_split_drags_and_keeps_its_share() {
     let mut ui = kontra_ui::ui();
     let mut app = App::default();
+    // The first frame has no column to share out; the second fits it.
+    settle(&mut ui, &mut app);
     settle(&mut ui, &mut app);
     let at = (ui.scene())
         .and_then(|s| s.surface("browser-split"))
         .map(|s| s.frame);
     assert!(at.is_some(), "the browser has a split edge");
     let Some(f) = at else { return };
+    // At rest the libraries hold only what they need: the drag starts there.
+    let column = (ui.scene())
+        .and_then(|s| s.surface("browser-column"))
+        .map(|s| s.frame);
+    let Some(column) = column else { return };
+    let start = (f.y - column.y) / column.size.height;
     let (x, y) = (f.x + f.size.width / 2., f.y + f.size.height / 2.);
     for k in 0..=10 {
         let pointer = PointerInput {
@@ -433,7 +441,12 @@ fn the_browser_split_drags_and_keeps_its_share() {
         };
         frame(&mut ui, &mut app, input);
     }
-    assert!(app.view.split > 0.55, "dragged down: {}", app.view.split);
+    let moved = 90. / column.size.height;
+    assert!(
+        (app.view.split - (start + moved).min(0.7)).abs() < 0.02,
+        "dragged down from {start}: {}",
+        app.view.split
+    );
     assert!(
         app.view.split <= 0.7,
         "held to v2's bound: {}",
@@ -468,11 +481,14 @@ fn a_double_click_names_the_focused_part() {
         preset,
         into,
     };
+    // The snapshot is in its folder; the instrument is at the top.
+    click(&mut ui, &mut app, "folder-Snapshots");
     click(&mut ui, &mut app, "preset-0");
     assert_eq!(
         clicks(&mut ui, &mut app, "preset-0", 2),
         vec![load(0, Some(0))]
     );
+    click(&mut ui, &mut app, "folder-up");
     click(&mut ui, &mut app, "preset-1");
     assert_eq!(
         clicks(&mut ui, &mut app, "preset-1", 2),
@@ -847,7 +863,7 @@ fn unified_and_separated_library_views_filter_and_sort_cleanly() {
     };
     settle(&mut ui, &mut app);
 
-    // Default is Unified ("All formats"): every format appears together, and
+    // Default is Unified ("All"): every format appears together, and
     // the format tabs that separate them are always on screen.
     assert_eq!(app.view.library_view, app::LibraryView::Unified);
     assert!(ui.scene().and_then(|s| s.surface("library-0")).is_some());
@@ -879,7 +895,7 @@ fn unified_and_separated_library_views_filter_and_sort_cleanly() {
     assert!(ui.scene().and_then(|s| s.surface("library-1")).is_some());
     assert!(ui.scene().and_then(|s| s.surface("library-2")).is_some());
 
-    // "All formats" unifies again.
+    // "All" unifies again.
     click(&mut ui, &mut app, "format-All");
     assert_eq!(app.view.library_view, app::LibraryView::Unified);
     assert!(ui.scene().and_then(|s| s.surface("library-0")).is_some());
@@ -994,12 +1010,6 @@ fn selected_and_hovered_library_pops_out_over_siblings_without_duplicate_banner(
         "preset header should be compact instead of an 88px banner, got {}",
         header.frame.size.height
     );
-
-    // Collapse-all button folds every folder in the selected library.
-    click(&mut ui, &mut app, "preset-fold-all");
-    assert!(!app.view.folded.is_empty(), "folders should fold");
-    click(&mut ui, &mut app, "preset-fold-all");
-    assert!(app.view.folded.is_empty(), "folders should unfold");
 
     // Hovering a different library pops it out too.
     let target = ui
@@ -1562,4 +1572,131 @@ fn a_wider_window_reflows_and_keeps_the_text_size() {
     assert!((text - text2).abs() < 0.5, "tab text {text} → {text2}");
     assert!(browser2 > browser + 100., "browser {browser} → {browser2}");
     assert!(per_row2 > per_row, "tiles per row {per_row} → {per_row2}");
+}
+
+/// A surface's frame in the last layout, as (x, y, width, height).
+fn surface(ui: &Ui, id: &str) -> Option<(f64, f64, f64, f64)> {
+    let f = ui.scene()?.surface(id)?.frame;
+    Some((f.x, f.y, f.size.width, f.size.height))
+}
+
+#[test]
+fn a_library_drills_down_folder_by_folder() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App {
+        libraries: vec![Library {
+            name: "Brass".into(),
+            format: Format::Kontakt,
+            presets: vec![
+                "Instruments/Horns/2 Horns".into(),
+                "Instruments/Trumpet".into(),
+                "Warm/Tubas".into(),
+                "Loose".into(),
+            ],
+            ..Library::default()
+        }],
+        ..App::default()
+    };
+    settle(&mut ui, &mut app);
+    click(&mut ui, &mut app, "library-0");
+    // The top: its two folders and its loose preset, nothing deeper.
+    assert!(surface(&ui, "folder-Instruments").is_some());
+    assert!(surface(&ui, "folder-Warm").is_some());
+    assert!(surface(&ui, "preset-3").is_some());
+    assert!(surface(&ui, "preset-0").is_none() && surface(&ui, "preset-1").is_none());
+    assert!(surface(&ui, "folder-up").is_none());
+
+    // A folder row stands out from a preset row: taller, bolder, bigger.
+    let (folder, preset) = (
+        surface(&ui, "folder-Instruments").unwrap_or_default(),
+        surface(&ui, "preset-3").unwrap_or_default(),
+    );
+    assert!(folder.3 > preset.3, "{folder:?} {preset:?}");
+
+    click(&mut ui, &mut app, "folder-Instruments");
+    assert_eq!(app.view.folder, ["Instruments"]);
+    assert!(surface(&ui, "folder-Instruments/Horns").is_some());
+    assert!(surface(&ui, "preset-1").is_some());
+    assert!(surface(&ui, "preset-0").is_none() && surface(&ui, "preset-3").is_none());
+
+    click(&mut ui, &mut app, "folder-Instruments/Horns");
+    assert!(surface(&ui, "preset-0").is_some());
+    click(&mut ui, &mut app, "folder-up");
+    click(&mut ui, &mut app, "folder-up");
+    assert!(app.view.folder.is_empty());
+    assert!(surface(&ui, "folder-Warm").is_some());
+
+    // A search lists its hits at any depth, flat, with no folders.
+    app.view.preset_search = "Horns".into();
+    settle(&mut ui, &mut app);
+    assert!(surface(&ui, "preset-0").is_some());
+    assert!(surface(&ui, "folder-Instruments").is_none());
+}
+
+#[test]
+fn the_browser_runs_full_height_and_the_keys_are_a_thin_strip_under_the_rack() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App {
+        libraries: vec![Library {
+            name: "Areia".into(),
+            format: Format::Kontakt,
+            presets: vec!["Violins".into()],
+            ..Library::default()
+        }],
+        ..App::default()
+    };
+    settle(&mut ui, &mut app);
+    let (browser, bed) = (
+        surface(&ui, "browser-column").unwrap_or_default(),
+        surface(&ui, "keybed").unwrap_or_default(),
+    );
+    assert!(
+        bed.3 > 0. && bed.3 <= kontra_ui::theme::CONTROL * 2.,
+        "{bed:?}"
+    );
+    assert!(
+        bed.0 >= browser.0 + browser.2,
+        "keys under the browser: {bed:?} {browser:?}"
+    );
+    assert!(
+        browser.1 + browser.3 >= 600. - 1.,
+        "browser stops short: {browser:?}"
+    );
+}
+
+#[test]
+fn the_scan_line_sits_below_the_format_tags() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App {
+        libraries: vec![
+            Library {
+                name: "Areia".into(),
+                format: Format::Kontakt,
+                ..Library::default()
+            },
+            Library {
+                name: "Cameo".into(),
+                format: Format::Uvi,
+                ..Library::default()
+            },
+        ],
+        scan: Some(app::ScanProgress {
+            folder: "Native Instruments Komplete 15 Collector's Edition Libraries".into(),
+            files: 1204,
+            found: 6,
+            machine: false,
+        }),
+        ..App::default()
+    };
+    settle(&mut ui, &mut app);
+    settle(&mut ui, &mut app);
+    let scan = surface(&ui, "scan-progress").unwrap_or_default();
+    assert!(scan.3 > 0., "no scan line");
+    for tag in ["format-All", "format-Kontakt", "format-Falcon / UVI"] {
+        let t = surface(&ui, tag).unwrap_or_default();
+        assert!(
+            t.1 + t.3 <= scan.1 + 0.5,
+            "{tag} {t:?} overlaps the scan line {scan:?}"
+        );
+    }
 }

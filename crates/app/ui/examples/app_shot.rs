@@ -399,6 +399,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         s.save("scanning")?;
         s.app.scan = None;
         s.scroll("library-list")?;
+        s.click("folder-Instruments")?;
+        s.save("folder")?;
         s.click("preset-0")?;
         s.app.loading = Some(app::Loading::New);
         s.app.load_progress = kontra_protocol::LoadSnapshot {

@@ -5,7 +5,7 @@ use mui::prelude::*;
 
 use super::{Action, App, Build, Presentation, SCALES, Sheet};
 use crate::kit::{self, Icon, button, icon_button, interactive, latch, rule, section};
-use crate::theme::{self, CONTROL, HAIR, Look, SPACE, TEXT, TIGHT, TOKENS, secondary};
+use crate::theme::{self, CONTROL, HAIR, INSET, Look, SPACE, TEXT, TIGHT, TOKENS, secondary};
 
 /// A labelled row: the label takes the room left, the control sits at the end.
 fn line(label: &str, control: El) -> El {
@@ -20,7 +20,7 @@ fn group(title: &str, rows: Vec<El>) -> El {
     // Wrap the section title in a row so `Align::Stretch` does not centre it.
     let mut all = vec![row![section(title)].align(Align::Center)];
     all.extend(rows);
-    col(all).gap(TIGHT).align(Align::Stretch)
+    col(all).gap(SPACE).align(Align::Stretch)
 }
 
 /// The settings sheet's body: two balanced columns (Library, MIDI & Output,
@@ -48,7 +48,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     // its full height, spilling a long folder list out of the sheet.
     col![
         row![left, kit::vrule(), right]
-            .gap(SPACE * 2.)
+            .gap(INSET * 2.)
             .align(Align::Stretch)
     ]
     .align(Align::Stretch)

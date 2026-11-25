@@ -384,8 +384,9 @@ pub struct View {
     /// library again shows it, scrolled into view once (`reveal`).
     pub last: Vec<(usize, usize)>,
     pub reveal: bool,
-    /// Preset folders folded shut.
-    pub folded: Vec<String>,
+    /// The folder the preset list is in, outermost first; empty is the
+    /// library's top.
+    pub folder: Vec<String>,
     pub sheet: Option<Sheet>,
     /// The name typed in a preset sheet.
     pub preset_name: String,
@@ -649,7 +650,17 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
         middle.push(edge(ui));
     }
     let modal = app.pick.is_some() || app.view.sheet.is_some();
-    middle.push(main(ui, app, &mut out).grow(1).min_w(0).min_h(0));
+    // The browser runs the window's full height; the keyboard sits under
+    // the rack only, as in Kontakt.
+    let rack_w = app.width - width;
+    let work = main(ui, app, &mut out).grow(1).min_w(0).min_h(0);
+    let keyboard = keys(ui, app, rack_w, &mut out);
+    middle.push(
+        col![work, rule(), keyboard.shrink(0).fill(Role::Surface)]
+            .grow(1)
+            .min_w(0)
+            .min_h(0),
+    );
     // v2's two tones: the frame around the work (header, browser, tab
     // rows, keyboard) one step up on Surface, the work on Background.
     // Only the middle gives way to a short window: the header and the
@@ -658,8 +669,6 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
         header.shrink(0).fill(Role::Surface),
         loading_bar(app),
         row(middle).grow(1).min_h(0).align(Align::Stretch),
-        rule(),
-        keys(ui, app, &mut out).shrink(0).fill(Role::Surface),
     ]
     .w(Len::Pct(100.))
     .h(Len::Pct(100.))
@@ -949,10 +958,11 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         .shrink(0)
 }
 
-fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
-    // One octave per ~168 points of width: seven at the design width,
-    // more keys as the window widens, never past MIDI's top note.
-    let octaves = (app.width / 168.).round().clamp(3., 10.) as u8;
+fn keys(ui: &mut Ui, app: &mut App, width: f64, out: &mut Vec<Action>) -> El {
+    // One octave per ~132 points of the rack's width (the sidebar's half):
+    // seven at the design width, more keys as the window widens, never past
+    // MIDI's top note.
+    let octaves = (width / (SIDEBAR / 2.)).round().clamp(3., 10.) as u8;
     let v = &mut app.view;
     let down = icon_button(ui, "octave-down", Icon::Left, "Octave down", false);
     let up = icon_button(ui, "octave-up", Icon::Right, "Octave up", false);
@@ -971,23 +981,26 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     }
     let low = 12 * v.octave.clamp(0, 5) as u8;
     let range = (low, (low + 12 * octaves - 1).min(127));
-    let label = caption(format!("{} – {}", note_name(range.0), note_name(range.1)))
-        .tip("Every part · the keys play channel 1 or Omni · click a part to focus it")
-        .id("keys-range");
+    let span = format!("{} – {}", note_name(range.0), note_name(range.1));
     let focused = browser::focused(&app.parts).and_then(|n| app.parts.get(n));
     // Its script's last `message`, where Kontakt's status bar shows it.
+    // The keys' range, or its script's last `message` where Kontakt's
+    // status bar shows it, under the octave buttons.
     let message = (focused.and_then(|p| p.face.as_ref()))
-        .map(|f| f.tree.message.as_str())
-        .filter(|m| !m.is_empty())
-        .map(|m| caption(m).fill(secondary()).lines(1).grow(1).w(0.).tip(m));
-    let bar = strip(vec![
-        section("Keyboard"),
-        label,
-        message.unwrap_or_else(spacer),
-        down.el,
-        up.el,
-        fold.el,
-    ]);
+        .map(|f| f.tree.message.clone())
+        .filter(|m| !m.is_empty());
+    let tip =
+        format!("{span} · every part · the keys play channel 1 or Omni · click a part to focus it");
+    let note = match message {
+        Some(m) => caption(m.clone()).tip(m),
+        None => caption(span).tip(tip),
+    };
+    let side = col![
+        row![down.el, up.el, fold.el],
+        note.fill(secondary()).lines(1).min_w(0).id("keys-range"),
+    ]
+    .w(CONTROL * 3.)
+    .shrink(0);
     let script: Vec<_> = focused
         .and_then(|p| p.face.as_ref())
         .map(|f| (f.tree.keybed.iter()).map(|&(n, c)| (n, crate::view::color(c))))
@@ -1023,7 +1036,8 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .map(|f| f.tree.key_names.clone())
             .unwrap_or_default(),
     };
-    let height = TEXT * 6.;
+    // A thin strip: Kontakt's keys, not a piano.
+    let height = CONTROL * 1.75;
     let mut pitch = v.pitch;
     let bend = kit::slider(
         ui,
@@ -1057,13 +1071,11 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     }
     let bed = keyboard::keyboard(ui, "keybed", &shown, &mut app.view.playing, height);
     out.extend(bed.changed.into_iter().map(|(n, on)| Action::Note(n, on)));
-    col![
-        bar,
-        row![bend.el, wheel.el, bed.el]
-            .gap(TIGHT)
-            .pad(kit::edges(0., SPACE, SPACE, SPACE))
-    ]
-    .animate_layout_with(quick())
+    row![bend.el, wheel.el, bed.el, side]
+        .gap(TIGHT)
+        .align(Align::Center)
+        .pad((SPACE, TIGHT))
+        .animate_layout_with(quick())
 }
 
 /// A gain for a readout.

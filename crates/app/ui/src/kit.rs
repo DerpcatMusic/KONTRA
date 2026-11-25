@@ -819,8 +819,8 @@ pub fn sheet(ui: &mut Ui, id: &str, title_text: &str, content: El) -> Response {
         rule(),
         content.grow(1).min_h(0),
     ]
-    .gap(SPACE)
-    .pad(INSET)
+    .gap(INSET)
+    .pad(INSET * 1.5)
     .w(TEXT * 36.)
     .max_size((TEXT * 36., TEXT * 40.))
     .fill(lift(1))
