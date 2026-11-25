@@ -383,6 +383,26 @@ groups in unencrypted files read exactly.
 
 Next: FNTableImpl and SlotList; then Program and Bank.
 
+## Batch 9: FNTableImpl
+
+**FNTableImpl (0x4B).** The sample file-name table, read by [ref] from the
+chunk header on: it looks for a chunk of id 0x3D or 0x4B, then reads a u16
+version. Version 2 goes to [ref]; version 3 reads a u32 count and, per entry,
+two u32, two paths ([ref]), a u64 and two u32. The reader then seeks back to
+where it started, because callers read the table ahead of the rest. It is now
+a `CURATED_UNFRAMED` record. Its programs are lowered by `lower_curated.py`,
+which now also skips callees curated.rs already holds. Test:
+`curated_fntable_reads_by_version` (versions 3 and 2 read exactly; version 1
+is rejected).
+
+Evidence is three in-repo fixtures, not a corpus census:
+
+| Fixture | FNTableImpl bytes | Unaccounted before | Unaccounted after | File unaccounted before → after |
+| --- | ---: | ---: | ---: | ---: |
+| glide-time.nki | 283 | 283 | 0 | 692 → 409 |
+| source-pars.nki | 105 | 105 | 0 | 511 → 406 |
+| start-criteria.nki | 95 | 95 | 0 | 770 → 675 |
+
 ## Batch 10: SlotList
 
 **SlotList (0x37).** A multi's slot table, read by [ref] from the chunk

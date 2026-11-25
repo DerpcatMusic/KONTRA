@@ -84,6 +84,24 @@ mod tests {
         }
     }
 
+    /// curated.rs FNTableImpl (FUN_140d175f0): a u16 version, then for 3 a u32 count of
+    /// entries (none here) and for 2 FUN_140cfc330's three counted tables (all empty), from
+    /// the chunk header on; any other version is rejected.
+    #[test]
+    fn curated_fntable_reads_by_version() {
+        let v3 = [&3u16.to_le_bytes()[..], &0u32.to_le_bytes()].concat();
+        let v2 = [&2u16.to_le_bytes()[..], &[0; 12]].concat();
+        for body in [v3, v2] {
+            let d = decode_unframed(0x4b, &body).unwrap();
+            assert_eq!(
+                (d.consumed, d.opaque.len()),
+                (body.len() + 6, 0),
+                "{body:?}"
+            );
+        }
+        assert!(decode_unframed(0x4b, &[1, 0, 0, 0, 0, 0]).is_err());
+    }
+
     /// Kontakt's string reads take any length: a BParScript v0x60 whose source is longer
     /// than 16 MiB (152 saved presets hold one of 19264696 bytes) reads in full.
     #[test]

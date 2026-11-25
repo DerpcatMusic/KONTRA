@@ -8,9 +8,10 @@ The decompile dir is the per-64-KiB Ghidra export (`<base>.c`, functions headed
 `// ==== <addr> <name> size=<n>`). Prints one `ProgramSrc` entry per address, in the
 form gen_native_schemas.py writes, from reader_lower.py's lowering. A function that
 does not lower cleanly (parse error, or callees the IR would need) is reported and
-not printed: it stays out of the table. Callees programs.rs already holds are used
-from there and not printed again. An address programs.rs holds is lowered anew when
-named: its curated entry replaces the generated one (programs.rs cannot be regenerated).
+not printed: it stays out of the table. Callees programs.rs or curated.rs already hold
+are used from there and not printed again. An address programs.rs holds is lowered anew
+when named: its curated entry replaces the generated one (programs.rs cannot be
+regenerated).
 """
 import re
 import sys
@@ -57,11 +58,12 @@ def lower(root, wanted, have):
 
 
 def main():
-    have = set(re.findall(r'name: "(FUN_[0-9a-f]+)"', GENERATED.read_text()))
+    tables = GENERATED.read_text() + GENERATED.with_name("curated.rs").read_text()
+    have = set(re.findall(r'name: "(FUN_[0-9a-f]+)"', tables))
     root, addrs = sys.argv[1], [a.removeprefix("0x").lower() for a in sys.argv[2:]]
     for a in addrs:
         if f"FUN_{a}" in have:
-            print(f"FUN_{a}: replaces programs.rs's", file=sys.stderr)
+            print(f"FUN_{a}: replaces the entry already lowered", file=sys.stderr)
     have -= {f"FUN_{a}" for a in addrs}
     # Follow helpers the lowering cannot see into until none is new (as fetch_helpers.py
     # does against Ghidra), so a reader comes with the stream helpers it calls.
