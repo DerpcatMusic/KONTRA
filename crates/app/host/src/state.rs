@@ -363,7 +363,7 @@ impl Rack {
                 self.awaiting.push((p.clone(), saved.ids));
                 continue;
             }
-            if let Err(e) = self.restore_part(p) {
+            if let Err(e) = self.restore_part(p, &saved.ids) {
                 self.notices.push(format!("part {}: {e}", p.part + 1));
             }
         }
@@ -374,8 +374,6 @@ impl Rack {
     /// creation, then again on activation) loads nothing twice. A part that
     /// fails to load is left empty; its error is returned.
     pub fn restore(&mut self, saved: &Saved) -> Vec<(usize, String)> {
-        // Loads still running are of the rack this replaces.
-        self.supersede(None);
         let saved = &self.resolved(saved);
         self.awaiting.clear();
         let now = self.save().parts;
@@ -394,6 +392,14 @@ impl Rack {
             .filter(|p| same(p))
             .map(|p| p.part)
             .collect();
+        // A load still running that the state does not keep is of the rack
+        // this replaces.
+        let stale: Vec<usize> = (self.running().map(|r| r.part))
+            .filter(|n| !kept.contains(n))
+            .collect();
+        for part in stale {
+            self.supersede(Some(part));
+        }
         let loaded: Vec<usize> = (self.parts().iter().enumerate())
             .filter_map(|(n, p)| p.as_ref().map(|_| n))
             .filter(|n| !kept.contains(n))
@@ -404,7 +410,7 @@ impl Rack {
         self.set_multi(saved.multi.as_deref());
         let mut failed = Vec::new();
         for p in saved.parts.iter().filter(|p| !kept.contains(&p.part)) {
-            if let Err(e) = self.restore_part(p) {
+            if let Err(e) = self.restore_part(p, &saved.ids) {
                 if !crate::relink::present(&p.path) {
                     self.awaiting.push((p.clone(), saved.ids.clone()));
                     failed.push((
@@ -421,36 +427,37 @@ impl Rack {
         failed
     }
 
-    /// Loads saved part `p` and puts back how it sat in the rack.
-    fn restore_part(&mut self, p: &SavedPart) -> Result<(), crate::Error> {
-        let (types, responses) = live_slots(&p.slot_types, &p.slot_responses);
-        match self.load_saved(p.part, &p.path, &p.scripts, &types, &responses) {
-            Ok(()) => {
-                self.set_mix(
-                    p.part,
-                    Mix {
-                        channel: p.channel,
-                        output: p.output,
-                        gain: p.gain,
-                        pan: p.pan,
-                        silent: false,
-                    },
-                );
-                self.set_solo_mute(p.part, p.solo, p.mute);
-                if let Some(delays) = p.delays.clone() {
-                    self.set_delays(p.part, delays);
-                }
-                match &p.preset {
-                    Some(preset) if preset.is_file() => self.set_preset(p.part, preset),
-                    Some(_) => self.set_modified(p.part),
-                    None => {}
-                }
-                if p.modified {
-                    self.set_modified(p.part);
-                }
-            }
-            Err(e) => return Err(e),
+    /// Loads saved part `p` (now, or on the loader thread); how it sat in
+    /// the rack comes back once it is in ([`Rack::restored`]).
+    fn restore_part(&mut self, p: &SavedPart, ids: &[SavedId]) -> Result<(), crate::Error> {
+        let mut job = crate::rack::loader::Job::new(p.part, p.path.clone());
+        job.restore = Some((p.clone(), ids.to_vec()));
+        self.post(job)
+    }
+
+    /// Puts back how saved part `p` sat in the rack, once it is loaded.
+    pub(crate) fn restored(&mut self, p: &SavedPart) {
+        self.set_mix(
+            p.part,
+            Mix {
+                channel: p.channel,
+                output: p.output,
+                gain: p.gain,
+                pan: p.pan,
+                silent: false,
+            },
+        );
+        self.set_solo_mute(p.part, p.solo, p.mute);
+        if let Some(delays) = p.delays.clone() {
+            self.set_delays(p.part, delays);
         }
-        Ok(())
+        match &p.preset {
+            Some(preset) if preset.is_file() => self.set_preset(p.part, preset),
+            Some(_) => self.set_modified(p.part),
+            None => {}
+        }
+        if p.modified {
+            self.set_modified(p.part);
+        }
     }
 }

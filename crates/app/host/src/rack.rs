@@ -23,7 +23,7 @@ mod audio;
 mod command;
 mod files;
 mod hold;
-mod loader;
+pub(crate) mod loader;
 mod macros;
 mod named;
 mod native;

@@ -7,13 +7,16 @@ use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 
 use super::{Built, Rack};
-use crate::state::SavedPart;
+use crate::state::{SavedId, SavedPart};
 
 /// One load: what to read into which part.
 pub(crate) struct Job {
     pub part: usize,
     generation: u64,
     pub path: PathBuf,
+    /// A saved part brought back: its scripts' values, how it sat in the
+    /// rack ([`Rack::restored`]), and the state's identities.
+    pub restore: Option<(SavedPart, Vec<SavedId>)>,
     /// What the read needs of the rack as it is now.
     known: Arc<Vec<PathBuf>>,
     moved: Vec<(PathBuf, PathBuf)>,
@@ -26,6 +29,7 @@ impl Job {
             part,
             generation: 0,
             path,
+            restore: None,
             known: Arc::default(),
             moved: Vec::new(),
             saves: None,
@@ -48,7 +52,19 @@ pub(crate) struct Loads {
 
 /// Reads `job`'s instrument and prepares it with `store`.
 fn read(job: &Job, rate: u32, store: &mut super::Store) -> Result<Built, crate::Error> {
-    let instrument = crate::instrument::read_saved(&job.path, &[], &job.known)?;
+    let scripts = job
+        .restore
+        .as_ref()
+        .map_or(&[][..], |(p, _)| &p.scripts[..]);
+    let mut instrument = crate::instrument::read_saved(&job.path, scripts, &job.known)?;
+    if job.restore.is_some() {
+        for (script, saved) in instrument.scripts.iter_mut().zip(scripts) {
+            script.saved.clone_from(saved);
+        }
+        // Its values are the state the scripts reached after the preset was
+        // recalled; recalling them again would run that recall twice.
+        instrument.recalled = false;
+    }
     Ok(Rack::build_part(
         instrument,
         rate,
@@ -96,7 +112,10 @@ impl Rack {
         }
         (job.known, job.moved) = (Arc::clone(&self.known.1), self.moved.clone());
         job.saves.clone_from(&self.saves);
-        let saved = SavedPart::new(job.part, job.path.clone(), self.mix_of(job.part));
+        let saved = job.restore.as_ref().map_or_else(
+            || SavedPart::new(job.part, job.path.clone(), self.mix_of(job.part)),
+            |(p, _)| p.clone(),
+        );
         let loads = &mut self.loads;
         loads.running.retain(|r| r.0 != job.part);
         loads.running.push((job.part, job.generation, saved, false));
@@ -119,7 +138,17 @@ impl Rack {
         if self.loads.latest.get(job.part) != Some(&job.generation) {
             return Ok(());
         }
-        self.install_built(job.part, built?, Some(job.path), &[], &[])
+        let (types, responses) = job
+            .restore
+            .as_ref()
+            .map_or_else(Default::default, |(p, _)| {
+                crate::state::live_slots(&p.slot_types, &p.slot_responses)
+            });
+        self.install_built(job.part, built?, Some(job.path), &types, &responses)?;
+        if let Some((p, _)) = &job.restore {
+            self.restored(p);
+        }
+        Ok(())
     }
 
     /// Installs the loads finished in the background: the parts to place
@@ -138,12 +167,22 @@ impl Rack {
             let (part, path) = (job.part, job.path.clone());
             let place = (self.loads.running.iter())
                 .any(|r| (r.0, r.1, r.3) == (part, job.generation, true));
-            match self.land(job, built) {
-                Ok(()) if place && self.parts.get(part).is_some_and(Option::is_some) => {
+            let restore = job.restore.clone();
+            match (self.land(job, built), restore) {
+                (Ok(()), _) if place && self.parts.get(part).is_some_and(Option::is_some) => {
                     placed.push(part);
                 }
-                Ok(()) => {}
-                Err(e) => failed.push(format!("{}: {e}", path.display())),
+                (Ok(()), _) => {}
+                // As a restore says it at once ([`Rack::restore`]).
+                (Err(e), Some((p, ids))) if !crate::relink::present(&p.path) => {
+                    self.awaiting.push((p, ids));
+                    failed.push(format!(
+                        "part {}: {e}; its library moved or is missing: it loads once found (Locate\u{2026} in the browser)",
+                        part + 1
+                    ));
+                }
+                (Err(e), Some(_)) => failed.push(format!("part {}: {e}", part + 1)),
+                (Err(e), None) => failed.push(format!("{}: {e}", path.display())),
             }
         }
         (placed, failed)
