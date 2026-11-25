@@ -858,7 +858,9 @@ pub fn machine(progress: &Progress) -> Vec<Root> {
 }
 
 /// The player's `user` roots, then `auto` roots that are not hidden and not
-/// already covered by another root.
+/// already covered by another root; each folder once, by its canonical path
+/// (this session's discovery and the saved one can both list it, or name it
+/// through a link).
 #[must_use]
 pub fn merge(user: &[Root], auto: &[Root], hidden: &[PathBuf]) -> Vec<Root> {
     let auto: Vec<Root> = auto
@@ -871,5 +873,7 @@ pub fn merge(user: &[Root], auto: &[Root], hidden: &[PathBuf]) -> Vec<Root> {
         .collect();
     let mut out = user.to_vec();
     out.extend(nest(auto, user));
+    let mut seen = HashSet::new();
+    out.retain(|r| seen.insert(crate::path_identity(&r.path)));
     out
 }

@@ -189,7 +189,51 @@ fn specimen() -> App {
             "Areia 16 Violins: the convolution reverb's impulse is not in the library\nThe library names Hall.wav in its reverb, and no file of that name ships with it; the dry signal plays.".into(),
             "2 Horns KS: script line 912 asks for an unknown effect's display\nget_engine_par_disp on slot 3 names no effect; Kontakt answers an empty text and so does KONTRA.".into(),
         ],
-        folders: vec!["/data/main/Libraries/Kontakt".into(), "/data/main/Libraries/UVI".into()],
+        // As a tester's Settings showed them: long summaries, warnings.
+        folders: vec![
+            app::LibraryFolder {
+                path: "/mnt/vst/NI".into(),
+                status: "108 libraries found \u{b7} presets 23489 (Kontakt 23487, SoundFont 2) \u{b7} files listed 39048 \u{b7} skipped: other file types 7".into(),
+                ..Default::default()
+            },
+            app::LibraryFolder {
+                path: "/home/user/.wine/drive_c/users/user/Documents/Native Instruments".into(),
+                auto: true,
+                status: "0 libraries \u{2014} nothing matched \u{b7} files listed 7 \u{b7} skipped: other file types 7".into(),
+                problem: true,
+                ..Default::default()
+            },
+            app::LibraryFolder {
+                path: "/mnt/vst/UVI".into(),
+                status: "15 libraries found \u{b7} presets 5988 (UVI 5988) \u{b7} files listed 40 \u{b7} skipped: other file types 1".into(),
+                ..Default::default()
+            },
+            app::LibraryFolder {
+                path: "/mnt/archive/music/misc VST/FM banks/fmB patches/RO M/Factory Presets From Yamaha Synths".into(),
+                auto: true,
+                status: "2 libraries found \u{b7} presets 8 (Kontakt 6, SoundFont 2) \u{b7} files listed 11420 \u{b7} skipped: other file types 11412".into(),
+                ..Default::default()
+            },
+            app::LibraryFolder {
+                path: "/mnt/external/cloud/music/projects/other/2026/paracetamol_new".into(),
+                auto: true,
+                status: "not found".into(),
+                hint: Some("Check the folder's permissions; an NTFS/exFAT drive needs mounting with uid=<you> (or the permissions option).".into()),
+                problem: true,
+            },
+            app::LibraryFolder {
+                path: "/mnt/external/cloud/uni work/Berklee College Of Music/5th Semester/EP-322 - Advanced Sound Design Techniques/Final Project Sound".into(),
+                auto: true,
+                status: "10 libraries found \u{b7} presets 16 (Kontakt 16) \u{b7} files listed 86 \u{b7} skipped: other file types 70".into(),
+                ..Default::default()
+            },
+            app::LibraryFolder {
+                path: "/mnt/external/cloud/uni work/Berklee College Of Music/6th Semester/EP-353 - Programming Audio Applications".into(),
+                auto: true,
+                status: "3 libraries found \u{b7} presets 1560 (SoundFont 1560) \u{b7} files listed 168 \u{b7} skipped: other file types 160".into(),
+                ..Default::default()
+            },
+        ],
         build: app::Build {
             version: "0.6.24",
             revision: "e4e1173bf",
@@ -392,12 +436,30 @@ fn main() -> Result<(), Box<dyn Error>> {
         s.click("theme-preset/list/1")?;
         s.save("settings-midnight")?;
         s.click("theme-reset")?;
-        s.click("settings-about")?;
+        // Below the fold of a long folder list: open it as its button does.
+        s.app.view.sheet = Some(app::Sheet::About);
+        s.settle()?;
         s.save("about")?;
         s.scroll("about-changelog")?;
         s.click("sheet-close")?;
         s.click("browser")?;
         s.save("browser-hidden")?;
+        s.click("browser")?;
+        // A tester's counts: the format pills wrap to a second line.
+        let one = s.app.libraries.first().cloned().unwrap_or_default();
+        s.app.libraries = (0..176)
+            .map(|n| Library {
+                format: if n < 161 {
+                    Format::Kontakt
+                } else {
+                    Format::Uvi
+                },
+                ..one.clone()
+            })
+            .collect();
+        s.app.view.library = None;
+        s.settle()?;
+        s.save("format-chips")?;
         eprintln!("actions: {:?}", s.actions);
     }
     Ok(())

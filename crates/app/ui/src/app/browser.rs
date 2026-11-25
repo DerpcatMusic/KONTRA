@@ -523,7 +523,10 @@ fn libraries(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         format_bar,
     ]
     .gap(TIGHT)
-    .pad(kit::edges(SPACE, SPACE, SPACE, SPACE));
+    .pad(kit::edges(SPACE, SPACE, SPACE, SPACE))
+    // The list gives up the height when it is short, never the head: a
+    // squeezed head slid the tiles over its wrapped format pills.
+    .shrink(0);
     col![
         head,
         rule(),
@@ -582,25 +585,28 @@ pub(super) fn scan_folder(f: &super::LibraryFolder, control: Option<El>) -> El {
     }
     top.extend(control);
     let mut lines = vec![row(top).gap(TIGHT).align(Align::Center)];
+    // The summary wraps beneath its path, left-aligned: a long one kept to
+    // one line ran off the sheet and over the next folder.
     if !f.status.is_empty() {
-        let status = caption(f.status.clone()).lines(1).min_w(0);
+        let status = caption(f.status.clone()).min_w(0).grow(1);
         lines.push(if f.problem {
-            row![glyph(Icon::Warning, TEXT, secondary()), status]
-                .gap(TIGHT)
-                .align(Align::Center)
+            row![
+                glyph(Icon::Warning, TEXT, Role::Warning.into()).shrink(0),
+                status.fill(Role::Warning)
+            ]
+            .gap(TIGHT)
         } else {
-            status.fill(secondary())
+            row![status.fill(secondary())]
         });
     }
     if let Some(hint) = &f.hint {
-        lines.push(
-            caption(hint.clone())
-                .fill(secondary())
-                .min_w(0)
-                .w(Len::Pct(100.)),
-        );
+        lines.push(caption(hint.clone()).fill(secondary()).min_w(0));
     }
-    col(lines).gap(1).w(Len::Pct(100.))
+    col(lines)
+        .gap(1)
+        .align(Align::Stretch)
+        .min_w(0)
+        .w(Len::Pct(100.))
 }
 
 /// The browser with no library: why, folder by folder, and what to do.

@@ -517,7 +517,7 @@ fn infer_protection(reason: &str) -> ProtectionStatus {
     }
 }
 
-fn path_identity(path: &Path) -> PathBuf {
+pub(crate) fn path_identity(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 

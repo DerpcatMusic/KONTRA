@@ -1427,3 +1427,91 @@ fn a_theme_preset_applies_at_once_and_is_saved() {
     assert_eq!(theme::look(), Look::GRAPHITE);
     assert!(ui.theme().palette.neutral.chroma.abs() < 1e-6);
 }
+
+/// Settings lists long scanned folders (a tester's): each folder is one
+/// block inside the sheet, none overlaps the next, and the list scrolls
+/// inside the sheet instead of spilling over the keyboard.
+#[test]
+fn settings_folders_stay_in_the_sheet_one_block_each() {
+    let summary = "108 libraries found \u{b7} presets 23489 (Kontakt 23487, SoundFont 2) \u{b7} files listed 39048 \u{b7} skipped: other file types 7";
+    let mut app = about_app();
+    app.folders = (0..12)
+        .map(|n| app::LibraryFolder {
+            path: format!("/mnt/external/cloud/uni work/Berklee College Of Music/Semester {n}/EP-322 - Advanced Sound Design Techniques/Final Project Sound"),
+            status: summary.into(),
+            problem: n % 3 == 0,
+            ..app::LibraryFolder::default()
+        })
+        .collect();
+    app.view.sheet = Some(app::Sheet::Settings);
+    let mut ui = kontra_ui::ui();
+    settle(&mut ui, &mut app);
+    let scene = ui.scene().expect("scene");
+    let frame = |id: &str| scene.surface(id).map(|s| s.frame).expect(id);
+    let sheet = frame("sheet");
+    let view = frame("settings-scroll");
+    assert!(
+        view.y + view.size.height <= sheet.y + sheet.size.height + 0.5
+            && view.x + view.size.width <= sheet.x + sheet.size.width + 0.5,
+        "settings {view:?} spills out of the sheet {sheet:?}"
+    );
+    let rows: Vec<_> = (0..app.folders.len())
+        .map(|n| frame(&format!("folder-{n}")))
+        .collect();
+    for (n, r) in rows.iter().enumerate() {
+        assert!(
+            r.x >= view.x - 0.5 && r.x + r.size.width <= view.x + view.size.width + 0.5,
+            "folder-{n} {r:?} past the sheet's sides {view:?}"
+        );
+        if let Some(next) = rows.get(n + 1) {
+            assert!(
+                r.y + r.size.height <= next.y + 0.5,
+                "folder-{n} {r:?} overlaps the next {next:?}"
+            );
+        }
+    }
+}
+
+/// With a tester's counts the format pills wrap in the sidebar: the grid
+/// starts below the last line, so "Falcon / UVI" is never under a tile.
+#[test]
+fn every_format_chip_sits_above_the_library_grid() {
+    let library = |n: usize, format| Library {
+        name: format!("Library {n}"),
+        format,
+        presets: vec!["Preset".into()],
+        ..Library::default()
+    };
+    let mut app = App {
+        libraries: (0..176)
+            .map(|n| {
+                library(
+                    n,
+                    if n < 161 {
+                        Format::Kontakt
+                    } else {
+                        Format::Uvi
+                    },
+                )
+            })
+            .collect(),
+        ..App::default()
+    };
+    let mut ui = kontra_ui::ui();
+    settle(&mut ui, &mut app);
+    let scene = ui.scene().expect("scene");
+    let grid_top = (0..2)
+        .filter_map(|n| scene.surface(&format!("library-{n}")))
+        .map(|s| s.frame.y)
+        .fold(f64::INFINITY, f64::min);
+    for id in ["format-All", "format-Kontakt", "format-Falcon / UVI"] {
+        let f = scene.surface(id).expect(id).frame;
+        assert!(
+            f.y + f.size.height <= grid_top + 0.5,
+            "{id} {f:?} runs under the first tile row at y {grid_top}"
+        );
+    }
+    click(&mut ui, &mut app, "format-Falcon / UVI");
+    assert_eq!(app.view.format, Format::Uvi);
+    assert_eq!(app.view.library_view, app::LibraryView::Separated);
+}

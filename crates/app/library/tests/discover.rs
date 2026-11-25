@@ -210,17 +210,19 @@ fn a_library_whose_folder_is_a_start_is_its_own_root() {
 }
 
 #[test]
-fn merging_keeps_user_roots_and_drops_hidden_or_covered_auto_roots() {
+fn merging_keeps_user_roots_and_drops_hidden_covered_or_repeated_auto_roots() {
     let r = |p: &str| Root {
         path: p.into(),
         single: false,
         auto: false,
     };
     let user = [r("/mnt/hdd/Libraries")];
+    // This session's discovery and the saved one both list Music: once.
     let auto = [
         r("/mnt/hdd/Libraries/Kontakt"),
         r("/home/u/Music"),
         r("/home/u/Downloads"),
+        r("/home/u/Music"),
     ];
     let merged = merge(&user, &auto, &[PathBuf::from("/home/u/Downloads")]);
     let paths: Vec<_> = merged

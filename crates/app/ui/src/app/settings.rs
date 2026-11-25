@@ -36,20 +36,26 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     ]
     .gap(SPACE)
     .align(Align::Stretch)
-    .grow(1)
+    .flex(1)
     .min_w(0);
+    // Equal halves: long folder paths ellipsize instead of squeezing this one.
     let right = col![interface(ui, app, out), rule(), appearance(ui, app, out)]
         .gap(SPACE)
         .align(Align::Stretch)
-        .grow(1)
+        .flex(1)
         .min_w(0);
-    row![left, kit::vrule(), right]
-        .gap(SPACE * 2.)
-        .align(Align::Stretch)
-        .scroll()
-        .id("settings-scroll")
-        .min_h(0)
-        .grow(1)
+    // A column scrolls down; a scrolling row would scroll sideways and keep
+    // its full height, spilling a long folder list out of the sheet.
+    col![
+        row![left, kit::vrule(), right]
+            .gap(SPACE * 2.)
+            .align(Align::Stretch)
+    ]
+    .align(Align::Stretch)
+    .scroll()
+    .id("settings-scroll")
+    .min_h(0)
+    .grow(1)
 }
 
 fn library(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
@@ -73,7 +79,7 @@ fn library(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             false,
         );
         out.extend(remove.changed.then_some(Action::RemoveFolder(n)));
-        rows.push(super::browser::scan_folder(f, Some(remove.el)));
+        rows.push(super::browser::scan_folder(f, Some(remove.el)).id(format!("folder-{n}")));
     }
     if app.folders.is_empty() {
         rows.push(caption("No folders yet").fill(secondary()));
