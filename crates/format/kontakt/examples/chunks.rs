@@ -1,96 +1,348 @@
-//! Decode coverage of Kontakt files: walks every chunk of every file given
-//! and counts, per chunk id and version, how ni-file handles it: a typed
-//! decoder that succeeds, one that fails, a named id with no decoder, or an
-//! unknown id. `cargo run --release -p kontra-format-kontakt --example chunks -- <files>`
-//! (or paths on stdin). `KONTRA_CHUNK_DUMP=<dir>` keeps the undecoded chunks.
+//! ni-file parity census: of every Kontakt file under the roots given, how
+//! much of what Kontakt reads KONTRA reads. Prints the markdown baseline kept
+//! in docs/re/NI_FILE_PARITY.md.
+//!
+//! `cargo run --release -p kontra-format-kontakt --example chunks -- <dir or file>...`
+//! `KONTRA_CHUNK_DUMP=<dir>` keeps the chunks not read in full, `KONTRA_CENSUS_EXAMPLES=1`
+//! names one file per object class on stderr.
+//!
+//! Every chunk of every chunk stream is walked (structured children and the
+//! slots a decoder holds). Each one is judged against Kontakt 8.13.1's own
+//! reader for its SerType and stored version (`native_schema`):
+//! - **full**: Kontakt's reader accounts for every byte of the block it reads, and the chunk
+//!   holds nothing past its children;
+//! - **partial**: a reader recognises it but bytes stay unaccounted for
+//!   (trailing, truncated, rejected, unmodelled), or only a hand reader with
+//!   no byte accounting reads it;
+//! - **unrecognised**: no reader for it at all.
+//!
+//! Encrypted presets are reported as protected and not opened: nothing is
+//! decrypted.
 
 use std::collections::BTreeMap;
+use std::io::Cursor;
+use std::path::{Path, PathBuf};
 
+use ni_file::kontakt::native_schema::{self, Undecoded};
 use ni_file::kontakt::{Chunk, KontaktObject, StructuredObject, objects::read_param_slots};
+use ni_file::nkr::Archive;
+
+/// Preset files: a Kontakt chunk stream inside NKS, NIS or a monolith.
+const PRESETS: [&str; 4] = ["nki", "nkm", "nkb", "nksn"];
+/// Resource archives, the sample cache and library metadata: framing only.
+const OTHERS: [&str; 4] = ["nkr", "nkx", "nkc", "nicnt"];
+
+#[derive(Default)]
+struct Files {
+    total: usize,
+    read: usize,
+    protected: usize,
+    unreadable: usize,
+}
 
 #[derive(Default)]
 struct Tally {
-    typed: usize,
-    failed: usize,
-    named: usize,
-    unknown: usize,
-    example: String,
+    n: usize,
+    full: usize,
+    partial: BTreeMap<&'static str, usize>,
+    unrecognised: usize,
+    bytes: usize,
+    unaccounted: usize,
+    hand: [usize; 4],
+}
+
+type Key = (u16, Option<u16>, &'static str);
+
+#[derive(Default)]
+struct Census {
+    files: BTreeMap<String, Files>,
+    why: BTreeMap<String, usize>,
+    objects: BTreeMap<Key, Tally>,
 }
 
 fn main() {
-    let mut by_id: BTreeMap<(u16, u16), Tally> = BTreeMap::new();
-    let (mut files, mut unreadable) = (0, BTreeMap::<String, usize>::new());
-    let mut paths: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
-    if paths.is_empty() {
-        // One path per line on stdin, for more files than a command line holds.
-        paths = std::io::stdin()
-            .lines()
-            .map_while(Result::ok)
-            .map(Into::into)
-            .collect();
+    let roots: Vec<PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
+    let mut paths = Vec::new();
+    for root in &roots {
+        collect(root, &mut paths);
     }
-    for path in paths {
-        files += 1;
-        match kontra_format_kontakt::chunks(&path) {
-            Ok(chunks) => {
-                for c in &chunks.0 {
-                    walk(c, &mut by_id, &path.display().to_string(), 0);
-                }
-            }
-            Err(e) => {
-                *unreadable
-                    .entry(format!("{}: {}", e.what, e.reason))
-                    .or_default() += 1
-            }
-        }
+    paths.sort();
+    let mut c = Census::default();
+    for path in &paths {
+        c.file(path);
     }
-    println!(
-        "files {files}, unreadable {}",
-        unreadable.values().sum::<usize>()
-    );
-    for (why, n) in &unreadable {
-        println!("  unreadable {n}× {why}");
-    }
-    println!("id\tversion\ttyped\tfailed\tnamed-only\tunknown\texample");
-    for ((id, version), t) in &by_id {
-        println!(
-            "{id:#06x}\t{version:#x}\t{}\t{}\t{}\t{}\t{}",
-            t.typed, t.failed, t.named, t.unknown, t.example
-        );
+    c.print();
+}
+
+fn collect(path: &Path, out: &mut Vec<PathBuf>) {
+    match std::fs::read_dir(path) {
+        Ok(dir) => dir.flatten().for_each(|e| collect(&e.path(), out)),
+        Err(_) => out.push(path.to_path_buf()),
     }
 }
 
-fn walk(chunk: &Chunk, by_id: &mut BTreeMap<(u16, u16), Tally>, file: &str, depth: usize) {
-    let object = StructuredObject::read(std::io::Cursor::new(chunk.data.as_slice())).ok();
-    let version = object.as_ref().map_or(0, |o| o.version);
-    let t = by_id.entry((chunk.id, version)).or_default();
-    let mut nested = Vec::new();
-    match chunk.into_object() {
-        Ok(KontaktObject::Unsupported(_)) => {
-            t.unknown += 1;
-            dump(chunk, t.unknown + t.named);
+fn ext(path: &Path) -> Option<String> {
+    path.extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+}
+
+impl Census {
+    fn file(&mut self, path: &Path) {
+        let Some(ext) = ext(path) else { return };
+        if OTHERS.contains(&ext.as_str()) {
+            return self.container(path, ext);
         }
-        Ok(o) if is_named_only(&o) => {
-            t.named += 1;
-            dump(chunk, t.unknown + t.named);
+        if !PRESETS.contains(&ext.as_str()) {
+            return;
         }
-        Ok(o) => {
-            t.typed += 1;
-            nested = inner_chunks(o);
-        }
-        Err(e) => {
-            t.failed += 1;
-            if t.example.is_empty() {
-                t.example = format!("{e} ({file})");
+        let opened = kontra_format_kontakt::encrypted(path).and_then(|e| {
+            (!e).then(|| kontra_format_kontakt::chunks(path))
+                .transpose()
+        });
+        let f = self.files.entry(ext.clone()).or_default();
+        f.total += 1;
+        match opened {
+            Ok(None) => f.protected += 1,
+            Ok(Some(chunks)) => {
+                f.read += 1;
+                let file = path.display().to_string();
+                for chunk in &chunks.0 {
+                    self.walk(chunk, &file, 0);
+                }
+            }
+            Err(e) => {
+                f.unreadable += 1;
+                *self
+                    .why
+                    .entry(format!(".{ext}: {}: {}", e.what, e.reason))
+                    .or_default() += 1;
             }
         }
     }
-    if depth < 16 {
-        nested.extend(object.into_iter().flat_map(|o| o.children));
-        for c in &nested {
-            walk(c, by_id, file, depth + 1);
+
+    /// A file that is not a chunk stream: only its framing is read for now.
+    fn container(&mut self, path: &Path, ext: String) {
+        let read = match ext.as_str() {
+            "nkr" | "nkx" => std::fs::File::open(path)
+                .map_err(|e| e.to_string())
+                .and_then(|f| Archive::read(f).map_err(|e| e.to_string()))
+                .and_then(|a| a.issues.first().map_or(Ok(()), |i| Err(i.clone()))),
+            _ => Err("no reader".into()),
+        };
+        let f = self.files.entry(ext.clone()).or_default();
+        f.total += 1;
+        match read {
+            Ok(()) => f.read += 1,
+            Err(why) => {
+                f.unreadable += 1;
+                *self.why.entry(format!(".{ext}: {why}")).or_default() += 1;
+            }
         }
     }
+
+    fn walk(&mut self, chunk: &Chunk, file: &str, depth: usize) {
+        // A serialized object starts with its framing flag: 1 structured
+        // (private, public, children), 0 a version and the public bytes only.
+        let object = matches!(chunk.data.first(), Some(0 | 1))
+            .then(|| StructuredObject::read(Cursor::new(chunk.data.as_slice())).ok())
+            .flatten();
+        let hand = chunk.into_object();
+        let version = object.as_ref().map(|o| o.version);
+        let class = version
+            .and_then(|v| native_schema::class_of(chunk.id, v))
+            .unwrap_or_else(|| hand_name(&hand));
+        let t = self.objects.entry((chunk.id, version, class)).or_default();
+        if t.n == 0 && std::env::var_os("KONTRA_CENSUS_EXAMPLES").is_some() {
+            eprintln!("{:#06x} {class}: {file}", chunk.id);
+        }
+        t.n += 1;
+        let hand_typed = match &hand {
+            Ok(KontaktObject::Unsupported(_)) => {
+                t.hand[3] += 1;
+                false
+            }
+            Ok(o) if is_named_only(o) => {
+                t.hand[2] += 1;
+                false
+            }
+            Ok(_) => {
+                t.hand[0] += 1;
+                true
+            }
+            Err(_) => {
+                t.hand[1] += 1;
+                false
+            }
+        };
+        let verdict = match &object {
+            Some(o) => {
+                t.bytes += o.public_data.len() + o.private_data.len();
+                let tail = chunk.data.len() - framed(o, chunk.data.first() == Some(&1));
+                // Kontakt reads the public and private blocks with separate
+                // readers (docs/re/NI_FILE_BINARY_RECORDS.md §2); a class keeps
+                // its fields in one, and the catalog reader is that one's.
+                let mut blocks: Vec<&[u8]> = [&o.public_data, &o.private_data]
+                    .into_iter()
+                    .filter(|b| !b.is_empty())
+                    .map(Vec::as_slice)
+                    .collect();
+                if blocks.is_empty() {
+                    blocks.push(&[]);
+                }
+                let mut why = (tail > 0).then_some("bytes past the children");
+                let mut miss = tail;
+                for block in blocks {
+                    let (w, n) = match native_schema::decode(chunk.id, o.version, block) {
+                        Ok(_) => continue,
+                        Err(Undecoded::Trailing(n)) => ("trailing bytes", n),
+                        Err(Undecoded::NoReader) if hand_typed => ("hand reader only", block.len()),
+                        Err(Undecoded::NoReader) => ("", block.len()),
+                        Err(e) => (reason(&e), block.len()),
+                    };
+                    why.get_or_insert(w);
+                    miss += n;
+                }
+                why.map_or(Ok(()), |w| Err((w, miss)))
+            }
+            None => {
+                t.bytes += chunk.data.len();
+                Err((
+                    if hand_typed {
+                        "raw, hand reader only"
+                    } else {
+                        ""
+                    },
+                    chunk.data.len(),
+                ))
+            }
+        };
+        match verdict {
+            Ok(()) => t.full += 1,
+            Err(("", n)) => {
+                t.unrecognised += 1;
+                t.unaccounted += n;
+            }
+            Err((why, n)) => {
+                *t.partial.entry(why).or_default() += 1;
+                t.unaccounted += n;
+            }
+        }
+        if verdict.is_err() {
+            dump(chunk, t.n);
+        }
+        let mut nested = hand.map(inner_chunks).unwrap_or_default();
+        if depth < 16 {
+            nested.extend(object.into_iter().flat_map(|o| o.children));
+            for c in &nested {
+                self.walk(c, file, depth + 1);
+            }
+        }
+    }
+
+    fn print(&self) {
+        println!("## Files\n");
+        println!("| Type | Files | Read | Protected | Unreadable |");
+        println!("| --- | ---: | ---: | ---: | ---: |");
+        for (ext, f) in &self.files {
+            println!(
+                "| .{ext} | {} | {} | {} | {} |",
+                f.total, f.read, f.protected, f.unreadable
+            );
+        }
+        if !self.why.is_empty() {
+            println!("\nUnreadable:\n");
+            for (why, n) in &self.why {
+                println!("- {n} × {why}");
+            }
+        }
+        let sum = |f: fn(&Tally) -> usize| self.objects.values().map(f).sum::<usize>();
+        let partial = |t: &Tally| t.partial.values().sum::<usize>();
+        println!("\n## Objects\n");
+        println!(
+            "{} objects: {} full, {} partial, {} unrecognised. Bytes {}, unaccounted for {}.\n",
+            sum(|t| t.n),
+            sum(|t| t.full),
+            sum(partial),
+            sum(|t| t.unrecognised),
+            sum(|t| t.bytes),
+            sum(|t| t.unaccounted),
+        );
+        let mut reasons = BTreeMap::<&str, usize>::new();
+        for t in self.objects.values() {
+            for (why, n) in &t.partial {
+                *reasons.entry(why).or_default() += n;
+            }
+        }
+        println!("| Partial because | Objects |\n| --- | ---: |");
+        for (why, n) in &reasons {
+            println!("| {why} | {n} |");
+        }
+        println!(
+            "\nBy SerType, stored version and class, most unaccounted bytes first. Hand: KONTRA's \
+             typed decoder succeeded / failed / names the id only / does not know it.\n"
+        );
+        println!(
+            "| SerType | Version | Class | Objects | Full | Partial | Unrecognised | Bytes | Unaccounted | Hand |"
+        );
+        println!("| --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | --- |");
+        let mut rows: Vec<_> = self.objects.iter().collect();
+        rows.sort_by_key(|(k, t)| {
+            (
+                std::cmp::Reverse(t.unaccounted),
+                std::cmp::Reverse(t.n),
+                **k,
+            )
+        });
+        for ((id, version, class), t) in rows {
+            let partial = t
+                .partial
+                .iter()
+                .map(|(why, n)| format!("{n} {why}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!(
+                "| {id:#06x} | {} | {class} | {} | {} | {partial} | {} | {} | {} | {} |",
+                version.map_or("raw".into(), |v| format!("{v:#x}")),
+                t.n,
+                t.full,
+                t.unrecognised,
+                t.bytes,
+                t.unaccounted,
+                t.hand.map(|n| n.to_string()).join("/"),
+            );
+        }
+    }
+}
+
+/// The bytes a structured object's framing covers.
+fn framed(o: &StructuredObject, structured: bool) -> usize {
+    if !structured {
+        return 1 + 2 + o.public_data.len();
+    }
+    let children: usize = o.children.iter().map(|c| 6 + c.data.len()).sum();
+    1 + 2 + 4 + o.private_data.len() + 4 + o.public_data.len() + 4 + children
+}
+
+fn reason(e: &Undecoded) -> &'static str {
+    match e {
+        Undecoded::Truncated => "truncated for Kontakt's reader",
+        Undecoded::Rejected => "Kontakt's reader rejects it",
+        Undecoded::Unresolved(_) => "reader not modelled",
+        Undecoded::Budget => "host-state search over budget",
+        Undecoded::Trailing(_) => "trailing bytes",
+        Undecoded::NoReader => "no reader",
+    }
+}
+
+/// The hand reader's name for a chunk with no native class.
+fn hand_name(hand: &Result<KontaktObject, ni_file::Error>) -> &'static str {
+    let Ok(o) = hand else { return "?" };
+    let name = format!("{o:?}");
+    let name = name.split(['(', ' ', '{']).next().unwrap_or("?");
+    if name == "Unsupported" {
+        return "?";
+    }
+    Box::leak(name.to_owned().into_boxed_str())
 }
 
 /// Chunks a decoder holds outside the structured children: parameter-array
@@ -123,11 +375,11 @@ fn inner_chunks(o: KontaktObject) -> Vec<Chunk> {
     }
 }
 
-/// With `KONTRA_CHUNK_DUMP=<dir>`, writes undecoded chunks there as
+/// With `KONTRA_CHUNK_DUMP=<dir>`, writes chunks not read in full there as
 /// `<id>-<n>.bin` for study.
 fn dump(chunk: &Chunk, n: usize) {
     if let Some(dir) = std::env::var_os("KONTRA_CHUNK_DUMP") {
-        let path = std::path::Path::new(&dir).join(format!("{:04x}-{n}.bin", chunk.id));
+        let path = Path::new(&dir).join(format!("{:04x}-{n}.bin", chunk.id));
         if let Err(e) = std::fs::write(&path, &chunk.data) {
             eprintln!("{}: {e}", path.display());
         }
@@ -136,6 +388,5 @@ fn dump(chunk: &Chunk, n: usize) {
 
 /// Variants that only name the id: the bytes are not decoded.
 fn is_named_only(o: &KontaktObject) -> bool {
-    let name = format!("{o:?}");
-    !name.contains('(')
+    !format!("{o:?}").contains('(')
 }

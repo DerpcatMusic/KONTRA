@@ -59,14 +59,15 @@ oracle (`tools/kontakt-oracle/disp_sweep.py`), plus the KSP manual's parameter n
 | | tested | done | missing |
 |---|---:|---:|---:|
 | `$ENGINE_PAR_*` before (main 22f3e8ce99, with corpus) | 48 | 319 | 300 |
-| after | 115 | 263 | 289 |
+| after #203 | 115 | 263 | 289 |
+| after the amp/delay/ring batch (main 2597cd0d20) | 196 | 263 | 208 |
 
 ## Verification Matrix
 
 | Check | Tier | Target / OS | Exact Command | Pass Criterion | Status / Observed Evidence |
 |---|---|---|---|---|---|
 | Spec proof gate | Doc | any | `python3 tools/check-spec-proof.py plugins/kontra/docs/specs/engine-par-display.md` | Exit 0 | PASS (2026-11-25, linux-x86_64) |
-| Oracle measurement | Validator/Runtime | linux-x86_64 (Wine, Kontakt 8.13.1) | `tools/kontakt-oracle/disp_sweep.py` | 77 names, 1156 rows; two runs agree at shared points | PASS (2026-11-25, linux-x86_64) |
+| Oracle measurement | Validator/Runtime | linux-x86_64 (Wine, Kontakt 8.13.1) | `tools/kontakt-oracle/disp_sweep.py` | 77 names, 1156 rows; two runs agree at shared points. Batch 2: 98 names, 980 rows (Bass Pro, Dirt, Kolor, V5, SF100, Twin Delay, Ring Mod) | PASS (2026-11-25, linux-x86_64) |
 | Display test | Compile/ABI | linux-x86_64 | `matari fast kontra -p kontra-host -- -E 'test(every_measured_engine_par_text)'` | Every non-pending row equal | PASS (2026-11-25, linux-x86_64) |
 | Scoped package tests | Compile/ABI | linux-x86_64 | `matari fast kontra -p kontra-law / kontra-plan / kontra-format-kontakt / kontra-host`, `-p kontra-engine -- -E 'binary(arch_guards)'` | Exit 0 | PASS (2026-11-25, linux-x86_64) |
 | Full PR verification gate | Validator/Runtime | linux-x86_64 | CI `verify` | green | PENDING |
@@ -81,7 +82,18 @@ None — all verification tiers execute on the current host.
   the module display code or a fitted closed form. The 201-point Raum sweep is in
   the table. Also menu names (Replika quality and BBD type), Choral delay's "x"
   prefix, Psyche Delay's stepped pitch and its detune rounding.
-- The other modules' parameters: Bass Pro, Dirt, Kolor, V5, SF100, Twin Delay,
-  Ring Mod and others. The same sweep covers them, one PR per batch.
+- Batch 2's pending names: Bass Pro's gain, master, mid, GEQ bands and GEQ
+  volume (curves: gain reads like 20·log10((e^(kx) − 1)/(e^k − 1)) with k
+  near 3.23, not pinned by one-decimal text), Twin Delay's times (near
+  2000·x², off at the low end) and Ring Mod's LFO rate (two decimals below 1,
+  one above: no form yet).
+- V5 and SF100 had no owner family, so their controls were not held and read
+  nothing. They are now held by `$EFFECT_TYPE_VAN51` / `$EFFECT_TYPE_SUPERFAST100`.
+- The manual and `crates/script/ksp/data/vendor_constants.txt` spell
+  `$ENGINE_PAR_SF100_OVEDRIVE`. Kontakt 8.13.1's binary has only `…_OVERDRIVE`
+  (the only other manual name it lacks is `$ENGINE_PAR_HP_FREQ`). That is for the KSP
+  language lane.
+- The other modules' parameters (Bite, Freak, Flair, Phasis, Bass Invader,
+  Super GT, the guitar pedals and others): the same sweep, one PR per batch.
 - DSP for the held-only controls (Jump, Replika held, Raum freeze/sparse) is not
   part of this lane.

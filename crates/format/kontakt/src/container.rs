@@ -33,59 +33,59 @@ pub fn chunks(path: &Path) -> Result<KontaktChunks, Error> {
 /// # Errors
 /// When the file cannot be opened or is not a recognized Kontakt container.
 pub(crate) fn inspect_protection(path: &Path) -> Result<ProtectionStatus, Error> {
-    let mut file = std::fs::File::open(path).map_err(|e| Error::new(path, "open", e))?;
-    inspect_reader(&mut file, path, 0)
+    if !encrypted(path)? {
+        return Ok(ProtectionStatus::Open);
+    }
+    match crate::access::library_key(path) {
+        Ok(_) => Ok(ProtectionStatus::Open),
+        Err(reason) => Ok(ProtectionStatus::protected(
+            ProtectionSystem::NativeAccess,
+            format!("encrypted Kontakt preset requires .nicnt access data ({reason})"),
+        )),
+    }
 }
 
-fn inspect_reader<R: Read + Seek>(
+/// Whether the preset in `path` is encrypted, read from its container alone:
+/// no access data is looked up and nothing is decrypted.
+///
+/// # Errors
+/// When the file cannot be opened or is not a recognized Kontakt container.
+pub(crate) fn encrypted(path: &Path) -> Result<bool, Error> {
+    let mut file = std::fs::File::open(path).map_err(|e| Error::new(path, "open", e))?;
+    encrypted_reader(&mut file, path, 0)
+}
+
+fn encrypted_reader<R: Read + Seek>(
     reader: &mut R,
     path: &Path,
     depth: usize,
-) -> Result<ProtectionStatus, Error> {
+) -> Result<bool, Error> {
     if depth > 3 {
         return Err(Error::new(path, "container", "nested too deep"));
     }
     let container = NIFile::read(&mut *reader).map_err(|e| Error::new(path, "container", e))?;
     match container {
         NIFile::NKSContainer(nks) => match &nks.header {
-            BPatchHeader::BPatchHeaderV42(_) => Ok(ProtectionStatus::Open),
+            BPatchHeader::BPatchHeaderV42(_) => Ok(false),
             _ => Err(Error::new(
                 path,
                 "NKS preset",
                 "legacy XML instruments are not read",
             )),
         },
-        NIFile::NISoundContainer(nis) => inspect_nis_protection(nis, path, 0),
+        NIFile::NISoundContainer(nis) => nis_encrypted(nis, path, 0),
         NIFile::Monolith(container) => {
-            let is_preset = |name: &str| {
-                Path::new(name).extension().is_some_and(|e| {
-                    ["nki", "nkm", "nkb"]
-                        .iter()
-                        .any(|x| e.eq_ignore_ascii_case(x))
-                })
-            };
-            let mut presets = container.items.iter().filter(|i| is_preset(&i.filename));
-            let (Some(preset), None) = (presets.next(), presets.next()) else {
-                return Err(Error::new(
-                    path,
-                    "monolith",
-                    "not exactly one preset member",
-                ));
-            };
+            let preset = monolith_preset(&container, path)?;
             let bytes = container
                 .read_item(reader, preset, MAX_PRESET as u64)
                 .map_err(|e| Error::new(path, "monolith preset", e))?;
-            inspect_reader(&mut Cursor::new(bytes), path, depth + 1)
+            encrypted_reader(&mut Cursor::new(bytes), path, depth + 1)
         }
         _ => Err(Error::new(path, "container", "not an instrument")),
     }
 }
 
-fn inspect_nis_protection(
-    container: ItemContainer,
-    path: &Path,
-    depth: usize,
-) -> Result<ProtectionStatus, Error> {
+fn nis_encrypted(container: ItemContainer, path: &Path, depth: usize) -> Result<bool, Error> {
     if depth > 3 {
         return Err(Error::new(path, "NIS", "nested too deep"));
     }
@@ -96,24 +96,37 @@ fn inspect_nis_protection(
             .subtree_item
             .item()
             .map_err(|e| Error::new(path, "NIS subtree", e))?;
-        return inspect_nis_protection(inner, path, depth + 1);
+        return nis_encrypted(inner, path, depth + 1);
     }
     let NISObject::BNISoundPreset(preset) = Repository::from(container).infer_schema() else {
         return Err(Error::new(path, "NIS", "not a sound preset"));
     };
-    let is_encrypted = preset
+    preset
         .is_encrypted()
-        .map_err(|e| Error::new(path, "NIS preset", e))?;
-    if !is_encrypted {
-        return Ok(ProtectionStatus::Open);
-    }
-    match crate::access::library_key(path) {
-        Ok(_) => Ok(ProtectionStatus::Open),
-        Err(reason) => Ok(ProtectionStatus::protected(
-            ProtectionSystem::NativeAccess,
-            format!("encrypted Kontakt preset requires .nicnt access data ({reason})"),
-        )),
-    }
+        .map_err(|e| Error::new(path, "NIS preset", e))
+}
+
+/// A monolith's one preset member (.nki, .nkm or .nkb).
+fn monolith_preset<'a>(
+    container: &'a NIFileContainer,
+    path: &Path,
+) -> Result<&'a ni_file::file_container::FileContainerItem, Error> {
+    let is_preset = |name: &str| {
+        Path::new(name).extension().is_some_and(|e| {
+            ["nki", "nkm", "nkb"]
+                .iter()
+                .any(|x| e.eq_ignore_ascii_case(x))
+        })
+    };
+    let mut presets = container.items.iter().filter(|i| is_preset(&i.filename));
+    let (Some(preset), None) = (presets.next(), presets.next()) else {
+        return Err(Error::new(
+            path,
+            "monolith",
+            "not exactly one preset member",
+        ));
+    };
+    Ok(preset)
 }
 
 /// [`chunks`], and the file's own monolith table when it is one: the file
@@ -179,21 +192,7 @@ fn payload<R: Read + Seek>(
         },
         NIFile::NISoundContainer(nis) => nis_payload(nis, path, 0, encrypted),
         NIFile::Monolith(container) => {
-            let is_preset = |name: &str| {
-                Path::new(name).extension().is_some_and(|e| {
-                    ["nki", "nkm", "nkb"]
-                        .iter()
-                        .any(|x| e.eq_ignore_ascii_case(x))
-                })
-            };
-            let mut presets = container.items.iter().filter(|i| is_preset(&i.filename));
-            let (Some(preset), None) = (presets.next(), presets.next()) else {
-                return Err(Error::new(
-                    path,
-                    "monolith",
-                    "not exactly one preset member",
-                ));
-            };
+            let preset = monolith_preset(&container, path)?;
             let bytes = container
                 .read_item(reader, preset, MAX_PRESET as u64)
                 .map_err(|e| Error::new(path, "monolith preset", e))?;

@@ -1,5 +1,8 @@
 # Library format coverage census
 
+> `tools/format-census` no longer exists. For ni-file byte coverage see
+> [NI_FILE_PARITY.md](NI_FILE_PARITY.md).
+
 Tool: `tools/format-census` (release build). It parses every file under a
 library root with the reader KONTRA ships for that family and prints one TSV
 line per file (`family`, `outcome`, `detail`). Instrument files are also built
