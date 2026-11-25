@@ -558,6 +558,14 @@ impl Engine {
         if self.absent(par, group, slot, generic) {
             return false;
         }
+        // A value outside what the control takes is refused, and it keeps
+        // what it held (the reference 8.13's setter, [ref]).
+        if !self
+            .script()
+            .is_none_or(|s| s.engine_pars.takes(par, value))
+        {
+            return false;
+        }
         let Some(par) = self.engine_par(par) else {
             return false;
         };

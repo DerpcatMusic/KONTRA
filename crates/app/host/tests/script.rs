@@ -4418,6 +4418,41 @@ fn an_uncarried_modules_controls_hold_what_a_script_sets() {
     assert_eq!(e.last_message(), "123456 300000 0");
 }
 
+/// A control the reference 8.13's setter takes in its own units refuses a
+/// value outside them and keeps what it held (Ring Mod's LFO wave: 0 or 1;
+/// "Phasis notch count must be between 2 and 12!" is the same check).
+#[test]
+fn a_set_outside_what_a_control_takes_is_refused() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Gain(1.0),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    plan.slot_shapes.saved_types = vec![(ir::RackAt::Inserts, 0, 50)];
+    let wave = ir::held_key("$ENGINE_PAR_RINGMOD_LFO_WAVE");
+    plan.slot_shapes.held = vec![(ir::RackAt::Inserts, 0, wave, 1)];
+    let script = kontra_ksp::compile(
+        "on init
+            declare @t
+            set_engine_par($ENGINE_PAR_RINGMOD_LFO_WAVE, 500000, -1, 0, 1)
+            @t := get_engine_par($ENGINE_PAR_RINGMOD_LFO_WAVE, -1, 0, 1)
+            set_engine_par($ENGINE_PAR_RINGMOD_LFO_WAVE, 0, -1, 0, 1)
+            @t := @t & \" \" & get_engine_par($ENGINE_PAR_RINGMOD_LFO_WAVE, -1, 0, 1)
+            set_engine_par($ENGINE_PAR_RINGMOD_LFO_WAVE, -1, -1, 0, 1)
+            message(@t & \" \" & get_engine_par($ENGINE_PAR_RINGMOD_LFO_WAVE, -1, 0, 1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "1 0 0");
+}
+
 /// A module a script loads answers reads at once with Kontakt's fresh
 /// values (a held control: Psyche Delay's TIME_UNIT, as a fresh unit holds it).
 #[test]

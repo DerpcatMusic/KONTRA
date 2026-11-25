@@ -16,6 +16,9 @@ pub struct EnginePars {
     /// The effect type id `first + n` belongs to, for a parameter only one
     /// effect type has. On a slot holding another type it names nothing.
     pub owners: Box<[Option<i32>]>,
+    /// The values `set_engine_par` takes for id `first + n`, when it takes
+    /// only some; any other set is refused.
+    pub accepts: Box<[Option<(i32, i32)>]>,
 }
 
 impl EnginePars {
@@ -31,6 +34,18 @@ impl EnginePars {
     pub fn owner(&self, id: i32) -> Option<i32> {
         let n = usize::try_from(id.checked_sub(self.first)?).ok()?;
         self.owners.get(n).copied().flatten()
+    }
+
+    /// Whether `set_engine_par` takes `value` for id `id`.
+    #[must_use]
+    pub fn takes(&self, id: i32, value: i32) -> bool {
+        let n = id
+            .checked_sub(self.first)
+            .and_then(|n| usize::try_from(n).ok());
+        match n.and_then(|n| self.accepts.get(n).copied().flatten()) {
+            Some((lo, hi)) => (lo..=hi).contains(&value),
+            None => true,
+        }
     }
 
     /// The text law of parameter id `id`.
@@ -52,7 +67,10 @@ mod tests {
             by_id: vec![None, Some(EnginePar::Attack)].into(),
             readouts: Box::default(),
             owners: Box::default(),
+            accepts: vec![None, Some((2, 12))].into(),
         };
+        assert!(pars.takes(100, -5) && pars.takes(101, 12) && pars.takes(7, 99));
+        assert!(!pars.takes(101, 1) && !pars.takes(101, 13) && !pars.takes(101, -1));
         assert_eq!(pars.get(101), Some(EnginePar::Attack));
         assert_eq!(pars.get(100), None);
         assert_eq!(pars.get(99), None);
