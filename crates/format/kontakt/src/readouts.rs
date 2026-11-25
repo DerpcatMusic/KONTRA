@@ -51,6 +51,16 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
         "$ENGINE_PAR_WOWFLUTTER_AGE",
         "$ENGINE_PAR_WOWFLUTTER_SATURATION",
         "$ENGINE_PAR_WOWFLUTTER_MIX",
+        "$ENGINE_PAR_SCOMP_MIX",
+        "$ENGINE_PAR_DL_DAMPING",
+        "$ENGINE_PAR_RV2_SIZE",
+        "$ENGINE_PAR_RV2_DAMPING",
+        "$ENGINE_PAR_RV2_MOD",
+        "$ENGINE_PAR_RV2_DIFF",
+        "$ENGINE_PAR_RV2_STEREO",
+        "$ENGINE_PAR_RV_COLOUR",
+        "$ENGINE_PAR_RV_STEREO",
+        "$ENGINE_PAR_RV_DAMPING",
         "$ENGINE_PAR_JMP_PREAMP",
         "$ENGINE_PAR_JMP_BASS",
         "$ENGINE_PAR_JMP_MID",
@@ -94,6 +104,60 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
         ("$ENGINE_PAR_FL_COLOR", lin(0.0, 100.0), Wide, none),
         // `0x141adffb0`: `20 + 380·x` as `%3.0f BPM`.
         ("$ENGINE_PAR_GATER_RATE", lin(20.0, 400.0), Bpm, none),
+        // Feedback Compressor (`0x141a87d40`, cases 2..5), printed by the shared `%5.1f`.
+        (
+            "$ENGINE_PAR_FCOMP_ATTACK",
+            lin(0.1034, 0.1034 + 49.896_603),
+            Padded,
+            none,
+        ),
+        (
+            "$ENGINE_PAR_FCOMP_RELEASE",
+            lin(50.0, 1_200.000_1),
+            Padded,
+            none,
+        ),
+        ("$ENGINE_PAR_FCOMP_RATIO", lin(1.0, 20.0), Padded, none),
+        ("$ENGINE_PAR_FCOMP_MIX", lin(0.0, 100.0), Padded, none),
+        // Bus Compressor: lines and six-entry menus, as a 101-point sweep reads them (its
+        // converter `0x141a88230` goes through a parameter object not read yet).
+        (
+            "$ENGINE_PAR_SCOMP_THRESHOLD",
+            lin(-20.0, 20.0),
+            Padded,
+            none,
+        ),
+        // Makeup is −5..20 dB but rounds the other way at 1, 3.25 and 3.75 (the reference
+        // prints "1.00", "3.3", "3.7"): the object's own arithmetic, still pending.
+        ("$ENGINE_PAR_SCOMP_MAKEUP", lin(-5.0, 20.0), Padded, none),
+        (
+            "$ENGINE_PAR_SCOMP_RATIO",
+            lin(0.0, 1.0),
+            Menu(&["1.5", "2", "3", "4", "5", "10"]),
+            none,
+        ),
+        (
+            "$ENGINE_PAR_SCOMP_ATTACK",
+            lin(0.0, 1.0),
+            Menu(&["0.1", "0.3", "1", "3", "10", "30"]),
+            none,
+        ),
+        (
+            "$ENGINE_PAR_SCOMP_RELEASE",
+            lin(0.0, 1.0),
+            Menu(&["100", "200", "400", "800", "1600", "Auto"]),
+            none,
+        ),
+        // Reverb2 (`0x141adc760`, cases 5..7): 250·x, (1 − x)·19000 + 2000, x·−12 (−0 at 0,
+        // which prints "-0.00").
+        ("$ENGINE_PAR_RV2_PREDELAY", lin(0.0, 250.0), Padded, none),
+        (
+            "$ENGINE_PAR_RV2_HIGHCUT",
+            lin(21_000.0, 2_000.0),
+            Padded,
+            none,
+        ),
+        ("$ENGINE_PAR_RV2_LOWSHELF", lin(-0.0, -12.0), Padded, none),
         (
             "$ENGINE_PAR_COMP_ATTACK",
             curve(COMP_ATTACK_MS),

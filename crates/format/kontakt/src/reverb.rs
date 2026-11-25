@@ -298,7 +298,9 @@ mod tests {
                 assert!((got - want).abs() < 0.005, "{name} {raw}: {got} != {want}");
             }
         }
-        assert!(!mappings.iter().any(|row| row.name == "$ENGINE_PAR_RV2_MOD"));
+        // Modulation plays from the save only: a script's set is held and shown, not run.
+        assert!(mappings.iter().any(|row| row.name == "$ENGINE_PAR_RV2_MOD"
+            && matches!(row.drives, Drives::Engine(EnginePar::Opaque(_)))));
     }
 
     #[test]

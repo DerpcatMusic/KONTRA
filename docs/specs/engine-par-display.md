@@ -122,7 +122,15 @@ None — all verification tiers execute on the current host.
   note `30 + 90·x` (Ultra −30..190), `·1/12 − 69/12`. These are the ranges
   phasis.rs already plays. A fresh unit is Ultra off, so only that form is
   encoded; the 201-point sweep reads it to the printed digit.
+- Bus Compressor (2026-11-25, 101 points): threshold −20..20 dB; ratio, attack and
+  release six-entry menus picked by `floor(6x)` (1.5 2 3 4 5 10; 0.1 0.3 1 3 10 30;
+  100 200 400 800 1600 Auto). Its converter `0x141a88230` writes x into a parameter
+  object (`0x14a1b5430 + i·0x240`) and calls `0x141a98370`, not read yet.
 - Still pending:
+  - Bus Compressor makeup: −5..20 dB fits but for three texts on a rounding edge
+    (x .24, .33, .35 print "1.00", "3.3", "3.7"); the object's arithmetic decides.
+  - Convolution (IRC) controls: the setter always applies them asynchronously, so the
+    sweep reads the old value; they need a read after `on async_complete`.
   - Phasis notches (`0x1407baee0`: `2 − trunc(−11·clamp(x))`, 2..12) and Flair
     pitch (`0x140adfb60`: `i = trunc(97x)`, 0..96, note `i % 12`, octave
     `i/12 − 2`) read their floor (2, C-2) at every set value. Both descriptors are
