@@ -447,7 +447,60 @@ def resolve_panels(text):
                   r"set_control_par(\1, $CONTROL_PAR_PARENT_PANEL, get_ui_id($\2))", text)
 
 
-PAGES = [widgets, geometry, pictures_page, text, data]
+def behaviour():
+    """How far a drag and a fine (Shift) drag move each kind of control: one
+    gesture per control, each starting mid-range, so each control's last callback is one law.
+    Shoot at 100 % (DPI=96), so page pixels are screen pixels."""
+    p = Page("behaviour")
+    # (kind, name, args, start, gesture relative to the click point)
+    rows = [
+        [("ui_knob", f"k{d}", "(0, 1000, 1)", 500, f"drag 0 0 0 -{d}") for d in (10, 50, 100, 200)]
+        + [("ui_knob", "kdown", "(0, 1000, 1)", 500, "drag 0 0 0 100"),
+           ("ui_knob", "kright", "(0, 1000, 1)", 500, "drag 0 0 100 0"),
+           ("ui_knob", "kfine", "(0, 1000, 1)", 500, "drag 0 0 0 -100 shift"),
+           ("ui_knob", "k100r", "(0, 100, 1)", 50, "drag 0 0 0 -100")],
+        [("ui_slider", f"s{d}", "(0, 1000)", 500, f"drag 0 0 {d} 0") for d in (10, 20, 40)]
+        + [("ui_slider", "sup", "(0, 1000)", 500, "drag 0 0 0 -50"),
+           ("ui_slider", "sfine", "(0, 1000)", 500, "drag 0 0 40 0 shift"),
+           ("ui_slider", "smb1000", "(0, 1000)", 500, "drag 0 0 20 0"),
+           ("ui_slider", "smbneg", "(0, 1000)", 500, "drag 0 0 0 -10"),
+           ("ui_slider", "s100r", "(0, 100)", 50, "drag 0 0 20 0")],
+        # Value edits first the ranges: in this rig a page loses its value-edit drags after the
+        # first two to four (Kontakt hides and recentres the pointer; Xvfb seems to lose it).
+        [("ui_value_edit", "v100r40", "(0, 100, 1)", 50, "drag 0 0 0 -40"),
+         ("ui_value_edit", "v10kr", "(0, 10000, 1)", 5000, "drag 0 0 0 -10"),
+         ("ui_value_edit", "v10", "(0, 1000, 1)", 500, "drag 0 0 0 -10"),
+         ("ui_value_edit", "v40", "(0, 1000, 1)", 500, "drag 0 0 0 -40"),
+         ("ui_value_edit", "vdown", "(0, 1000, 1)", 500, "drag 0 0 0 20"),
+         ("ui_value_edit", "vright", "(0, 1000, 1)", 500, "drag 0 0 40 0"),
+         ("ui_value_edit", "vfine", "(0, 1000, 1)", 500, "drag 0 0 0 -20 shift")],
+        [("ui_slider", "smb500", "(0, 1000)", 500, "drag 0 0 20 0"),
+         ("ui_slider", "smbn500", "(0, 1000)", 500, "drag 0 0 0 -10"),
+         ("ui_knob", "kreset", "(0, 1000, 1)", 500, "click 0 0 ctrl")],
+    ]
+    for r, row in enumerate(rows):
+        for c, (kind, name, args, start, gesture) in enumerate(row):
+            var = p.control(kind, name, args)
+            x, y = 10 + 110 * c, 20 + 90 * r
+            p.at(var, x, y)
+            p.setup.append(f"{var} := {start}")
+            if name == "smb1000":
+                p.par(var, "MOUSE_BEHAVIOUR", 1000)
+            if name == "smbneg":
+                p.par(var, "MOUSE_BEHAVIOUR", -1000)
+            if name == "smb500":
+                p.par(var, "MOUSE_BEHAVIOUR", 500)
+            if name == "smbn500":
+                p.par(var, "MOUSE_BEHAVIOUR", -500)
+            p.read(f"{name}.start", var)
+            for step in gesture.split(";"):
+                op, dx, dy, *rest = step.split()
+                # Grab each control where the widgets page does: 30, 10 in from its corner.
+                p.act(op, x + 30 + int(dx), y + 10 + int(dy), *rest)
+    return p
+
+
+PAGES = [widgets, geometry, pictures_page, text, data, behaviour]
 
 
 def main():

@@ -912,8 +912,6 @@ pub enum Sweep {
     Points(f64),
     /// This many times the control's own length along the axis.
     Lengths(f64),
-    /// This far per unit of the value.
-    PerUnit(f64),
 }
 
 /// Colours of the stock drawing (KSP `*_COLOR` control parameters).

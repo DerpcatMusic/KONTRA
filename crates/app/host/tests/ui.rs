@@ -846,3 +846,75 @@ fn a_picture_the_script_picks_by_a_menu_spells_its_item() {
         "picked by a slider, not a menu"
     );
 }
+
+/// Each control's drag sweeps its range as Kontakt 8.13's did on the
+/// `tools/ksp-ui` behaviour page (100 %, so page pixels are points): one
+/// drag per control from mid range, the value it ended on.
+#[test]
+fn a_drag_moves_each_control_as_far_as_kontakt_did() {
+    let ui = tree(
+        "on init
+            declare ui_knob $k (0, 1000, 1)
+            declare ui_knob $k100 (0, 100, 1)
+            declare ui_slider $s (0, 1000)
+            declare ui_slider $s100 (0, 100)
+            declare ui_slider $mb1000 (0, 1000)
+            set_control_par(get_ui_id($mb1000), $CONTROL_PAR_MOUSE_BEHAVIOUR, 1000)
+            declare ui_slider $mb500 (0, 1000)
+            set_control_par(get_ui_id($mb500), $CONTROL_PAR_MOUSE_BEHAVIOUR, 500)
+            declare ui_value_edit $v (0, 1000, 1)
+            move_control_px($k, 10, 20)
+            move_control_px($k100, 120, 20)
+            move_control_px($s, 10, 110)
+            move_control_px($s100, 120, 110)
+            move_control_px($mb1000, 230, 110)
+            move_control_px($mb500, 340, 110)
+            move_control_px($v, 10, 200)
+            { The renderer's stock slider size (crates/app/ui layout), set here
+              because the tree leaves it to the renderer. }
+            set_control_par(get_ui_id($mb1000), $CONTROL_PAR_WIDTH, 85)
+            set_control_par(get_ui_id($mb1000), $CONTROL_PAR_HEIGHT, 18)
+            set_control_par(get_ui_id($mb500), $CONTROL_PAR_WIDTH, 85)
+            set_control_par(get_ui_id($mb500), $CONTROL_PAR_HEIGHT, 18)
+        end on",
+    );
+    // (control, start, pixels along its axis, where Kontakt left it)
+    let cases = [
+        ("$k", 500., 10., 543.),
+        ("$k", 500., 50., 714.),
+        ("$k", 500., 100., 929.),
+        ("$k", 500., -100., 71.),
+        ("$k100", 50., 100., 93.),
+        ("$s", 500., 10., 587.),
+        ("$s", 500., 20., 674.),
+        ("$s", 500., 40., 849.),
+        ("$s100", 50., 20., 67.),
+        ("$mb1000", 500., 20., 616.),
+        ("$mb500", 500., 20., 558.),
+        ("$v", 500., 10., 540.),
+        ("$v", 500., 40., 660.),
+    ];
+    for (name, start, pixels, kontakt) in cases {
+        let w = widget(&ui, name);
+        let (ui::Kind::Knob { range, .. }
+        | ui::Kind::Slider { range, .. }
+        | ui::Kind::ValueEdit { range, .. }) = &w.kind
+        else {
+            panic!("{name} is not continuous");
+        };
+        let drag = w.drag.unwrap();
+        let length = match drag.axis {
+            ui::Orientation::Vertical => w.rect.height,
+            ui::Orientation::Horizontal => w.rect.width,
+        };
+        let sweep = match drag.sweep {
+            ui::Sweep::Points(p) => p,
+            ui::Sweep::Lengths(k) => k * length,
+        };
+        let ours = (start + (range.max - range.min) * pixels / sweep).clamp(range.min, range.max);
+        assert!(
+            (ours - kontakt).abs() <= 2.,
+            "{name} dragged {pixels}: {ours:.1}, Kontakt {kontakt}"
+        );
+    }
+}

@@ -39,8 +39,12 @@ const SLIDER_SWEEP: f64 = 172. / MEASURED_AT;
 /// 1000 sweeps it in twice that (Kontakt 8 oracle, tools/ksp-ui pictures
 /// page: a 40-point picture at 1000 swept in 78 points, at -500 in 158).
 const BEHAVIOUR_PER_LENGTH: f64 = 2000.;
-/// Points a value edit's drag travels per unit (4 px).
-const VALUE_EDIT_PER_UNIT: f64 = 4. / MEASURED_AT;
+/// Points a value edit's drag travels up to sweep its range: 4 units a
+/// pixel on 0..1000 at 100 % (Kontakt 8.13, `tools/ksp-ui` behaviour page).
+/// The earlier 150 % fact, 4 px a unit on 0..100, fits it too.
+// ponytail: only 0..1000 dragged up is measured; the rig loses value-edit
+// drags down, on other ranges and with Shift (behaviour page notes).
+const VALUE_EDIT_SWEEP: f64 = 250.;
 
 pub(super) fn widget(
     bld: &mut Builder<'_>,
@@ -314,7 +318,7 @@ pub(super) fn widget(
     // Kontakt 8's drags, measured in 150 % screen pixels and held in page
     // points (the constants above): a knob sweeps in 350 px up, ignoring
     // MOUSE_BEHAVIOUR; a slider in 172 px, or 2000 / |MOUSE_BEHAVIOUR| lengths of its
-    // picture along the sign's axis; a value edit 4 px a unit, up. Each runs
+    // picture along the sign's axis; a value edit in 250 points (100 %), up. Each runs
     // its callback again on release.
     // ponytail: 172 measured on the stock skin only; a picture may scale it.
     // A slider set to 0 sweeps in no travel at all: any move takes it to
@@ -327,7 +331,7 @@ pub(super) fn widget(
             Some(0) => ui::Sweep::Points(0.),
             Some(m) => ui::Sweep::Lengths(BEHAVIOUR_PER_LENGTH / f64::from(m.unsigned_abs())),
         }),
-        ControlKind::ValueEdit => Some(ui::Sweep::PerUnit(VALUE_EDIT_PER_UNIT)),
+        ControlKind::ValueEdit => Some(ui::Sweep::Points(VALUE_EDIT_SWEEP)),
         _ => None,
     };
     w.drag = sweep.map(|sweep| ui::Drag {

@@ -80,7 +80,7 @@ impl Face {
         edit.value = Some(model::Value::Integer(0));
         edit.drag = Some(model::Drag {
             axis: model::Orientation::Vertical,
-            sweep: model::Sweep::PerUnit(4.),
+            sweep: model::Sweep::Points(400.),
         });
         edit.reports_release = true;
         let mut table = Widget::new(
@@ -243,7 +243,7 @@ fn library_controls_answer_the_pointer_as_kontakt_plays_them() {
     );
     assert_eq!(f.value(2), 2.);
     assert_eq!(f.gesture.menu, None);
-    // A value edit sweeps 4 points a unit: up 20 is 5.
+    // A value edit sweeping its 100 units in 400 points: up 20 is 5.
     let edit = input::surface(0, 3);
     let start = f.at(&edit);
     f.pointer(start, true, Mods::default());

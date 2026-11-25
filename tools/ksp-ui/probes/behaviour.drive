@@ -1,0 +1,26 @@
+drag 40 30 0 -10
+drag 150 30 0 -50
+drag 260 30 0 -100
+drag 370 30 0 -200
+drag 480 30 0 100
+drag 590 30 100 0
+drag 700 30 0 -100 shift
+drag 810 30 0 -100
+drag 40 120 10 0
+drag 150 120 20 0
+drag 260 120 40 0
+drag 370 120 0 -50
+drag 480 120 40 0 shift
+drag 590 120 20 0
+drag 700 120 0 -10
+drag 810 120 20 0
+drag 40 210 0 -40
+drag 150 210 0 -10
+drag 260 210 0 -10
+drag 370 210 0 -40
+drag 480 210 0 20
+drag 590 210 40 0
+drag 700 210 0 -20 shift
+drag 40 300 20 0
+drag 150 300 0 -10
+click 260 300 ctrl

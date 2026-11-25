@@ -1,0 +1,31 @@
+# Kontakt 8.13 at 100 % (shoot.sh, DPI=96), oracle slot run 2026-11-25: each control's start,
+# the value its last callback read (or - for none) and that callback's shift, alt, ctrl.
+# Across three runs only value edits on 0..1000 dragged up heard their drags (and not always):
+# the rig loses the rest, so a value edit's '-' is not Kontakt's answer.
+# KONTRA checks the measured drags: crates/app/host/tests/ui.rs (a_drag_moves_each_control...).
+k10	500	543	0	0	0
+k50	500	714	0	0	0
+k100	500	929	0	0	0
+k200	500	1000	0	0	0
+kdown	500	71	0	0	0
+kright	500	500	0	0	0
+kfine	500	543	1	0	0
+k100r	50	93	0	0	0
+s10	500	587	0	0	0
+s20	500	674	0	0	0
+s40	500	849	0	0	0
+sup	500	500	0	0	0
+sfine	500	535	1	0	0
+smb1000	500	616	0	0	0
+smbneg	500	833	0	0	0
+s100r	50	67	0	0	0
+v100r40	50	-
+v10kr	5000	-
+v10	500	540	0	0	0
+v40	500	660	0	0	0
+vdown	500	-
+vright	500	-
+vfine	500	-
+smb500	500	558	0	0	0
+smbn500	500	667	0	0	0
+kreset	500	0	0	0	1

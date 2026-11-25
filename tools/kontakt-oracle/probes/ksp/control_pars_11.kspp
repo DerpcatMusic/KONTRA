@@ -1,0 +1,18 @@
+# Kontakt 8.13, after control_pars_7: whether a button's and a knob's TEXT read their last line as a
+# label's does.
+# Run: ksp_probe.py "ANALOG STRINGS.nki" this-file > control_pars_11.measured
+# KONTRA replays it: crates/app/host/tests/oracle_probes.rs.
+R one 1
+S declare ui_button $bt
+S declare ui_knob $kn(0, 100, 1)
+S declare ui_label $lb(1, 1)
+S set_control_par_str(get_ui_id($bt), $CONTROL_PAR_TEXT, "one")
+S set_control_par_str(get_ui_id($bt), $CONTROL_PAR_TEXTLINE, "two")
+T button_lines get_control_par_str(get_ui_id($bt), $CONTROL_PAR_TEXT)
+S set_control_par_str(get_ui_id($kn), $CONTROL_PAR_TEXT, "one")
+S set_control_par_str(get_ui_id($kn), $CONTROL_PAR_TEXTLINE, "two")
+T knob_lines get_control_par_str(get_ui_id($kn), $CONTROL_PAR_TEXT)
+S set_control_par_str(get_ui_id($lb), $CONTROL_PAR_TEXT, "one")
+S set_control_par_str(get_ui_id($lb), $CONTROL_PAR_TEXTLINE, "two")
+T label_lines get_control_par_str(get_ui_id($lb), $CONTROL_PAR_TEXTLINE)
+T label_text get_control_par_str(get_ui_id($lb), $CONTROL_PAR_TEXT)

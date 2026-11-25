@@ -205,7 +205,7 @@ const REPEAT_STEP: f64 = 0.15;
 /// its range. A source that sets no [`model::Drag`] gets the renderer's: a
 /// slider sweeps in its own length along its orientation, anything else in
 /// 200 points up.
-fn travel(w: &model::Widget, r: model::Rect, span: f64, scale: f64) -> (bool, f64) {
+fn travel(w: &model::Widget, r: model::Rect, scale: f64) -> (bool, f64) {
     let drag = w.drag.unwrap_or(match &w.kind {
         Kind::Slider { orientation, .. } => model::Drag {
             axis: if *orientation == Orientation::Vertical || r.height > r.width {
@@ -225,7 +225,6 @@ fn travel(w: &model::Widget, r: model::Rect, span: f64, scale: f64) -> (bool, f6
     let points = match drag.sweep {
         Sweep::Points(p) => p,
         Sweep::Lengths(k) => length * k,
-        Sweep::PerUnit(p) => p * span.abs(),
     };
     (vertical, points.max(1.) * scale)
 }
@@ -488,8 +487,7 @@ pub fn read(
             }
         };
         if let Some(range) = range(&w.kind) {
-            let span = range.max - range.min;
-            let (vertical, points) = travel(w, tree.page_rect(n), span, scale);
+            let (vertical, points) = travel(w, tree.page_rect(n), scale);
             let along = |d: Vec2| if vertical { -d.y } else { d.x };
             let reset = r.press_mods.ctrl || r.press_mods.cmd;
             let arrow = r.pressed.then(|| arrow(ui, &id, w, scale)).flatten();

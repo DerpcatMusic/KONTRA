@@ -12,6 +12,7 @@ oracle Kontakt and KONTRA can be diffed on screen and on what scripts see.
 | pictures | skins and frames, picture states, nine-slice, wallpaper, icon, skin offset, mouse behaviours, knob unit/label/default |
 | text | fonts 0–25, alignment, multi-line labels, text edit, value edit modes, colours, `set_ui_color` |
 | data | menus (rename, values, visibility, selection), tables, xy pad, level meter, waveform, wavetable, file selector, mouse area, key modifiers |
+| behaviour | how far each drag, Shift drag and ctrl-press moves knobs, sliders (with `MOUSE_BEHAVIOUR`) and value edits; shoot with `DPI=96` |
 
 ## Run
 
@@ -45,3 +46,10 @@ python3 tools/ksp-ui/trace.py OUT/k-PAGE-150.nka OUT/o-PAGE.nka   # the rows tha
 - A file selector on a large folder stalls Kontakt's editor; the probe lists a small one.
 - A wallpaper is drawn from the top of the instrument header, not from the page.
 - `get_font_id(25)` answers 6789. Scripts hand it back to `FONT_TYPE`, which takes either.
+- Drags (behaviour page at 100 %, `probes/behaviour.measured`): a knob sweeps its range in about
+  233 px up, whatever its range, and ignores sideways moves; a slider in about 115 px right and
+  ignores vertical moves; with `MOUSE_BEHAVIOUR` m it sweeps in 2000/|m| times its length (width
+  for m > 0, about 15 px tall for m < 0 on the stock skin); a value edit moves 4 units a pixel up on
+  0..1000. Shift drags ten times finer. Each motion runs the callback, and the release once more.
+- Wheel notches sent by xdotool reach no control in this rig, Kontakt's own Tune knob neither, so
+  the wheel is not measured. Most value-edit drags are lost too (see the measured file).
