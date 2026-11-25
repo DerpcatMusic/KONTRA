@@ -3,7 +3,7 @@
   noise   mono, 20 s white noise, peak -6 dBFS (default)
   stereo  2 ch, 20 s, left and right independent white noise A and B (regress outputs on A,B = the effect's stereo matrix)
   burst   mono, 15 s: 50 ms white noise burst at t = 0.1 s, then silence (reverb tail / pre-delay tests)
-Copy to D:\\kontra_ref_src\\NAME.wav (/mnt/MAIN_STORAGE/kontra_ref_src) and load with noise_instrument.sh NAME with Kontakt in classic view
+Copy to D:\\kontra_ref_src\\NAME.wav ($KONTRA_REF_SRC, kontra_libraries.sh) and load with noise_instrument.sh NAME with Kontakt in classic view
 (Kontakt cannot start with a WAV argument; a WAV double-clicked in the Files tab loads as a one-zone instrument spanning the keyboard).
 Play key 60 for original speed. The sample is cut at note-off + release, so hold the note for the length you need."""
 import sys, wave, numpy as np

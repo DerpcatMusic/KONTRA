@@ -4966,6 +4966,244 @@ pub(super) static CURATED_PROGRAMS: &[ProgramSrc] = &[
 (label L64)
 (label L3)
 (ret)" },
+    // SlotList (0x37) and the BProgramContainer (0x29) objects it holds, one per set bit
+    // of its 64-bit slot mask: the SlotList reader FUN_140d1df30 reads id 0x37, length,
+    // the mask, then each set slot's id, length and object (FUN_14093d6c0); slots past
+    // the program table are skipped by FUN_140d1ecf0 with id 0x29. BProgramContainer
+    // reads public FUN_140d0edd0 (slot 10) and private FUN_140d0c590 (slot 11), versions
+    // 0x50 and 0x51.
+    ProgramSrc { name: "FUN_140d1df30", params: &["param_1", "param_2", "param_3", "param_4"], frame: 80, ops: "\
+(set local_40 ?)
+(set t1 (rd H))
+(set sVar17 (s16 t1))
+(br (!= sVar17 55) L1)
+(jmp L2)
+(label L1)
+(throw native-throw)
+(label L2)
+(set t2 (rd I))
+(set t3 (rd B))
+(st 1 (+ (+ sp 64) 0) t3)
+(set t4 (rd B))
+(st 1 (+ (+ sp 64) 1) t4)
+(set t5 (rd B))
+(st 1 (+ (+ sp 64) 2) t5)
+(set t6 (rd B))
+(st 1 (+ (+ sp 64) 3) t6)
+(set t7 (rd B))
+(st 1 (+ (+ sp 64) 4) t7)
+(set t8 (rd B))
+(st 1 (+ (+ sp 64) 5) t8)
+(set t9 (rd B))
+(st 1 (+ (+ sp 64) 6) t9)
+(set t10 (rd B))
+(st 1 (+ (+ sp 64) 7) t10)
+(set iVar22 0)
+(set local_74 0)
+(set uVar27 0)
+(set lVar24 14)
+(set lVar25 4)
+(label L4)
+(set lVar1 (+ lVar24 -13))
+(set lVar2 (+ lVar24 -12))
+(set lVar3 (+ lVar24 -11))
+(set lVar4 (+ lVar24 -10))
+(set lVar5 (+ lVar24 -9))
+(set lVar6 (+ lVar24 -8))
+(set lVar7 (+ lVar24 -7))
+(set lVar8 (+ lVar24 -5))
+(set lVar9 (+ lVar24 -4))
+(set lVar10 (+ lVar24 -3))
+(set lVar11 (+ lVar24 -2))
+(set lVar12 (+ lVar24 1))
+(set lVar13 (+ lVar24 -1))
+(set lVar19 (>> lVar24 3))
+(set lVar14 (+ lVar24 -14))
+(set lVar15 (+ lVar24 -6))
+(set lVar24 (+ lVar24 16))
+(set uVar27 (u16 (s32 (+ (s32 (+ (s32 (+ (s32 (+ (s32 (+ (s32 (+ (s32 (+ (s32 (+ (s32 (+ (s32 (+ (s32 (+ (s32 (+ (s32 (+ (s32 (+ (s32 (+ (s32 (+ uVar27 (u16 (!= (s32 (& (ld1u (+ (+ sp 64) (>> lVar1 3))) 2)) 0)))) (u16 (!= (s32 (& (ld1u (+ (+ sp 64) (>> lVar2 3))) 4)) 0)))) (u16 (!= (s32 (& (ld1u (+ (+ sp 64) (>> lVar3 3))) 8)) 0)))) (u16 (!= (s32 (& (ld1u (+ (+ sp 64) (>> lVar4 3))) 16)) 0)))) (u16 (!= (s32 (& (ld1u (+ (+ sp 64) (>> lVar5 3))) 32)) 0)))) (u16 (!= (s32 (& (ld1u (+ (+ sp 64) (>> lVar6 3))) 64)) 0)))) (u16 (!= (s32 (& (ld1u (+ (+ sp 64) (>> lVar7 3))) 128)) 0)))) (u16 (!= (s32 (& (ld1u (+ (+ sp 64) (>> lVar8 3))) 2)) 0)))) (u16 (!= (s32 (& (ld1u (+ (+ sp 64) (>> lVar9 3))) 4)) 0)))) (u16 (!= (s32 (& (ld1u (+ (+ sp 64) (>> lVar10 3))) 8)) 0)))) (u16 (!= (s32 (& (ld1u (+ (+ sp 64) (>> lVar11 3))) 16)) 0)))) (u16 (!= (s32 (& (ld1u (+ (+ sp 64) (>> lVar12 3))) 128)) 0)))) (u16 (!= (s32 (& (ld1u (+ (+ sp 64) (>> lVar13 3))) 32)) 0)))) (u16 (!= (s32 (& (ld1u (+ (+ sp 64) lVar19)) 64)) 0)))) (u16 (!= (s32 (& (ld1u (+ (+ sp 64) (>> lVar14 3))) 1)) 0)))) (u16 (!= (s32 (& (ld1u (+ (+ sp 64) (>> lVar15 3))) 1)) 0))))))
+(set lVar25 (+ lVar25 -1))
+(label L5)
+(br (!= lVar25 0) L4)
+(jmp L6)
+(label L6)
+(set plVar26 (ld8 (+ param_4 664)))
+(set local_78 uVar27)
+(br (!= plVar26 0) L7)
+(jmp L8)
+(label L7)
+(set pcVar16 (ld8 (+ (ld8 plVar26) 8)))
+(set puVar20 ?)
+(br (ltu 15 (ld8 (+ puVar20 (* 3 8)))) L10)
+(jmp L11)
+(label L10)
+(set puVar20 (ld8 puVar20))
+(label L11)
+(label L8)
+(set local_70 (+ param_4 712))
+(set iVar28 0)
+(set iVar29 0)
+(set plVar26 (+ param_1 24))
+(label L13)
+(br (< 63 iVar28) L16)
+(jmp L17)
+(label L16)
+(jmp L15)
+(label L17)
+(br (== (ld4s (+ (ld8 plVar26) 59392)) 0) L19)
+(jmp L20)
+(label L19)
+(br (!= (s32 (& (ld1u (+ (+ sp 64) (>> iVar28 3))) (u8 (s32 (<< 1 (s32 (& (u8 iVar28) 7))))))) 0) L22)
+(jmp L23)
+(label L22)
+(st 4 (+ param_4 696) iVar29)
+(st 4 (+ param_4 704) 4294967295)
+(set plVar21 (+ (ld8 plVar26) 16))
+(set sVar17 (s16 g_cls))
+(set t11 (rd H))
+(set sVar18 (s16 t11))
+(br (!= sVar18 sVar17) L25)
+(jmp L26)
+(label L25)
+(throw native-throw)
+(label L26)
+(set t12 (rd I))
+(set t13 (rd O))
+(set iVar22 (s32 (+ local_74 1)))
+(st 4 local_70 iVar29)
+(set local_74 iVar22)
+(label L23)
+(set iVar28 (s32 (+ iVar28 1)))
+(set local_70 (+ local_70 (* 1 4)))
+(label L20)
+(set iVar29 (s32 (+ iVar29 1)))
+(set plVar26 (+ plVar26 (* 1 8)))
+(label L14)
+(br (< iVar29 64) L13)
+(jmp L15)
+(label L15)
+(br (< iVar22 (s32 local_78)) L28)
+(jmp L29)
+(label L28)
+(st 4 (+ param_4 48) 1)
+(set uVar23 (u32 (- local_78 (u32 iVar22))))
+(label L31)
+(call FUN_140d1ecf0 t14 (param_4 param_2 41))
+(set uVar23 (- uVar23 1))
+(label L32)
+(br (!= uVar23 0) L31)
+(jmp L33)
+(label L33)
+(label L29)
+(ret)" },
+    ProgramSrc { name: "FUN_140d0edd0", params: &["param_1", "param_2", "param_3", "param_4"], frame: 32, ops: "\
+(br (!= param_3 80) L4)
+(jmp L2)
+(label L4)
+(br (!= param_3 81) L1)
+(jmp L2)
+(label L1)
+(throw native-throw)
+(label L2)
+(call FUN_140cfbaf0 t1 (param_2 (+ param_1 59344) param_4))
+(set uVar3 (rd F))
+(st 4 (+ param_1 1084) uVar3)
+(set uVar3 (rd F))
+(st 4 (+ param_1 1088) uVar3)
+(br (!= (ld8 (+ param_2 8)) 0) L5)
+(jmp L6)
+(label L5)
+(set iVar1 (ld4s (+ (ld8 (+ param_2 8)) 12)))
+(br (== iVar1 3) L8)
+(jmp L11)
+(label L11)
+(br (== iVar1 0) L8)
+(jmp L9)
+(label L8)
+(set bVar2 ?)
+(jmp L10)
+(label L9)
+(set bVar2 ?)
+(label L10)
+(br bVar2 L13)
+(jmp L12)
+(label L12)
+(ret)
+(label L13)
+(label L6)
+(throw native-throw)
+(ret)" },
+    ProgramSrc { name: "FUN_140d0c590", params: &["param_1", "param_2", "param_3", "param_4"], frame: 32, ops: "\
+(br (== param_3 80) L1)
+(jmp L2)
+(label L1)
+(set uVar5 (rd I))
+(st 4 (+ param_1 59376) uVar5)
+(set uVar3 (rd B))
+(st 1 (+ param_1 54908) uVar3)
+(set uVar3 (rd B))
+(st 1 (+ param_1 54909) uVar3)
+(set uVar3 (rd B))
+(st 1 (+ param_1 54910) uVar3)
+(set uVar3 (rd B))
+(st 1 (+ param_1 54911) uVar3)
+(set uVar4 (rd H))
+(st 2 (+ param_1 1082) uVar4)
+(call FUN_140cfb610 t7 (param_2 (+ param_1 53528) param_4))
+(set uVar5 (rd I))
+(st 4 (+ param_1 54104) uVar5)
+(set uVar3 (rd B))
+(st 1 (+ param_1 54108) uVar3)
+(set uVar3 (rd B))
+(st 1 (+ param_1 54109) uVar3)
+(call FUN_140cefcf0 t11 (param_2 (+ param_1 59280) param_4))
+(set uVar3 (rd B))
+(st 1 (+ param_1 54110) uVar3)
+(jmp L3)
+(label L2)
+(br (!= param_3 81) L4)
+(jmp L5)
+(label L4)
+(throw native-throw)
+(label L5)
+(set uVar5 (rd I))
+(st 4 (+ param_1 59376) uVar5)
+(set uVar3 (rd B))
+(st 1 (+ param_1 54908) uVar3)
+(set uVar3 (rd B))
+(st 1 (+ param_1 54909) uVar3)
+(set uVar3 (rd B))
+(st 1 (+ param_1 54910) uVar3)
+(set uVar3 (rd B))
+(st 1 (+ param_1 54911) uVar3)
+(set uVar4 (rd H))
+(st 2 (+ param_1 1082) uVar4)
+(call FUN_140cefcf0 t19 (param_2 (+ param_1 59280) param_4))
+(label L3)
+(set uVar5 (rd I))
+(br (!= (ld8 (+ param_2 8)) 0) L7)
+(jmp L8)
+(label L7)
+(set iVar1 (ld4s (+ (ld8 (+ param_2 8)) 12)))
+(br (== iVar1 3) L10)
+(jmp L13)
+(label L13)
+(br (== iVar1 0) L10)
+(jmp L11)
+(label L10)
+(set bVar2 ?)
+(jmp L12)
+(label L11)
+(set bVar2 ?)
+(label L12)
+(br bVar2 L15)
+(jmp L14)
+(label L14)
+(ret)
+(label L15)
+(label L8)
+(throw native-throw)
+(ret)" },
 ];
 
 pub(super) static CURATED_READERS: &[ReaderSrc] = &[
@@ -5014,6 +5252,15 @@ pub(super) static CURATED_READERS: &[ReaderSrc] = &[
         element: 0,
         status: "host-branch",
     },
+    ReaderSrc {
+        sertype: 0x29,
+        class: "BProgramContainer",
+        program: "FUN_140d0edd0",
+        current: 0x51,
+        versions: &[(0x50, 0x51)],
+        element: 0,
+        status: "typed",
+    },
 ];
 
 /// Private-block readers, where a class reads its two blocks with different readers
@@ -5037,6 +5284,15 @@ pub(super) static CURATED_PRIVATE: &[ReaderSrc] = &[
         program: "FUN_140d0c760",
         current: 0x9c,
         versions: &[(0x92, 0x95), (0x97, 0x9c)],
+        element: 0,
+        status: "typed",
+    },
+    ReaderSrc {
+        sertype: 0x29,
+        class: "BProgramContainer",
+        program: "FUN_140d0c590",
+        current: 0x51,
+        versions: &[(0x50, 0x51)],
         element: 0,
         status: "typed",
     },
@@ -5076,6 +5332,15 @@ pub(super) static CURATED_UNFRAMED: &[ReaderSrc] = &[
         current: 0,
         versions: &[],
         element: 0x2c,
+        status: "typed",
+    },
+    ReaderSrc {
+        sertype: 0x37,
+        class: "SlotList",
+        program: "FUN_140d1df30",
+        current: 0,
+        versions: &[],
+        element: 0x29,
         status: "typed",
     },
 ];

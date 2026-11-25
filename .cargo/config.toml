@@ -1,2 +1,11 @@
 [alias]
 xtask = "run -p xtask --"
+
+# Resolve features once for the whole workspace, so `cargo test -p <crate>` reuses the
+# `--workspace` artifacts instead of rebuilding syn/serde/toml/... with a narrower
+# feature set (measured: 15 crates, +17 s per `-p` run). Nightly-only; the tree pins nightly.
+[unstable]
+feature-unification = true
+
+[resolver]
+feature-unification = "workspace"

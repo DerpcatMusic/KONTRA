@@ -6,3 +6,22 @@ failure-output = "immediate-final"
 
 [profile.ci]
 fail-fast = false
+
+# Start the longest tests first so they overlap the rest of the suite instead of
+# finishing alone at the end (the suite's wall was max(tail start + 71 s)).
+# CPU per test at dsp-dev, 2026-11-25: auto_align 22 s, real_instruments 24 s,
+# uvi_loads 12 s, a_part_playing 9 s (docs/specs/fast-build.md). Not kontra-lua's
+# wall-clock-slice tests (e.g. an_endless_comparator_under_sort): started beside these
+# under load, their 500 us slice expires before the code under test runs.
+[[profile.default.overrides]]
+filter = """
+test(=tests::auto_align_reports_the_latest_part_and_holds_the_other)
+| test(=tests::real_instruments_load_play_save_and_reload)
+| test(=tests::a_part_playing_a_snapshot_reopens_with_it_without_a_library_scan)
+| test(=uvi_loads_use_the_same_progress_path)
+| test(=tests::an_analog_strings_snapshot_on_its_other_buses_sounds)
+| test(=an_analog_strings_snapshot_is_its_instrument_with_its_saved_values)
+| test(=a_user_snapshot_binds_to_its_instrument_by_name)
+| test(=instrument::tests::a_projects_saved_state_picks_the_samples_a_program_loads)
+"""
+priority = 100

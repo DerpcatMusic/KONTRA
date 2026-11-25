@@ -100,6 +100,19 @@ pub enum FormulaId {
     LofiNoiseDb,
     /// Transparent Limiter's release in ms: `500^x`.
     TransLimReleaseMs,
+    /// Time Machine's grain in ms: `e^(3.7920637·x + 0.8329091) − 2`, 0.3..100.
+    TmGrainMs,
+    /// Beat Machine's slice attack in ms: `e^(2.7478962·x + 0.7178398) − 2`,
+    /// 0.05..30.
+    SliceAttackMs,
+    /// Beat Machine's slice release in ms: `e^(3.3603754·x + 0.9162908) − 2`,
+    /// 0.5..70.
+    SliceReleaseMs,
+    /// Time Machine Pro's envelope order: `512·x` from 0.25, else `480·x + 8`.
+    EnvelopeOrder,
+    /// Time Machine Pro's formant shift in percent, bipolar `v = 2x − 1`:
+    /// `100 + 75·v` below 0, else `100 + 300·v`, 25..400.
+    FormantShiftPercent,
     /// Solid G-EQ's high-pass in Hz: `10^(1.30103·x + 1.4771212)`, 30..600.
     SolidEqHpHz,
     /// Solid G-EQ's low-pass in Hz: `10^(4.69897 − 1.2218485·x)`, 50k..3k.
@@ -180,6 +193,23 @@ impl FormulaId {
                 T::of(x * x * 19.99 + 0.01)
             }
             Self::TransLimReleaseMs => T::of(500f32.powf(x.to_f32())),
+            Self::TmGrainMs => T::of(exp_less_two(3.792_063_7, 0.832_909_1, x.to_f32())),
+            Self::SliceAttackMs => T::of(exp_less_two(2.747_896_2, 0.717_839_8, x.to_f32())),
+            Self::SliceReleaseMs => T::of(exp_less_two(3.360_375_4, 0.916_290_8, x.to_f32())),
+            Self::EnvelopeOrder => {
+                let x = x.to_f32();
+                let v = if x >= 0.25 {
+                    x * 512.0
+                } else {
+                    x * 480.0 + 8.0
+                };
+                T::of(v.clamp(8.0, 512.0))
+            }
+            Self::FormantShiftPercent => {
+                let v = x.to_f32() * 2.0 - 1.0;
+                let pct = if v < 0.0 { v * 75.0 } else { v * 300.0 } + 100.0;
+                T::of(pct.clamp(25.0, 400.0))
+            }
             Self::SolidEqHpHz => {
                 T::of(10f64.powf(f64::from(x.to_f32() * 1.301_030_1 + 1.477_121_2)) as f32)
             }
@@ -276,6 +306,11 @@ impl FormulaId {
             | Self::EppTremoloRateHz
             | Self::LofiNoiseDb
             | Self::TransLimReleaseMs
+            | Self::TmGrainMs
+            | Self::SliceAttackMs
+            | Self::SliceReleaseMs
+            | Self::EnvelopeOrder
+            | Self::FormantShiftPercent
             | Self::SolidEqHpHz
             | Self::SolidEqLpHz
             | Self::SimpleFilterCutoffHz
@@ -431,6 +466,11 @@ fn flex_ratio(c: f32) -> f32 {
 
 /// A shared module parameter object's value: `lo + (hi − lo)·x` in f64,
 /// or the same between `log10` ends and raised back, then f32.
+/// The source module's exponential times: `e^(clamp(x)·k + c) − 2`.
+fn exp_less_two(k: f32, c: f32, x: f32) -> f32 {
+    (x.clamp(0.0, 1.0) * k + c).exp() - 2.0
+}
+
 fn object(lo: f64, hi: f64, log: bool, x: f32) -> f32 {
     let x = f64::from(x);
     if log {

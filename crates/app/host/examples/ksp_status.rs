@@ -1,8 +1,9 @@
 //! What KONTRA answers of KSP, by name, for the parity board (`tools/parity-board.py`):
 //! one tab-separated line per builtin (`fn`), callback (`cb`) and carried
-//! `$ENGINE_PAR_*` name (`par`). A builtin the VM lowers is `vm`; an action
+//! `$ENGINE_PAR_*` name (`par`: `carried` when it drives the engine, `held`
+//! when it is only stored and shown). A builtin the VM lowers is `vm`; an action
 //! the engine answers to a bare probe is `answered`; the rest is `missing`.
-//! `build-slot cargo run -p kontra-host --example ksp_status > docs/parity/snapshots/ksp-status.tsv`
+//! `build-slot cargo run -p kontra-host --example ksp_status | LC_ALL=C sort -u > docs/parity/snapshots/ksp-status.tsv`
 
 use std::sync::Arc;
 
@@ -145,8 +146,10 @@ fn main() -> std::io::Result<()> {
     for c in CallbackKind::ALL {
         println!("cb\t{c:?}\tcompiled");
     }
+    // `held`: the slot stores and shows it, but nothing plays it.
     for p in kontra_format_kontakt::engine_pars() {
-        println!("par\t{}\tcarried", p.name);
+        let held = matches!(p.drives, ir::Drives::Engine(ir::EnginePar::Opaque(_)));
+        println!("par\t{}\t{}", p.name, if held { "held" } else { "carried" });
     }
     Ok(())
 }

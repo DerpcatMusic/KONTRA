@@ -191,6 +191,7 @@ pub fn prepare(
         blends: g.blends.clone(),
         routes: g.routes.clone(),
         release_trigger: g.trigger == ir::Trigger::Release,
+        held: g.held.clone(),
         bus: g.bus,
         wavetable: g.effective_wavetable().copied().map(read),
         oscillator,

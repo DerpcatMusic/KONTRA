@@ -141,7 +141,10 @@ def build(output):
     assert progress.count(marker) == 1, 'Progress template marker missing or duplicated'
     sound = json.loads((SITE / 'progress.json').read_text())['sound']
     (output / 'progress.html').write_text(progress.replace(marker, render_sound(sound)))
-    # The parity board's rows, from the page tools/parity-board.py writes, in the site's chrome.
+    # The parity board's rows, from the page tools/parity-board.py writes, in the site's chrome. It is not
+    # committed in the monorepo; the public mirror carries the copy the mirror job generated with full history.
+    if not (ROOT / 'docs/PARITY.html').is_file():
+        subprocess.run([sys.executable, str(ROOT / 'tools/parity-board.py')], check=True)
     board = re.search(r'<!-- board:start -->.*<!-- board:end -->', (ROOT / 'docs/PARITY.html').read_text(), re.S).group()
     parity = (SITE / 'parity.html').read_text()
     assert parity.count('<!-- parity:board -->') == 1, 'Parity template marker missing or duplicated'

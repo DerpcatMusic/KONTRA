@@ -205,7 +205,7 @@ pub fn reverb(kind: i32, v: [f32; 9]) -> ir::Reverb {
         high_cut_hz: laws.high_cut.eval(high_cut),
         low_shelf_db: laws.low_shelf.eval(low_shelf),
         stereo: laws.stereo.eval(stereo),
-        modulation_ms: modulation * 10.0 / 44.1,
+        modulation_ms: laws.modulation.eval(modulation),
         modulation_hz: 2.0,
     }
 }
@@ -246,6 +246,11 @@ pub fn reverb_laws() -> ir::ReverbControls<ir::Law> {
         },
         low_shelf: ir::Law::Linear { lo: 0.0, hi: -12.0 },
         stereo: ir::Law::Linear { lo: 0.0, hi: 1.0 },
+        // 10x frames at 44.1 kHz
+        modulation: ir::Law::Linear {
+            lo: 0.0,
+            hi: 10.0 / 44.1,
+        },
     }
 }
 
@@ -256,7 +261,7 @@ mod tests {
     #[test]
     fn mapped_controls_keep_measured_laws_and_vendor_names() {
         use ir::{Drives, EnginePar, ReverbPar as P};
-        let cases: [(P, &str, f32, f32, f32); 8] = [
+        let cases: [(P, &str, f32, f32, f32); 9] = [
             (
                 P::Seconds,
                 "$ENGINE_PAR_RV2_TIME",
@@ -283,6 +288,7 @@ mod tests {
             ),
             (P::LowShelf, "$ENGINE_PAR_RV2_LOWSHELF", 0.0, -6.0, -12.0),
             (P::Stereo, "$ENGINE_PAR_RV2_STEREO", 0.0, 0.5, 1.0),
+            (P::Modulation, "$ENGINE_PAR_RV2_MOD", 0.0, 5.0 / 44.1, 10.0 / 44.1),
         ];
         let mappings = crate::engine_pars();
         for (par, name, lo, mid, hi) in cases {
@@ -298,9 +304,6 @@ mod tests {
                 assert!((got - want).abs() < 0.005, "{name} {raw}: {got} != {want}");
             }
         }
-        // Modulation plays from the save only: a script's set is held and shown, not run.
-        assert!(mappings.iter().any(|row| row.name == "$ENGINE_PAR_RV2_MOD"
-            && matches!(row.drives, Drives::Engine(EnginePar::Opaque(_)))));
     }
 
     #[test]

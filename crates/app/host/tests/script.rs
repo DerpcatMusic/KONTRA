@@ -124,6 +124,37 @@ fn level(e: &mut Engine, input: &[Timed<Event>]) -> f32 {
     out.last().unwrap()[0]
 }
 
+/// `and` / `or` skip their right side once the left decides (Kontakt 8.13,
+/// tools/kontakt-oracle/probes/ksp/short_circuit.kspp): the guards here never
+/// read `%a[-1]`, and the right side runs when the left leaves it open.
+#[test]
+fn and_or_skip_their_right_side_once_the_left_decides() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.25, 0), zone(&mut store, 0.5, 1)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare %a[2] := (0, 1)
+            declare $i := -1
+        end on
+        on note
+            disallow_group($ALL_GROUPS)
+            if ($i # -1 and %a[$i] = 1)
+                allow_group(0)
+            end if
+            if ($i = -1 or %a[$i] = 0)
+                $i := 1
+            end if
+            if ($i # -1 and %a[$i] = 1)
+                allow_group(1)
+            end if
+        end on",
+    );
+    assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
+    assert_eq!(e.script_faults().first().map(|f| f.out_of_range), Some(0));
+}
+
 /// Kontakt's `real_to_int` of a NaN is 42 (measured; `kontra_ksp`'s
 /// `NAN_INT`): Dolce's start offset hangs on it.
 #[test]
@@ -889,6 +920,71 @@ fn route_intensities_follow_kontakts_laws() {
     }
     let hi = level(&mut e, &[]);
     assert!((hi - 0.5 * 1.0 * 0.875).abs() < 1e-3, "{hi}");
+}
+
+/// The reference 8.13 (disp_sweep.py GET/AT, 2026-11-25): a start criterion
+/// reads what the group holds and drops a set; the voice group keeps a set;
+/// `POST_FX_SLOT` reads 0; an index or group the instrument lacks reads 0;
+/// none shows a text.
+#[test]
+fn a_script_reads_a_groups_start_criteria_and_keeps_only_its_voice_group() {
+    use kontra_engine::ir::held_key;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].held = vec![
+        (0, held_key("$ENGINE_PAR_START_CRITERIA_MODE"), 3),
+        (-1, held_key("$ENGINE_PAR_VOICE_GROUP"), 1),
+    ];
+    let script = kontra_ksp::compile(
+        "on init
+            set_engine_par($ENGINE_PAR_START_CRITERIA_MODE, 1, 0, 0, -1)
+            set_engine_par($ENGINE_PAR_VOICE_GROUP, 2, 0, -1, -1)
+            message(get_engine_par($ENGINE_PAR_START_CRITERIA_MODE, 0, 0, -1) & \" \" ...
+                & get_engine_par($ENGINE_PAR_START_CRITERIA_MODE, 0, -1, -1) & \" \" ...
+                & get_engine_par($ENGINE_PAR_VOICE_GROUP, 0, -1, -1) & \" \" ...
+                & get_engine_par($ENGINE_PAR_POST_FX_SLOT, 0, -1, -1) & \" \" ...
+                & get_engine_par($ENGINE_PAR_VOICE_GROUP, 9, -1, -1) & \"|\" ...
+                & get_engine_par_disp($ENGINE_PAR_VOICE_GROUP, 0, -1, -1))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "3 0 2 0 0|");
+}
+
+/// Every group row of the reference 8.13's set → read table
+/// (docs/re/kontakt-bindings/engine_par_clamp.tsv, `Group`: par, value set,
+/// index, value held before, value read after): a start criterion drops
+/// every set, the voice group keeps any value unclamped, `POST_FX_SLOT`
+/// stays 0.
+#[test]
+fn a_groups_controls_take_sets_as_kontakt_takes_them() {
+    use kontra_engine::ir::held_key;
+    let table = include_str!("../../../../docs/re/kontakt-bindings/engine_par_clamp.tsv");
+    let rows: Vec<Vec<&str>> = table
+        .lines()
+        .map(|l| l.split('\t').collect())
+        .filter(|r: &Vec<&str>| r.first() == Some(&"Group"))
+        .collect();
+    assert!(rows.len() >= 13 * 9, "{}", rows.len());
+    let int = |s: &str| s.parse::<i32>().unwrap();
+    for r in &rows {
+        let (par, value, index, before, after) = (r[3], int(r[4]), int(r[6]), int(r[8]), int(r[9]));
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+        let at = i8::try_from(index).unwrap();
+        plan.groups[0].held = vec![(at, held_key(par), before)];
+        let source = format!(
+            "on init\n set_engine_par({par}, {value}, 0, {index}, -1)\n \
+             message(get_engine_par({par}, 0, {index}, -1))\nend on"
+        );
+        let script = kontra_ksp::compile(&source, &[]).unwrap();
+        plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+        let e = Engine::new(Arc::new(plan), store.client(), RATE);
+        assert_eq!(e.last_message(), after.to_string(), "{par} set {value}");
+    }
 }
 
 #[test]
@@ -4022,7 +4118,9 @@ fn pgs_creation_in_note_controller_and_ui_callbacks_is_shared() {
     on ui_control ($k)
         pgs_create_key(UIKEY, 1)
         pgs_set_key_val(UIKEY, 0, pgs_get_key_val(NOTEKEY, 1))
-        message(pgs_get_key_val(UIKEY, 0) & \" \" & pgs_get_str_key_val(CCTEXT))
+        if (pgs_str_key_exists(CCTEXT) and not pgs_str_key_exists(NOTEXT))
+            message(pgs_get_key_val(UIKEY, 0) & \" \" & pgs_get_str_key_val(CCTEXT))
+        end if
     end on",
     );
     let id = e.last_message().parse().unwrap();
@@ -4085,6 +4183,7 @@ fn reverb_controls_write_read_and_keep_missing_target_semantics() {
         ("HIGHCUT", ir::ReverbPar::HighCut),
         ("LOWSHELF", ir::ReverbPar::LowShelf),
         ("STEREO", ir::ReverbPar::Stereo),
+        ("MOD", ir::ReverbPar::Modulation),
     ];
     for (name, par) in cases {
         let mut store = Store::new(StoreConfig::DEFAULT).unwrap();

@@ -167,7 +167,37 @@ impl<'a> Compiler<'a> {
             return Ok(Ty::Text);
         }
         let left = self.expr(a)?;
+        // `and` / `or` skip their right side once the left decides (the
+        // reference 8.13, the short_circuit probe: a 1 000 000-cell search on
+        // the right costs nothing behind a deciding left), so a guard such
+        // as `i # -1 and %a[i] = 1` never reads `%a[-1]`.
+        let skip = match (op, left) {
+            (Bin::And | Bin::Or, Ty::Bool) => {
+                self.emit(Op::Dup);
+                let test = self.here();
+                self.emit(Op::JumpIfZero(0));
+                let jump = (op == Bin::Or).then(|| {
+                    let at = self.here();
+                    self.emit(Op::Jump(0));
+                    self.patch(test, self.here());
+                    at
+                });
+                self.emit(Op::Pop);
+                Some(jump.unwrap_or(test))
+            }
+            _ => None,
+        };
         let right = self.expr(b)?;
+        if let Some(at) = skip {
+            if right != Ty::Bool {
+                return Err(Error::new(
+                    span,
+                    format!("operator cannot take {} and {}", left.name(), right.name()),
+                ));
+            }
+            self.patch(at, self.here());
+            return Ok(Ty::Bool);
+        }
         let mismatch = || {
             Error::new(
                 span,
@@ -185,8 +215,6 @@ impl<'a> Compiler<'a> {
         };
         let int = |t| matches!(t, Ty::Int | Ty::Bool);
         let (code, ty) = match (op, left, right) {
-            (Bin::Or, Ty::Bool, Ty::Bool) => (Op::IOr, Ty::Bool),
-            (Bin::And, Ty::Bool, Ty::Bool) => (Op::IAnd, Ty::Bool),
             (Bin::Xor, Ty::Bool, Ty::Bool) => (Op::IXor, Ty::Bool),
             // Kontakt has no string comparison: `if (@s = "abc")` is rejected in
             // on init and on note (conformance `str_lit_cond`, `str_assign_cond`,

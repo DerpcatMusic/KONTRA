@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # One quiet session (run as ~/.cache/kontakto-quiet tools/kontakt-reference/session_una.sh): calibrate, Una recordings x2, calibrate again.
 set -uo pipefail
-here=$(cd "$(dirname "$0")" && pwd); W=/home/derpcat/.cache/kontra-reference; export KONTRA_MAX_LOAD=${KONTRA_MAX_LOAD:-8}
+here=$(cd "$(dirname "$0")" && pwd); . "$here/../kontra_libraries.sh"; W=/home/derpcat/.cache/kontra-reference; export KONTRA_MAX_LOAD=${KONTRA_MAX_LOAD:-8}
 OUT=$W/log/session_una.txt; : >"$OUT"; say() { echo "$@" | tee -a "$OUT"; }
-CAL=/mnt/MAIN_STORAGE/kontra_ref_src/calibration.nki
-UNA="/mnt/MAIN_STORAGE/Libraries/Kontakt/Una Corda Library/Instruments/Una Corda Cotton.nki"
+CAL=$KONTRA_REF_SRC/calibration.nki
+UNA="$KONTRA_LIBRARIES/Kontakt/Una Corda Library/Instruments/Una Corda Cotton.nki"
 # persistent wineserver so the calibration stamp (sink + wineserver pid) survives Kontakt restarts; killed by PID at the end
 wine_pids() { pgrep -x "wineserver|services.exe|winedevice.exe|explorer.exe|plugplay.exe|svchost.exe|rpcss.exe|Kontakt 8.exe|start.exe|Xvfb" | sort; }
 allb=$(wine_pids); before=$(pgrep -x wineserver | sort); wineserver -p; sleep 1

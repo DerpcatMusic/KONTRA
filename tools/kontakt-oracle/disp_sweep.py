@@ -17,6 +17,11 @@ even points instead of X (a curve's shape); --values a,b,... sweeps those
 values instead (a control the setter takes in its own units).
 TYPE EXT loads nothing and reads get_engine_par_disp_ext(PAR, x, -1, -1, -1),
 with no set: a modulator's or a group's text, without that module.
+TYPE AT/G/S/I sets PAR at (group G, slot S, index I) and reads
+`get_engine_par & "|" & get_engine_par_disp` there; GET/G/S/I reads the same
+with no set (a module's default, or what an absent module answers).
+--setup FILE.lua runs that Lua (instrument `i`, `kt`) before the script is
+set: groups, start options, voice groups for AT/GET to read.
 --async sets one cell per listener tick and reads it on the next, counting
 `on async_complete` (for controls the setter applies asynchronously); the
 count is printed. Its render is longer: 200 ms a cell.
@@ -31,17 +36,22 @@ X = [0, 50000, 100000, 250000, 333333, 500000, 666667, 750000, 900000, 1000000]
 
 def ksp(specs, nka, ran, X, wait=False):
     cells = sum(len(p) for _, p in specs) * len(X)
+    at = lambda t: ", ".join(t.split("/")[1:])
     read = lambda t, s, x: (f"get_engine_par_disp_ext($p, {x}, -1, -1, -1)" if t == "EXT"
+                            else f"get_engine_par($p, {at(t)}) & \"|\" & get_engine_par_disp($p, {at(t)})"
+                            if t.split("/")[0] in ("AT", "GET")
                             else f"get_engine_par_disp($p, -1, {s}, 1)")
+    put = lambda t, s: (f"    set_engine_par($p, %x[$i], {at(t)})\n" if t.startswith("AT/")
+                        else f"    set_engine_par($p, %x[$i], -1, {s}, 1)\n")
     sweep = "".join(
         f"  $p := $ENGINE_PAR_{p}\n  $i := 0\n  while ($i < {len(X)})\n"
-        + ("" if t == "EXT" else f"    set_engine_par($p, %x[$i], -1, {s}, 1)\n")
+        + ("" if t == "EXT" or t.startswith("GET/") else put(t, s))
         + f"    !out[$j] := {read(t, s, '%x[$i]')}\n    inc($j)\n    inc($i)\n  end while\n"
         for s, (t, pars) in enumerate(specs) for p in pars)
     loads = "".join(f"    set_engine_par($ENGINE_PAR_EFFECT_TYPE, $EFFECT_TYPE_{t.split('/')[0]}, -1, {s}, 1)\n"
                     + "".join(f"    set_engine_par($ENGINE_PAR_EFFECT_SUBTYPE, ${t.split('/')[0]}_TYPE_{sub}, -1, {s}, 1)\n"
                               for sub in t.split("/")[1:])
-                    for s, (t, _) in enumerate(specs) if t != "EXT")
+                    for s, (t, _) in enumerate(specs) if t.split("/")[0] not in ("EXT", "AT", "GET"))
     if wait:
         assert all(t != "EXT" for t, _ in specs), "--async sets, EXT does not"
         fill = "".join(f"  %cp[{k}] := $ENGINE_PAR_{p}\n  %cs[{k}] := {s}\n  %cx[{k}] := {x}\n"
@@ -80,12 +90,17 @@ def main():
         k = args.index("--values")
         xs = [int(v) for v in args[k + 1].split(",")]
         del args[k : k + 2]
+    setup = ""
+    if "--setup" in args:
+        k = args.index("--setup")
+        setup = Path(args[k + 1]).read_text()
+        del args[k : k + 2]
     wait = "--async" in args
     if wait:
         args.remove("--async")
     out = Path(args[0])
     specs = [(t, p.split(",")) for t, p in (a.split(":") for a in args[1:])]
-    assert len(specs) <= 8, "8 insert slots"
+    assert sum(t.split("/")[0] not in ("EXT", "AT", "GET") for t, _ in specs) <= 8, "8 insert slots"
     work = Path("/tmp/disp-sweep")
     work.mkdir(exist_ok=True)
     nka, ran = work / "out.nka", work / "ran.nka"
@@ -95,7 +110,7 @@ def main():
     seconds = 8 + (0.2 * sum(len(p) for _, p in specs) * len(xs) if wait else 0)
     (work / "sweep.ksp").write_text(src)
     lua = ("local kt = Kontakt\nlocal out = assert(io.open(ORACLE_OUT, \"w\"))\nkt.reset_multi()\n"
-           "local i = kt.add_instrument()\n"
+           f"local i = kt.add_instrument()\n{setup}\n"
            f"local ok, err = pcall(kt.set_instrument_script_source, i, 0, [==[{src}]==])\n"
            "out:write(string.format('{\"compiled\":%s,\"err\":\"%s\"}\\n', tostring(ok), tostring(err):gsub('\"', \"'\")))\n"
            "out:write('{\"ready\":true}\\n')\nout:close()\n")

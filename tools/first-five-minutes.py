@@ -24,9 +24,11 @@ import random
 import subprocess
 import sys
 
+from kontra_libraries import KONTAKT, UVI
+
 HERE = pathlib.Path(__file__).resolve().parent
 RUN = HERE / "corpus-health" / "run.sh"
-CORPUS = [pathlib.Path("/data/main/Libraries/Kontakt"), pathlib.Path("/data/main/Libraries/UVI")]
+CORPUS = [KONTAKT, UVI]
 
 
 def libraries():

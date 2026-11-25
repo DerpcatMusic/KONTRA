@@ -54,6 +54,7 @@ fn run_events(
         .max()
         .context("scenario needs a note-off")?;
     let stop = end.max(last_off + TAIL_SECONDS * u64::from(RATE));
+    let load_start = std::time::Instant::now();
     let mut ir = kontra_host::instrument::read(path)
         .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
     // KONTRA_SCRIPT_SOURCE=<dir>: script n's source is <dir>/n.ksp when that file exists
@@ -160,6 +161,10 @@ fn run_events(
     let mut extras: Vec<(u64, i64, i64, u64, kontra_lua::probe::Probe)> = Vec::new();
     let (mut peak_voices, mut voice_blocks) = (0usize, 0u64);
     let mut process_time = Duration::ZERO;
+    // KONTRA_INSPECT_TIMES=FILE: one line per block, "<cpu ns> <active voices>".
+    let times_path = std::env::var_os("KONTRA_INSPECT_TIMES");
+    let mut times = String::new();
+    let load_ms = load_start.elapsed().as_secs_f64() * 1e3;
     while at < stop {
         let frames = usize::try_from((stop - at).min(block as u64))?;
         let until = at + frames as u64;
@@ -206,8 +211,13 @@ fn run_events(
         if !timed.is_empty() {
             event_blocks.push([mono_start, monotonic_ns()]);
         }
+        let cpu = cpu.unwrap_or_else(|| u64::try_from(spent.as_nanos()).unwrap_or(u64::MAX));
+        if times_path.is_some() {
+            use std::fmt::Write as _;
+            let _ = writeln!(times, "{cpu} {}", engine.active_voices());
+        }
         block_times.push((
-            cpu.unwrap_or_else(|| u64::try_from(spent.as_nanos()).unwrap_or(u64::MAX)),
+            cpu,
             at,
             timed.len(),
             {
@@ -333,6 +343,9 @@ fn run_events(
         }
     }
     let fingerprint = format!("{fingerprint:016x}");
+    if let Some(file) = &times_path {
+        std::fs::write(file, &times).context("writing KONTRA_INSPECT_TIMES")?;
+    }
     let script_faults = faults(&engine.script_faults(), &sources);
     let loudest_remaining = engine
         .inspect_voices()
@@ -475,7 +488,7 @@ fn run_events(
         json!({"schema_version":1,"command":"play","instrument":path,"engine":"v3",
         "result":{"scenario":scenario_name,"rate":RATE,"events":events.iter().map(|e|json!({"frame":e.frame,"event":e.description})).collect::<Vec<_>>(),
         "trace":trace,"stage_events":stage_events,"script_symbols":script_symbols,"symbol_base":kontra_ksp::SYMBOL_BASE,"route_events":route_events,"route_event_semantics":"values evaluated during CC or note-on processing before smoothing, combining and clamping; dependency flags are structural","trace_events_dropped":dropped,"remaining_voices":left,"metrics":{"peak":peak,"rms":rms,"clipped_samples":clipped,"max_sample_jump":jump,"cc_hf_bursts":bursts,"octave_bands":octave_bands,"octave_time":octave_time},
-        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "process_ms":process_time.as_secs_f64() * 1e3, "script_faults":script_faults, "unhandled_actions":engine.unhandled_actions().iter().map(|(a, n)| json!([format!("{a:?}"), n])).collect::<Vec<_>>(), "unanswered_pars":engine.unanswered_pars().iter().take(40).map(|(p, n)| json!([p, n])).collect::<Vec<_>>(), "action_calls":engine.action_calls().iter().take(12).map(|(a, n)| json!([format!("{a:?}"), n])).collect::<Vec<_>>(), "peak_voices":peak_voices, "blocks_with_voices":voice_blocks, "block_timing":timing, "load_timing":load_timing, "play_timing":play_timing, "event_blocks_mono_ns":event_blocks, "audio_s":stop as f64 / f64::from(RATE), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
+        "oracle":reference,"diagnostics":diagnostics,"engine_stats":format!("{stats:?}"), "process_ms":process_time.as_secs_f64() * 1e3, "load_ms":load_ms, "script_faults":script_faults, "unhandled_actions":engine.unhandled_actions().iter().map(|(a, n)| json!([format!("{a:?}"), n])).collect::<Vec<_>>(), "unanswered_pars":engine.unanswered_pars().iter().take(40).map(|(p, n)| json!([p, n])).collect::<Vec<_>>(), "action_calls":engine.action_calls().iter().take(12).map(|(a, n)| json!([format!("{a:?}"), n])).collect::<Vec<_>>(), "peak_voices":peak_voices, "blocks_with_voices":voice_blocks, "block_timing":timing, "load_timing":load_timing, "play_timing":play_timing, "event_blocks_mono_ns":event_blocks, "audio_s":stop as f64 / f64::from(RATE), "stream_stats":format!("{stream_stats:?}"), "missing_blocks":missing_blocks, "settle_timeouts":wait_timeouts, "render_complete":complete,"audio_fnv1a64":fingerprint,"unavailable":["instantaneous per-route smoothed values", "controller dependencies hidden inside arbitrary script state"]}}),
         summary,
     ))
 }

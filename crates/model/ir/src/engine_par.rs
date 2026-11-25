@@ -76,6 +76,56 @@ pub enum EnginePar {
     /// [`held_key`]: the slot stores and reads back the raw value without
     /// altering audio.
     Opaque(u32),
+    /// A group control keyed by [`held_key`], read from
+    /// [`crate::Group::held`] at its index (0 where none is held: a set
+    /// there is dropped); `set` says what a set keeps.
+    GroupHeld {
+        key: u32,
+        set: HeldSet,
+    },
+}
+
+/// What a set keeps of a held group control ([`EnginePar::GroupHeld`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeldSet {
+    /// Read only: the set is dropped.
+    Drop,
+    /// The value as set.
+    Keep,
+    /// 0 for 0, else 1.
+    Switch,
+    /// The value clamped to `lo..=hi`.
+    Clamp(i32, i32),
+    /// Kept as an unclamped 0..=1 `f32` and read back through [`unit_read`].
+    Unit,
+}
+
+impl HeldSet {
+    /// The value a set of `value` keeps; `None` drops it.
+    #[must_use]
+    pub fn apply(self, value: i32) -> Option<i32> {
+        match self {
+            Self::Drop => None,
+            Self::Keep => Some(value),
+            Self::Switch => Some(i32::from(value != 0)),
+            Self::Clamp(lo, hi) => Some(value.clamp(lo, hi)),
+            Self::Unit => Some(unit_read(value as f32 * 1e-6)),
+        }
+    }
+}
+
+/// What a script reads of a 0..=1 `f32` control: `v·1e6 + 0.5` toward
+/// zero, and `i32::MIN` past the `i32` range (the reference 8.13's
+/// conversion: a set of −5 reads −4, of 2³¹ − 1 reads −2³¹; measured
+/// 2026-11-25).
+#[must_use]
+pub fn unit_read(v: f32) -> i32 {
+    let p = v * 1e6 + 0.5;
+    if p > -2_147_483_648.0 && p < 2_147_483_648.0 {
+        p as i32
+    } else {
+        i32::MIN
+    }
 }
 
 impl EnginePar {

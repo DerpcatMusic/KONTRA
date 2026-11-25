@@ -1,0 +1,27 @@
+# The reference 8.13: out-of-bounds array access. Measured 2026-11-25 (slot 2): writes past either
+# end are dropped (%a and its neighbour %b keep 7 and 3); reads past either end give 0, 0.0 and
+# "", and the callback runs on (`after` is recorded).
+# Run: ksp_probe.py "ANALOG STRINGS.nki" this-file > array_out_of_bounds.measured
+S declare %a[4] := (7, 7, 7, 7)
+S declare %b[4] := (3, 3, 3, 3)
+S declare !s[2]
+S declare ?r[2] := (2.5, 2.5)
+S declare $i := 4
+S declare $n := -1
+S !s[0] := "a"
+S !s[1] := "b"
+R before 11
+S %a[$i] := 9
+S %a[$n] := 8
+R a3 %a[3]
+R a0 %a[0]
+R b0 %b[0]
+R b3 %b[3]
+R big %a[$i + 1000]
+R rd real_to_int(?r[$i] * 10.0)
+T s6 "<" & !s[6] & ">"
+T sn "<" & !s[$n] & ">"
+S !s[$i] := "zz"
+T s0 !s[0]
+T s1 !s[1]
+R after 22

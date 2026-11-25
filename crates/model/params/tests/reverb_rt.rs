@@ -38,6 +38,6 @@ fn prepared_control_lookup_allocates_nothing() {
         }
     }
     COUNTING.store(false, Ordering::SeqCst);
-    assert_eq!(sum, 28_000);
+    assert_eq!(sum, 36_000);
     assert_eq!(ALLOCS.load(Ordering::Relaxed), 0);
 }

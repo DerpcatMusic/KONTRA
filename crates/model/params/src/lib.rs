@@ -20,11 +20,13 @@ pub enum ReverbPar {
     LowShelf,
     /// Stereo width of the tail.
     Stereo,
+    /// Swing of the tail's delay lines.
+    Modulation,
 }
 
 impl ReverbPar {
     /// Canonical presentation order. Identities, rather than positions, select values.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Seconds,
         Self::Size,
         Self::Damping,
@@ -33,6 +35,7 @@ impl ReverbPar {
         Self::HighCut,
         Self::LowShelf,
         Self::Stereo,
+        Self::Modulation,
     ];
 
     /// Stable format-neutral identity; do not derive this from the enum ordinal.
@@ -47,6 +50,7 @@ impl ReverbPar {
             Self::HighCut => "reverb.high_cut",
             Self::LowShelf => "reverb.low_shelf",
             Self::Stereo => "reverb.stereo",
+            Self::Modulation => "reverb.modulation",
         }
     }
 }
@@ -71,6 +75,8 @@ pub struct ReverbControls<T> {
     pub low_shelf: T,
     /// [`ReverbPar::Stereo`].
     pub stereo: T,
+    /// [`ReverbPar::Modulation`].
+    pub modulation: T,
 }
 
 impl<T> ReverbControls<T> {
@@ -86,6 +92,7 @@ impl<T> ReverbControls<T> {
             high_cut: f(ReverbPar::HighCut),
             low_shelf: f(ReverbPar::LowShelf),
             stereo: f(ReverbPar::Stereo),
+            modulation: f(ReverbPar::Modulation),
         }
     }
 
@@ -101,6 +108,7 @@ impl<T> ReverbControls<T> {
             ReverbPar::HighCut => &self.high_cut,
             ReverbPar::LowShelf => &self.low_shelf,
             ReverbPar::Stereo => &self.stereo,
+            ReverbPar::Modulation => &self.modulation,
         }
     }
 }

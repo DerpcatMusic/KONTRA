@@ -241,10 +241,10 @@ impl Look {
                         glyphs,
                         color,
                         metrics,
-                        // TEXTPOS_Y moves the words down from their centred
-                        // place, lit or not (fields page: 6 sets them 6 px lower).
+                        // TEXTPOS_Y moves the words down, lit or not (fields
+                        // page: 6 sets them 6 px lower; textpos page).
                         None,
-                        [7., 7., 1. - f64::from(wd.text_y.unwrap_or(0))],
+                        [7., 7., 1. - text_drop(wd.text_y)],
                     )
                 } else if let Some(el) = label_words(caption, style, wd, (w, h, scale, device)) {
                     el
@@ -302,7 +302,7 @@ impl Look {
                     color,
                     StockMetrics::Field,
                     wd.text_y,
-                    [7., 11., 0.],
+                    [7., 11., -half_drop(wd.text_y)],
                 ));
                 if !wd.hide.value {
                     parts.push(field_words(
@@ -314,7 +314,7 @@ impl Look {
                         color,
                         StockMetrics::Field,
                         wd.value_y.or(wd.text_y),
-                        [7., 11., 0.],
+                        [7., 11., -half_drop(wd.value_y.or(wd.text_y))],
                     ));
                 }
                 parts
@@ -347,7 +347,7 @@ impl Look {
                         style.map_or(model::Rgba::rgb(0xfefefe), |s| s.color),
                         StockMetrics::Field,
                         wd.text_y,
-                        [7., 1., 1.],
+                        [7., 1., 1. - text_drop(wd.text_y)],
                     )
                 } else if let Some(el) = label_words(caption, style, wd, (w, h, scale, device)) {
                     el
@@ -501,6 +501,21 @@ pub(super) fn area(n: u32, d: u32, device: f64) -> Vec<Vec<(usize, f64)>> {
         .collect()
 }
 
+/// The height a stock field's words are centred in.
+const CELL: f64 = 20.;
+
+/// Points a menu's or a button's words drop under TEXTPOS_Y: unset and
+/// negative count as 0 (the reference 8.13, textpos page).
+pub(super) fn text_drop(text_y: Option<i32>) -> f64 {
+    f64::from(text_y.unwrap_or(0).max(0))
+}
+
+/// A value edit's words drop half as far, rounded up (textpos page: 3, 6
+/// and 10 move them 2, 3 and 5 px).
+pub(super) fn half_drop(text_y: Option<i32>) -> f64 {
+    (text_drop(text_y) / 2.).ceil()
+}
+
 #[derive(Clone, Copy)]
 enum StockMetrics {
     Field,
@@ -516,6 +531,7 @@ fn field_words(
     glyphs: Option<&kontra_ui_pictures::Glyphs>,
     color: model::Rgba,
     metrics: StockMetrics,
+    // Where the fallback face's words go; the atlas takes `lift`.
     y_override: Option<i32>,
     [left, right, lift]: [f64; 3],
 ) -> El {
@@ -585,13 +601,14 @@ fn field_words(
             if let Some(image) = Image::rgba(glyph.width, glyph.height, pixels)
                 .and_then(|image| kontra_ui_pictures::at(image, device as f32))
             {
-                let y = y_override.map_or_else(
-                    || match metrics {
-                        StockMetrics::Field => (h - height) / 2. - s - lift * s,
-                        StockMetrics::Button12 => (h - height) / 2. - lift * s,
-                    },
-                    |y| f64::from(y) * s,
-                );
+                // Centred in 20 points whatever the control's height (the
+                // reference 8.13, textpos page: 16, 20 and 30 px tall alike).
+                let y = (CELL * s - height) / 2.
+                    - lift * s
+                    - match metrics {
+                        StockMetrics::Field => s,
+                        StockMetrics::Button12 => 0.,
+                    };
                 let y = (y * device / s).floor() * s / device;
                 layers.push(super::image(&Arc::new(image), width, height).at(x, y));
             }

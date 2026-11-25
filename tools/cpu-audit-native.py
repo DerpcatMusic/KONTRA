@@ -14,6 +14,7 @@ import tempfile
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'kontra-gate'))
+from kontra_libraries import KONTAKT
 from live_host import V1, artifact_receipt, observe, private_settings, sha, v1_state
 
 SCENARIOS = {
@@ -102,7 +103,7 @@ def main():
         host_source = Path(__file__).resolve().parents[1] / 'tools/native-hosts/clap-live-performance.cpp'
         assert build.get('host_source_sha256') == sha(host_source), 'built host source receipt missing or mismatched'
     library, instrument = SCENARIOS[args.scenario]
-    library = Path('/mnt/MAIN_STORAGE/Libraries/Kontakt') / library
+    library = KONTAKT / library
     path = library / instrument
     assert path.is_file(), 'original audit instrument absent'
     assert not (args.out / 'metrics.json').exists(), 'use a fresh output directory for each repeat'

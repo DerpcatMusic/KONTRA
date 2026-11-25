@@ -11,10 +11,12 @@ pub enum Stage {
 }
 
 /// Stage durations; a missing value means that the format did not expose it.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Timings {
     pub read: Option<Duration>,
     pub translate: Option<Duration>,
+    /// Named phases inside them ([`span`]), in the order they ended.
+    pub phases: Vec<(&'static str, Duration)>,
 }
 
 thread_local! {
@@ -39,6 +41,29 @@ pub fn measure<T>(stage: Stage, f: impl FnOnce() -> T) -> T {
         }
     });
     result
+}
+
+/// A phase being timed: it records its time when dropped.
+pub struct Span(Option<(&'static str, Instant)>);
+
+impl Drop for Span {
+    fn drop(&mut self) {
+        if let Some((name, start)) = self.0.take() {
+            CURRENT.with(|current| {
+                if let Some(timings) = current.borrow_mut().as_mut() {
+                    timings.phases.push((name, start.elapsed()));
+                }
+            });
+        }
+    }
+}
+
+/// Times the phase `name` until the returned guard drops, when a caller is
+/// collecting timings.
+#[must_use]
+pub fn span(name: &'static str) -> Span {
+    let active = CURRENT.with(|current| current.borrow().is_some());
+    Span(active.then(|| (name, Instant::now())))
 }
 
 struct Restore(Option<Timings>);

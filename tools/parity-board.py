@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The parity board: every Kontakt and UVI Falcon item KONTRA must match, with its status.
 
-    tools/parity-board.py                  regenerate docs/PARITY.md and docs/PARITY.html (and blame new rows)
-    tools/parity-board.py --check          fail when the checked-in board is out of date with its inputs
+    tools/parity-board.py                  generate docs/PARITY.md and docs/PARITY.html (and blame new rows)
+    tools/parity-board.py --check          fail when a snapshot is malformed or the generator fails on them
     tools/parity-board.py --ksp-manual KSP_Reference_Manual.txt    refresh snapshots/ksp-manual.tsv
     tools/parity-board.py --uvi-reference [DIR]   refresh snapshots/uvi-reference.tsv from lua.uvi.net
                                                   (or from a directory of its saved pages)
@@ -10,7 +10,9 @@
 
 No cargo and no oracle: inputs that need either are the checked-in snapshots under
 docs/parity/snapshots/, refreshed by the lane that changes them (the board's header lists the
-commands). Every status is derived from the repo: tests, probes, law tables, the census.
+commands). Each snapshot keeps its rows in byte order, one per line, so two PRs that add rows merge.
+The board itself is generated, never committed: committed output made every lane PR conflict. The
+site and the public mirror generate it (.github/workflows/mirror.yml in the monorepo). Every status is derived from the repo: tests, probes, law tables, the census.
 snapshots/overrides.tsv is the only hand-typed layer, and every row of it gives a reason.
 
 Statuses: tested (KONTRA does it and a test, probe or oracle measurement checks it), done (KONTRA
@@ -19,7 +21,7 @@ does it), partial (some of it), missing. "Passing" is tested + done.
 Each passing row names the PR that brought its evidence: the squash-merge `(#NNN)` of the commit
 that last changed the evidence line (git blame, cached by file content), or a `Parity: <row-id>...`
 trailer in a commit message. A claim on a row that does not pass is listed, not trusted.
-Attributions are kept in snapshots/attribution.tsv so --check needs no git history.
+Attributions are a local cache (docs/parity/attribution.tsv, gitignored) rebuilt from git on demand.
 """
 import collections
 import hashlib
@@ -33,6 +35,8 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SNAP = ROOT / "docs/parity/snapshots"
+ATTRIBUTION = ROOT / "docs/parity/attribution.tsv"  # local caches, gitignored
+FLAGGED = ROOT / "docs/parity/flagged-claims.tsv"
 OUT_MD = ROOT / "docs/PARITY.md"
 OUT_HTML = ROOT / "docs/PARITY.html"
 REPO = "https://github.com/DerpcatMusic/KONTRA/blob/main/"
@@ -69,15 +73,19 @@ class Index:
 
 
 class Titles:
-    """A measurement is of a module when its file name or its first line names it."""
+    """A measurement is of a module when its file name or its first line names it. One whose first line says
+    "(partial" has settings that still miss the threshold: it does not count yet."""
 
     def __init__(self, paths):
         self.heads = [(p.relative_to(ROOT).as_posix(), (p.stem + " " + p.read_text(errors="ignore").lstrip().split("\n", 1)[0]).lower())
                       for p in paths]
 
-    def find(self, word):
+    def find(self, word, legacy=None):
+        """`legacy`: True/False keeps only measurements that do/do not say "legacy" (a legacy module and its namesake)."""
         word = word.lower()
-        return next((path for path, head in self.heads if re.search(rf"(?<![a-z]){re.escape(word)}", head)), None)
+        return next((path for path, head in self.heads if "(partial" not in head
+                     and re.search(rf"(?<![a-z]){re.escape(word)}", head)
+                     and (legacy is None or ("legacy" in head) == legacy)), None)
 
 
 def row(rid, area, group, name, status, ev=None, note=""):
@@ -148,7 +156,8 @@ def kontakt_ksp_and_params(manual, status):
             continue
         if kind == "par":  # $ENGINE_PAR_*: value law, display text, range, drives sound
             law_ev = law.find("engine_par_" + key.removeprefix("engine_par_"), key)
-            cells = [law_ev is not None, bare in disp, clamp.find(key) is not None, ("par", bare) in status]
+            # acts: the engine plays it; one only stored and shown (`held`) does not.
+            cells = [law_ev is not None, bare in disp, clamp.find(key) is not None, status.get(("par", bare)) == "carried"]
             ev = (law_ev, name) if law_ev else (disp_file, name) if cells[1] else None
             if not ev and cells[3]:  # carried: the engine answers it (ksp_status)
                 ev = (src.find(key), name) if src.find(key) else ("docs/parity/snapshots/ksp-status.tsv", bare)
@@ -156,7 +165,7 @@ def kontakt_ksp_and_params(manual, status):
             continue
         if kind in ("uipar", "evpar"):  # $CONTROL_PAR_*, $ZONE_PAR_*, $EVENT_PAR_*: measured law, acts
             if bare.startswith("ZONE_PAR"):
-                acts = ("par", bare) in status
+                acts = status.get(("par", bare)) == "carried"
             else:
                 acts = bare in ui_names or bare in valued or any(("fn", p + key) in status for p in ("", "$", "%"))
             probe = measured_probes.find(key)
@@ -320,6 +329,15 @@ def ptype(name):
     return next((t for t, rx in TYPES if re.search(rx, n)), "utility")
 
 
+def key_of(name):
+    return re.sub(r"[^a-z0-9]", "", name.lower().replace("(legacy)", ""))
+
+
+# MODULES names whose binding-table effect name differs after key_of.
+BINDING = {"Reverb": "galoisreverb", "Replika": "rdelay", "Stereo Modeller": "stereo", "Supercharger": "superchargergt",
+           "Hilbert Limiter": "transparentlimiter"}
+
+
 def kontakt_dsp(status):
     """Every effect module Kontakt's files can hold (the MODULES table of crates/format/kontakt/src/effects.rs) and
     every modulator class, three rows each: in the IR (decoded to an ir::EffectKind / translated), driven at run
@@ -330,6 +348,13 @@ def kontakt_dsp(status):
     measured = Titles(files("docs/re/engine/fx-measured/*.md", "docs/re/kontakt-bindings/*-responses*.tsv",
                             "docs/re/kontakt-bindings/limiter-dynamics.tsv", "docs/re/kontakt-bindings/saturation-curves.tsv",
                             "docs/re/kontakt-bindings/filter-laws.tsv"))
+    # Each module's own $ENGINE_PAR_* names (the shared BParFX ones aside), from the binding tables.
+    own = {}
+    for f in files("docs/re/kontakt-bindings/fx_*.tsv"):
+        for r in tsv(f):
+            if r["class"] != "BParFX":
+                own.setdefault(key_of(r["effect"].removeprefix("Effects/")), set()).add(r["par"].lstrip("$").upper())
+    played = {n for (k, n), st in status.items() if k == "par" and st == "carried"}
     out = []
     for m in re.finditer(r'(fx|model)\((0x[0-9a-f]+|&crate::(\w+)::(\w+)), "([^"]+)", [^\n]*?(Read|Unread|\|s\|)', table):
         kind, name = m[1], m[5]
@@ -339,11 +364,13 @@ def kontakt_dsp(status):
         ir_ok = m[6] != "Unread"
         ev = ("crates/format/kontakt/src/effects.rs", name)
         out.append(row(f"kontakt.dsp.{slug}.ir", "kontakt.dsp", t, f"{name}: in IR", "done" if ir_ok else "missing", ev if ir_ok else None))
-        live = kind == "model"
+        # Driven live: every control it binds has a runtime setter; with none bound, a model module.
+        pars = own.get(BINDING.get(name, key_of(name)), set())
+        live = pars <= played if pars else kind == "model"
         out.append(row(f"kontakt.dsp.{slug}.driven", "kontakt.dsp", t, f"{name}: driven live",
                        "done" if live else "partial" if ir_ok else "missing", ev if ir_ok else None,
-                       "" if live else "load-time only" if ir_ok else ""))
-        hit = measured.find(words[0]) if ir_ok and words else None
+                       "" if live or not ir_ok else "held: " + " ".join(sorted(pars - played)) if pars else "load-time only"))
+        hit = measured.find(words[0], "legacy" in name.lower()) if ir_ok and words else None
         out.append(row(f"kontakt.dsp.{slug}.measured", "kontakt.dsp", t, f"{name}: output vs oracle",
                        "tested" if hit else "missing", (hit, words[0]) if hit else None,
                        "threshold in the cited measurement" if hit else ""))
@@ -520,9 +547,9 @@ def claims():
 
 
 def attribute(rows, refresh):
-    """Fill each passing row's PR(s) and date from snapshots/attribution.tsv; with `refresh`, blame the rows
+    """Fill each passing row's PR(s) and date from the attribution cache; with `refresh`, blame the rows
     it lacks or holds unmerged (no PR number yet), add trailer claims, and rewrite it."""
-    path = SNAP / "attribution.tsv"
+    path = ATTRIBUTION
     known = {r["id"]: r for r in tsv(path)} if path.is_file() else {}
     flagged = []
     if refresh:
@@ -547,10 +574,10 @@ def attribute(rows, refresh):
             new[r["id"]] = dict(id=r["id"], pr=",".join(sorted(prs, key=lambda p: (p[0] == "K", int(p.lstrip("K"))))), date=date)
         known = new
         path.write_text("id\tpr\tdate\n" + "".join(f"{v['id']}\t{v['pr']}\t{v['date']}\n" for v in sorted(new.values(), key=lambda v: v["id"])))
-        (SNAP / "flagged-claims.tsv").write_text("id\tpr\n" + "".join(f"{a}\t{b}\n" for a, b in sorted(flagged)))
+        flagged.sort()  # the order --check reads back
+        FLAGGED.write_text("id\tpr\n" + "".join(f"{a}\t{b}\n" for a, b in flagged))
     else:
-        f = SNAP / "flagged-claims.tsv"
-        flagged = [tuple(l) for l in tsv(f, header=False)[1:]] if f.is_file() else []
+        flagged = [tuple(l) for l in tsv(FLAGGED, header=False)[1:]] if FLAGGED.is_file() else []
     for r in rows:
         a = known.get(r["id"]) if r["status"] in ("tested", "done") else None
         r["pr"], r["date"] = (a["pr"], a["date"]) if a else ("", "")
@@ -596,13 +623,12 @@ def summary(rows):
 
 SNAPSHOTS = [
     ("ksp-manual.tsv", "the KSP manual's items", "tools/parity-board.py --ksp-manual KSP_Reference_Manual.txt (pdftotext -layout of the manual)"),
-    ("ksp-status.tsv", "what KONTRA's VM and engine answer", "build-slot cargo run -p kontra-host --example ksp_status > docs/parity/snapshots/ksp-status.tsv"),
+    ("ksp-status.tsv", "what KONTRA's VM and engine answer", "build-slot cargo run -p kontra-host --example ksp_status \\| LC_ALL=C sort -u > docs/parity/snapshots/ksp-status.tsv"),
     ("ni-file-census.tsv", "the ni-file corpus census", "build-slot cargo run --release -p kontra-format-kontakt --example chunks -- <Kontakt library root> > census.md; tools/parity-board.py --census census.md"),
     ("ui-corpus.tsv", "UI areas that differ from Kontakt per corpus instrument", "tools/ksp-ui/align.py per instrument (README 'Library instruments'); one row per instrument: an opaque id and its count"),
     ("uvi-reference.tsv", "UVI Falcon's public script reference", f"tools/parity-board.py --uvi-reference ({UVI_DOCS})"),
     ("uvi-elements.tsv", "which UVI elements the loader maps or runs", "the UVI catalog lane (was tools/coverage/data/uvi-features.tsv)"),
     ("modulation-targets.tsv", "Kontakt's modulation targets", "docs/specs/modulation-laws.md lane"),
-    ("attribution.tsv", "PR and date per passing row", "tools/parity-board.py (blames rows it lacks)"),
     ("overrides.tsv", "hand-set statuses, each with a reason", "by hand, with a reason"),
 ]
 
@@ -627,7 +653,8 @@ def render_md(rows, sums, fmt_extra, flagged):
     tot, latest, mism = fmt_extra
     out = ["# KONTRA parity board", "",
            "Every Kontakt and UVI Falcon item KONTRA must match, one checkable row each. Generated by "
-           "`tools/parity-board.py`; do not edit by hand (`tools/parity-board.py --check` fails when it is stale).", "",
+           "`tools/parity-board.py` from the snapshots below and the repo; never edited or committed. A PR changes "
+           "snapshots (rows in byte order) and evidence, and the site regenerates this board.", "",
            "**tested**: KONTRA does it and a test, probe or oracle measurement checks it. **done**: KONTRA does it. "
            "**partial**: some of it. **missing**: not yet. Passing = tested + done. Parameter cells: law (set → internal "
            "value), display (internal → text), range (clamp), acts (drives sound or the UI).", "",
@@ -752,6 +779,7 @@ def refresh_ksp_manual(path):
         r"(?:declare|decalre)\s+(?:(?:const|polyphonic|global|local|read|pers|instpers|ui_\w+)\s+)*[$%~@!?]?([A-Za-z_]\w*)", whole)}
     items = {}
     fn, var, cb = re.compile(r"^([a-z_][a-z_0-9]*)\(\)\s*$"), re.compile(r"^[\s•\-\*]*([$%~@!][A-Za-z_][A-Za-z_0-9]*)"), re.compile(r"^\s*on ([a-z_]+)")
+    sig = re.compile(r"^ ?(?:<\w+> := )?([a-z_][a-z_0-9]*)\(<")
     last_par = None
     for i, line in enumerate(manual):
         sec = section(i)
@@ -759,7 +787,9 @@ def refresh_ksp_manual(path):
             continue
         if sec == "User Interface Widgets" and re.fullmatch(r"ui_[a-z_]+", line.strip()):
             items.setdefault(("widget", line.strip()), [sec, ""])
-        if m := fn.match(line):
+        # A command's heading `name()`, or in a command section a bare signature `name(<arg>...)`: the
+        # Zone Commands "Zone and Slice Functions" list and Advanced Concepts' PGS lists have no headings.
+        if (m := fn.match(line)) or ((sec.endswith("Commands") or sec == "Advanced Concepts") and (m := sig.match(line))):
             items.setdefault(("fn", m[1]), [sec, ""])
         elif m := var.match(line):
             name = m[1]
@@ -788,7 +818,7 @@ def refresh_ksp_manual(path):
             ws = set(re.findall(r"\bui_[a-z_]+", line)) - {"ui_control", "ui_controls", "ui_update", "ui_id"}
             if ws:
                 items[last_par][1] = ",".join(sorted(set(filter(None, items[last_par][1].split(","))) | ws))
-    out = ["kind\tname\tsection\tapplies"] + [f"{k}\t{n}\t{s}\t{a}" for (k, n), (s, a) in items.items()]
+    out = ["kind\tname\tsection\tapplies"] + sorted(f"{k}\t{n}\t{s}\t{a}" for (k, n), (s, a) in items.items())
     (SNAP / "ksp-manual.tsv").write_text("# The KSP Reference Manual's items (names only), from tools/parity-board.py --ksp-manual\n"
                                          + "\n".join(out) + "\n")
     print(f"{len(items)} items -> {SNAP / 'ksp-manual.tsv'}")
@@ -839,6 +869,7 @@ def refresh_uvi_reference(src):
             out.append(f"element\t{cat}\t\t{owner}\t{html.unescape(m[3].strip())}\t{UVI_DOCS}_elements.html#{owner}")
         elif owner and m[4].strip():
             out.append(f"param\t{cat}\t{owner}\t{m[4].strip()}\t{html.unescape(m[5].strip())}\t{UVI_DOCS}_elements.html#{owner}")
+    out[1:] = sorted(set(out[1:]))
     (SNAP / "uvi-reference.tsv").write_text(f"# UVI script reference ({UVI_DOCS}), names only, from tools/parity-board.py --uvi-reference\n"
                                             + "\n".join(out) + "\n")
     print(f"{len(out) - 1} items -> {SNAP / 'uvi-reference.tsv'}")
@@ -855,11 +886,25 @@ def refresh_census(path):
         c = [x.strip() for x in line.strip().strip("|").split("|")]
         if len(c) == 10 and c[0].startswith("0x"):
             out.append("\t".join([c[0], c[1], c[2], c[3], c[4], c[7], c[8]]))
+    out[1:] = sorted(out[1:])
     (SNAP / "ni-file-census.tsv").write_text("\n".join(out) + "\n")
     print(f"{len(out) - 1} rows -> {SNAP / 'ni-file-census.tsv'}")
 
 
 # ------------------------------------------------------------------ main
+def snapshot_errors():
+    """Each snapshot: every row as wide as its header, rows in byte order (`LC_ALL=C sort`) and unique."""
+    errors = []
+    for p in sorted(SNAP.glob("*.tsv")):
+        lines = [l for l in p.read_text().splitlines() if l and not l.startswith("#")]
+        body = lines if p.name == "ksp-status.tsv" else lines[1:]  # ksp-status has no header
+        width = 3 if p.name == "ksp-status.tsv" else len(lines[0].split("\t"))
+        errors += [f"{p.name}: {l!r} has {len(l.split(chr(9)))} columns, not {width}" for l in body if len(l.split("\t")) != width]
+        if body != sorted(set(body)):
+            errors.append(f"{p.name}: rows are not sorted and unique (keep the header, LC_ALL=C sort -u the rows)")
+    return errors
+
+
 def build(refresh):
     manual, status = ksp_inputs()
     ksp, pars = kontakt_ksp_and_params(manual, status)
@@ -886,14 +931,13 @@ def main():
         return refresh_uvi_reference(args[1] if len(args) > 1 else None)
     if args[:1] == ["--census"]:
         return refresh_census(args[1])
-    check = args[:1] == ["--check"]
-    md, page, sums = build(refresh=not check)
-    if check:
-        stale = [p.relative_to(ROOT).as_posix() for p, t in ((OUT_MD, md), (OUT_HTML, page)) if not p.is_file() or p.read_text() != t]
-        if stale:
-            sys.exit(f"parity board out of date: {', '.join(stale)}. Run plugins/kontra/tools/parity-board.py and commit the result.")
-        print("parity board is current")
+    if args[:1] == ["--check"]:
+        if errors := snapshot_errors():
+            sys.exit("\n".join(errors))
+        build(refresh=False)
+        print("parity snapshots are well-formed and the board generates")
         return
+    md, page, sums = build(refresh=True)
     OUT_MD.write_text(md)
     OUT_HTML.write_text(page)
     for label, c in sums:

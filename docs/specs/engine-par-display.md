@@ -206,3 +206,29 @@ None — all verification tiers execute on the current host.
   modulation only; a set does not move it.
 - These laws drive text only. Whether a held module's DSP should use them is
   for the module's own lane.
+- Missing names, group class C (2026-11-25): the group's start criteria,
+  `VOICE_GROUP` and `POST_FX_SLOT`, measured with `disp_sweep.py` `GET/<g>/<c>/-1` and
+  `AT/...` against groups that Kontakt's own `set_group_start_options` and
+  `set_voice_groups` configured (`--setup`, probes/start_criteria_pars.lua, saved as
+  `tests/data/start-criteria.nki`):
+  - A missing or wrong-kind modulator index and a missing group read 0, with
+    empty text, and the script runs on. This is the existing `Engine::absent` path.
+  - Start criteria are addressed (group, criterion 0..=3, −1), are read only (a
+    set is dropped, as the manual's "only work with get_engine_par()" says), and read
+    the saved fields as stored: mode 0 none, 1 key, 2 controller, 3 round robin,
+    4 random; next 0 and, 1 and not, 2 or; cycle class the round-robin position. A
+    criterion never set reads mode 0, keys 24..24, controller 1, 0..64, zone and
+    slice −1. Index 4 read `1065353216` (float 1.0's bits) in the reference: a
+    read past its four criteria, not reproduced; KONTRA reads 0 there.
+  - `VOICE_GROUP` reads the saved voice-group index (−1 none) and keeps any set,
+    even past the instrument's voice groups. It is held, not driven: the IR's
+    voice groups are only the ones groups name at load, so a set to another one has
+    nothing to point at.
+  - `POST_FX_SLOT` reads 0 and drops every set, with or without group effects
+    loaded, at every address tried.
+  - KONTRA keeps these in `ir::Group::held` (`EnginePar::GroupHeld`), separate from
+    the effect-slot store. None of them shows a text.
+  - The set → read rows (values −5 to 2³¹−1, sweeps/c-set.tsv) are the `Group` rows of
+    `docs/re/kontakt-bindings/engine_par_clamp.tsv`. `slot` there is the index, and
+    `preset` is what the group held before the set. kontra-host's
+    `a_groups_controls_take_sets_as_kontakt_takes_them` checks each row.

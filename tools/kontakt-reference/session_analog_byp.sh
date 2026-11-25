@@ -6,7 +6,7 @@ here=$(cd "$(dirname "$0")" && pwd); . "$here/session_lib.sh"; . "$here/gui_lib.
 export DISPLAY=:77
 OUT=$W/log/session_analog_byp.txt; : >"$OUT"
 sess_begin
-NKI="/mnt/MAIN_STORAGE/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki"
+NKI="$KONTRA_LIBRARIES/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki"
 lv() { python3 "$here/comp_levels.py" "$W/wav/$1.wav" 3 1 6 | tee -a "$OUT"; }
 export KONTAKT_NO_VIEW_FIX=1 KONTRA_NO_STATE_CHECK="ANALOG STRINGS GUI is wider than the 1600x1000 desktop so the golden header crops do not match; only the instrument compressor slot was bypassed in the GUI, calibration before and after"
 "$here/kontakt.sh" start "$NKI" || { say "start failed"; exit 1; }

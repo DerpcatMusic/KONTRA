@@ -31,6 +31,7 @@ impl crate::Reverb {
             ReverbPar::HighCut => self.high_cut_hz,
             ReverbPar::LowShelf => self.low_shelf_db,
             ReverbPar::Stereo => self.stereo,
+            ReverbPar::Modulation => self.modulation_ms,
         }
     }
 
@@ -45,6 +46,7 @@ impl crate::Reverb {
             ReverbPar::HighCut => self.high_cut_hz = value,
             ReverbPar::LowShelf => self.low_shelf_db = value,
             ReverbPar::Stereo => self.stereo = value,
+            ReverbPar::Modulation => self.modulation_ms = value,
         }
     }
 }

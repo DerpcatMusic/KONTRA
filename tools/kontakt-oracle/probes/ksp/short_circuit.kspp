@@ -1,0 +1,37 @@
+# The reference 8.13: `and` / `or` skip their right side once the left decides. Measured
+# 2026-11-25 (slot 1): 100 runs of search() over 1 000 000 cells take both_ms 159 when the
+# right side runs, and_ms 0 behind a false left, or_ms 0 behind a true left; z 0.
+# Timings: no .measured replay. KONTRA: script.rs and_or_skip_their_right_side_once_the_left_decides.
+# Run: ksp_probe.py "ANALOG STRINGS.nki" this-file
+S declare %big[1000000]
+S declare $k
+S declare $t
+S declare $z := 0
+S $k := 0
+S $t := $KSP_TIMER
+S while ($k < 100)
+S   if (search(%big, 5) = 0 and $z = 1)
+S     inc($z)
+S   end if
+S   inc($k)
+S end while
+R both_ms ($KSP_TIMER - $t) / 1000
+S $k := 0
+S $t := $KSP_TIMER
+S while ($k < 100)
+S   if ($z = 1 and search(%big, 5) = 0)
+S     inc($z)
+S   end if
+S   inc($k)
+S end while
+R and_ms ($KSP_TIMER - $t) / 1000
+S $k := 0
+S $t := $KSP_TIMER
+S while ($k < 100)
+S   if ($z = 0 or search(%big, 5) = 0)
+S     $z := 0
+S   end if
+S   inc($k)
+S end while
+R or_ms ($KSP_TIMER - $t) / 1000
+R z $z

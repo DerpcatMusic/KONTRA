@@ -11,4 +11,3 @@ workspace = true
 [dependencies]
 kontra-dsp-core = { path = "../core" }
 kontra-law = { path = "../../base/law" }
-kontra-params = { path = "../../model/params" }

@@ -10,7 +10,8 @@ pub struct Named {
     pub name: &'static str,
     /// The law.
     pub law: Law,
-    /// The native address it was confirmed at, or why it has none.
+    /// Where it was confirmed (`[ref]`: a citation kept in the private RE store), or why it
+    /// has none.
     pub source: &'static str,
     /// The input range worth sampling, in the law's source units.
     pub domain: [f32; 2],

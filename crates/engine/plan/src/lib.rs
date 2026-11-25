@@ -215,6 +215,8 @@ pub struct Group {
     pub routes: Vec<ir::Routes>,
     /// It plays on release (scripts read this).
     pub release_trigger: bool,
+    /// Its held controls ([`kontra_ir::Group::held`]).
+    pub held: Vec<(i8, u32, i32)>,
     /// The bus its voices play into, an index into [`Plan::buses`]; a
     /// script may move it while they play.
     pub bus: usize,
@@ -330,6 +332,7 @@ impl Group {
             blends: Vec::new(),
             routes: Vec::new(),
             release_trigger: false,
+            held: Vec::new(),
             bus: 0,
             wavetable: None,
             oscillator: None,

@@ -17,5 +17,4 @@ kontra-dsp-delay = { path = "../delay" }
 kontra-dsp-reverb = { path = "../reverb" }
 kontra-dsp-drive = { path = "../drive" }
 kontra-dsp-spatial = { path = "../spatial" }
-kontra-dsp-modulators = { path = "../modulators" }
 kontra-params = { path = "../../model/params" }

@@ -221,6 +221,69 @@ pub fn load(path: &Path, rate: u32, store: &mut Store) -> Result<Loaded, Error> 
     Ok(build(read(path)?, rate, store))
 }
 
+/// Scripts compiled by every build of the process.
+static COMPILES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many scripts [`build`] has compiled so far.
+#[must_use]
+pub fn script_compiles() -> u64 {
+    COMPILES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn compiled() {
+    COMPILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// What a KSP compile reads: the source, the conditions set before it and
+/// its performance view's controls.
+type KspKey = (String, Vec<String>, Vec<(String, Vec<i32>)>);
+
+/// [`kontra_ksp::compile_with_view`], from the scripts compiled last when
+/// one had the same inputs: the instruments of a library mostly share one
+/// script, and a swap between them compiles nothing.
+// ponytail: the last 8 by exact inputs, scanned in a line; a map when a
+// rack holds more distinct scripts than that.
+fn compile_ksp(
+    source: &str,
+    set: &[&str],
+    view: &[(&str, &[i32])],
+) -> Result<std::sync::Arc<kontra_ksp::Script>, kontra_ksp::Error> {
+    use std::sync::{Arc, Mutex, PoisonError};
+    static RECENT: Mutex<Vec<(KspKey, Arc<kontra_ksp::Script>)>> = Mutex::new(Vec::new());
+    let same = |(s, c, v): &KspKey| {
+        s == source
+            && c.iter().map(String::as_str).eq(set.iter().copied())
+            && v.iter()
+                .map(|(n, p)| (n.as_str(), p.as_slice()))
+                .eq(view.iter().copied())
+    };
+    let recent = || RECENT.lock().unwrap_or_else(PoisonError::into_inner);
+    {
+        let mut recent = recent();
+        if let Some(at) = recent.iter().position(|(key, _)| same(key)) {
+            let hit = recent.remove(at);
+            let script = Arc::clone(&hit.1);
+            recent.push(hit);
+            return Ok(script);
+        }
+    }
+    compiled();
+    let script = Arc::new(kontra_ksp::compile_with_view(source, set, view)?);
+    let key = (
+        source.to_owned(),
+        set.iter().map(|&c| c.to_owned()).collect(),
+        view.iter()
+            .map(|&(n, p)| (n.to_owned(), p.to_vec()))
+            .collect(),
+    );
+    let mut recent = recent();
+    recent.push((key, Arc::clone(&script)));
+    if recent.len() > 8 {
+        recent.remove(0);
+    }
+    Ok(script)
+}
+
 /// Builds the plan for an instrument already read into the IR.
 #[must_use]
 pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded {
@@ -257,6 +320,7 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
     let mut origin: Option<PathBuf> = None;
     for (n, script) in instrument.scripts.iter().enumerate() {
         if script.dialect == ir::Dialect::Lua {
+            compiled();
             match kontra_lua::compile(&script.source, &lua_modules(script), &script.saved) {
                 Ok(mut compiled) => {
                     persist.push(crate::persist::Vars::lua(n, &compiled.ui));
@@ -308,7 +372,7 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
         let view: Vec<(&str, &[i32])> = (view.iter().flat_map(|v| &v.controls))
             .map(|c| (c.name.as_str(), c.params.as_slice()))
             .collect();
-        match kontra_ksp::compile_with_view(&script.source, &set, &view) {
+        match compile_ksp(&script.source, &set, &view) {
             Ok(compiled) => {
                 conditions.clone_from(&compiled.conditions);
                 let mut planned = crate::script::plan(&compiled, &script.saved, &script.data);

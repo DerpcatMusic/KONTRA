@@ -48,10 +48,11 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import compare  # noqa: E402  (RATE, PRE, load)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from kontra_libraries import KONTAKT  # noqa: E402
 
 R = compare.RATE
 LEAD = 30.0
-KONTAKT = Path(os.environ.get("KONTRA_KONTAKT_LIBRARIES", "/data/main/Libraries/Kontakt"))
 LIBRARIES = {
     "analog": "ANALOG STRINGS/Instruments/ANALOG STRINGS.nki",
     "trumpets": "Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/3 Trumpets/3 Trumpets Legato.nki",

@@ -8,9 +8,9 @@ import unittest
 from inspector_audit_summary import summarize
 
 
-KONTAKT = "/mnt/MAIN_STORAGE/Libraries/Kontakt/Example/Instrument.nki"
-MULTI = "/mnt/MAIN_STORAGE/Libraries/Kontakt/Example/Rack.nkm"
-BANK = "/mnt/MAIN_STORAGE/Libraries/UVI/Example/Bank.ufs"
+KONTAKT = "/data/main/Libraries/Kontakt/Example/Instrument.nki"
+MULTI = "/data/main/Libraries/Kontakt/Example/Rack.nkm"
+BANK = "/data/main/Libraries/UVI/Example/Bank.ufs"
 MEMBER = "Presets/Part.uvip"
 
 

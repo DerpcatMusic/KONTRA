@@ -72,6 +72,18 @@ fn model(effect: &str, keys: &HashMap<&str, f32>) -> Option<(ir::EffectKind, f32
             })),
             0.0,
         )),
+        "legacy_reverb" => Some((
+            ir::EffectKind::Reverb(crate::legacy_reverb::reverb(
+                k("pd", 0.0),
+                [
+                    k("size", 0.5),
+                    k("colour", 0.5),
+                    k("stereo", 1.0),
+                    k("damp", 0.5),
+                ],
+            )),
+            0.0,
+        )),
         "distortion" => Some((
             crate::drive::distortion(k("type", 0.0) as i32, k("drive", 0.0), k("damp", 0.0))?,
             0.0,

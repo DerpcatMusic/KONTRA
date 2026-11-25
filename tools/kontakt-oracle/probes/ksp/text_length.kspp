@@ -1,0 +1,13 @@
+# The reference 8.13: a string grown past 320 characters keeps its first 320 (2 500 appended here)
+# and the callback runs on. Measured 2026-11-25 (slot 2). KONTRA's TEXT_CAPACITY is 320.
+# Run: ksp_probe.py "ANALOG STRINGS.nki" this-file > text_length.measured
+S declare @s
+S declare $k
+S @s := ""
+S $k := 0
+S while ($k < 250)
+S   @s := @s & "abcdefghi" & ($k mod 10)
+S   inc($k)
+S end while
+T long @s
+R after 22

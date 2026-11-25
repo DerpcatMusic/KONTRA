@@ -549,6 +549,16 @@ type HeadJob = (Arc<Sample>, Arc<dyn Source>, Range<usize>, BlobKey);
 /// A run of pages read for request `.0`.
 type RunRead = (usize, Range<usize>, io::Result<Vec<Page>>);
 
+/// Bytes of pinned pages read from their sources, by every store of the
+/// process (a load that reuses held pages adds nothing).
+static PINNED_READ: AtomicU64 = AtomicU64::new(0);
+
+/// [`PINNED_READ`]: what loads have read into memory so far.
+#[must_use]
+pub fn pinned_bytes_read() -> u64 {
+    PINNED_READ.load(Ordering::Relaxed)
+}
+
 /// Pages `run` of a `frames`-long sample of `source`, as pinned pages.
 fn read_run(
     source: &dyn Source,
@@ -561,9 +571,25 @@ fn read_run(
     let first = run.start as u64 * size;
     let end = (run.end as u64 * size).min(frames);
     let frame_bytes = fmt.bytes_per_frame();
-    if let Some(per) = blocks_per_page(source, size) {
-        return read_blocks(source, frames, run, per);
+    let read = if let Some(per) = blocks_per_page(source, size) {
+        read_blocks(source, frames, run, per)
+    } else {
+        read_pcm(source, first, end, frame_bytes, size)
+    };
+    if let Ok(pages) = &read {
+        let bytes = pages.iter().map(|p| p.bytes().len() as u64).sum();
+        PINNED_READ.fetch_add(bytes, Ordering::Relaxed);
     }
+    read
+}
+
+fn read_pcm(
+    source: &dyn Source,
+    first: u64,
+    end: u64,
+    frame_bytes: usize,
+    size: u64,
+) -> io::Result<Vec<Page>> {
     let mut buf = vec![0; end.saturating_sub(first) as usize * frame_bytes];
     // Split into pages here, so this thread's heap reuses the freed run for
     // the pages it keeps.

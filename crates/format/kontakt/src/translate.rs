@@ -8,8 +8,8 @@ use kontra_format::Notes;
 use kontra_ir as ir;
 use ni_file::kontakt::KontaktChunks;
 use ni_file::kontakt::objects::{
-    BParScript, Group, GroupList, InternalModArray16, LoopArray, Modulator, StartCriteriaParams,
-    VoiceGroups, VoiceLimit, ZoneList, ZoneSlices,
+    BParScript, Group, GroupList, InternalModArray16, LoopArray, Modulator, StartCriteriaList,
+    StartCriteriaParams, VoiceGroups, VoiceLimit, ZoneList, ZoneSlices,
 };
 
 use crate::Error;
@@ -270,7 +270,9 @@ pub(crate) fn instrument(
     encrypted: Option<bool>,
     native: Option<crate::snapshot::Native>,
 ) -> Result<ir::Instrument, Error> {
+    use kontra_format::timing::span;
     let decode = |what| move |e: ni_file::Error| Error::new(path, what, e);
+    let phase = span("program");
     let mut program = chunks
         .program()
         .ok_or_else(|| Error::new(path, "program", "missing"))?
@@ -338,6 +340,8 @@ pub(crate) fn instrument(
         tune: laws::semitones(params.tune) + f64::from(params.transpose),
         preload: params.dfd_channel_preload_size,
     };
+    drop(phase);
+    let phase = span("scripts");
     let mut resources = None;
     let (links, others) = crate::links::links(&program.0.private_data);
     for name in others {
@@ -399,6 +403,8 @@ pub(crate) fn instrument(
     for why in resources.iter().flat_map(|r| &r.unreadable) {
         notes.add(ir::Impact::Broken, "resource archive", why);
     }
+    drop(phase);
+    let phase = span("group list, samples resolver, tables");
     let mut groups = program
         .0
         .find_first(GROUP_LIST)
@@ -420,6 +426,8 @@ pub(crate) fn instrument(
         crate::snapshot::unmatched(native.groups.len(), groups.groups.len(), &mut notes);
         group_fx = native.groups;
     }
+    drop(phase);
+    let phase = span("groups");
     for (index, group) in groups.groups.iter_mut().enumerate() {
         let mut saved = group_fx.get_mut(index).and_then(Option::take);
         // A snapshot's params, source and modulators stand in for the group's own.
@@ -441,6 +449,8 @@ pub(crate) fn instrument(
         out.groups.push(g);
         criteria.push(t.criteria);
     }
+    drop(phase);
+    let phase = span("program racks");
     impulses.snapshot = snapshot_racks;
     let racks = crate::effects::program(&program, &mut impulses, &mut notes);
     let mut buses = racks.buses;
@@ -498,13 +508,19 @@ pub(crate) fn instrument(
             out_group.muted = if any_soloed { !p.soloed } else { p.muted };
         }
     }
+    drop(phase);
+    let phase = span("zone list");
     let zones = program
         .0
         .find_first(ZONE_LIST)
         .ok_or_else(|| Error::new(path, "zone list", "missing"))
         .and_then(|c| ZoneList::try_from(c).map_err(decode("zone list")))?;
     let mut sample_of: HashMap<u32, Option<usize>> = HashMap::new();
+    drop(phase);
+    let phase = span("warm zones");
     resolver.warm_zones(&zones, &table);
+    drop(phase);
+    let phase = span("zones");
     // A zone's id is its place in the zone list, saved or not.
     for (zone_id, (zone, &group)) in (0u32..).zip(zones.zones().iter().zip(&zones.group_ids)) {
         let z = zone.params().map_err(decode("zone"))?;
@@ -537,9 +553,11 @@ pub(crate) fn instrument(
                 );
                 return None;
             };
+            let resolving = span("zones: resolve");
             let found = resolver
                 .resolve(name)
                 .and_then(|at| at.ok_or("not found".into()));
+            drop(resolving);
             match found {
                 Ok(at) => {
                     out.samples.push(ir::Sample {
@@ -623,6 +641,8 @@ pub(crate) fn instrument(
         *sample += first;
     }
     out.samples.extend(responses);
+    drop(phase);
+    let _phase = span("finish");
     Ok(finish(out, notes))
 }
 
@@ -1215,10 +1235,61 @@ fn translate_group(
         &mut out,
         notes,
     )?;
+    out.held = held(&v.start_criteria, v.voice_group_index);
+    if let Ok((record, _)) = group.source_params() {
+        out.held.extend(crate::source_pars::held(&record, &v));
+    }
     Ok(Translated {
         group: out,
         criteria: v.start_criteria.items,
     })
+}
+
+/// What a script reads of a group's start criteria and voice group
+/// ([`crate::engine_pars::CRITERIA`]): each of the four criteria, the saved
+/// one where its mask bit is set, else the reference 8.13's fresh one.
+fn held(list: &StartCriteriaList, voice_group: i32) -> Vec<(i8, u32, i32)> {
+    let fresh = StartCriteriaParams {
+        mode: 0,
+        next_criteria: 0,
+        key_min: 24,
+        key_max: 24,
+        controller: 1,
+        cc_min: 0,
+        cc_max: 64,
+        cycle_class: 0,
+        slice_zone_idx: -1,
+        slice_zone_slice_idx: -1,
+        sequencer_only: false,
+    };
+    let mut saved = list.items.iter();
+    let mut out = Vec::with_capacity(4 * 11 + 1);
+    for n in 0..4i8 {
+        let c = if list.mask & (1 << n) != 0 {
+            saved.next()
+        } else {
+            None
+        };
+        let c = c.unwrap_or(&fresh);
+        let fields = [
+            c.mode,
+            c.next_criteria,
+            c.key_min.into(),
+            c.key_max.into(),
+            c.controller.into(),
+            c.cc_min.into(),
+            c.cc_max.into(),
+            c.cycle_class,
+            c.slice_zone_idx,
+            c.slice_zone_slice_idx,
+            c.sequencer_only.into(),
+        ];
+        for (name, v) in crate::engine_pars::CRITERIA.iter().zip(fields) {
+            out.push((n, ir::held_key(name), v));
+        }
+    }
+    out.push((-1, ir::held_key("$ENGINE_PAR_VOICE_GROUP"), voice_group));
+    out
 }
 
 /// Start options: key switches, controller ranges and round robins. Cycles count

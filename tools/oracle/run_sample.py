@@ -25,9 +25,11 @@ import capture  # noqa: E402
 import compare  # noqa: E402
 import kontra_render  # noqa: E402
 import scenario  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from kontra_libraries import KONTAKT  # noqa: E402
 
-CANARY_NKI = ("/data/main/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/"
-              "02 Legato Technique Patches/Areia - 04 4 Double Basses - Performance Legato.nki")
+CANARY_NKI = str(KONTAKT / "Areia 1.2.0 [Audio Imperia]/Instruments/"
+                  "02 Legato Technique Patches/Areia - 04 4 Double Basses - Performance Legato.nki")
 
 
 def read_list(path):

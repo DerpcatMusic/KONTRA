@@ -42,6 +42,9 @@ pub(crate) struct Resolver {
     keys: HashMap<PathBuf, std::sync::Arc<[u8]>>,
     /// Each name resolved once: a large table names the same file many times.
     resolved: HashMap<String, Option<Location>>,
+    /// Files checked to be under the root (each canonicalizes it).
+    #[cfg(test)]
+    inside_checks: std::cell::Cell<usize>,
 }
 
 impl Resolver {
@@ -96,11 +99,15 @@ impl Resolver {
             loose: None,
             keys: HashMap::new(),
             resolved: HashMap::new(),
+            #[cfg(test)]
+            inside_checks: std::cell::Cell::new(0),
         })
     }
 
     /// Whether `file`, symlinks followed, is still under the (canonical) root.
     fn inside(&self, file: &Path) -> bool {
+        #[cfg(test)]
+        self.inside_checks.set(self.inside_checks.get() + 1);
         file.canonicalize().is_ok_and(|f| f.starts_with(&self.root))
     }
 
@@ -359,7 +366,12 @@ impl Resolver {
     /// follow find them in the page cache: on a cold disk each is a random
     /// read, and one at a time they dominate the load.
     fn warm<'a>(&mut self, names: impl Iterator<Item = &'a str>) {
+        let phase = kontra_format::timing::span("warm: names");
         let mut named: Vec<(PathBuf, String)> = Vec::new();
+        // Each archive checked once (whether it may be opened): a library's
+        // thousands of samples sit in a few archives, and each check stats
+        // and canonicalizes it.
+        let mut checked: HashMap<PathBuf, bool> = HashMap::new();
         for name in names {
             let normalized = normalize_separators(name);
             let rel = normalized.trim_start_matches('/');
@@ -372,15 +384,29 @@ impl Resolver {
                 if !candidate.starts_with(&self.root) {
                     continue;
                 }
-                if let Some((archive, member)) = self.resolve_archive(&base, &candidate, rel)
-                    && self.can_open_archive(&archive)
-                {
+                let known = split_container_path(&candidate, ARCHIVE_EXTS, |p| {
+                    checked.contains_key(p) || self.archives.contains_key(p)
+                });
+                let Some((archive, member)) =
+                    known.or_else(|| self.resolve_archive(&base, &candidate, rel))
+                else {
+                    continue;
+                };
+                let open = match checked.get(&archive) {
+                    Some(&open) => open,
+                    None => *checked
+                        .entry(archive.clone())
+                        .or_insert(self.can_open_archive(&archive)),
+                };
+                if open {
                     found = Some((archive, member));
                     break;
                 }
             }
             named.extend(found);
         }
+        drop(phase);
+        let phase = kontra_format::timing::span("warm: archive indexes");
         // Open the archives (each reads its directory) side by side.
         let mut missing: Vec<&PathBuf> = named
             .iter()
@@ -405,6 +431,8 @@ impl Resolver {
             handles.into_iter().filter_map(|h| h.join().ok()).collect()
         });
         self.archives.extend(opened);
+        drop(phase);
+        let _phase = kontra_format::timing::span("warm: headers");
         let mut wanted: Vec<(PathBuf, u64)> = (named.iter())
             .filter_map(|(archive, member)| {
                 let (_, index) = self.archives.get(archive)?.as_ref()?;
@@ -609,6 +637,24 @@ fn walk(dir: &Path, found: &mut impl FnMut(PathBuf)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A library's samples sit in a few archives: warming thousands of
+    /// names checks each archive once, not once per name.
+    #[test]
+    fn warming_many_names_checks_their_archive_once() {
+        let dir = std::env::temp_dir().join(format!("kontra-warm-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("Samples")).unwrap();
+        std::fs::write(dir.join("Samples/pack.nkx"), b"").unwrap();
+        let instrument = dir.join("x.nki");
+        std::fs::write(&instrument, b"").unwrap();
+        let mut resolver = Resolver::new(&instrument, None).unwrap();
+        let names: Vec<String> = (0..1000)
+            .map(|n| format!("Samples/pack.nkx/{n}.ncw"))
+            .collect();
+        resolver.warm(names.iter().map(String::as_str));
+        assert_eq!(resolver.inside_checks.get(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn resolves_case_insensitive_windows_and_foreign_paths_on_linux() {

@@ -17,3 +17,9 @@
 
 /.github/scripts/__pycache__/
 __pycache__/
+
+# The parity board is generated (tools/parity-board.py), never committed: committed output conflicted on every lane PR.
+/docs/PARITY.md
+/docs/PARITY.html
+/docs/parity/attribution.tsv
+/docs/parity/flagged-claims.tsv

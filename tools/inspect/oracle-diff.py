@@ -11,6 +11,9 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from kontra_libraries import KONTAKT  # noqa: E402
+
 import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
@@ -167,7 +170,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--reuse', type=Path, help='tabulate an existing run directory without rendering')
     parser.add_argument('--output', type=Path, default=Path('/data/dev/workspace/scratch/laneG/ORACLE-DIFF.md'))
-    parser.add_argument('--library-root', type=Path, default=Path('/data/main/Libraries/Kontakt'))
+    parser.add_argument('--library-root', type=Path, default=KONTAKT)
     parser.add_argument('--jobs', type=int, default=3)
     args = parser.parse_args()
     if args.jobs < 1 or args.jobs > 3:

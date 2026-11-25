@@ -12,7 +12,11 @@ import argparse
 import os
 import subprocess
 import io
+import sys
 import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from kontra_libraries import KONTAKT  # noqa: E402
 
 def black_regions(image):
     """Merge equal pure-black horizontal runs; ignore small keys/text/shadows."""
@@ -210,7 +214,7 @@ def main():
     env['XDG_CONFIG_HOME'] = str(capture.root / 'config')
     settings = capture.root / 'config/kontra/settings.json'
     settings.parent.mkdir(parents=True)
-    settings.write_text(json.dumps({'version': 2, 'imported': True, 'roots': ['/mnt/MAIN_STORAGE/Libraries/Kontakt'], 'view_mode': 'Original'}))
+    settings.write_text(json.dumps({'version': 2, 'imported': True, 'roots': [str(KONTAKT)], 'view_mode': 'Original'}))
     state = args.state or args.ram_dir / 'session.state'
     assert state.resolve().is_relative_to(Path('/dev/shm'))
     multi = capture.root / 'input.kontra-multi'

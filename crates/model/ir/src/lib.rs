@@ -33,7 +33,7 @@ pub use effects::{
     IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Notches, Phaser, Polarity, Reverb,
     ScanShape, Scanner, Shifter, Strip, Transient, VowelSet,
 };
-pub use engine_par::{Drives, EnginePar, ScriptPar, ZonePar, held_key};
+pub use engine_par::{Drives, EnginePar, HeldSet, ScriptPar, ZonePar, held_key, unit_read};
 pub use generator::Generator;
 pub use graph::{AudioGraph, ChannelLayout, EffectId, GraphEdge, GraphNode, GraphNodeKind, NodeId};
 pub use kontra_law::{FormulaId, Section, Sections, Stage, common};
@@ -349,6 +349,10 @@ pub struct Group {
     pub speed: Option<f32>,
     /// Index into [`Instrument::voice_groups`].
     pub voice_group: Option<usize>,
+    /// Saved group controls a script reads back with no processor behind
+    /// them ([`crate::EnginePar::GroupHeld`]): index (−1: the whole group),
+    /// [`crate::held_key`], raw value.
+    pub held: Vec<(i8, u32, i32)>,
     /// Its notes slide in pitch from the note before (portamento).
     pub glide: Option<Glide>,
     /// Effects on this group's voices, by slot.
@@ -408,6 +412,7 @@ impl Group {
         generator: None,
         speed: None,
         voice_group: None,
+        held: Vec::new(),
         glide: None,
         inserts: Vec::new(),
         amp_split: u8::MAX,

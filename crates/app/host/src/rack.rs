@@ -416,26 +416,14 @@ impl Rack {
         if kontra_format_kontakt::is_multi(path) {
             return self.load_multi(part, path);
         }
-        if path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("nksn"))
-            && let Some(preset) = crate::instrument::preset(path, &self.known.1)
-        {
-            let base = match self.snapshot_base_for(part, &preset.base) {
-                Some(cached) => Ok(cached),
-                None => kontra_format_kontakt::open_snapshot_base(&preset.base).map(Arc::new),
-            };
-            if let Ok(base) = base {
-                let instrument =
-                    kontra_format_kontakt::load_snapshot_onto(&base, path, &self.known.1)?;
-                self.load_ir(part, instrument, Some(path.to_owned()))?;
-                if let Some(slot) = self.snapshot_bases.get_mut(part) {
-                    *slot = Some(base);
-                }
-                return Ok(());
-            }
-        }
-        self.post(loader::Job::new(part, path.to_owned()))
+        // A snapshot reads onto the base the part decoded, if it has it.
+        let mut job = loader::Job::new(part, path.to_owned());
+        let own = self.snapshot_bases.get(part).cloned().flatten();
+        job.bases = own
+            .into_iter()
+            .chain(self.snapshot_bases.iter().flatten().cloned())
+            .collect();
+        self.post(job)
     }
 
     /// Returns a cached open Kontakt [`SnapshotBase`] matching `base` from

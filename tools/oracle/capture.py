@@ -260,11 +260,57 @@ def kontakt_ticks():
     return total
 
 
+CPU_IDLE_S = 4.0  # the idle window cpu sessions measure, after loading, before the MIDI
+
+
+def kontakt_threads():
+    """{tid: (name, utime+stime ticks)} of every thread of this slot's Kontakt."""
+    out = {}
+    for pid in slot.kontakt_pids():
+        for task in Path(f"/proc/{pid}/task").glob("*"):
+            try:
+                stat = (task / "stat").read_text()
+                name = stat[stat.index("(") + 1:stat.rindex(")")]
+                fields = stat.rsplit(")", 1)[1].split()
+                out[int(task.name)] = (name, int(fields[11]) + int(fields[12]))
+            except (OSError, ValueError, IndexError):  # thread ended while we looked
+                pass
+    return out
+
+
+def kontakt_rchar():
+    """Bytes this slot's Kontakt has read so far (rchar: page-cache hits included)."""
+    total = 0
+    for pid in slot.kontakt_pids():
+        try:
+            line = next(l for l in Path(f"/proc/{pid}/io").read_text().splitlines() if l.startswith("rchar:"))
+            total += int(line.split()[1])
+        except (OSError, StopIteration, ValueError):
+            pass
+    return total
+
+
+def settle_disk(quiet_s=3.0, limit_s=240.0, slack=1 << 20):
+    """Waits until Kontakt reads under `slack` bytes in `quiet_s` seconds (preload and DFD fills
+    done), at most `limit_s`; returns the seconds waited. /proc has no change event, so this samples."""
+    t0 = time.monotonic()
+    last = kontakt_rchar()
+    while time.monotonic() - t0 < limit_s:
+        time.sleep(quiet_s)
+        now = kontakt_rchar()
+        if now - last < slack:
+            break
+        last = now
+    return time.monotonic() - t0
+
+
 def run_session(nkis, window, work, midi=None, notes=SCENARIO, per_slot=None, cpu=None):
     """Loads up to PER_SESSION NKIs, plays the slotted MIDI, records. Returns (wav, t_midi, loaded)
     where t_midi is the MIDI start on the recording clock and loaded[k] = (ok, error).
     `cpu` (a dict, optional): filled with "start" (monotonic, MIDI start) and "samples"
-    [(monotonic, ticks)] of Kontakt's CPU time, sampled every 0.1 s while the slots play."""
+    [(monotonic, ticks)] of Kontakt's CPU time, sampled every 0.1 s while the slots play; and, after
+    waiting for its disk reads to go quiet ("settle_s"), "idle" (seconds, threads before, threads
+    after) over CPU_IDLE_S with no notes and "threads" [(monotonic, kontakt_threads())] while they play."""
     if kontakt_running():
         stop_kontakt()  # left over from the previous group of this batch, or a crashed session
     if kontakt_running():
@@ -314,6 +360,12 @@ def run_session(nkis, window, work, midi=None, notes=SCENARIO, per_slot=None, cp
         if not diag["routed"]:
             sys.exit(f"Kontakt has no audio output ports; see {work / 'kontakt.log'}")
         log(work, f"after route: sink={sink_state()} links={kontakt_links()}")
+        if cpu is not None:
+            cpu["settle_s"] = settle_disk()
+            before, t0 = kontakt_threads(), time.monotonic()
+            time.sleep(CPU_IDLE_S)
+            cpu["idle"] = (time.monotonic() - t0, before, kontakt_threads())
+            cpu["threads"] = []
         keep = subprocess.Popen(["pw-cat", "-p", "--raw", "--rate", "48000", "--channels", "2", "--format", "f32",
                                  "--target", SINK, "/dev/zero"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         t_rec = time.monotonic()  # the WAV's sample 0 is at recorder start, so the clock starts here
@@ -331,7 +383,9 @@ def run_session(nkis, window, work, midi=None, notes=SCENARIO, per_slot=None, cp
         while time.monotonic() < end:  # phase 2: keep links pinned while the slots play
             route_kontakt_to_sink()
             if cpu is not None:
-                cpu["samples"].append((time.monotonic(), kontakt_ticks()))
+                now = time.monotonic()
+                cpu["samples"].append((now, kontakt_ticks()))
+                cpu["threads"].append((now, kontakt_threads()))
             time.sleep(0.1)
         time.sleep(0.5)
         if os.environ.get("ORACLE_SHOT"):  # the screen as the MIDI left it (e.g. a script control a CC moved)

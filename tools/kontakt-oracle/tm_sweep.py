@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Time Machine source-parameter sweep: which stored source-record field does each ENGINE_PAR drive?
 
-    TM_SOURCE_DUMP=<path to tm_source_dump> tm_sweep.py OUT.tsv [--modes time_machine_1,time_machine_2,time_machine_pro]
+    TM_SOURCE_DUMP=<path to the source_dump example> tm_sweep.py OUT.tsv [--modes time_machine_1,time_machine_2,time_machine_pro]
                         [--pars SPEED,SMOOTH,GRAIN_LENGTH,FORMANT_SHIFT,TMPRO_KEEP_FORMANTS]
                         [--values 0,250000,500000,750000,1000000]
 
 One group per mode, one zone on a generated wav. For each (par, value) a one-line KSP `on init`
 writes the engine parameter on that group, the instrument is saved, and the saved .nki is decoded
-with the `tm_source_dump` example (ni_file's group source reader). Every source-record field that differs
-from the untouched baseline is written as a TSV row. Runs one Kontakt session (see NATIVE_ORACLE.md).
+with the `source_dump` example (ni_file's group source reader). Every source-record field that differs
+from the untouched baseline is written as a TSV row. Runs one Kontakt render session.
 
 Output: mode, par, value, path, field_idx, kind, baseline, stored
 """
@@ -67,6 +67,7 @@ for n, s in ipairs(STEPS) do
   out:flush()
 end
 out:write('{{"done":true}}\\n')
+out:write('{{"ready":true}}\\n')
 out:close()
 """
 
@@ -104,8 +105,10 @@ def main() -> int:
     WORK.mkdir(parents=True)
     script = WORK.parent / "tm_sweep_gen.lua"
     script.write_text(gen_lua(modes, steps, a.generic))
-    env = dict(os.environ, ORACLE_LUA=str(script), ORACLE_TIMEOUT=str(600))
-    subprocess.run([sys.executable, str(HERE / "dump.py"), str(WORK / "probe.jsonl")], env=env, check=True)
+    # The render session runs the Lua before it renders (as disp_sweep.py); dump.py's
+    # session needs Kontakt's developer options on.
+    subprocess.run([str(HERE.parent / "oracle/oracle-slot"), sys.executable, str(HERE / "render.py"),
+                    str(script), "/dev/null", "8"], check=True)
     rows = []
     base = {}
     for n, (m, p, v) in enumerate(steps, 1):

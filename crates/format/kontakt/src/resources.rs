@@ -481,9 +481,10 @@ mod tests {
 
     #[test]
     fn library_root_requires_one_unambiguous_nicnt() {
-        let base = std::env::current_dir()
-            .unwrap()
-            .join(format!(".library-root-test-{}", std::process::id()));
+        // Not the crate dir (the test's cwd): writing there touches the source
+        // tree, which reruns kontra-plugin's build script and relinks it.
+        let base = std::env::temp_dir().join(format!(".library-root-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base); // a killed run with a reused pid leaves files
         let scratch = Scratch(base.clone());
         let instrument_dir = base.join("Instruments");
         std::fs::create_dir_all(instrument_dir.join("Resources")).unwrap();

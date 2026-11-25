@@ -719,7 +719,39 @@ def hiding():
     return p
 
 
-PAGES = [widgets, geometry, pictures_page, text, data, behaviour, layers, fields, tables, hiding]
+def textpos():
+    """Where $CONTROL_PAR_TEXTPOS_Y puts a menu's, a value edit's and a button's words, stock and
+    pictured, 16, 20 and 30 px tall: unset, 0, -4, 3, 6, 10 and 500 (libraries park words out of
+    sight with 500)."""
+    p = Page("textpos")
+    rows = [(kind, None, None, None, h) for kind in ("ui_menu", "ui_value_edit", "ui_button")
+            for h in (16, 20, 30)]
+    rows += [("ui_menu", "kp_menu", None, None, 20), ("ui_menu", "kp_menu", 13, 2, 20)]
+    for r, (kind, pic, font, align, h) in enumerate(rows):
+        for c, y in enumerate([None, 0, -4, 3, 6, 10, 500]):
+            args = "(0, 100, 1)" if kind == "ui_value_edit" else ""
+            v = p.control(kind, f"r{r}c{c}", args, log=False)
+            p.at(v, 10 + c * 100, 8 + r * 33, *((None, None) if pic else (90, h)))
+            if kind == "ui_menu":
+                p.setup.append(f'add_menu_item({v}, "Item AaBb", 0)')
+                p.setup.append(f'add_menu_item({v}, "Other", 1)')
+            elif kind == "ui_value_edit":
+                p.setup.append(f"{v} := 61")
+                p.par(v, "TEXT", "Val")
+            else:
+                p.setup.append(f'set_text({v}, "Button")')
+            if pic:
+                p.par(v, "PICTURE", pic)
+            if font is not None:
+                p.par(v, "FONT_TYPE", font)
+            if align is not None:
+                p.par(v, "TEXT_ALIGNMENT", align)
+            if y is not None:
+                p.par(v, "TEXTPOS_Y", y)
+    return p
+
+
+PAGES = [widgets, geometry, pictures_page, text, data, behaviour, layers, fields, tables, hiding, textpos]
 
 
 def main():

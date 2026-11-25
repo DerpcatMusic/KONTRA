@@ -31,6 +31,8 @@ pub enum Form {
     Hundredths,
     /// A whole number in five places (degrees).
     WideWhole,
+    /// A whole number in three places (`%3.0f`).
+    NarrowWhole,
     /// No text: a switch shows none.
     Blank,
     /// `x ` and one decimal: a multiple.

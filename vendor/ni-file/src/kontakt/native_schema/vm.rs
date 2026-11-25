@@ -111,9 +111,10 @@ pub(super) fn names_nested(sertype: u16) -> bool {
 /// is the framed read 0x140756e50: private, public and children areas, each u32-length
 /// framed, dispatched to slots 11, 10 and 12. Slot 8 of each vtable, Kontakt 8.13.1:
 /// BGroup 0x04 (0x144e97ab0), BParEnv 0x07 (0x144e749f0), BZone 0x2C (0x144e97560),
-/// BInsertBus 0x45 (0x144e980c0). A class not listed reads its body inline, as
-/// BGroupSnapshot (0x50, slot 8 is its reader 0x140cff070).
-const SLOT8_FRAMED: &[u16] = &[0x04, 0x07, 0x2c, 0x45];
+/// BInsertBus 0x45 (0x144e980c0), BProgramContainer 0x29 (0x144e983f0). A class not
+/// listed reads its body inline, as BGroupSnapshot (0x50, slot 8 is its reader
+/// 0x140cff070).
+const SLOT8_FRAMED: &[u16] = &[0x04, 0x07, 0x29, 0x2c, 0x45];
 
 /// Virtual reads the IR leaves as `(callx ..)`, proven from the vtable the constructor
 /// installs: (program, read kind).

@@ -11,7 +11,9 @@ ART='/data/dev/workspace/PluginArtifacts/kontra-parity'
 BIN=os.environ.get('KONTRA_INSPECT_BIN',os.path.join(ART,'kontra-inspect'))
 OUT=os.environ.get('KONTRA_CENSUS_OUT',os.path.join(ART,'play.jsonl'))
 SCENARIO=os.environ.get('KONTRA_CENSUS_SCENARIO',os.path.join(os.path.dirname(os.path.abspath(__file__)),'census.scenario.json'))
-ROOTS=os.environ.get('KONTRA_CENSUS_ROOTS','/data/main/Libraries/Kontakt:/data/main/Libraries/UVI').split(':')
+sys.path.insert(0,os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from kontra_libraries import KONTAKT,UVI
+ROOTS=os.environ.get('KONTRA_CENSUS_ROOTS',f'{KONTAKT}:{UVI}').split(':')
 SILENT=1e-4  # RMS under -80 dBFS over the render
 
 def instruments():

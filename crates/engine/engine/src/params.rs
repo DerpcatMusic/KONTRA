@@ -350,6 +350,10 @@ impl Engine {
                 .find(|h| (h.0, h.1, h.2) == (at, slot, name))
                 .map(|h| h.3);
         }
+        if let EnginePar::GroupHeld { key, .. } = par {
+            let held = &self.group_mut(group)?.held;
+            return Some(group_held(held, key, slot).map_or(0, |h| h.2));
+        }
         if par == EnginePar::OutputChannel {
             return self.output_channel(group, generic);
         }
@@ -571,6 +575,19 @@ impl Engine {
         };
         if let EnginePar::Opaque(name) = par {
             return self.hold(name, value, group, slot, generic);
+        }
+        if let EnginePar::GroupHeld { key, set } = par {
+            // A read-only control, or one the group lacks (a source mode
+            // without it): the reference 8.13 drops the set and the script
+            // runs on (measured 2026-11-25).
+            let held = self.group_mut(group).and_then(|g| {
+                let at = g.held.iter().position(|h| group_held_at(h, key, slot))?;
+                g.held.get_mut(at)
+            });
+            if let (Some(h), Some(v)) = (held, set.apply(value)) {
+                h.2 = v;
+            }
+            return true;
         }
         if par == EnginePar::OutputChannel {
             return self.set_output_channel(value, group, generic);
@@ -1011,6 +1028,18 @@ fn in_unit(rate: ir::Rate, unit: ir::Rate, tempo: f32) -> ir::Rate {
 }
 
 /// The rack and slot a held control lives in.
+/// Whether held group control `h` is `key` at index `slot` (−1 in `h`:
+/// the whole group, any index).
+fn group_held_at(h: &(i8, u32, i32), key: u32, slot: i32) -> bool {
+    h.1 == key && (h.0 == -1 || i32::from(h.0) == slot)
+}
+
+/// Group control `key` at index `slot`; none reads 0 (the reference 8.13
+/// reads 0 at a start criterion index it lacks, e.g. −1).
+fn group_held(held: &[(i8, u32, i32)], key: u32, slot: i32) -> Option<&(i8, u32, i32)> {
+    held.iter().find(|h| group_held_at(h, key, slot))
+}
+
 fn slot_at(group: i32, slot: i32, generic: i32) -> Option<(ir::RackAt, u8)> {
     Some((
         crate::knobs::rack_at(group, generic)?,

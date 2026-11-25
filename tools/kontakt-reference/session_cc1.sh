@@ -5,7 +5,7 @@ set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd); . "$here/session_lib.sh"
 OUT=$W/log/session_cc1.txt; : >"$OUT"
 sess_begin
-LIB=/mnt/MAIN_STORAGE/Libraries/Kontakt
+LIB=$KONTRA_LIBRARIES/Kontakt
 for inst in ${INSTS:-barbarian vista}; do
   case $inst in barbarian) nki="$LIB/Afflatus Chapter II Brass/Instruments/3. Curated Ensembles/Barbarian Brass.nki"; n=7; key=55;;
                 vista) nki="$LIB/Performance Samples Vista/Instruments/Vista - 3 Cellos.nki"; n=7; key=48;; esac

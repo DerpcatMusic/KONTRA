@@ -1,6 +1,7 @@
 # shared helpers for quiet sessions (source me); sets W, OUT must be set by the caller before sess_begin
+. "$(dirname "${BASH_SOURCE[0]}")/../kontra_libraries.sh"
 W=/home/derpcat/.cache/kontra-reference; export KONTRA_MAX_LOAD=${KONTRA_MAX_LOAD:-8}
-CAL=/mnt/MAIN_STORAGE/kontra_ref_src/calibration.nki
+CAL=$KONTRA_REF_SRC/calibration.nki
 say() { echo "$@" | tee -a "$OUT"; }
 wine_pids() { pgrep -x "wineserver|services.exe|winedevice.exe|explorer.exe|plugplay.exe|svchost.exe|rpcss.exe|Kontakt 8.exe|start.exe|Xvfb" | sort; }
 sess_begin() {

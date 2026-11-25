@@ -11,13 +11,16 @@
 //!, lengths `ms·0.001·rate` truncated;
 //! - comb feedback `0.3·size + 0.65` and its
 //!   one-pole keeping `1 − 0.35·(1 − colour)` of the new sample
-//!; allpass gain 0.5 (`v = buf − g·x`, `buf ← g·v + x`);
+//!; the allpasses run as plain delays: the reference 8.13
+//!   renders each comb's first echo 35.44 ms (their summed lengths) later
+//!   with no recirculation between (docs/re/engine/fx-measured/legacy-reverb.md);
 //! - the channels mix toward their mean by `1 − stereo` (the mix reads
 //!   `(stereo + 1)/2`, [ref]), then ×0.015, then a
 //!   low-pass: `x = 0.75·(1 − damping) + 0.25`, corner
 //!   `(e^(6.15x) − 1)·0.0025728 + 0.002` of 22,006 Hz ([ref]:
 //!   [ref]), detuned by 0.99·0.99878 ([ref],
-//!   [ref]); written out unscaled.
+//!   [ref]); the wet written out ×3 (measured: damping 1 nulls at
+//!   −88.6 dB with a gain of 3.0000).
 //!
 //! That low-pass (+0x1100, vtable [ref]) is a two-pole Butterworth:
 //! init [ref] designs a 2-pole, 0-ripple Chebyshev prototype
@@ -34,7 +37,8 @@ static COMBS: ir::CombNetwork = ir::CombNetwork {
     ],
     allpasses_ms: [12.607_71, 10.0, 7.732_426, 5.102_041],
     spread_ms: 0.521_541_95,
-    input_gain: 0.015,
+    // 0.015 in, ×3 out.
+    input_gain: 0.045,
 };
 
 /// The record's reverb, `None` when a field is missing.
@@ -70,7 +74,8 @@ pub fn reverb(predelay_ms: f32, knobs: [f32; 4]) -> ir::Reverb {
         size: 1.0,
         network: Some(ir::Network::Combs(ir::Shared::Borrowed(&COMBS))),
         damping: 0.35 * (1.0 - colour),
-        diffusion: 0.5,
+        // The allpasses' gain: they only delay.
+        diffusion: 0.0,
         predelay_ms: predelay_ms.clamp(0.0, 180.0),
         high_cut_hz: LEGACY_REVERB_HIGH_CUT_HZ.eval(x),
         low_shelf_db: 0.0,

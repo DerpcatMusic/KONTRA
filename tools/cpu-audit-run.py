@@ -8,6 +8,8 @@ import signal
 import subprocess
 import time
 
+from kontra_libraries import KONTAKT
+
 p = argparse.ArgumentParser()
 p.add_argument('engine', choices=['v1', 'v2'])
 p.add_argument('binary', type=Path)
@@ -22,7 +24,7 @@ p.add_argument('--notes', type=int, choices=[1, 8])
 p.add_argument('--seconds', type=float, default=3.0)
 a = p.parse_args()
 a.out.mkdir(parents=True, exist_ok=True)
-root = Path('/mnt/MAIN_STORAGE/Libraries/Kontakt')
+root = KONTAKT
 scenarios = {
     'piano': ('Una Corda Library', 'Instruments/Una Corda Pure.nki'),
     'strings': ('Performance Samples Vista', 'Instruments/Vista - 5 Violins.nki'),

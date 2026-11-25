@@ -11,7 +11,7 @@ class PullRequestTest(unittest.TestCase):
 
     def test_titles_that_only_their_author_understands_fail(self):
         for title in ('Lane B: zones by name', 'P8.17: playability', 'Script parity: Choral',
-                      'fix(dsp): match [ref]', 'fix(dsp): read the table at [ref]',
+                      'fix(dsp): match FUN_1a2b', 'fix(dsp): read the table at 0xa5ee2b0',
                       'fix(ui): menus scroll.', 'fix: ' + 'a' * 80):
             with self.subTest(title=title):
                 self.assertTrue(problems(title, BODY))

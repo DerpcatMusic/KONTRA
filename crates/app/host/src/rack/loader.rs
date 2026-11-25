@@ -21,6 +21,11 @@ pub(crate) struct Job {
     known: Arc<Vec<PathBuf>>,
     moved: Vec<(PathBuf, PathBuf)>,
     saves: Option<PathBuf>,
+    /// The Kontakt snapshot bases the rack holds decoded, the part's own
+    /// first: a snapshot onto one of them reads only the snapshot.
+    pub bases: Vec<Arc<kontra_format_kontakt::SnapshotBase>>,
+    /// The base a snapshot read onto, kept for the part's next one.
+    snapshot: Option<Arc<kontra_format_kontakt::SnapshotBase>>,
 }
 
 impl Job {
@@ -33,6 +38,8 @@ impl Job {
             known: Arc::default(),
             moved: Vec::new(),
             saves: None,
+            bases: Vec::new(),
+            snapshot: None,
         }
     }
 }
@@ -50,13 +57,36 @@ pub(crate) struct Loads {
     running: Vec<(usize, u64, SavedPart, bool)>,
 }
 
+/// A Kontakt snapshot at `job.path` onto its base, decoded once per base
+/// ([`Job::bases`]); None for any other file, or a base that does not
+/// open (the snapshot then reads as any file does).
+fn snapshot(job: &mut Job) -> Option<Result<kontra_engine::ir::Instrument, crate::Error>> {
+    let nksn = (job.path.extension()).is_some_and(|e| e.eq_ignore_ascii_case("nksn"));
+    if !nksn || job.restore.is_some() {
+        return None;
+    }
+    let preset = crate::instrument::preset(&job.path, &job.known)?;
+    let held = std::mem::take(&mut job.bases);
+    let base = match held.into_iter().find(|b| b.path() == preset.base) {
+        Some(base) => base,
+        None => Arc::new(kontra_format_kontakt::open_snapshot_base(&preset.base).ok()?),
+    };
+    let read = kontra_format_kontakt::load_snapshot_onto(&base, &job.path, &job.known);
+    job.snapshot = Some(base);
+    Some(read.map_err(Into::into))
+}
+
 /// Reads `job`'s instrument and prepares it with `store`.
-fn read(job: &Job, rate: u32, store: &mut super::Store) -> Result<Built, crate::Error> {
+fn read(job: &mut Job, rate: u32, store: &mut super::Store) -> Result<Built, crate::Error> {
+    let snapshot = snapshot(job);
     let scripts = job
         .restore
         .as_ref()
         .map_or(&[][..], |(p, _)| &p.scripts[..]);
-    let mut instrument = crate::instrument::read_saved(&job.path, scripts, &job.known)?;
+    let mut instrument = match snapshot {
+        Some(read) => read?,
+        None => crate::instrument::read_saved(&job.path, scripts, &job.known)?,
+    };
     if job.restore.is_some() {
         for (script, saved) in instrument.scripts.iter_mut().zip(scripts) {
             script.saved.clone_from(saved);
@@ -85,8 +115,8 @@ impl Rack {
         let spawned = std::thread::Builder::new()
             .name("kontra-loader".into())
             .spawn(move || {
-                for job in take {
-                    let built = read(&job, rate, &mut store);
+                for mut job in take {
+                    let built = read(&mut job, rate, &mut store);
                     if give.send((job, built)).is_err() {
                         return;
                     }
@@ -119,14 +149,14 @@ impl Rack {
         let loads = &mut self.loads;
         loads.running.retain(|r| r.0 != job.part);
         loads.running.push((job.part, job.generation, saved, false));
-        let job = match &loads.thread {
+        let mut job = match &loads.thread {
             Some((jobs, _)) => match jobs.send(job) {
                 Ok(()) => return Ok(()),
                 Err(mpsc::SendError(job)) => job,
             },
             None => job,
         };
-        let built = read(&job, self.rate, &mut self.store);
+        let built = read(&mut job, self.rate, &mut self.store);
         self.land(job, built)
     }
 
@@ -145,6 +175,9 @@ impl Rack {
                 crate::state::live_slots(&p.slot_types, &p.slot_responses)
             });
         self.install_built(job.part, built?, Some(job.path), &types, &responses)?;
+        if let (Some(base), Some(slot)) = (job.snapshot, self.snapshot_bases.get_mut(job.part)) {
+            *slot = Some(base);
+        }
         if let Some((p, _)) = &job.restore {
             self.restored(p);
         }

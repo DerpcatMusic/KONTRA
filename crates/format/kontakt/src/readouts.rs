@@ -15,24 +15,26 @@ use crate::script_knobs::{
 // each filter kind when a library shows another.
 pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
     use ir::Form::{
-        Blank, Bpm, Decimal, Hundredths, Menu, Note, Padded, Pan, Rate, Ratio, Times, Whole, Wide,
-        WideWhole,
+        Blank, Bpm, Decimal, Hundredths, Menu, NarrowWhole, Note, Padded, Pan, Rate, Ratio, Times,
+        Whole, Wide, WideWhole,
     };
     use kontra_law::FormulaId::{
         AttackCurvePercent, BassProGainDb, BassProGeqDb, BassProGeqVolumeDb, BassProMasterDb,
         BassProMidDb, BiteBits, BiteFrequencyHz, BusCompMakeupDb, BusCompThresholdDb, ChoralRateHz,
-        EppTremoloRateHz, FlairPitchNote, FlairRateHz, FreakBandPassHz, FreakCarrierHz,
-        FreakFrequencyHz, LofiNoiseDb, PhasisCenterHz, PhasisNotches, PhasisRateHz,
-        PsycheDetuneCents, PsychePitchSemitones, RaumDecayMs, RaumRateHz, RotatorFast,
-        RotatorMixDb, SimpleFilterCutoffHz, SolidEqHfHz, SolidEqHmfHz, SolidEqHpHz, SolidEqLfHz,
-        SolidEqLmfHz, SolidEqLpHz, SolidEqQ, StereoTuneDriftPercent, TransLimReleaseMs,
-        TransStretchKey, TwinDelayTimeMs,
+        EnvelopeOrder, EppTremoloRateHz, FlairPitchNote, FlairRateHz, FormantShiftPercent,
+        FreakBandPassHz, FreakCarrierHz, FreakFrequencyHz, LofiNoiseDb, PhasisCenterHz,
+        PhasisNotches, PhasisRateHz, PsycheDetuneCents, PsychePitchSemitones, RaumDecayMs,
+        RaumRateHz, RotatorFast, RotatorMixDb, SimpleFilterCutoffHz, SliceAttackMs, SliceReleaseMs,
+        SolidEqHfHz, SolidEqHmfHz, SolidEqHpHz, SolidEqLfHz, SolidEqLmfHz, SolidEqLpHz, SolidEqQ,
+        StereoTuneDriftPercent, TmGrainMs, TransLimReleaseMs, TransStretchKey, TwinDelayTimeMs,
     };
     let lin = |lo, hi| ir::Law::Linear { lo, hi };
     let exp = |lo, hi| ir::Law::Exp { lo, hi };
     let curve = |points: [(f32, f32, f32); 2]| ir::Law::Breakpoints(points.into());
     let formula = ir::Law::Formula;
     let percent = [
+        // Time Machine's smooth (descriptor 2).
+        "$ENGINE_PAR_SMOOTH",
         "$ENGINE_PAR_RESONANCE",
         "$ENGINE_PAR_DAMPING",
         "$ENGINE_PAR_DRIVE",
@@ -162,6 +164,36 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
             "$ENGINE_PAR_TRANSLIM_CEILING",
             lin(-40.0, -0.3),
             Decimal,
+            none,
+        ),
+        // The source module (descriptors 2..18): Time Machine's formant `24x − 12`
+        // semitones (bipolar), its grain, Beat Machine's slice times and
+        // Time Machine 2's transient size (`e^(kx + c) − 2`), Pro's envelope order and
+        // formant shift (2026-11-25, sweeps/a-ext.tsv).
+        ("$ENGINE_PAR_FORMANT", lin(-12.0, 12.0), Decimal, none),
+        ("$ENGINE_PAR_GRAIN_LENGTH", formula(TmGrainMs), Padded, none),
+        (
+            "$ENGINE_PAR_SLICE_ATTACK",
+            formula(SliceAttackMs),
+            Padded,
+            none,
+        ),
+        (
+            "$ENGINE_PAR_SLICE_RELEASE",
+            formula(SliceReleaseMs),
+            Padded,
+            none,
+        ),
+        (
+            "$ENGINE_PAR_ENVELOPE_ORDER",
+            formula(EnvelopeOrder),
+            NarrowWhole,
+            none,
+        ),
+        (
+            "$ENGINE_PAR_FORMANT_SHIFT",
+            formula(FormantShiftPercent),
+            NarrowWhole,
             none,
         ),
         (
@@ -443,6 +475,27 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
     // switches and modes show nothing; Raum's high cut reads "Off" at 1 and
     // Psyche Delay's time 5 ms at 0.
     let blank = [
+        // Group controls the reference 8.13 shows no text for (KSP:
+        // get_engine_par only).
+        "$ENGINE_PAR_START_CRITERIA_MODE",
+        "$ENGINE_PAR_START_CRITERIA_NEXT_CRIT",
+        "$ENGINE_PAR_START_CRITERIA_KEY_MIN",
+        "$ENGINE_PAR_START_CRITERIA_KEY_MAX",
+        "$ENGINE_PAR_START_CRITERIA_CONTROLLER",
+        "$ENGINE_PAR_START_CRITERIA_CC_MIN",
+        "$ENGINE_PAR_START_CRITERIA_CC_MAX",
+        "$ENGINE_PAR_START_CRITERIA_CYCLE_CLASS",
+        "$ENGINE_PAR_START_CRITERIA_ZONE_IDX",
+        "$ENGINE_PAR_START_CRITERIA_SLICE_IDX",
+        "$ENGINE_PAR_START_CRITERIA_SEQ_ONLY",
+        "$ENGINE_PAR_VOICE_GROUP",
+        "$ENGINE_PAR_POST_FX_SLOT",
+        // The source module's mode and switches.
+        "$ENGINE_PAR_SOURCE_MODE",
+        "$ENGINE_PAR_TRACKING",
+        "$ENGINE_PAR_HQI_MODE",
+        "$ENGINE_PAR_TM_LEGATO",
+        "$ENGINE_PAR_TMPRO_KEEP_FORMANTS",
         "$ENGINE_PAR_RAUM_TYPE",
         "$ENGINE_PAR_RAUM_FREEZE",
         "$ENGINE_PAR_RAUM_PREDELAY_UNIT",

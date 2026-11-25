@@ -2,12 +2,13 @@
 # ranks the `ignored …` diagnostics by instruments. Output: OUT/load.jsonl (resumable), then the table.
 # usage: ignored-census.py OUT_DIR [top]
 import json,os,subprocess,sys,tempfile,collections,concurrent.futures as cf
+from kontra_libraries import KONTAKT, UVI
 BIN=os.environ['KONTRA_INSPECT_BIN']; OUT=sys.argv[1]; TOP=int(sys.argv[2]) if len(sys.argv)>2 else 15
 os.makedirs(OUT,exist_ok=True); path=os.path.join(OUT,'load.jsonl')
 jobs=[]
-for d,_,fs in os.walk('/data/main/Libraries/Kontakt'):
+for d,_,fs in os.walk(KONTAKT):
     jobs+=[('kontakt',os.path.join(d,f)) for f in fs if f.lower().endswith('.nki')]
-for d,_,fs in os.walk('/data/main/Libraries/UVI'):
+for d,_,fs in os.walk(UVI):
     for f in fs:
         if f.lower().endswith('.ufs'):
             b=os.path.join(d,f)

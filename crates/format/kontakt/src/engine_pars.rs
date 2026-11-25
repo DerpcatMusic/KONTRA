@@ -24,8 +24,21 @@ pub fn engine_pars() -> Vec<ir::ScriptPar> {
     let knobs = script_knobs()
         .into_iter()
         .map(|(name, target, law)| (name, ir::Drives::Knob(target, law)));
+    let group = CRITERIA
+        .iter()
+        .map(|&name| (name, ir::HeldSet::Drop))
+        .chain(GROUP_HELD.iter().copied())
+        .chain(crate::source_pars::SOURCE.iter().copied())
+        .map(|(name, set)| {
+            let key = ir::held_key(name);
+            (
+                name,
+                ir::Drives::Engine(ir::EnginePar::GroupHeld { key, set }),
+            )
+        });
     let mut pars: Vec<_> = fixed
         .chain(knobs)
+        .chain(group)
         .map(|(name, drives)| ir::ScriptPar {
             name,
             drives,
@@ -221,6 +234,36 @@ const OWNERS: &[(&str, &str)] = &[
     ("$ENGINE_PAR_STEREO_PSEUDO", "$EFFECT_TYPE_STEREO"),
 ];
 
+/// A group's start criteria, read only (the KSP manual: "only work with
+/// get_engine_par()"), at index 0..=3, in the order of a saved criterion's
+/// fields ([`crate::translate`] seeds them). The reference 8.13 reads a
+/// criterion never set as mode 0, keys 24..24, controller 1, 0..64, class 0,
+/// zone and slice −1, and drops every set (measured 2026-11-25,
+/// sweeps/startc*.tsv).
+pub(crate) const CRITERIA: [&str; 11] = [
+    "$ENGINE_PAR_START_CRITERIA_MODE",
+    "$ENGINE_PAR_START_CRITERIA_NEXT_CRIT",
+    "$ENGINE_PAR_START_CRITERIA_KEY_MIN",
+    "$ENGINE_PAR_START_CRITERIA_KEY_MAX",
+    "$ENGINE_PAR_START_CRITERIA_CONTROLLER",
+    "$ENGINE_PAR_START_CRITERIA_CC_MIN",
+    "$ENGINE_PAR_START_CRITERIA_CC_MAX",
+    "$ENGINE_PAR_START_CRITERIA_CYCLE_CLASS",
+    "$ENGINE_PAR_START_CRITERIA_ZONE_IDX",
+    "$ENGINE_PAR_START_CRITERIA_SLICE_IDX",
+    "$ENGINE_PAR_START_CRITERIA_SEQ_ONLY",
+];
+
+/// Other held group controls, and what a set keeps.
+/// `VOICE_GROUP` reads the saved voice group (−1 none) and keeps any set,
+/// but moves no voice: KONTRA's voice groups are only those the groups name
+/// at load. `POST_FX_SLOT` reads 0 and drops every set in the reference
+/// 8.13, with group effects loaded or not (measured 2026-11-25).
+const GROUP_HELD: [(&str, ir::HeldSet); 2] = [
+    ("$ENGINE_PAR_VOICE_GROUP", ir::HeldSet::Keep),
+    ("$ENGINE_PAR_POST_FX_SLOT", ir::HeldSet::Drop),
+];
+
 /// The names with an engine parameter of their own.
 const FIXED: &[(&str, ir::EnginePar)] = {
     use ir::EnginePar as P;
@@ -296,7 +339,7 @@ const FIXED: &[(&str, ir::EnginePar)] = {
         ("$ENGINE_PAR_SENDLEVEL_5", P::SendLevel(5)),
         ("$ENGINE_PAR_SENDLEVEL_6", P::SendLevel(6)),
         ("$ENGINE_PAR_SENDLEVEL_7", P::SendLevel(7)),
-        // RV2_MOD is not carried.
+        ("$ENGINE_PAR_RV2_MOD", P::Reverb(R::Modulation)),
         ("$ENGINE_PAR_RV2_TYPE", P::ReverbNetwork),
         ("$ENGINE_PAR_RV2_TIME", P::Reverb(R::Seconds)),
         ("$ENGINE_PAR_RV2_SIZE", P::Reverb(R::Size)),

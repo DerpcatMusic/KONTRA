@@ -6,7 +6,7 @@ set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd); . "$here/session_lib.sh"
 OUT=$W/log/session_analog.txt; : >"$OUT"
 sess_begin
-NKI="/mnt/MAIN_STORAGE/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki"
+NKI="$KONTRA_LIBRARIES/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki"
 lv() { python3 "$here/comp_levels.py" "$W/wav/$1.wav" "${2:-3}" "${3:-1}" "${4:-6}" | tee -a "$OUT"; }
 for r in ${REPS:-a b}; do
   KONTAKT_NO_VIEW_FIX=1 "$here/kontakt.sh" start "$NKI" || { say "start failed"; continue; }

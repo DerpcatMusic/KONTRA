@@ -275,6 +275,106 @@ fn a_saved_glide_modulator_is_a_timed_linear_glide_from_the_previous_key() {
     );
 }
 
+/// Groups with start options and voice groups, saved by Kontakt 8.13 from
+/// the probe that measured what `get_engine_par` reads of them
+/// (tools/kontakt-oracle/probes/start_criteria_pars.lua through
+/// disp_sweep.py `GET/<group>/<criterion>/-1`): mode, next, key min/max,
+/// controller, cc min/max, cycle class, zone, slice, sequencer only per
+/// criterion 0..=2, then the voice group.
+#[test]
+fn a_groups_start_criteria_and_voice_group_read_as_kontakt_reads_them() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/start-criteria.nki");
+    let i = kontra_format_kontakt::load(&path).unwrap();
+    let fresh = [0, 0, 24, 24, 1, 0, 64, 0, -1, -1, 0];
+    #[rustfmt::skip]
+    let measured: [([[i32; 11]; 3], i32); 5] = [
+        ([[3, 0, 24, 24, 1, 0, 64, 2, -1, -1, 0], fresh, fresh], -1),
+        ([[1, 0, 36, 40, 1, 0, 64, 0, -1, -1, 0], [3, 0, 24, 24, 1, 0, 64, 3, -1, -1, 0], fresh], 1),
+        ([[2, 2, 24, 24, 11, 10, 90, 0, -1, -1, 0], [1, 1, 50, 52, 1, 0, 64, 0, -1, -1, 0],
+          [4, 0, 24, 24, 1, 0, 64, 0, -1, -1, 0]], 2),
+        ([[4, 0, 24, 24, 1, 0, 64, 0, -1, -1, 0], fresh, fresh], -1),
+        ([fresh, fresh, fresh], -1),
+    ];
+    let read = |g: &kontra_ir::Group, n: i8, name: &str| {
+        let key = kontra_ir::held_key(name);
+        g.held
+            .iter()
+            .find(|h| h.1 == key && (h.0 == n || h.0 == -1))
+            .map(|h| h.2)
+    };
+    let names = [
+        "MODE",
+        "NEXT_CRIT",
+        "KEY_MIN",
+        "KEY_MAX",
+        "CONTROLLER",
+        "CC_MIN",
+        "CC_MAX",
+        "CYCLE_CLASS",
+        "ZONE_IDX",
+        "SLICE_IDX",
+        "SEQ_ONLY",
+    ];
+    for (g, (criteria, voice_group)) in i.groups.iter().zip(measured) {
+        for (n, row) in (0i8..).zip(criteria) {
+            let got =
+                names.map(|f| read(g, n, &format!("$ENGINE_PAR_START_CRITERIA_{f}")).unwrap_or(0));
+            assert_eq!(got, row, "group {} criterion {n}", g.name);
+        }
+        assert_eq!(
+            read(g, -1, "$ENGINE_PAR_VOICE_GROUP"),
+            Some(voice_group),
+            "{}",
+            g.name
+        );
+    }
+}
+
+/// What a script reads of each group's source controls, seeded from the
+/// saved source record: one group per source mode, saved by the reference
+/// 8.13 after `tools/kontakt-oracle/probes/source_pars.lua` set them, and
+/// read back with `disp_sweep.py` `GET` (sweeps/srcp.tsv).
+#[test]
+fn a_groups_source_controls_read_as_kontakt_saved_them() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/source-pars.nki");
+    let i = kontra_format_kontakt::load(&path).unwrap();
+    let names = [
+        "SOURCE_MODE",
+        "TRACKING",
+        "HQI_MODE",
+        "TM_LEGATO",
+        "TMPRO_KEEP_FORMANTS",
+        "SMOOTH",
+        "FORMANT",
+        "GRAIN_LENGTH",
+        "ENVELOPE_ORDER",
+        "FORMANT_SHIFT",
+        "SLICE_ATTACK",
+        "SLICE_RELEASE",
+    ];
+    #[rustfmt::skip]
+    let measured: [[i32; 12]; 8] = [
+        [0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+        [4, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+        [1, 1, 0, 0, 1, 250_000, 750_000, 328_721, 0, 0, 0, 0],
+        [3, 1, 2, 1, 1, 333_333, 500_000, 250_000, 0, 0, 0, 0],
+        [6, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+        [9, 1, 0, 0, 0, 0, 0, 0, 600_000, 900_000, 0, 0],
+        [5, 1, 0, 0, 1, 0, 0, 0, 0, 0, 100_000, 900_000],
+        [2, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    ];
+    assert_eq!(i.groups.len(), measured.len());
+    for (g, row) in i.groups.iter().zip(measured) {
+        let got = names.map(|n| {
+            let key = kontra_ir::held_key(&format!("$ENGINE_PAR_{n}"));
+            (g.held.iter())
+                .find(|h| h.0 == -1 && h.1 == key)
+                .map_or(0, |h| h.2)
+        });
+        assert_eq!(got, row, "group {}", g.name);
+    }
+}
+
 /// Kontakt's own restore of a snapshot (`KONTRA_SNAPSHOT_ORACLE=<dir>`, the
 /// files `tools/kontakt-oracle/probes/snapshot_restore.lua` saves: for pair
 /// `n`, the instrument as loaded, `oracle.jsonl.<n>.base.nki`, and with the
@@ -460,4 +560,49 @@ fn empty_script_slot_reads_its_null_strings() {
         let d = native_schema::decode(0x06, o.version, &o.public_data).unwrap();
         assert!(d.opaque.is_empty(), "{:?}", d.opaque);
     }
+}
+
+/// A multi's SlotList (0x37) reads in full through Kontakt's slot-list reader: the 64-bit
+/// slot mask, then one BProgramContainer (0x29) per set slot, each framed (private, public
+/// and children areas). The fixture holds three programs; their ProgramList children are
+/// read in a later batch.
+#[test]
+fn slot_list_reads_every_program_container() {
+    use ni_file::kontakt::native_schema;
+    use ni_file::kontakt::{Chunk, KontaktChunks, StructuredObject};
+    use std::io::Cursor;
+
+    fn lists(chunk: &Chunk, out: &mut Vec<Vec<u8>>) {
+        if chunk.id == 0x37 {
+            out.push(chunk.data.clone());
+            return;
+        }
+        if let Ok(o) = StructuredObject::read(Cursor::new(chunk.data.as_slice())) {
+            for c in &o.children {
+                lists(c, out);
+            }
+        }
+    }
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/three-slots.nkm");
+    let (bytes, _) = kontra_format_kontakt::decode(&path).unwrap();
+    let mut found = Vec::new();
+    for c in &KontaktChunks::read(Cursor::new(bytes)).unwrap().0 {
+        lists(c, &mut found);
+    }
+    assert_eq!(found.len(), 1);
+    let d = native_schema::decode_unframed(0x37, &found[0]).unwrap();
+    assert_eq!(d.consumed, found[0].len() + 6);
+    // Each container's children area holds its ProgramList (0x36), the Program objects,
+    // which have no reader yet.
+    assert!(
+        d.opaque.iter().all(|o| o.sertype == Some(0x36)),
+        "{:?}",
+        d.opaque
+    );
+    let programs = d
+        .fields
+        .iter()
+        .filter(|f| f.kind == 'O' && f.depth == 0)
+        .count();
+    assert_eq!(programs, 3);
 }

@@ -4,7 +4,7 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd); ID=$1
 read -r _ keys rel < <(grep -P "^$ID\t" "$here/probe_set.tsv"); rel=$(grep -P "^$ID\t" "$here/probe_set.tsv" | cut -f3)
-P=/home/derpcat/.cache/kontra-reference/probe/$ID; NKI="/mnt/MAIN_STORAGE/Libraries/Kontakt/$rel"
+. "$here/../kontra_libraries.sh"; P=/home/derpcat/.cache/kontra-reference/probe/$ID; NKI="$KONTRA_LIBRARIES/Kontakt/$rel"
 T=/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target
 B=/home/derpcat/.cache/kontra-reference/bin/sampler-native-ksp; V=/home/derpcat/.cache/kontra-reference/bin/kontakto-v1
 H=/home/derpcat/.cache/kontakto-heavy

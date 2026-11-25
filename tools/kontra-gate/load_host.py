@@ -7,8 +7,11 @@ import os
 from pathlib import Path
 import resource
 import subprocess
+import sys
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from kontra_libraries import KONTAKT  # noqa: E402
 from live_host import observe, private_settings, v1_state, sha
 
 SOURCE = '608a20a1687a501e161d80af72280639c122fbc3'
@@ -36,7 +39,7 @@ def selected_paths():
         paths = [r.split('\t')[1] for r in rows if needle in r]
         assert len(paths) == 1
         path = paths[0]
-        assert path.startswith('/mnt/MAIN_STORAGE/Libraries/Kontakt/') and Path(path).suffix.lower() == '.nki'
+        assert Path(path).is_relative_to(KONTAKT) and Path(path).suffix.lower() == '.nki'
         assert Path(path).is_file()
         selected.append((name, path))
     return selected

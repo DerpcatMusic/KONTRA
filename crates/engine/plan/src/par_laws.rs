@@ -97,6 +97,7 @@ pub fn text(pars: &EnginePars, id: i32, raw: i32, out: &mut Text) -> bool {
         ir::Form::Blank | ir::Form::Menu(_) => return true,
         ir::Form::Times => return out.push_fmt(format_args!("x {v:.1}")),
         ir::Form::Bpm => return out.push_fmt(format_args!("{v:3.0} BPM")),
+        ir::Form::NarrowWhole => return out.push_fmt(format_args!("{v:3.0}")),
         ir::Form::Note => {
             const NAMES: [&str; 12] = [
                 "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",

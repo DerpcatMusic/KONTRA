@@ -213,6 +213,23 @@ mod tests {
     use super::*;
     use moose::prelude::Event as HostEvent;
 
+    /// Raw MIDI 1.0 from a host or a MIDI port (CLAP/VST3 bytes, the
+    /// standalone's input) is typed by moose before it reaches here, so a
+    /// note-off (0x80) and a note-on at velocity 0 both end the note: no
+    /// raw note packet ever reaches the engine, which plays notes only as
+    /// [`Event::NoteOn`] / [`Event::NoteOff`].
+    #[test]
+    fn a_raw_midi_1_note_off_or_zero_velocity_note_on_ends_the_note() {
+        for bytes in [[0x83, 60, 64], [0x93, 60, 0]] {
+            let body = moose::core::midi::parse_midi1(0, &bytes).unwrap();
+            let e = event(&HostEvent::new(0, body));
+            assert!(
+                matches!(e, Some(Event::NoteOff(p)) if (p.channel, p.key) == (3, 60)),
+                "{bytes:02x?} → {e:?}"
+            );
+        }
+    }
+
     #[test]
     fn notes_become_notes_and_controllers_packets() {
         let note = |velocity| {

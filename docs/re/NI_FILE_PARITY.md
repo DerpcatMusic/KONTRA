@@ -382,3 +382,25 @@ groups in unencrypted files read exactly.
   This needs per-class children readers (slot 12) in the VM.
 
 Next: FNTableImpl and SlotList; then Program and Bank.
+
+## Batch 10: SlotList
+
+**SlotList (0x37).** A multi's slot table, read by [ref] from the chunk
+header on: id 0x37, length, a 64-bit slot mask, then for each set slot the
+slot object's id, length and the object itself; set slots past the program
+table are skipped by [ref]. The slot objects are BProgramContainer
+(vtable [ref]: id 0x29, version 0x51, flag 1). Its body read (slot 8) is the
+framed read: public reader [ref] (slot 10), private reader [ref] (slot 11),
+children reader slot 12. Both readers accept versions 0x50 and 0x51. SlotList
+is now a `CURATED_UNFRAMED` record holding 0x29 objects, and 0x29 is in
+`SLOT8_FRAMED`. Test: `three-slots.nkm` reads its SlotList to the last byte,
+three containers.
+
+| | Full | Partial | Unaccounted bytes |
+| --- | ---: | ---: | ---: |
+| Before (d2458e097e) | 18461678 | 4874 | 2809108471 |
+| After | 18461678 | 4874 | 2809095722 |
+
+- 0x37 SlotList: 286327735 → 286314986. The containers read in full; what
+  remains is each container's children area, its ProgramList (0x36), which
+  holds the Program objects (0x28). That is the next batch.

@@ -41,6 +41,7 @@ pub use snapshot::{
     preset, save as save_snapshot,
 };
 mod solid_knobs;
+mod source_pars;
 mod timed;
 mod translate;
 mod versatile;

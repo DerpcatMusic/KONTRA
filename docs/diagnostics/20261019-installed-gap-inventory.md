@@ -121,8 +121,7 @@ the loop's start instead of holding. See
 ## 3. The Ladder filter's gain law and HQ mode
 
 1,022 entries, 6 instruments, 904 of them in Morphology Evolved. The Ladder
-core itself is checked against the native code ([ref],
-[ref]): the cutoff law and table, the pole polynomial, the
+core itself is checked against the native code: the cutoff law and table, the pole polynomial, the
 resonance, the feedback correction, the clip, the stages, the tap weights and
 the compensation, and the 2 ms ramp. Two parts are still unproved: the gain
 law, and the 2x resampled (HQ) mode. The Daft filter is weaker still: its
@@ -180,8 +179,7 @@ and where the search starts in `Kontakt8.exe` (SHA256
   `(0x98, 83)` and `(0x9a, 140..176)` privates with `word56 == 1`. The native
   dispatch settles it: every version branch ends in the same
   `read_u32` into `+0xa4`, `0x99..=0x9c` read one aux count before it and
-  `0x92..=0x98` do not, and the variable-length sub-records ([ref],
-  [ref]) only shift the fields in between. The identity is therefore
+  `0x92..=0x98` do not, and the variable-length sub-records only shift the fields in between. The identity is therefore
   the terminal `i32` at every admitted version; `private[56..58]` is layout
   noise, and the mode guard at `private[4..8]` (accepted 0..2 by [ref])
   is the only fixed-offset check. `docs/re/kontakt-zone-source-identity.md`.

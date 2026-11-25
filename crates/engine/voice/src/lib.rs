@@ -686,7 +686,7 @@ impl Voice {
         now: u64,
         out: &mut [[f32; 2]],
     ) {
-        self.render_inner::<false>(scratch, client, now, out, |_, _| {});
+        self.render_inner::<false, true>(scratch, client, now, out, |_, _| {});
     }
 
     /// As [`Self::render`], with `insert` run on the interpolated signal
@@ -700,7 +700,7 @@ impl Voice {
         out: &mut [[f32; 2]],
         mut insert: impl FnMut(&mut [[f32; 2]]),
     ) {
-        self.render_inner::<false>(scratch, client, now, out, |stage, io| {
+        self.render_inner::<false, false>(scratch, client, now, out, |stage, io| {
             if stage == VoiceStage::PreAmp {
                 insert(io);
             }
@@ -719,10 +719,13 @@ impl Voice {
         out: &mut [[f32; 2]],
         insert: impl FnMut(VoiceStage, &mut [[f32; 2]]),
     ) {
-        self.render_inner::<true>(scratch, client, now, out, insert);
+        self.render_inner::<true, false>(scratch, client, now, out, insert);
     }
 
-    fn render_inner<const POST: bool>(
+    /// `PLAIN`: no inserts see the voice, so a chunk it cannot be heard in
+    /// (gain and its target exactly zero, not releasing) skips reading and
+    /// interpolating its source; everything else steps as when it renders.
+    fn render_inner<const POST: bool, const PLAIN: bool>(
         &mut self,
         scratch: &mut Scratch,
         client: &StreamClient,
@@ -830,7 +833,21 @@ impl Voice {
                 n = lo;
             }
             let missing_before = self.missing;
-            let filled = if let Some(mut osc) = self.osc.take() {
+            let releasing = self.released.is_some() || self.is_ending();
+            let silent = PLAIN
+                && !synth
+                && !stretched
+                && !releasing
+                && self.gain.as_flattened().iter().all(|&g| g == 0.0)
+                && self.target.as_flattened().iter().all(|&g| g == 0.0);
+            let filled = if silent {
+                let cursor = (self.anchor, self.elapsed, self.step * self.loop_tune);
+                let ramp = Ramp {
+                    per_frame: self.ramp.per_frame * self.loop_tune,
+                    frames: self.ramp.frames,
+                };
+                window_frames(scratch, n, cursor, ramp)
+            } else if let Some(mut osc) = self.osc.take() {
                 let raw = scratch.raw.get_mut(..n).unwrap_or_default();
                 let (base_step, elapsed, ramp, loop_tune) =
                     (self.step, self.elapsed, self.ramp, self.loop_tune);
@@ -877,8 +894,28 @@ impl Voice {
             if !raw.is_empty() {
                 insert(VoiceStage::PreAmp, raw);
             }
-            let releasing = self.released.is_some() || self.is_ending();
-            if POST {
+            if silent {
+                // The amp stage of a voice that adds exactly zero: its
+                // envelope, fade, lags and gain step frame by frame as below.
+                for _ in 0..limit {
+                    self.env.tick();
+                    self.fade.next();
+                    self.tick_lags();
+                    for (g, target) in self
+                        .gain
+                        .as_flattened_mut()
+                        .iter_mut()
+                        .zip(self.target.as_flattened())
+                    {
+                        *g += (target - *g) * self.gain_smooth;
+                    }
+                    if self.env.is_off() || self.fade.ended() {
+                        alive = false;
+                        break;
+                    }
+                    self.silent_tail = 0;
+                }
+            } else if POST {
                 let mut amp_frames = 0usize;
                 for sample in raw.iter_mut() {
                     let level = self.env.tick() * self.fade.next() * self.tick_lags();
@@ -1054,16 +1091,8 @@ impl Voice {
         let loops = &self.loops;
         let released = self.released;
         let step = ramp.step_at(first_step, frames);
-        let peak_step = ramp.peak(first_step);
         let at = |i: u64| base + ramp.travel(first_step, frames + i);
-        let (left_pad, right_pad) = if peak_step > 1.0 {
-            let h = sinc_params(peak_step).0 as i64 + 1;
-            (h, h + 1)
-        } else {
-            (1, 3)
-        };
-        let lo = at(0).floor() as i64 - left_pad;
-        let span = (at(n as u64 - 1).floor() as i64 + right_pad - lo) as usize;
+        let (lo, span) = window_span(n, (base, frames, first_step), ramp);
         let partner = &mut scratch.partner;
         let [main, blend_cache] = &mut self.decoded;
         let Some(window) = scratch.window.get_mut(..span.min(SCRATCH)) else {
@@ -1144,7 +1173,7 @@ impl Voice {
         for (i, frame) in scratch.raw.iter_mut().take(n).enumerate() {
             let cur_step = ramp.step_at(first_step, frames + i as u64);
             let x = at(i as u64) - lo as f64;
-            if !x.is_finite() || x < 1.0 {
+            if !reads(window.len(), x, cur_step) {
                 break;
             }
             if cur_step > 1.0 {
@@ -1206,6 +1235,50 @@ impl Voice {
         }
         filled
     }
+}
+
+/// The window [`Voice::read_window`] reads for `n` frames: its first source
+/// frame and its length, with the interpolator's margin on both sides.
+fn window_span(n: usize, (base, frames, first_step): (f64, u64, f64), ramp: Ramp) -> (i64, usize) {
+    let at = |i: u64| base + ramp.travel(first_step, frames + i);
+    let (left_pad, right_pad) = if ramp.peak(first_step) > 1.0 {
+        let h = sinc_params(ramp.peak(first_step)).0 as i64 + 1;
+        (h, h + 1)
+    } else {
+        (1, 3)
+    };
+    let lo = at(0).floor() as i64 - left_pad;
+    let span = (at(n as u64 - 1).floor() as i64 + right_pad - lo) as usize;
+    (lo, span)
+}
+
+/// Whether the interpolator has every frame it needs at window position `x`.
+fn reads(window: usize, x: f64, step: f64) -> bool {
+    if !x.is_finite() || x < 1.0 {
+        return false;
+    }
+    if step > 1.0 {
+        let half = sinc_params(step).0;
+        usize::try_from(x.round() as isize).is_ok_and(|c| c >= half && c + half < window)
+    } else {
+        x.floor() as usize + 3 <= window
+    }
+}
+
+/// How many of `n` frames [`Voice::read_window`] fills at this cursor,
+/// without reading the source.
+fn window_frames(scratch: &Scratch, n: usize, cursor: (f64, u64, f64), ramp: Ramp) -> usize {
+    let (base, frames, first_step) = cursor;
+    let (lo, span) = window_span(n, cursor, ramp);
+    let Some(window) = scratch.window.get(..span.min(SCRATCH)).map(<[_]>::len) else {
+        return 0;
+    };
+    (0..n.min(scratch.raw.len()) as u64)
+        .take_while(|&i| {
+            let x = base + ramp.travel(first_step, frames + i) - lo as f64;
+            reads(window, x, ramp.step_at(first_step, frames + i))
+        })
+        .count()
 }
 
 /// A step that rises by `per_frame` each output frame for `frames` frames

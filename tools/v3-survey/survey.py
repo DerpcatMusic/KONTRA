@@ -32,7 +32,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 OUT = Path('/data/dev/workspace/PluginArtifacts/v3-survey')
 BIN = Path('/data/dev/workspace/scratch/survey-bin')
-LIBRARIES = [Path('/data/main/Libraries/Kontakt'), Path('/data/main/Libraries/UVI')]
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from kontra_libraries import KONTAKT, UVI  # noqa: E402
+LIBRARIES = [KONTAKT, UVI]
 SILENT = 1e-4
 KEYS = (60, 48, 72, 36, 84)
 # Wheel and expression full with the note-on: a patch whose dynamics ride

@@ -1,0 +1,16 @@
+# Kontakt 8.13 at 100 % (shoot.sh, DPI=96, NODRIVE=1), oracle run 2026-11-25 (gen.py textpos()).
+# Top row of the words' ink below the control's top, in px, for TEXTPOS_Y unset, 0, -4, 3, 6, 10
+# and 500 (columns). Rows are stock controls 16, 20 and 30 px tall and two 90 x 20 pictured menus.
+control              unset  0   -4  3   6   10  500
+menu 16/20/30        9      9   9   12  15  19  hidden
+value edit 16/20/30  10     10  10  12  13  15  hidden
+button 16/20/30      9      9   9   12  15  19  hidden
+pictured menu        9      9   9   12  15  19  hidden
+pictured menu, 13 R  7      7   7   10  13  17  hidden
+# Unset and negative values count as 0, and the height never moves the words: they sit in the same
+# 20-px cell at 16, 20 and 30 px, clipped by the control. A menu's or a button's words drop by
+# TEXTPOS_Y; a value edit's by half of it, rounded up. 500 puts them out of sight.
+# A pictured menu draws its words in the stock pixel font at the stock menu's 7-px inset; in font 13
+# right-aligned they end at the picture's last column. KONTRA matches the stock rows; the pictured
+# rows still draw in the outline face, 21 px in (open).
+# Not matched: a 30-px value edit at TEXTPOS_Y 10 clips its words a row higher than KONTRA does.

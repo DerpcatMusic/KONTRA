@@ -1929,3 +1929,18 @@ fn a_stock_button_keeps_its_body_and_words_under_hide_parts() {
     assert_eq!(px.get(10 * 60 + 50).map(|p| p[0]), Some(0x5f), "the body");
     assert!(px.iter().any(|p| p[0] > 200), "the words");
 }
+
+/// TEXTPOS_Y moves a stock menu's or button's words down by its value and a
+/// value edit's by half, rounded up; unset and negative count as 0 (the
+/// reference 8.13, tools/ksp-ui textpos page).
+#[test]
+fn stock_words_drop_by_textpos_y_never_above_their_place() {
+    let drops: Vec<_> = [None, Some(0), Some(-4), Some(3), Some(6), Some(10)]
+        .into_iter()
+        .map(|y| (stock::text_drop(y), stock::half_drop(y)))
+        .collect();
+    assert_eq!(
+        drops,
+        [(0., 0.), (0., 0.), (0., 0.), (3., 2.), (6., 3.), (10., 5.)]
+    );
+}

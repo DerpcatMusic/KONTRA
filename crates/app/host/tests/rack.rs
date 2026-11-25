@@ -245,6 +245,87 @@ fn a_new_part_swaps_in_while_audio_runs_and_the_old_one_is_freed_off_audio() {
     assert!(rack.stats().is_some());
 }
 
+/// A swap under a held note, as Kontakt loading over a playing
+/// instrument: the old voice fades out (never cut dead, never left
+/// sounding), the new instrument starts nothing for the key still held,
+/// and the key's note-off and next press sound one voice, not two.
+#[test]
+fn a_swap_under_a_held_note_leaves_no_voice_stuck_dropped_or_doubled() {
+    let (mut rack, mut audio) = rack();
+    let a = engine(rack.store_mut(), 0.25);
+    rack.install(0, a, part("a"));
+    let [held, _] = play(&mut audio, &[(0, note(0))]);
+    assert!(held > 0.1, "{held}");
+    let b = engine(rack.store_mut(), 0.5);
+    rack.install(0, b, part("b"));
+    audio.process(BLOCK, &[]);
+    let fading = level(&audio, 0);
+    assert!(
+        fading > 0.0 && fading < held,
+        "the old voice fades out: {held} → {fading}"
+    );
+    let [after, _] = play(&mut audio, &[]);
+    assert!(after.abs() < 1e-4, "a voice outlived the swap: {after}");
+    let off = Event::NoteOff(kontra_engine::HostPattern {
+        port: 0,
+        channel: 0,
+        key: 60,
+        id: -1,
+        clap: true,
+    });
+    let [released, _] = play(&mut audio, &[(0, off)]);
+    assert!(released.abs() < 1e-4, "{released}");
+    let [again, _] = play(&mut audio, &[(0, note(0))]);
+    let (mut alone, mut audio_alone) = self::rack();
+    let b = engine(alone.store_mut(), 0.5);
+    alone.install(0, b, part("b"));
+    let [once, _] = play(&mut audio_alone, &[(0, note(0))]);
+    assert!(
+        (again - once).abs() < 1e-3,
+        "{again} is not one voice ({once})"
+    );
+    let [ended, _] = play(&mut audio, &[(0, off)]);
+    assert!(ended.abs() < 1e-4, "the new voice stuck: {ended}");
+}
+
+/// Swapping between two instruments 50 times holds no more sample pages
+/// than swapping twice, and the process does not grow with the swaps.
+#[test]
+fn fifty_swaps_hold_no_more_than_two() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("swap-memory");
+    let _ = std::fs::remove_dir_all(&dir);
+    sfz_library(&dir, "");
+    std::fs::write(dir.join("b.wav"), tone_wav()).unwrap();
+    std::fs::write(dir.join("y.sfz"), "<region> sample=b.wav key=60\n").unwrap();
+    let (mut rack, mut audio) = rack();
+    let resident = || {
+        let statm = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
+        let pages = statm.split(' ').nth(1).and_then(|p| p.parse::<u64>().ok());
+        pages.unwrap_or(0) * 4096
+    };
+    let mut at = Vec::new();
+    for n in 0..50 {
+        let file = if n % 2 == 0 { "x.sfz" } else { "y.sfz" };
+        rack.load(0, &dir.join(file)).unwrap();
+        play(&mut audio, &[(0, note(0))]);
+        rack.tick();
+        at.push((rack.store().pinned_bytes(), resident()));
+    }
+    let (pinned_2, rss_10) = (at[1].0, at[9].1);
+    let (pinned_50, rss_50) = at[49];
+    assert_eq!(pinned_50, pinned_2, "sample pages held: {at:?}");
+    assert!(pinned_50 > 0);
+    // ponytail: RSS is the allocator's view; 4 MiB of slack for its noise.
+    if rss_10 > 0 {
+        assert!(
+            rss_50 < rss_10 + (4 << 20),
+            "the process grew {} KiB over 40 swaps",
+            (rss_50 - rss_10) >> 10
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn the_audio_side_moves_to_the_audio_thread() {
     fn send<T: Send + 'static>(_: &T) {}

@@ -1,0 +1,5 @@
+# The reference 8.13: a constant index past the end compiles and reads 0. Measured 2026-11-25 (slot 3).
+# Run: ksp_probe.py "ANALOG STRINGS.nki" this-file > array_constant_out_of_bounds.measured
+S declare %a[4] := (7, 7, 7, 7)
+R c %a[6]
+R after 22

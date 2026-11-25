@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""docs/PARITY.md is current with its inputs, and its rules hold. `python3 tools/test_parity_board.py`"""
+"""The parity board generates from well-formed, sorted snapshots, and its rules hold. `python3 tools/test_parity_board.py`"""
 import importlib.util
 import pathlib
 import subprocess
@@ -19,6 +19,18 @@ assert board.grade([False, None, None, False]) == "missing"
 assert board.ptype("Replika") == "delay" and board.ptype("Solid G-EQ") == "EQ" and board.ptype("Raum") == "reverb"
 # Only the public KONTRA repo's PRs are linked.
 assert "KONTRA#12](" in board.pr_md("K12,34") and "#34" in board.pr_md("K12,34") and "/34)" not in board.pr_md("K12,34")
+
+# A snapshot row out of byte order, or of the wrong width, fails the check.
+real = board.SNAP
+try:
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        board.SNAP = pathlib.Path(d)
+        (board.SNAP / "a.tsv").write_text("k\tv\nb\t1\na\t2\nc\n")
+        errs = board.snapshot_errors()
+        assert any("not sorted" in e for e in errs) and any("1 columns" in e for e in errs), errs
+finally:
+    board.SNAP = real
 
 r = subprocess.run([sys.executable, str(HERE / "parity-board.py"), "--check"], capture_output=True, text=True)
 assert r.returncode == 0, r.stderr or r.stdout
