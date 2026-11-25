@@ -5678,7 +5678,11 @@ fn engine_with_sample_zone(store: &mut Store, source: &str, name: &str, pcm: &[i
         wav.extend(v.to_le_bytes());
     }
     let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}.wav"));
-    std::fs::write(&file, wav).unwrap();
+    // Tests run as parallel processes that share this file: each writes its own copy and
+    // renames it over, so no test reads one half-rewritten by another.
+    let part = file.with_extension(format!("wav.{}", std::process::id()));
+    std::fs::write(&part, wav).unwrap();
+    std::fs::rename(&part, &file).unwrap();
     let sample = ir::Sample {
         name: name.into(),
         file,
