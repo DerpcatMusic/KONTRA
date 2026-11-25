@@ -15,7 +15,7 @@ evidence → 0"). Stacked on Wave 2A.
 
 ## Audit (2026-11-24)
 
-Sources: `tools/coverage/engine.tsv`, every `Impact::Audible` note in
+Sources: `tools/coverage/engine.tsv` (retired since; [docs/PARITY.md](../PARITY.md) is the board), every `Impact::Audible` note in
 `crates/format/kontakt/src`, the plan's open items. No Kontakt corpus or
 native-oracle renders are mounted on the build host, so only gaps with
 evidence already in the code or the Kontakt manual are closed here.

@@ -5,7 +5,7 @@ on:
   # Engine PRs skip it (it was every PR's slowest job): the site builds when they reach main.
   pull_request:
     branches: [main]
-    paths: ['website/**', 'tools/coverage/**', '.github/workflows/pages.yml']
+    paths: ['website/**', 'tools/coverage/**', 'docs/PARITY.html', '.github/workflows/pages.yml']
   workflow_dispatch:
 permissions:
   contents: read

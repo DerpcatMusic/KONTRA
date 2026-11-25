@@ -1,8 +1,8 @@
-//! What KONTRA answers of KSP, by name, for `tools/ksp-manual-coverage.py`:
+//! What KONTRA answers of KSP, by name, for the parity board (`tools/parity-board.py`):
 //! one tab-separated line per builtin (`fn`), callback (`cb`) and carried
 //! `$ENGINE_PAR_*` name (`par`). A builtin the VM lowers is `vm`; an action
 //! the engine answers to a bare probe is `answered`; the rest is `missing`.
-//! `cargo run --release -p kontra-host --example ksp_status > status.tsv`
+//! `build-slot cargo run -p kontra-host --example ksp_status > docs/parity/snapshots/ksp-status.tsv`
 
 use std::sync::Arc;
 

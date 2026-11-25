@@ -7,6 +7,7 @@ from html import escape
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -140,6 +141,11 @@ def build(output):
     assert progress.count(marker) == 1, 'Progress template marker missing or duplicated'
     sound = json.loads((SITE / 'progress.json').read_text())['sound']
     (output / 'progress.html').write_text(progress.replace(marker, render_sound(sound)))
+    # The parity board's rows, from the page tools/parity-board.py writes, in the site's chrome.
+    board = re.search(r'<!-- board:start -->.*<!-- board:end -->', (ROOT / 'docs/PARITY.html').read_text(), re.S).group()
+    parity = (SITE / 'parity.html').read_text()
+    assert parity.count('<!-- parity:board -->') == 1, 'Parity template marker missing or duplicated'
+    (output / 'parity.html').write_text(parity.replace('<!-- parity:board -->', board))
     (output / 'compatibility.json').write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n')
     # Preserve links to the old tracker while keeping one public compatibility surface.
     (output / 'tracker').mkdir(exist_ok=True)

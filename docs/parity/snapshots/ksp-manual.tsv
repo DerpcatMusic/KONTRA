@@ -1,0 +1,1513 @@
+# The KSP Reference Manual's items (names only), from tools/parity-board.py --ksp-manual
+kind	name	section	applies
+cb	note	Callbacks	
+cb	controller	Callbacks	
+fn	stop_wait	Callbacks	
+cb	async_complete	Callbacks	
+cb	init	Callbacks	
+cb	ui_control	Callbacks	
+fn	set_voice_limit	Callbacks	
+fn	save_midi_file	Callbacks	
+fn	mf_insert_file	Callbacks	
+fn	mf_set_buffer_size	Callbacks	
+fn	mf_reset	Callbacks	
+fn	set_engine_par	Callbacks	
+fn	set_zone_par	Callbacks	
+fn	set_loop_par	Callbacks	
+fn	set_sample	Callbacks	
+fn	purge_group	Callbacks	
+fn	load_ir_sample	Callbacks	
+fn	set_controller	Callbacks	
+cb	persistence_changed	Callbacks	
+fn	make_persistent	Callbacks	
+fn	read_persistent_var	Callbacks	
+cb	listener	Callbacks	
+fn	set_listener	Callbacks	
+fn	change_listener_par	Callbacks	
+cb	release	Callbacks	
+fn	ignore_event	Callbacks	
+fn	set_event_par	Callbacks	
+fn	get_event_par	Callbacks	
+cb	note_controller	Callbacks	
+sym	$HIDE_PART_VALUE	Callbacks	
+fn	set_note_controller	Callbacks	
+fn	set_snapshot_type	Callbacks	
+cb	pgs_changed	Callbacks	
+cb	poly_at	Callbacks	
+cb	rpn	Callbacks	
+fn	msb	Callbacks	
+fn	lsb	Callbacks	
+cb	ui_controls	Callbacks	
+cb	ui_update	Callbacks	
+fn	real	Variables	
+fn	int	Variables	
+fn	make_instr_persistent	Variables	
+fn	watch_var	Variables	
+sym	$KSP_TIMER	Variables	
+fn	watch_array_idx	Variables	
+fn	random	Arithmetic Commands & Operators	
+fn	wait	Control Statements	
+fn	wait_ticks	Control Statements	
+widget	ui_button	User Interface Widgets	
+widget	ui_switch	User Interface Widgets	
+widget	ui_file_selector	User Interface Widgets	
+fn	fs_navigate	User Interface Widgets	
+widget	ui_label	User Interface Widgets	
+fn	set_text	User Interface Widgets	
+fn	add_text_line	User Interface Widgets	
+fn	hide_part	User Interface Widgets	
+widget	ui_level_meter	User Interface Widgets	
+fn	attach_level_meter	User Interface Widgets	
+uipar	$CONTROL_PAR_OFF_COLOR	User Interface Widgets	ui_level_meter
+uipar	$CONTROL_PAR_PEAK_COLOR	User Interface Widgets	
+uipar	$CONTROL_PAR_RANGE_MAX	User Interface Widgets	ui_level_meter,ui_menu
+widget	ui_knob	User Interface Widgets	
+widget	ui_menu	User Interface Widgets	
+fn	add_menu_item	User Interface Widgets	
+fn	get_menu_item_str	User Interface Widgets	
+fn	get_menu_item_value	User Interface Widgets	
+fn	get_menu_item_visibility	User Interface Widgets	
+fn	set_menu_item_str	User Interface Widgets	
+fn	set_menu_item_value	User Interface Widgets	
+fn	set_menu_item_visibility	User Interface Widgets	
+widget	ui_mouse_area	User Interface Widgets	
+widget	ui_panel	User Interface Widgets	
+uipar	$CONTROL_PAR_POS_X	User Interface Widgets	
+widget	ui_slider	User Interface Widgets	
+fn	set_control_par_arr	User Interface Widgets	
+widget	ui_table	User Interface Widgets	
+fn	set_table_steps_shown	User Interface Widgets	
+widget	ui_text_edit	User Interface Widgets	
+widget	ui_value_edit	User Interface Widgets	
+widget	ui_waveform	User Interface Widgets	
+fn	set_ui_wf_property	User Interface Widgets	
+fn	get_ui_wf_property	User Interface Widgets	
+fn	attach_zone	User Interface Widgets	
+uipar	$CONTROL_PAR_WAVE_CURSOR_COLOR	User Interface Widgets	ui_waveform
+uipar	$CONTROL_PAR_BG_ALPHA	User Interface Widgets	ui_waveform,ui_wavetable
+widget	ui_wavetable	User Interface Widgets	
+fn	set_control_par	User Interface Widgets	
+uipar	$CONTROL_PAR_WAVE_END_COLOR	User Interface Widgets	
+uipar	$CONTROL_PAR_WAVETABLE_END_COLOR	User Interface Widgets	
+uipar	$CONTROL_PAR_PARALLAX_X	User Interface Widgets	ui_wavetable
+widget	ui_xy	User Interface Widgets	
+uipar	$CONTROL_PAR_MOUSE_MODE	User Interface Widgets	ui_xy
+uipar	$CONTROL_PAR_CURSOR_PICTURE	User Interface Widgets	ui_button,ui_switch,ui_xy
+uipar	$CONTROL_PAR_MOUSE_BEHAVIOUR_Y	User Interface Widgets	ui_xy
+fn	disable_logging	General Commands	
+var	ni_log_message	General Commands	
+var	ni_log_warning	General Commands	
+var	ni_log_watching	General Commands	
+fn	message	General Commands	
+fn	note_off	General Commands	
+fn	fade_out	General Commands	
+fn	play_note	General Commands	
+sym	$VCC_PITCH_BEND	General Commands	
+sym	$VCC_MONO_AT	General Commands	
+sym	$VNC_PITCH_BEND	General Commands	
+fn	set_poly_at	General Commands	
+fn	array_equal	Array Commands	
+fn	sort	Array Commands	
+fn	num_elements	Array Commands	
+fn	search	Array Commands	
+fn	get_mod_idx	Engine Parameter Commands	
+fn	get_target_idx	Engine Parameter Commands	
+fn	get_engine_par	Engine Parameter Commands	
+par	$ENGINE_PAR_FLEXENV_STAGE_LEVEL	Engine Parameter Commands	
+par	$ENGINE_PAR_FLEXENV_STAGE_SLOPE	Engine Parameter Commands	
+fn	get_engine_par_disp	Engine Parameter Commands	
+fn	get_engine_par_disp_ext	Engine Parameter Commands	
+fn	get_voice_limit	Engine Parameter Commands	
+fn	output_channel_name	Engine Parameter Commands	
+fn	by_marks	Event Commands	
+fn	set_event_mark	Event Commands	
+fn	change_note	Event Commands	
+var	event_note	Event Commands	
+fn	change_velo	Event Commands	
+fn	change_pan	Event Commands	
+fn	change_vol	Event Commands	
+fn	change_tune	Event Commands	
+var	event_velocity	Event Commands	
+fn	fade_in	Event Commands	
+fn	delete_event_mark	Event Commands	
+fn	event_status	Event Commands	
+var	event_status_note_queue	Event Commands	
+var	event_status_midi_queue	Event Commands	
+var	event_status_inactive	Event Commands	
+fn	get_event_ids	Event Commands	
+fn	get_event_mark	Event Commands	
+evpar	$EVENT_PAR_0	Event Commands	
+evpar	$EVENT_PAR_1	Event Commands	
+evpar	$EVENT_PAR_2	Event Commands	
+evpar	$EVENT_PAR_3	Event Commands	
+evpar	$EVENT_PAR_VOLUME	Event Commands	
+evpar	$EVENT_PAR_PAN	Event Commands	
+evpar	$EVENT_PAR_TUNE	Event Commands	
+evpar	$EVENT_PAR_NOTE	Event Commands	
+evpar	$EVENT_PAR_VELOCITY	Event Commands	
+evpar	$EVENT_PAR_REL_VELOCITY	Event Commands	
+evpar	$EVENT_PAR_MIDI_CHANNEL	Event Commands	
+evpar	$EVENT_PAR_SOURCE	Event Commands	
+evpar	$EVENT_PAR_PLAY_POS	Event Commands	
+evpar	$EVENT_PAR_ZONE_ID	Event Commands	
+fn	set_event_par_arr	Event Commands	
+fn	get_event_par_arr	Event Commands	
+evpar	$EVENT_PAR_ALLOW_GROUP	Event Commands	
+evpar	$EVENT_PAR_CUSTOM	Event Commands	
+evpar	$EVENT_PAR_MOD_VALUE_ID	Event Commands	
+evpar	$EVENT_PAR_MOD_VALUE_EX_ID	Event Commands	
+fn	redirect_output	Event Commands	
+sym	$OUTPUT_TYPE_MASTER_OUT	Event Commands	
+sym	$OUTPUT_TYPE_AUX_OUT	Event Commands	
+sym	$OUTPUT_TYPE_BUS_OUT	Event Commands	
+fn	allow_group	Event Commands	
+fn	disallow_group	Event Commands	
+fn	set_map_editor_event_color	Event Commands	
+fn	get_group_idx	Group Commands	
+fn	group_name	Group Commands	
+fn	get_purge_state	Group Commands	
+fn	get_key_color	Keyboard Commands	
+fn	set_key_color	Keyboard Commands	
+fn	get_key_name	Keyboard Commands	
+fn	set_key_name	Keyboard Commands	
+fn	get_key_triggerstate	Keyboard Commands	
+fn	set_key_pressed	Keyboard Commands	
+fn	set_key_pressed_support	Keyboard Commands	
+fn	get_key_type	Keyboard Commands	
+fn	set_key_type	Keyboard Commands	
+fn	get_keyrange_min_note	Keyboard Commands	
+fn	set_keyrange	Keyboard Commands	
+fn	get_keyrange_max_note	Keyboard Commands	
+fn	get_keyrange_name	Keyboard Commands	
+fn	set_control_help	Keyboard Commands	
+fn	remove_keyrange	Keyboard Commands	
+fn	get_folder	Load/Save Commands	
+fn	load_array	Load/Save Commands	
+fn	save_array	Load/Save Commands	
+fn	load_array_str	Load/Save Commands	
+fn	save_array_str	Load/Save Commands	
+fn	mf_set_export_area	Load/Save Commands	
+uipar	$CONTROL_PAR_MIDI_EXPORT_AREA_IDX	MIDI Object Commands	ui_label,ui_level_meter
+fn	mf_insert_event	MIDI Object Commands	
+fn	mf_remove_event	MIDI Object Commands	
+fn	by_track	MIDI Object Commands	
+fn	mf_set_mark	MIDI Object Commands	
+fn	mf_get_mark	MIDI Object Commands	
+fn	mf_get_id	MIDI Object Commands	
+fn	mf_copy_export_area	MIDI Object Commands	
+fn	mf_set_num_export_areas	MIDI Object Commands	
+fn	mf_get_buffer_size	MIDI Object Commands	
+fn	mf_get_event_par	MIDI Object Commands	
+evpar	$EVENT_PAR_MIDI_COMMAND	MIDI Object Commands	
+evpar	$EVENT_PAR_MIDI_BYTE_1	MIDI Object Commands	
+evpar	$EVENT_PAR_MIDI_BYTE_2	MIDI Object Commands	
+evpar	$EVENT_PAR_POS	MIDI Object Commands	
+evpar	$EVENT_PAR_NOTE_LENGTH	MIDI Object Commands	
+evpar	$EVENT_PAR_ID	MIDI Object Commands	
+evpar	$EVENT_PAR_TRACK_NR	MIDI Object Commands	
+fn	mf_get_first	MIDI Object Commands	
+fn	mf_get_next	MIDI Object Commands	
+fn	mf_get_next_at	MIDI Object Commands	
+fn	mf_get_num_tracks	MIDI Object Commands	
+fn	mf_get_prev	MIDI Object Commands	
+fn	mf_get_prev_at	MIDI Object Commands	
+fn	mf_get_last	MIDI Object Commands	
+fn	mf_get_last_filename	MIDI Object Commands	
+fn	load_midi_file	MIDI Object Commands	
+fn	mf_set_event_par	MIDI Object Commands	
+fn	detect_key	Music Information Retrieval	
+fn	detect_pitch	Music Information Retrieval	
+fn	detect_loudness	Music Information Retrieval	
+fn	detect_peak	Music Information Retrieval	
+fn	detect_rms	Music Information Retrieval	
+fn	detect_tempo	Music Information Retrieval	
+fn	detect_sample_type	Music Information Retrieval	
+fn	detect_drum_type	Music Information Retrieval	
+fn	detect_instrument_type	Music Information Retrieval	
+uipar	$ZONE_PAR_ROOT_KEY	Music Information Retrieval	
+uipar	$ZONE_PAR_TUNE	Music Information Retrieval	
+fn	ms_to_ticks	Time-Related Commands	
+fn	ticks_to_ms	Time-Related Commands	
+fn	wait_async	Time-Related Commands	
+fn	set_ui_height_px	User Interface Commands	
+fn	set_ui_width_px	User Interface Commands	
+fn	load_komplete_ui	User Interface Commands	
+fn	fs_get_filename	User Interface Commands	
+fn	get_control_par	User Interface Commands	
+uipar	$CONTROL_PAR_KEY_CONTROL	User Interface Commands	ui_knob,ui_menu,ui_slider,ui_value_edit
+fn	get_control_par_arr	User Interface Commands	
+fn	get_font_id	User Interface Commands	
+fn	get_ui_id	User Interface Commands	
+fn	load_performance_view	User Interface Commands	
+fn	set_skin_offset	User Interface Commands	
+fn	set_ui_height	User Interface Commands	
+fn	set_ui_color	User Interface Commands	
+fn	move_control	User Interface Commands	
+uipar	$CONTROL_PAR_WIDTH	User Interface Commands	
+fn	move_control_px	User Interface Commands	
+fn	set_script_title	User Interface Commands	
+uipar	$CONTROL_PAR_HELP	User Interface Commands	
+fn	set_knob_defval	User Interface Commands	
+uipar	$CONTROL_PAR_DEFAULT_VALUE	User Interface Commands	ui_knob,ui_slider
+fn	set_knob_label	User Interface Commands	
+fn	set_knob_unit	User Interface Commands	
+fn	get_loop_par	Zone Commands	
+fn	get_num_zones	Zone Commands	
+fn	get_sample	Zone Commands	
+fn	get_sel_zones_idx	Zone Commands	
+fn	get_zone_id	Zone Commands	
+fn	get_zone_par	Zone Commands	
+uipar	$ZONE_PAR_HIGH_KEY	Zone Commands	
+uipar	$ZONE_PAR_LOW_KEY	Zone Commands	
+uipar	$ZONE_PAR_HIGH_VELO	Zone Commands	
+uipar	$ZONE_PAR_LOW_VELO	Zone Commands	
+uipar	$ZONE_PAR_FADE_LOW_KEY	Zone Commands	
+uipar	$ZONE_PAR_FADE_HIGH_KEY	Zone Commands	
+uipar	$ZONE_PAR_FADE_LOW_VELO	Zone Commands	
+uipar	$ZONE_PAR_FADE_HIGH_VELO	Zone Commands	
+uipar	$ZONE_PAR_VOLUME	Zone Commands	
+uipar	$ZONE_PAR_PAN	Zone Commands	
+uipar	$ZONE_PAR_GROUP	Zone Commands	
+uipar	$ZONE_PAR_SAMPLE_START	Zone Commands	
+uipar	$ZONE_PAR_SAMPLE_END	Zone Commands	
+uipar	$ZONE_PAR_SAMPLE_MOD_RANGE	Zone Commands	
+uipar	$ZONE_PAR_SAMPLE_RATE	Zone Commands	
+uipar	$ZONE_PAR_SELECTED	Zone Commands	
+uipar	$ZONE_PAR_BPM	Zone Commands	
+fn	get_zone_status	Zone Commands	
+fn	set_num_user_zones	Zone Commands	
+var	current_script_slot	Built-in Variables and Constants	
+var	groups_selected	Built-in Variables and Constants	
+var	ni_async_exit_status	Built-in Variables and Constants	
+var	ni_async_id	Built-in Variables and Constants	
+var	ni_bus_offset	Built-in Variables and Constants	
+var	num_groups	Built-in Variables and Constants	
+var	num_output_channels	Built-in Variables and Constants	
+var	num_zones	Built-in Variables and Constants	
+sym	$PLAYED_VOICES_INST	Built-in Variables and Constants	
+sym	$PLAYED_VOICES_TOTAL	Built-in Variables and Constants	
+sym	$REF_GROUP_IDX	Built-in Variables and Constants	
+sym	$GET_FOLDER_LIBRARY_DIR	Built-in Variables and Constants	
+sym	$GET_FOLDER_FACTORY_DIR	Built-in Variables and Constants	
+sym	$GET_FOLDER_PATCH_DIR	Built-in Variables and Constants	
+sym	$GET_FOLDER_RC_DIR	Built-in Variables and Constants	
+var	ni_vl_tmpro_standard	Built-in Variables and Constants	
+sym	$ALL_GROUPS	Built-in Variables and Constants	
+sym	$ALL_EVENTS	Built-in Variables and Constants	
+var	mark_1	Built-in Variables and Constants	
+var	cc	Built-in Variables and Constants	
+sym	$CC_NUM	Built-in Variables and Constants	
+var	cc_touched	Built-in Variables and Constants	
+var	event_id	Built-in Variables and Constants	
+var	current_event	Built-in Variables and Constants	
+evpar	%EVENT_PAR	Built-in Variables and Constants	
+var	groups_affected	Built-in Variables and Constants	
+sym	$NOTE_HELD	Built-in Variables and Constants	
+var	poly_at	Built-in Variables and Constants	
+sym	$POLY_AT_NUM	Built-in Variables and Constants	
+sym	$RPN_ADDRESS	Built-in Variables and Constants	
+sym	$RPN_VALUE	Built-in Variables and Constants	
+var	key_down	Built-in Variables and Constants	
+var	key_down_oct	Built-in Variables and Constants	
+var	ni_date_year	Built-in Variables and Constants	
+var	ni_date_month	Built-in Variables and Constants	
+var	ni_date_day	Built-in Variables and Constants	
+var	ni_time_hour	Built-in Variables and Constants	
+var	ni_time_minute	Built-in Variables and Constants	
+var	ni_time_second	Built-in Variables and Constants	
+sym	$DISTANCE_BAR_START	Built-in Variables and Constants	
+sym	$DURATION_BAR	Built-in Variables and Constants	
+sym	$DURATION_QUARTER	Built-in Variables and Constants	
+sym	$DURATION_EIGHTH	Built-in Variables and Constants	
+sym	$DURATION_SIXTEENTH	Built-in Variables and Constants	
+sym	$DURATION_QUARTER_TRIPLET	Built-in Variables and Constants	
+sym	$DURATION_EIGHTH_TRIPLET	Built-in Variables and Constants	
+sym	$DURATION_SIXTEENTH_TRIPLET	Built-in Variables and Constants	
+sym	$ENGINE_UPTIME	Built-in Variables and Constants	
+var	ni_song_position	Built-in Variables and Constants	
+var	ni_transport_running	Built-in Variables and Constants	
+sym	$SIGNATURE_NUM	Built-in Variables and Constants	
+sym	$SIGNATURE_DENOM	Built-in Variables and Constants	
+var	ni_sync_unit_abs	Built-in Variables and Constants	
+var	ni_sync_unit_whole	Built-in Variables and Constants	
+var	ni_sync_unit_whole_triplet	Built-in Variables and Constants	
+var	ni_sync_unit_half	Built-in Variables and Constants	
+var	ni_sync_unit_half_triplet	Built-in Variables and Constants	
+var	ni_sync_unit_quarter	Built-in Variables and Constants	
+var	ni_sync_unit_quarter_triplet	Built-in Variables and Constants	
+var	ni_sync_unit_8th	Built-in Variables and Constants	
+var	ni_sync_unit_8th_triplet	Built-in Variables and Constants	
+var	ni_sync_unit_16th	Built-in Variables and Constants	
+var	ni_sync_unit_16th_triplet	Built-in Variables and Constants	
+var	ni_sync_unit_32nd	Built-in Variables and Constants	
+var	ni_sync_unit_32nd_triplet	Built-in Variables and Constants	
+var	ni_sync_unit_64th	Built-in Variables and Constants	
+var	ni_sync_unit_64th_triplet	Built-in Variables and Constants	
+var	ni_sync_unit_256th	Built-in Variables and Constants	
+var	ni_sync_unit_zone	Built-in Variables and Constants	
+var	note_duration	Built-in Variables and Constants	
+var	ni_bar_start_position	Built-in Variables and Constants	
+var	ni_callback_id	Built-in Variables and Constants	
+var	ni_callback_type	Built-in Variables and Constants	
+var	ni_cb_type_controller	Built-in Variables and Constants	
+var	ni_cb_type_init	Built-in Variables and Constants	
+var	ni_cb_type_listener	Built-in Variables and Constants	
+var	ni_cb_type_note	Built-in Variables and Constants	
+var	ni_cb_type_note_controller	Built-in Variables and Constants	
+var	ni_cb_type_nrpn	Built-in Variables and Constants	
+var	ni_cb_type_persistence_changed	Built-in Variables and Constants	
+var	ni_cb_type_pgs	Built-in Variables and Constants	
+var	ni_cb_type_poly_at	Built-in Variables and Constants	
+var	ni_cb_type_release	Built-in Variables and Constants	
+var	ni_cb_type_rpn	Built-in Variables and Constants	
+var	ni_cb_type_ui_control	Built-in Variables and Constants	
+var	ni_cb_type_ui_controls	Built-in Variables and Constants	
+var	ni_cb_type_ui_update	Built-in Variables and Constants	
+var	ni_cb_type_midi_in	Built-in Variables and Constants	
+sym	$KNOB_UNIT_NONE	Built-in Variables and Constants	
+sym	$KNOB_UNIT_DB	Built-in Variables and Constants	
+sym	$KNOB_UNIT_HZ	Built-in Variables and Constants	
+sym	$KNOB_UNIT_PERCENT	Built-in Variables and Constants	
+sym	$KNOB_UNIT_MS	Built-in Variables and Constants	
+sym	$KNOB_UNIT_ST	Built-in Variables and Constants	
+sym	$KNOB_UNIT_OCT	Built-in Variables and Constants	
+var	ni_ui_id	Built-in Variables and Constants	
+var	ni_signal_timer_beat	Built-in Variables and Constants	
+var	ni_signal_timer_ms	Built-in Variables and Constants	
+var	ni_signal_transp_start	Built-in Variables and Constants	
+var	ni_signal_transp_stop	Built-in Variables and Constants	
+var	ni_signal_type	Built-in Variables and Constants	
+var	ni_kontakt_is_headless	Built-in Variables and Constants	
+var	ni_kontakt_is_standalone	Built-in Variables and Constants	
+sym	~NI_MATH_PI	Built-in Variables and Constants	
+sym	~NI_MATH_E	Built-in Variables and Constants	
+uipar	$CONTROL_PAR_NONE	Control Parameters	
+uipar	$CONTROL_PAR_CUSTOM_ID	Control Parameters	
+uipar	$CONTROL_PAR_TYPE	Control Parameters	
+var	ni_control_type_none	Control Parameters	
+var	ni_control_type_button	Control Parameters	
+var	ni_control_type_knob	Control Parameters	
+var	ni_control_type_menu	Control Parameters	
+var	ni_control_type_value_edit	Control Parameters	
+var	ni_control_type_label	Control Parameters	
+var	ni_control_type_table	Control Parameters	
+var	ni_control_type_waveform	Control Parameters	
+var	ni_control_type_wavetable	Control Parameters	
+var	ni_control_type_slider	Control Parameters	
+var	ni_control_type_text_edit	Control Parameters	
+var	ni_control_type_file_selector	Control Parameters	
+var	ni_control_type_switch	Control Parameters	
+var	ni_control_type_xy	Control Parameters	
+var	ni_control_type_level_meter	Control Parameters	
+var	ni_control_type_mouse_area	Control Parameters	
+var	ni_control_type_panel	Control Parameters	
+uipar	$CONTROL_PAR_POS_Y	Control Parameters	
+uipar	$CONTROL_PAR_GRID_X	Control Parameters	
+uipar	$CONTROL_PAR_GRID_Y	Control Parameters	
+uipar	$CONTROL_PAR_HEIGHT	Control Parameters	
+uipar	$CONTROL_PAR_GRID_WIDTH	Control Parameters	
+uipar	$CONTROL_PAR_GRID_HEIGHT	Control Parameters	
+uipar	$CONTROL_PAR_HIDE	Control Parameters	
+sym	$HIDE_PART_BG	Control Parameters	
+sym	$HIDE_PART_TITLE	Control Parameters	
+sym	$HIDE_PART_MOD_LIGHT	Control Parameters	
+sym	$HIDE_PART_NOTHING	Control Parameters	
+sym	$HIDE_PART_CURSOR	Control Parameters	
+sym	$HIDE_WHOLE_CONTROL	Control Parameters	
+uipar	$CONTROL_PAR_PICTURE	Control Parameters	
+uipar	$CONTROL_PAR_PICTURE_STATE	Control Parameters	ui_label,ui_table,ui_value_edit,ui_xy
+uipar	$CONTROL_PAR_PARENT_PANEL	Control Parameters	ui_panel
+uipar	$CONTROL_PAR_Z_LAYER	Control Parameters	
+uipar	$CONTROL_PAR_MIN_VALUE	Control Parameters	ui_knob,ui_slider,ui_value_edit
+uipar	$CONTROL_PAR_MAX_VALUE	Control Parameters	ui_knob,ui_slider,ui_value_edit
+uipar	$CONTROL_PAR_VALUE	Control Parameters	
+uipar	$CONTROL_PAR_TEXT	Control Parameters	
+uipar	$CONTROL_PAR_TEXTLINE	Control Parameters	
+uipar	$CONTROL_PAR_IDENTIFIER	Control Parameters	
+uipar	$CONTROL_PAR_LABEL	Control Parameters	ui_slider,ui_switch,ui_xy
+uipar	$CONTROL_PAR_SHORT_NAME	Control Parameters	
+uipar	$CONTROL_PAR_UNIT	Control Parameters	
+uipar	$CONTROL_PAR_FONT_TYPE	Control Parameters	ui_button,ui_menu,ui_switch
+uipar	$CONTROL_PAR_FONT_TYPE_ON	Control Parameters	
+uipar	$CONTROL_PAR_FONT_TYPE_OFF_PRESSED	Control Parameters	
+uipar	$CONTROL_PAR_FONT_TYPE_ON_PRESSED	Control Parameters	
+uipar	$CONTROL_PAR_FONT_TYPE_OFF_HOVER	Control Parameters	
+uipar	$CONTROL_PAR_FONT_TYPE_ON_HOVER	Control Parameters	
+uipar	$CONTROL_PAR_DISABLE_TEXT_SHIFTING	Control Parameters	ui_button,ui_switch
+uipar	$CONTROL_PAR_TEXTPOS_Y	Control Parameters	ui_button,ui_label,ui_menu,ui_switch,ui_value_edit
+uipar	$CONTROL_PAR_TEXT_ALIGNMENT	Control Parameters	ui_button,ui_label,ui_menu,ui_switch,ui_text_edit
+uipar	$CONTROL_PAR_ALLOW_AUTOMATION	Control Parameters	ui_knob,ui_slider,ui_switch,ui_xy
+uipar	$CONTROL_PAR_AUTOMATION_NAME	Control Parameters	
+uipar	$CONTROL_PAR_AUTOMATION_ID	Control Parameters	ui_knob,ui_slider,ui_switch,ui_xy
+uipar	$CONTROL_PAR_KEY_SHIFT	Control Parameters	ui_knob,ui_menu,ui_slider,ui_value_edit
+uipar	$CONTROL_PAR_KEY_ALT	Control Parameters	ui_menu,ui_value_edit
+sym	$INST_ICON_ID	Control Parameters	
+sym	$INST_WALLPAPER_ID	Control Parameters	
+uipar	$CONTROL_PAR_BASEPATH	Control Parameters	ui_file_selector
+uipar	$CONTROL_PAR_COLUMN_WIDTH	Control Parameters	ui_file_selector
+uipar	$CONTROL_PAR_FILEPATH	Control Parameters	ui_file_selector
+uipar	$CONTROL_PAR_FILE_TYPE	Control Parameters	ui_file_selector
+var	ni_file_type_midi	Control Parameters	
+var	ni_file_type_audio	Control Parameters	
+var	ni_file_type_array	Control Parameters	
+uipar	$CONTROL_PAR_DND_BEHAVIOUR	Control Parameters	ui_label
+uipar	$CONTROL_PAR_BG_COLOR	Control Parameters	ui_level_meter,ui_waveform,ui_wavetable
+uipar	$CONTROL_PAR_ON_COLOR	Control Parameters	ui_level_meter
+uipar	$CONTROL_PAR_OVERLOAD_COLOR	Control Parameters	ui_level_meter
+uipar	$CONTROL_PAR_VERTICAL	Control Parameters	ui_level_meter
+uipar	$CONTROL_PAR_RANGE_MIN	Control Parameters	
+uipar	$CONTROL_PAR_NUM_ITEMS	Control Parameters	ui_menu
+uipar	$CONTROL_PAR_SELECTED_ITEM_IDX	Control Parameters	ui_mouse_area
+uipar	$CONTROL_PAR_DND_ACCEPT_AUDIO	Control Parameters	
+uipar	$CONTROL_PAR_DND_ACCEPT_MIDI	Control Parameters	
+uipar	$CONTROL_PAR_DND_ACCEPT_ARRAY	Control Parameters	ui_mouse_area
+var	ni_dnd_accept_none	Control Parameters	
+var	ni_dnd_accept_one	Control Parameters	
+var	ni_dnd_accept_multiple	Control Parameters	
+uipar	$CONTROL_PAR_RECEIVE_DRAG_EVENTS	Control Parameters	ui_mouse_area,ui_slider
+var	ni_mouse_event_type	Control Parameters	
+var	ni_mouse_over_control	Control Parameters	
+uipar	$CONTROL_PAR_MOUSE_BEHAVIOUR	Control Parameters	ui_slider,ui_table
+var	ni_control_par_idx	Control Parameters	
+uipar	$CONTROL_PAR_BAR_COLOR	Control Parameters	ui_table
+uipar	$CONTROL_PAR_ZERO_LINE_COLOR	Control Parameters	ui_table,ui_value_edit
+uipar	$CONTROL_PAR_SHOW_ARROWS	Control Parameters	ui_value_edit
+uipar	$CONTROL_PAR_VALUEPOS_Y	Control Parameters	ui_value_edit,ui_waveform
+sym	$UI_WAVEFORM_USE_SLICES	Control Parameters	
+sym	$UI_WAVEFORM_USE_TABLE	Control Parameters	
+sym	$UI_WAVEFORM_TABLE_IS_BIPOLAR	Control Parameters	
+sym	$UI_WAVEFORM_USE_MIDI_DRAG	Control Parameters	
+sym	$UI_WF_PROP_PLAY_CURSOR	Control Parameters	
+sym	$UI_WF_PROP_FLAGS	Control Parameters	
+sym	$UI_WF_PROP_TABLE_VAL	Control Parameters	
+sym	$UI_WF_PROP_TABLE_IDX_HIGHLIGHT	Control Parameters	
+sym	$UI_WF_PROP_MIDI_DRAG_START_NOTE	Control Parameters	
+uipar	$CONTROL_PAR_WF_VIS_MODE	Control Parameters	
+var	ni_wf_vis_mode_1	Control Parameters	
+var	ni_wf_vis_mode_2	Control Parameters	
+var	ni_wf_vis_mode_3	Control Parameters	
+uipar	$CONTROL_PAR_WAVE_COLOR	Control Parameters	ui_waveform,ui_wavetable
+uipar	$CONTROL_PAR_SLICEMARKERS_COLOR	Control Parameters	ui_waveform
+uipar	$CONTROL_PAR_WT_ZONE	Control Parameters	ui_wavetable
+uipar	$CONTROL_PAR_WT_VIS_MODE	Control Parameters	ui_wavetable
+var	ni_wt_vis_2d	Control Parameters	
+var	ni_wt_vis_3d	Control Parameters	
+uipar	$CONTROL_PAR_PARALLAX_Y	Control Parameters	ui_wavetable
+uipar	$CONTROL_PAR_WAVE_ALPHA	Control Parameters	ui_wavetable
+uipar	$CONTROL_PAR_WAVETABLE_COLOR	Control Parameters	ui_wavetable
+uipar	$CONTROL_PAR_WAVETABLE_ALPHA	Control Parameters	ui_wavetable
+uipar	$CONTROL_PAR_WAVE_END_ALPHA	Control Parameters	
+uipar	$CONTROL_PAR_WAVETABLE_END_ALPHA	Control Parameters	ui_xy
+uipar	$CONTROL_PAR_MOUSE_BEHAVIOUR_X	Control Parameters	ui_xy
+uipar	$CONTROL_PAR_ACTIVE_INDEX	Control Parameters	ui_xy
+var	ni_mouse_event_type_left_button_down	Control Parameters	
+var	ni_mouse_event_type_left_button_up	Control Parameters	
+var	ni_mouse_event_type_drag	Control Parameters	
+par	$ENGINE_PAR_TUNE	Engine Parameters	
+par	$ENGINE_PAR_PAN	Engine Parameters	
+par	$ENGINE_PAR_VOLUME	Engine Parameters	
+par	$ENGINE_PAR_PHASE_INVERT	Engine Parameters	
+par	$ENGINE_PAR_LR_SWAP	Engine Parameters	
+par	$ENGINE_PAR_POST_FX_SLOT	Engine Parameters	
+par	$ENGINE_PAR_OUTPUT_CHANNEL	Engine Parameters	
+par	$ENGINE_PAR_VOICE_GROUP	Engine Parameters	
+par	$ENGINE_PAR_SOURCE_MODE	Engine Parameters	
+var	ni_source_mode_sampler	Engine Parameters	
+var	ni_source_mode_dfd	Engine Parameters	
+var	ni_source_mode_tone_machine	Engine Parameters	
+var	ni_source_mode_time_machine_1	Engine Parameters	
+var	ni_source_mode_time_machine_2	Engine Parameters	
+var	ni_source_mode_time_machine_pro	Engine Parameters	
+var	ni_source_mode_beat_machine	Engine Parameters	
+var	ni_source_mode_mp60_machine	Engine Parameters	
+var	ni_source_mode_s1200_machine	Engine Parameters	
+var	ni_source_mode_wavetable	Engine Parameters	
+par	$ENGINE_PAR_TRACKING	Engine Parameters	
+par	$ENGINE_PAR_HQI_MODE	Engine Parameters	
+var	ni_hqi_mode_standard	Engine Parameters	
+var	ni_hqi_mode_high	Engine Parameters	
+var	ni_hqi_mode_perfect	Engine Parameters	
+par	$ENGINE_PAR_SMOOTH	Engine Parameters	
+par	$ENGINE_PAR_FORMANT	Engine Parameters	
+par	$ENGINE_PAR_SPEED	Engine Parameters	
+par	$ENGINE_PAR_GRAIN_LENGTH	Engine Parameters	
+par	$ENGINE_PAR_SLICE_ATTACK	Engine Parameters	
+par	$ENGINE_PAR_SLICE_RELEASE	Engine Parameters	
+par	$ENGINE_PAR_TRANSIENT_SIZE	Engine Parameters	
+par	$ENGINE_PAR_ENVELOPE_ORDER	Engine Parameters	
+par	$ENGINE_PAR_FORMANT_SHIFT	Engine Parameters	
+par	$ENGINE_PAR_SPEED_UNIT	Engine Parameters	
+par	$ENGINE_PAR_TM_LEGATO	Engine Parameters	
+par	$ENGINE_PAR_TMPRO_KEEP_FORMANTS	Engine Parameters	
+par	$ENGINE_PAR_WT_POSITION	Engine Parameters	
+par	$ENGINE_PAR_WT_FORM	Engine Parameters	
+par	$ENGINE_PAR_WT_FORM2	Engine Parameters	
+par	$ENGINE_PAR_WT_PHASE	Engine Parameters	
+par	$ENGINE_PAR_WT_PHASE_RAND	Engine Parameters	
+par	$ENGINE_PAR_WT_QUALITY	Engine Parameters	
+var	ni_wt_quality_lofi	Engine Parameters	
+var	ni_wt_quality_medium	Engine Parameters	
+var	ni_wt_quality_high	Engine Parameters	
+var	ni_wt_quality_best	Engine Parameters	
+par	$ENGINE_PAR_WT_FORM_MODE	Engine Parameters	
+par	$ENGINE_PAR_WT_FORM2_MODE	Engine Parameters	
+var	ni_wt_form_linear	Engine Parameters	
+var	ni_wt_form_sync1	Engine Parameters	
+var	ni_wt_form_sync2	Engine Parameters	
+var	ni_wt_form_sync3	Engine Parameters	
+var	ni_wt_form_sync4	Engine Parameters	
+var	ni_wt_form_sync5	Engine Parameters	
+var	ni_wt_form_sync6	Engine Parameters	
+var	ni_wt_form_bendp	Engine Parameters	
+var	ni_wt_form_bendm	Engine Parameters	
+var	ni_wt_form_bendmp	Engine Parameters	
+var	ni_wt_form_bend2p	Engine Parameters	
+var	ni_wt_form_bend2m	Engine Parameters	
+var	ni_wt_form_bend2mp	Engine Parameters	
+var	ni_wt_form_exp	Engine Parameters	
+var	ni_wt_form_log	Engine Parameters	
+var	ni_wt_form_logexp	Engine Parameters	
+var	ni_wt_form_pwm	Engine Parameters	
+var	ni_wt_form_asymp	Engine Parameters	
+var	ni_wt_form_asymm	Engine Parameters	
+var	ni_wt_form_asymmp	Engine Parameters	
+var	ni_wt_form_asym2p	Engine Parameters	
+var	ni_wt_form_asym2m	Engine Parameters	
+var	ni_wt_form_asym2mp	Engine Parameters	
+var	ni_wt_form_2blinds	Engine Parameters	
+var	ni_wt_form_4blinds	Engine Parameters	
+var	ni_wt_form_6blinds	Engine Parameters	
+var	ni_wt_form_8blinds	Engine Parameters	
+var	ni_wt_form_flip	Engine Parameters	
+var	ni_wt_form_fold	Engine Parameters	
+var	ni_wt_form_mirror	Engine Parameters	
+var	ni_wt_form_saturate	Engine Parameters	
+var	ni_wt_form_seesaw	Engine Parameters	
+var	ni_wt_form_quantize	Engine Parameters	
+var	ni_wt_form_wrap	Engine Parameters	
+par	$ENGINE_PAR_WT_INHARMONIC_MODE	Engine Parameters	
+par	$ENGINE_PAR_WT_INHARMONIC	Engine Parameters	
+par	$ENGINE_PAR_WT_MOD_TYPE	Engine Parameters	
+var	ni_wt_mod_type_off	Engine Parameters	
+var	ni_wt_mod_type_fm1	Engine Parameters	
+var	ni_wt_mod_type_fm2	Engine Parameters	
+var	ni_wt_mod_type_fm3	Engine Parameters	
+var	ni_wt_mod_type_pm1	Engine Parameters	
+var	ni_wt_mod_type_pm2	Engine Parameters	
+var	ni_wt_mod_type_pm3	Engine Parameters	
+var	ni_wt_mod_type_rm	Engine Parameters	
+var	ni_wt_mod_type_mix	Engine Parameters	
+par	$ENGINE_PAR_WT_MOD_WAVE	Engine Parameters	
+var	ni_wt_mod_wave_sine	Engine Parameters	
+var	ni_wt_mod_wave_triangle	Engine Parameters	
+var	ni_wt_mod_wave_tx2	Engine Parameters	
+var	ni_wt_mod_wave_tx3	Engine Parameters	
+var	ni_wt_mod_wave_tx4	Engine Parameters	
+var	ni_wt_mod_wave_tx5	Engine Parameters	
+var	ni_wt_mod_wave_tx6	Engine Parameters	
+var	ni_wt_mod_wave_tx7	Engine Parameters	
+var	ni_wt_mod_wave_tx8	Engine Parameters	
+par	$ENGINE_PAR_WT_MOD_TUNE	Engine Parameters	
+par	$ENGINE_PAR_WT_MOD_TUNE_UNIT	Engine Parameters	
+var	ni_wt_mod_tune_unit_semitones	Engine Parameters	
+var	ni_wt_mod_tune_unit_ratio	Engine Parameters	
+var	ni_wt_mod_tune_unit_hz	Engine Parameters	
+par	$ENGINE_PAR_S1200_FILTER_MODE	Engine Parameters	
+var	ni_s1200_filter_none	Engine Parameters	
+var	ni_s1200_filter_high	Engine Parameters	
+var	ni_s1200_filter_high_mid	Engine Parameters	
+var	ni_s1200_filter_low_mid	Engine Parameters	
+var	ni_s1200_filter_low	Engine Parameters	
+par	$ENGINE_PAR_CUTOFF	Engine Parameters	
+par	$ENGINE_PAR_RESONANCE	Engine Parameters	
+par	$ENGINE_PAR_EFFECT_BYPASS	Engine Parameters	
+par	$ENGINE_PAR_GAIN	Engine Parameters	
+par	$ENGINE_PAR_FILTER_LADDER_HQ	Engine Parameters	
+par	$ENGINE_PAR_BANDWIDTH	Engine Parameters	
+par	$ENGINE_PAR_FILTER_SHIFTB	Engine Parameters	
+par	$ENGINE_PAR_FILTER_SHIFTC	Engine Parameters	
+par	$ENGINE_PAR_FILTER_RESB	Engine Parameters	
+par	$ENGINE_PAR_FILTER_RESC	Engine Parameters	
+par	$ENGINE_PAR_FILTER_TYPEA	Engine Parameters	
+par	$ENGINE_PAR_FILTER_TYPEB	Engine Parameters	
+par	$ENGINE_PAR_FILTER_TYPEC	Engine Parameters	
+par	$ENGINE_PAR_FILTER_BYPA	Engine Parameters	
+par	$ENGINE_PAR_FILTER_BYPB	Engine Parameters	
+par	$ENGINE_PAR_FILTER_BYPC	Engine Parameters	
+par	$ENGINE_PAR_FILTER_GAIN	Engine Parameters	
+par	$ENGINE_PAR_FORMANT_TALK	Engine Parameters	
+par	$ENGINE_PAR_FORMANT_SHARP	Engine Parameters	
+par	$ENGINE_PAR_FORMANT_SIZE	Engine Parameters	
+par	$ENGINE_PAR_LP_CUTOFF	Engine Parameters	
+par	$ENGINE_PAR_HP_CUTOFF	Engine Parameters	
+par	$ENGINE_PAR_FREQ1	Engine Parameters	
+par	$ENGINE_PAR_BW1	Engine Parameters	
+par	$ENGINE_PAR_GAIN1	Engine Parameters	
+par	$ENGINE_PAR_FREQ2	Engine Parameters	
+par	$ENGINE_PAR_BW2	Engine Parameters	
+par	$ENGINE_PAR_GAIN2	Engine Parameters	
+par	$ENGINE_PAR_FREQ3	Engine Parameters	
+par	$ENGINE_PAR_BW3	Engine Parameters	
+par	$ENGINE_PAR_GAIN3	Engine Parameters	
+par	$ENGINE_PAR_SEQ_HP	Engine Parameters	
+par	$ENGINE_PAR_SEQ_HP_FREQ	Engine Parameters	
+par	$ENGINE_PAR_SEQ_LF_GAIN	Engine Parameters	
+par	$ENGINE_PAR_SEQ_LF_FREQ	Engine Parameters	
+par	$ENGINE_PAR_SEQ_LF_BELL	Engine Parameters	
+par	$ENGINE_PAR_SEQ_LMF_GAIN	Engine Parameters	
+par	$ENGINE_PAR_SEQ_LMF_FREQ	Engine Parameters	
+par	$ENGINE_PAR_SEQ_LMF_Q	Engine Parameters	
+par	$ENGINE_PAR_SEQ_HMF_GAIN	Engine Parameters	
+par	$ENGINE_PAR_SEQ_HMF_FREQ	Engine Parameters	
+par	$ENGINE_PAR_SEQ_HMF_Q	Engine Parameters	
+par	$ENGINE_PAR_SEQ_HF_GAIN	Engine Parameters	
+par	$ENGINE_PAR_SEQ_HF_FREQ	Engine Parameters	
+par	$ENGINE_PAR_SEQ_HF_BELL	Engine Parameters	
+par	$ENGINE_PAR_SEQ_LP	Engine Parameters	
+par	$ENGINE_PAR_SEQ_LP_FREQ	Engine Parameters	
+par	$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN	Engine Parameters	
+par	$ENGINE_PAR_THRESHOLD	Engine Parameters	
+par	$ENGINE_PAR_RATIO	Engine Parameters	
+par	$ENGINE_PAR_COMP_ATTACK	Engine Parameters	
+par	$ENGINE_PAR_COMP_DECAY	Engine Parameters	
+par	$ENGINE_PAR_COMP_LINK	Engine Parameters	
+par	$ENGINE_PAR_COMP_TYPE	Engine Parameters	
+var	ni_comp_type_classic	Engine Parameters	
+var	ni_comp_type_enhanced	Engine Parameters	
+var	ni_comp_type_pro	Engine Parameters	
+par	$ENGINE_PAR_FCOMP_INPUT	Engine Parameters	
+par	$ENGINE_PAR_FCOMP_RATIO	Engine Parameters	
+par	$ENGINE_PAR_FCOMP_ATTACK	Engine Parameters	
+par	$ENGINE_PAR_FCOMP_RELEASE	Engine Parameters	
+par	$ENGINE_PAR_FCOMP_MAKEUP	Engine Parameters	
+par	$ENGINE_PAR_FCOMP_MIX	Engine Parameters	
+par	$ENGINE_PAR_FCOMP_HQ_MODE	Engine Parameters	
+par	$ENGINE_PAR_FCOMP_LINK	Engine Parameters	
+par	$ENGINE_PAR_LIM_IN_GAIN	Engine Parameters	
+par	$ENGINE_PAR_LIM_RELEASE	Engine Parameters	
+par	$ENGINE_PAR_SCOMP_THRESHOLD	Engine Parameters	
+par	$ENGINE_PAR_SCOMP_RATIO	Engine Parameters	
+par	$ENGINE_PAR_SCOMP_ATTACK	Engine Parameters	
+par	$ENGINE_PAR_SCOMP_RELEASE	Engine Parameters	
+par	$ENGINE_PAR_SCOMP_MAKEUP	Engine Parameters	
+par	$ENGINE_PAR_SCOMP_MIX	Engine Parameters	
+par	$ENGINE_PAR_SCOMP_LINK	Engine Parameters	
+par	$ENGINE_PAR_SUPERGT_TRIM	Engine Parameters	
+par	$ENGINE_PAR_SUPERGT_HPF_MODE	Engine Parameters	
+var	ni_supergt_hpf_mode_off	Engine Parameters	
+var	ni_supergt_hpf_mode_100	Engine Parameters	
+var	ni_supergt_hpf_mode_300	Engine Parameters	
+par	$ENGINE_PAR_SUPERGT_SATURATION	Engine Parameters	
+par	$ENGINE_PAR_SUPERGT_SAT_MODE	Engine Parameters	
+var	ni_supergt_sat_mode_mild	Engine Parameters	
+var	ni_supergt_sat_mode_moderate	Engine Parameters	
+var	ni_supergt_sat_mode_hot	Engine Parameters	
+par	$ENGINE_PAR_SUPERGT_COMPRESS	Engine Parameters	
+par	$ENGINE_PAR_SUPERGT_ATTACK	Engine Parameters	
+par	$ENGINE_PAR_SUPERGT_RELEASE	Engine Parameters	
+par	$ENGINE_PAR_SUPERGT_CHARACTER	Engine Parameters	
+par	$ENGINE_PAR_SUPERGT_CHAR_MODE	Engine Parameters	
+var	ni_supergt_char_mode_fat	Engine Parameters	
+var	ni_supergt_char_mode_warm	Engine Parameters	
+var	ni_supergt_char_mode_bright	Engine Parameters	
+par	$ENGINE_PAR_SUPERGT_MIX	Engine Parameters	
+par	$ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE	Engine Parameters	
+var	ni_supergt_channel_link_mode_stereo	Engine Parameters	
+var	ni_supergt_channel_link_mode_dual_mono	Engine Parameters	
+var	ni_supergt_channel_link_mode_ms	Engine Parameters	
+par	$ENGINE_PAR_TR_INPUT	Engine Parameters	
+par	$ENGINE_PAR_TR_ATTACK	Engine Parameters	
+par	$ENGINE_PAR_TR_SUSTAIN	Engine Parameters	
+par	$ENGINE_PAR_TR_SMOOTH	Engine Parameters	
+par	$ENGINE_PAR_TRANSLIM_THRESHOLD	Engine Parameters	
+par	$ENGINE_PAR_TRANSLIM_RELEASE	Engine Parameters	
+par	$ENGINE_PAR_TRANSLIM_CEILING	Engine Parameters	
+par	$ENGINE_PAR_AC_NORMALVOLUME	Engine Parameters	
+par	$ENGINE_PAR_AC_BRILLIANTVOLUME	Engine Parameters	
+par	$ENGINE_PAR_AC_BASS	Engine Parameters	
+par	$ENGINE_PAR_AC_TREBLE	Engine Parameters	
+par	$ENGINE_PAR_AC_TONECUT	Engine Parameters	
+par	$ENGINE_PAR_AC_TREMOLOSPEED	Engine Parameters	
+par	$ENGINE_PAR_AC_TREMOLODEPTH	Engine Parameters	
+par	$ENGINE_PAR_AC_MONO	Engine Parameters	
+par	$ENGINE_PAR_BASSINVADER_VOLUME	Engine Parameters	
+par	$ENGINE_PAR_BASSINVADER_TREBLE	Engine Parameters	
+par	$ENGINE_PAR_BASSINVADER_HI_MID	Engine Parameters	
+par	$ENGINE_PAR_BASSINVADER_LO_MID	Engine Parameters	
+par	$ENGINE_PAR_BASSINVADER_BASS	Engine Parameters	
+par	$ENGINE_PAR_BASSINVADER_BOOST	Engine Parameters	
+par	$ENGINE_PAR_BASSINVADER_MASTER	Engine Parameters	
+par	$ENGINE_PAR_BASSINVADER_LO_CUT	Engine Parameters	
+par	$ENGINE_PAR_BASSINVADER_MID_CONTOUR	Engine Parameters	
+par	$ENGINE_PAR_BASSINVADER_HI_BOOST	Engine Parameters	
+par	$ENGINE_PAR_BASSINVADER_MONO	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_GAIN	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_BASS	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_MID	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_MIDFREQ	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_TREBLE	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_DRIVE	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_MASTER	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_GEQ_40	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_GEQ_90	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_GEQ_180	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_GEQ_300	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_GEQ_500	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_GEQ_1K	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_GEQ_2K	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_GEQ_4K	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_GEQ_10K	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_GEQ_VOLUME	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_ULTRALO	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_ULTRAHI	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_BRIGHT	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_GEQ	Engine Parameters	
+par	$ENGINE_PAR_BASSPRO_MONO	Engine Parameters	
+par	$ENGINE_PAR_CB_SIZE	Engine Parameters	
+par	$ENGINE_PAR_CB_AIR	Engine Parameters	
+par	$ENGINE_PAR_CB_TREBLE	Engine Parameters	
+par	$ENGINE_PAR_CB_BASS	Engine Parameters	
+par	$ENGINE_PAR_CABINET_TYPE	Engine Parameters	
+par	$ENGINE_PAR_EPP_DRIVE_MODE	Engine Parameters	
+var	ni_epp_drive_mode_bypass	Engine Parameters	
+var	ni_epp_drive_mode_de_tube	Engine Parameters	
+var	ni_epp_drive_mode_us_tube	Engine Parameters	
+var	ni_epp_drive_mode_transistor	Engine Parameters	
+var	ni_epp_drive_mode_tape	Engine Parameters	
+par	$ENGINE_PAR_EPP_DRIVE	Engine Parameters	
+par	$ENGINE_PAR_EPP_EQ_MODE	Engine Parameters	
+var	ni_epp_eq_mode_bypass	Engine Parameters	
+var	ni_epp_eq_mode_passive	Engine Parameters	
+var	ni_epp_eq_mode_70s	Engine Parameters	
+var	ni_epp_eq_mode_80s	Engine Parameters	
+var	ni_epp_eq_mode_e_grand	Engine Parameters	
+par	$ENGINE_PAR_EPP_EQ_BASS	Engine Parameters	
+par	$ENGINE_PAR_EPP_EQ_MID	Engine Parameters	
+par	$ENGINE_PAR_EPP_EQ_TREBLE	Engine Parameters	
+par	$ENGINE_PAR_EPP_PASSIVE_BASS	Engine Parameters	
+par	$ENGINE_PAR_EPP_TREMOLO_MODE	Engine Parameters	
+var	ni_epp_tremolo_mode_bypass	Engine Parameters	
+var	ni_epp_tremolo_mode_70s	Engine Parameters	
+var	ni_epp_tremolo_mode_80s	Engine Parameters	
+var	ni_epp_tremolo_mode_synth	Engine Parameters	
+var	ni_epp_tremolo_mode_guitar	Engine Parameters	
+var	ni_epp_tremolo_mode_e_grand	Engine Parameters	
+par	$ENGINE_PAR_EPP_TREMOLO_WAVE	Engine Parameters	
+var	ni_epp_tremolo_wave_sine	Engine Parameters	
+var	ni_epp_tremolo_wave_triangle	Engine Parameters	
+var	ni_epp_tremolo_wave_square	Engine Parameters	
+var	ni_epp_tremolo_wave_saw_down	Engine Parameters	
+var	ni_epp_tremolo_wave_saw_up	Engine Parameters	
+par	$ENGINE_PAR_EPP_TREMOLO_RATE	Engine Parameters	
+par	$ENGINE_PAR_EPP_TREMOLO_RATE_UNIT	Engine Parameters	
+par	$ENGINE_PAR_EPP_TREMOLO_AMOUNT	Engine Parameters	
+par	$ENGINE_PAR_EPP_TREMOLO_WIDTH	Engine Parameters	
+par	$ENGINE_PAR_EPP_MONO	Engine Parameters	
+par	$ENGINE_PAR_HS_PRENORMAL	Engine Parameters	
+par	$ENGINE_PAR_HS_PREOVERDRIVE	Engine Parameters	
+par	$ENGINE_PAR_HS_BASS	Engine Parameters	
+par	$ENGINE_PAR_HS_MID	Engine Parameters	
+par	$ENGINE_PAR_HS_TREBLE	Engine Parameters	
+par	$ENGINE_PAR_HS_MASTER	Engine Parameters	
+par	$ENGINE_PAR_HS_PRESENCE	Engine Parameters	
+par	$ENGINE_PAR_HS_DEPTH	Engine Parameters	
+par	$ENGINE_PAR_HS_OVERDRIVE	Engine Parameters	
+par	$ENGINE_PAR_HS_MONO	Engine Parameters	
+par	$ENGINE_PAR_JMP_PREAMP	Engine Parameters	
+par	$ENGINE_PAR_JMP_BASS	Engine Parameters	
+par	$ENGINE_PAR_JMP_MID	Engine Parameters	
+par	$ENGINE_PAR_JMP_TREBLE	Engine Parameters	
+par	$ENGINE_PAR_JMP_MASTER	Engine Parameters	
+par	$ENGINE_PAR_JMP_PRESENCE	Engine Parameters	
+par	$ENGINE_PAR_JMP_HIGAIN	Engine Parameters	
+par	$ENGINE_PAR_JMP_MONO	Engine Parameters	
+par	$ENGINE_PAR_SF100_NORMAL_GAIN	Engine Parameters	
+par	$ENGINE_PAR_SF100_OD_GAIN	Engine Parameters	
+par	$ENGINE_PAR_SF100_BASS	Engine Parameters	
+par	$ENGINE_PAR_SF100_MID	Engine Parameters	
+par	$ENGINE_PAR_SF100_TREBLE	Engine Parameters	
+par	$ENGINE_PAR_SF100_MASTER	Engine Parameters	
+par	$ENGINE_PAR_SF100_PRESENCE	Engine Parameters	
+par	$ENGINE_PAR_SF100_DEPTH	Engine Parameters	
+par	$ENGINE_PAR_SF100_OVERDRIVE	Engine Parameters	
+par	$ENGINE_PAR_SF100_CRUNCH	Engine Parameters	
+par	$ENGINE_PAR_SF100_BRIGHT	Engine Parameters	
+par	$ENGINE_PAR_SF100_MONO	Engine Parameters	
+par	$ENGINE_PAR_TW_VOLUME	Engine Parameters	
+par	$ENGINE_PAR_TW_TREBLE	Engine Parameters	
+par	$ENGINE_PAR_TW_MID	Engine Parameters	
+par	$ENGINE_PAR_TW_BASS	Engine Parameters	
+par	$ENGINE_PAR_TW_BRIGHT	Engine Parameters	
+par	$ENGINE_PAR_TW_MONO	Engine Parameters	
+par	$ENGINE_PAR_V5_PREGAINRHYTHM	Engine Parameters	
+par	$ENGINE_PAR_V5_PREGAINLEAD	Engine Parameters	
+par	$ENGINE_PAR_V5_BASS	Engine Parameters	
+par	$ENGINE_PAR_V5_MID	Engine Parameters	
+par	$ENGINE_PAR_V5_TREBLE	Engine Parameters	
+par	$ENGINE_PAR_V5_POSTGAIN	Engine Parameters	
+par	$ENGINE_PAR_V5_RESONANCE	Engine Parameters	
+par	$ENGINE_PAR_V5_PRESENCE	Engine Parameters	
+par	$ENGINE_PAR_V5_LEADCHANNEL	Engine Parameters	
+par	$ENGINE_PAR_V5_HIGAIN	Engine Parameters	
+par	$ENGINE_PAR_V5_BRIGHT	Engine Parameters	
+par	$ENGINE_PAR_V5_CRUNCH	Engine Parameters	
+par	$ENGINE_PAR_V5_MONO	Engine Parameters	
+par	$ENGINE_PAR_BIGFUZZ_SUSTAIN	Engine Parameters	
+par	$ENGINE_PAR_BIGFUZZ_TONE	Engine Parameters	
+par	$ENGINE_PAR_BIGFUZZ_BASS	Engine Parameters	
+par	$ENGINE_PAR_BIGFUZZ_TREBLE	Engine Parameters	
+par	$ENGINE_PAR_BIGFUZZ_MONO	Engine Parameters	
+par	$ENGINE_PAR_CT_VOLUME	Engine Parameters	
+par	$ENGINE_PAR_CT_DISTORTION	Engine Parameters	
+par	$ENGINE_PAR_CT_FILTER	Engine Parameters	
+par	$ENGINE_PAR_CT_BASS	Engine Parameters	
+par	$ENGINE_PAR_CT_BALLS	Engine Parameters	
+par	$ENGINE_PAR_CT_TREBLE	Engine Parameters	
+par	$ENGINE_PAR_CT_TONE	Engine Parameters	
+par	$ENGINE_PAR_CT_MONO	Engine Parameters	
+par	$ENGINE_PAR_CS_DISTORTION	Engine Parameters	
+par	$ENGINE_PAR_CS_LOW	Engine Parameters	
+par	$ENGINE_PAR_CS_HIGH	Engine Parameters	
+par	$ENGINE_PAR_CS_LEVEL	Engine Parameters	
+par	$ENGINE_PAR_CS_MONO	Engine Parameters	
+par	$ENGINE_PAR_CW_MONO	Engine Parameters	
+par	$ENGINE_PAR_CW_PEDAL	Engine Parameters	
+par	$ENGINE_PAR_DIRT_DRIVEA	Engine Parameters	
+par	$ENGINE_PAR_DIRT_AMOUNTA	Engine Parameters	
+par	$ENGINE_PAR_DIRT_BIASA	Engine Parameters	
+par	$ENGINE_PAR_DIRT_TILTA	Engine Parameters	
+par	$ENGINE_PAR_DIRT_MODEA	Engine Parameters	
+var	ni_dirt_mode_i	Engine Parameters	
+var	ni_dirt_mode_ii	Engine Parameters	
+var	ni_dirt_mode_iii	Engine Parameters	
+par	$ENGINE_PAR_DIRT_SAFETYA	Engine Parameters	
+par	$ENGINE_PAR_DIRT_DRIVEB	Engine Parameters	
+par	$ENGINE_PAR_DIRT_AMOUNTB	Engine Parameters	
+par	$ENGINE_PAR_DIRT_BIASB	Engine Parameters	
+par	$ENGINE_PAR_DIRT_TILTB	Engine Parameters	
+par	$ENGINE_PAR_DIRT_MODEB	Engine Parameters	
+par	$ENGINE_PAR_DIRT_SAFETYB	Engine Parameters	
+par	$ENGINE_PAR_DIRT_ROUTING	Engine Parameters	
+var	ni_dirt_routing_atob	Engine Parameters	
+var	ni_dirt_routing_btoa	Engine Parameters	
+var	ni_dirt_routing_parallel	Engine Parameters	
+par	$ENGINE_PAR_DIRT_MIX	Engine Parameters	
+par	$ENGINE_PAR_DIRT_BLEND	Engine Parameters	
+par	$ENGINE_PAR_DRIVE	Engine Parameters	
+par	$ENGINE_PAR_DAMPING	Engine Parameters	
+par	$ENGINE_PAR_DISTORTION_TYPE	Engine Parameters	
+var	ni_distortion_type_tube	Engine Parameters	
+var	ni_distortion_type_trans	Engine Parameters	
+par	$ENGINE_PAR_DS_VOLUME	Engine Parameters	
+par	$ENGINE_PAR_DS_TONE	Engine Parameters	
+par	$ENGINE_PAR_DS_DRIVE	Engine Parameters	
+par	$ENGINE_PAR_DS_BASS	Engine Parameters	
+par	$ENGINE_PAR_DS_MID	Engine Parameters	
+par	$ENGINE_PAR_DS_TREBLE	Engine Parameters	
+par	$ENGINE_PAR_DS_MONO	Engine Parameters	
+par	$ENGINE_PAR_FUZZ_AMOUNT	Engine Parameters	
+par	$ENGINE_PAR_FUZZ_BASS	Engine Parameters	
+par	$ENGINE_PAR_FUZZ_TREBLE	Engine Parameters	
+par	$ENGINE_PAR_FUZZ_MONO	Engine Parameters	
+par	$ENGINE_PAR_KOLOR_MODE	Engine Parameters	
+var	ni_kolor_solid_console	Engine Parameters	
+var	ni_kolor_analog_aura	Engine Parameters	
+var	ni_kolor_harmonic_ctrl	Engine Parameters	
+var	ni_kolor_full_on	Engine Parameters	
+var	ni_kolor_super_amp	Engine Parameters	
+var	ni_kolor_smooth_fuzz	Engine Parameters	
+var	ni_kolor_tape	Engine Parameters	
+var	ni_kolor_crunch	Engine Parameters	
+var	ni_kolor_saturaver	Engine Parameters	
+var	ni_kolor_diode	Engine Parameters	
+par	$ENGINE_PAR_KOLOR_DRIVE	Engine Parameters	
+par	$ENGINE_PAR_KOLOR_BOOST	Engine Parameters	
+par	$ENGINE_PAR_KOLOR_BOOST_LEVEL	Engine Parameters	
+par	$ENGINE_PAR_KOLOR_BASS_SAVER	Engine Parameters	
+par	$ENGINE_PAR_KOLOR_LPF	Engine Parameters	
+par	$ENGINE_PAR_KOLOR_HPF	Engine Parameters	
+par	$ENGINE_PAR_KOLOR_BASS	Engine Parameters	
+par	$ENGINE_PAR_KOLOR_MID	Engine Parameters	
+par	$ENGINE_PAR_KOLOR_MID_FREQ	Engine Parameters	
+par	$ENGINE_PAR_KOLOR_MID_Q	Engine Parameters	
+par	$ENGINE_PAR_KOLOR_TREBLE	Engine Parameters	
+par	$ENGINE_PAR_KOLOR_MIX	Engine Parameters	
+par	$ENGINE_PAR_SHAPE	Engine Parameters	
+par	$ENGINE_PAR_SHAPE_TYPE	Engine Parameters	
+var	ni_shape_type_classic	Engine Parameters	
+var	ni_shape_type_enhanced	Engine Parameters	
+var	ni_shape_type_drums	Engine Parameters	
+par	$ENGINE_PAR_SK_TONE	Engine Parameters	
+par	$ENGINE_PAR_SK_DRIVE	Engine Parameters	
+par	$ENGINE_PAR_SK_BASS	Engine Parameters	
+par	$ENGINE_PAR_SK_BRIGHT	Engine Parameters	
+par	$ENGINE_PAR_SK_MIX	Engine Parameters	
+par	$ENGINE_PAR_SKDLX_MODE	Engine Parameters	
+var	ni_skdlx_mode_classic	Engine Parameters	
+var	ni_skdlx_mode_led	Engine Parameters	
+var	ni_skdlx_mode_eq	Engine Parameters	
+par	$ENGINE_PAR_SKDLX_DRIVE	Engine Parameters	
+par	$ENGINE_PAR_SKDLX_TONE	Engine Parameters	
+par	$ENGINE_PAR_SKDLX_BASS	Engine Parameters	
+par	$ENGINE_PAR_SKDLX_MID	Engine Parameters	
+par	$ENGINE_PAR_SKDLX_TREBLE	Engine Parameters	
+par	$ENGINE_PAR_SKDLX_MONO	Engine Parameters	
+par	$ENGINE_PAR_BITE_FREQUENCY	Engine Parameters	
+par	$ENGINE_PAR_BITE_BITS	Engine Parameters	
+par	$ENGINE_PAR_BITE_JITTER	Engine Parameters	
+par	$ENGINE_PAR_BITE_CRUNCH	Engine Parameters	
+par	$ENGINE_PAR_BITE_DITHER	Engine Parameters	
+par	$ENGINE_PAR_BITE_EXPAND	Engine Parameters	
+par	$ENGINE_PAR_BITE_SATURATE	Engine Parameters	
+par	$ENGINE_PAR_BITE_PREFILTER	Engine Parameters	
+par	$ENGINE_PAR_BITE_POSTFILTER	Engine Parameters	
+par	$ENGINE_PAR_BITE_DC_QUANT	Engine Parameters	
+par	$ENGINE_PAR_BITE_HPF	Engine Parameters	
+var	ni_bite_hpf_mode_5	Engine Parameters	
+var	ni_bite_hpf_mode_100	Engine Parameters	
+var	ni_bite_hpf_mode_200	Engine Parameters	
+par	$ENGINE_PAR_BITE_MIX	Engine Parameters	
+par	$ENGINE_PAR_BITS	Engine Parameters	
+par	$ENGINE_PAR_FREQUENCY	Engine Parameters	
+par	$ENGINE_PAR_NOISELEVEL	Engine Parameters	
+par	$ENGINE_PAR_NOISECOLOR	Engine Parameters	
+par	$ENGINE_PAR_TP_GAIN	Engine Parameters	
+par	$ENGINE_PAR_TP_WARMTH	Engine Parameters	
+par	$ENGINE_PAR_TP_HF_ROLLOFF	Engine Parameters	
+par	$ENGINE_PAR_TP_QUALITY	Engine Parameters	
+par	$ENGINE_PAR_WOWFLUTTER_WOW	Engine Parameters	
+par	$ENGINE_PAR_WOWFLUTTER_FLUTTER	Engine Parameters	
+par	$ENGINE_PAR_WOWFLUTTER_SCRAPE	Engine Parameters	
+par	$ENGINE_PAR_WOWFLUTTER_SPEED	Engine Parameters	
+par	$ENGINE_PAR_WOWFLUTTER_STEREO	Engine Parameters	
+par	$ENGINE_PAR_WOWFLUTTER_AGE	Engine Parameters	
+par	$ENGINE_PAR_WOWFLUTTER_SATURATION	Engine Parameters	
+par	$ENGINE_PAR_WOWFLUTTER_MIX	Engine Parameters	
+par	$ENGINE_PAR_WOWFLUTTER_GATE	Engine Parameters	
+par	$ENGINE_PAR_CHORAL_RATE	Engine Parameters	
+par	$ENGINE_PAR_CHORAL_MODE	Engine Parameters	
+var	ni_choral_mode_synth	Engine Parameters	
+var	ni_choral_mode_ensemble	Engine Parameters	
+var	ni_choral_mode_dimension	Engine Parameters	
+var	ni_choral_mode_universal	Engine Parameters	
+par	$ENGINE_PAR_CHORAL_AMOUNT	Engine Parameters	
+par	$ENGINE_PAR_CHORAL_VOICES	Engine Parameters	
+par	$ENGINE_PAR_CHORAL_DELAY	Engine Parameters	
+par	$ENGINE_PAR_CHORAL_WIDTH	Engine Parameters	
+par	$ENGINE_PAR_CHORAL_FEEDBACK	Engine Parameters	
+par	$ENGINE_PAR_CHORAL_SCATTER	Engine Parameters	
+par	$ENGINE_PAR_CHORAL_INVERT_PHASE	Engine Parameters	
+par	$ENGINE_PAR_CHORAL_MIX	Engine Parameters	
+par	$ENGINE_PAR_FLAIR_MODE	Engine Parameters	
+var	ni_flair_mode_standard	Engine Parameters	
+var	ni_flair_mode_thru_zero	Engine Parameters	
+var	ni_flair_mode_scan	Engine Parameters	
+par	$ENGINE_PAR_FLAIR_CHORD	Engine Parameters	
+par	$ENGINE_PAR_FLAIR_INVERT_PHASE	Engine Parameters	
+par	$ENGINE_PAR_FLAIR_RATE	Engine Parameters	
+par	$ENGINE_PAR_FLAIR_RATE_UNIT	Engine Parameters	
+par	$ENGINE_PAR_FLAIR_FEEDBACK	Engine Parameters	
+par	$ENGINE_PAR_FLAIR_AMOUNT	Engine Parameters	
+par	$ENGINE_PAR_FLAIR_WIDTH	Engine Parameters	
+par	$ENGINE_PAR_FLAIR_PITCH	Engine Parameters	
+par	$ENGINE_PAR_FLAIR_DAMPING	Engine Parameters	
+par	$ENGINE_PAR_FLAIR_VOICES	Engine Parameters	
+par	$ENGINE_PAR_FLAIR_DETUNE	Engine Parameters	
+par	$ENGINE_PAR_FLAIR_MIX	Engine Parameters	
+par	$ENGINE_PAR_FLAIR_OFFSET	Engine Parameters	
+par	$ENGINE_PAR_FLAIR_SCANMODE	Engine Parameters	
+var	ni_flair_scanmode_triangle	Engine Parameters	
+var	ni_flair_scanmode_saw_up	Engine Parameters	
+var	ni_flair_scanmode_saw_down	Engine Parameters	
+par	$ENGINE_PAR_FREAK_MODE	Engine Parameters	
+var	ni_freak_mode_radio	Engine Parameters	
+var	ni_freak_mode_oscillator	Engine Parameters	
+var	ni_freak_mode_sidechain	Engine Parameters	
+par	$ENGINE_PAR_FREAK_TYPE	Engine Parameters	
+par	$ENGINE_PAR_FREAK_HARMONICS	Engine Parameters	
+par	$ENGINE_PAR_FREAK_FEEDBACK	Engine Parameters	
+par	$ENGINE_PAR_FREAK_MIX	Engine Parameters	
+par	$ENGINE_PAR_FREAK_CARRIER	Engine Parameters	
+par	$ENGINE_PAR_FREAK_TUNING	Engine Parameters	
+par	$ENGINE_PAR_FREAK_WIDTH	Engine Parameters	
+par	$ENGINE_PAR_FREAK_DEMOD	Engine Parameters	
+par	$ENGINE_PAR_FREAK_GATE	Engine Parameters	
+par	$ENGINE_PAR_FREAK_FREQUENCY	Engine Parameters	
+par	$ENGINE_PAR_FREAK_ANTIFOLD	Engine Parameters	
+par	$ENGINE_PAR_FREAK_STEREO	Engine Parameters	
+par	$ENGINE_PAR_FREAK_WIDE_RANGE	Engine Parameters	
+par	$ENGINE_PAR_FREAK_CONTOUR	Engine Parameters	
+par	$ENGINE_PAR_FREAK_RELEASE	Engine Parameters	
+par	$ENGINE_PAR_FREAK_BP_FREQ	Engine Parameters	
+par	$ENGINE_PAR_FREAK_BP_FILTER	Engine Parameters	
+par	$ENGINE_PAR_PHASIS_RATE	Engine Parameters	
+par	$ENGINE_PAR_PHASIS_RATE_UNIT	Engine Parameters	
+par	$ENGINE_PAR_PHASIS_ULTRA	Engine Parameters	
+par	$ENGINE_PAR_PHASIS_AMOUNT	Engine Parameters	
+par	$ENGINE_PAR_PHASIS_CENTER	Engine Parameters	
+par	$ENGINE_PAR_PHASIS_STEREO	Engine Parameters	
+par	$ENGINE_PAR_PHASIS_SPREAD	Engine Parameters	
+par	$ENGINE_PAR_PHASIS_FEEDBACK	Engine Parameters	
+par	$ENGINE_PAR_PHASIS_MOD_MIX	Engine Parameters	
+par	$ENGINE_PAR_PHASIS_NOTCHES	Engine Parameters	
+par	$ENGINE_PAR_PHASIS_INVERT_PHASE	Engine Parameters	
+par	$ENGINE_PAR_PHASIS_INVERT_MOD_MIX	Engine Parameters	
+par	$ENGINE_PAR_PHASIS_MIX	Engine Parameters	
+par	$ENGINE_PAR_RINGMOD_RING	Engine Parameters	
+par	$ENGINE_PAR_RINGMOD_FM	Engine Parameters	
+par	$ENGINE_PAR_RINGMOD_FREQUENCY	Engine Parameters	
+par	$ENGINE_PAR_RINGMOD_EDGE	Engine Parameters	
+par	$ENGINE_PAR_RINGMOD_LFO_RATE	Engine Parameters	
+par	$ENGINE_PAR_RINGMOD_LFO_RATE_UNIT	Engine Parameters	
+par	$ENGINE_PAR_RINGMOD_LFO_AMOUNT	Engine Parameters	
+par	$ENGINE_PAR_RINGMOD_LFO_WAVE	Engine Parameters	
+var	ni_ringmod_lfo_wave_sine	Engine Parameters	
+var	ni_ringmod_lfo_wave_square	Engine Parameters	
+par	$ENGINE_PAR_RINGMOD_FAST_MODE	Engine Parameters	
+par	$ENGINE_PAR_RT_SPEED	Engine Parameters	
+par	$ENGINE_PAR_RT_BALANCE	Engine Parameters	
+par	$ENGINE_PAR_RT_ACCEL_HI	Engine Parameters	
+par	$ENGINE_PAR_RT_ACCEL_LO	Engine Parameters	
+par	$ENGINE_PAR_RT_DISTANCE	Engine Parameters	
+par	$ENGINE_PAR_RT_MIX	Engine Parameters	
+par	$ENGINE_PAR_VC_BLEND	Engine Parameters	
+par	$ENGINE_PAR_VC_RATE	Engine Parameters	
+par	$ENGINE_PAR_VC_WIDTH	Engine Parameters	
+par	$ENGINE_PAR_VC_MIX	Engine Parameters	
+par	$ENGINE_PAR_VC_DEPTH	Engine Parameters	
+var	ni_vc_depth_1	Engine Parameters	
+var	ni_vc_depth_2	Engine Parameters	
+var	ni_vc_depth_3	Engine Parameters	
+var	ni_vc_depth_4	Engine Parameters	
+var	ni_vc_depth_5	Engine Parameters	
+var	ni_vc_depth_6	Engine Parameters	
+par	$ENGINE_PAR_VC_COLOR	Engine Parameters	
+var	ni_vc_color_type_a	Engine Parameters	
+var	ni_vc_color_type_b	Engine Parameters	
+var	ni_vc_color_type_c	Engine Parameters	
+par	$ENGINE_PAR_BEATMASHER_GATE	Engine Parameters	
+par	$ENGINE_PAR_BEATMASHER_LENGTH	Engine Parameters	
+var	ni_beatmasher_length_32nd	Engine Parameters	
+var	ni_beatmasher_length_16th	Engine Parameters	
+var	ni_beatmasher_length_8th	Engine Parameters	
+var	ni_beatmasher_length_8th_dotted	Engine Parameters	
+var	ni_beatmasher_length_quarter	Engine Parameters	
+var	ni_beatmasher_length_quarter_dotted	Engine Parameters	
+var	ni_beatmasher_length_half	Engine Parameters	
+var	ni_beatmasher_length_half_dotted	Engine Parameters	
+var	ni_beatmasher_length_bar	Engine Parameters	
+par	$ENGINE_PAR_BEATMASHER_MASH	Engine Parameters	
+par	$ENGINE_PAR_BEATMASHER_MIX	Engine Parameters	
+par	$ENGINE_PAR_BEATMASHER_REVERSE	Engine Parameters	
+par	$ENGINE_PAR_BEATMASHER_ROTATE	Engine Parameters	
+par	$ENGINE_PAR_BEATMASHER_WRAP	Engine Parameters	
+par	$ENGINE_PAR_BEATSLICER_BUZZ	Engine Parameters	
+par	$ENGINE_PAR_BEATSLICER_GATE	Engine Parameters	
+par	$ENGINE_PAR_BEATSLICER_MIX	Engine Parameters	
+par	$ENGINE_PAR_BEATSLICER_PATTERN	Engine Parameters	
+par	$ENGINE_PAR_BEATSLICER_SLICE	Engine Parameters	
+par	$ENGINE_PAR_BEATSLICER_STYLE	Engine Parameters	
+par	$ENGINE_PAR_BEATSLICER_TWOBARS	Engine Parameters	
+par	$ENGINE_PAR_GATER_GATE	Engine Parameters	
+par	$ENGINE_PAR_GATER_MIX	Engine Parameters	
+par	$ENGINE_PAR_GATER_MUTE_INPUT	Engine Parameters	
+par	$ENGINE_PAR_GATER_NOISE	Engine Parameters	
+par	$ENGINE_PAR_GATER_RATE	Engine Parameters	
+par	$ENGINE_PAR_GATER_RATE_SYNC	Engine Parameters	
+par	$ENGINE_PAR_GATER_SHAPE	Engine Parameters	
+par	$ENGINE_PAR_GATER_STUTTER	Engine Parameters	
+par	$ENGINE_PAR_RG_FORWARD	Engine Parameters	
+par	$ENGINE_PAR_RG_GRAIN	Engine Parameters	
+par	$ENGINE_PAR_RG_INVERT_GRAINS	Engine Parameters	
+par	$ENGINE_PAR_RG_MIX	Engine Parameters	
+par	$ENGINE_PAR_RG_PITCH	Engine Parameters	
+par	$ENGINE_PAR_RG_REVERSE	Engine Parameters	
+par	$ENGINE_PAR_RG_SPEED	Engine Parameters	
+par	$ENGINE_PAR_TS_AMOUNT	Engine Parameters	
+par	$ENGINE_PAR_TS_GRAIN	Engine Parameters	
+par	$ENGINE_PAR_TS_KEY	Engine Parameters	
+par	$ENGINE_PAR_TS_MIX	Engine Parameters	
+par	$ENGINE_PAR_TS_SIZE	Engine Parameters	
+par	$ENGINE_PAR_TS_STRETCH	Engine Parameters	
+par	$ENGINE_PAR_TS_TWOBARS	Engine Parameters	
+par	$ENGINE_PAR_STEREO	Engine Parameters	
+par	$ENGINE_PAR_STEREO_PAN	Engine Parameters	
+par	$ENGINE_PAR_STEREO_PSEUDO	Engine Parameters	
+par	$ENGINE_PAR_STEREOTUNE_SPLIT	Engine Parameters	
+par	$ENGINE_PAR_STEREOTUNE_DRIFT	Engine Parameters	
+par	$ENGINE_PAR_STEREOTUNE_SPREAD	Engine Parameters	
+par	$ENGINE_PAR_STEREOTUNE_MIX	Engine Parameters	
+par	$ENGINE_PAR_SP_OFFSET_DISTANCE	Engine Parameters	
+par	$ENGINE_PAR_SP_OFFSET_AZIMUTH	Engine Parameters	
+par	$ENGINE_PAR_SP_OFFSET_X	Engine Parameters	
+par	$ENGINE_PAR_SP_OFFSET_Y	Engine Parameters	
+par	$ENGINE_PAR_SP_LFE_VOLUME	Engine Parameters	
+par	$ENGINE_PAR_SP_SIZE	Engine Parameters	
+par	$ENGINE_PAR_SP_DIVERGENCE	Engine Parameters	
+par	$ENGINE_PAR_EXP_FILTER_MORPH	Engine Parameters	
+par	$ENGINE_PAR_EXP_FILTER_AMOUNT	Engine Parameters	
+par	$ENGINE_PAR_SENDLEVEL_0	Engine Parameters	
+par	$ENGINE_PAR_SENDLEVEL_1	Engine Parameters	
+par	$ENGINE_PAR_SENDLEVEL_2	Engine Parameters	
+par	$ENGINE_PAR_SENDLEVEL_3	Engine Parameters	
+par	$ENGINE_PAR_SENDLEVEL_4	Engine Parameters	
+par	$ENGINE_PAR_SENDLEVEL_5	Engine Parameters	
+par	$ENGINE_PAR_SENDLEVEL_6	Engine Parameters	
+par	$ENGINE_PAR_SENDLEVEL_7	Engine Parameters	
+par	$ENGINE_PAR_SEND_EFFECT_BYPASS	Engine Parameters	
+par	$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL	Engine Parameters	
+par	$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN	Engine Parameters	
+par	$ENGINE_PAR_PSYDL_TIME	Engine Parameters	
+par	$ENGINE_PAR_PSYDL_TIME_UNIT	Engine Parameters	
+par	$ENGINE_PAR_PSYDL_FEEDBACK	Engine Parameters	
+par	$ENGINE_PAR_PSYDL_CROSS_FEEDBACK	Engine Parameters	
+par	$ENGINE_PAR_PSYDL_LR_OFFSET	Engine Parameters	
+par	$ENGINE_PAR_PSYDL_PITCH	Engine Parameters	
+par	$ENGINE_PAR_PSYDL_DETUNE	Engine Parameters	
+par	$ENGINE_PAR_PSYDL_REVERSE	Engine Parameters	
+par	$ENGINE_PAR_PSYDL_REVERSE_STEREO	Engine Parameters	
+par	$ENGINE_PAR_PSYDL_DETUNE_STEREO	Engine Parameters	
+par	$ENGINE_PAR_RDL_TYPE	Engine Parameters	
+var	ni_replika_type_modern	Engine Parameters	
+var	ni_replika_type_tape	Engine Parameters	
+var	ni_replika_type_vintage	Engine Parameters	
+var	ni_replika_type_diffusion	Engine Parameters	
+var	ni_replika_type_analogue	Engine Parameters	
+par	$ENGINE_PAR_RDL_TIME	Engine Parameters	
+par	$ENGINE_PAR_RDL_TIME_UNIT	Engine Parameters	
+par	$ENGINE_PAR_RDL_FEEDBACK	Engine Parameters	
+par	$ENGINE_PAR_RDL_LOWCUT	Engine Parameters	
+par	$ENGINE_PAR_RDL_HIGHCUT	Engine Parameters	
+par	$ENGINE_PAR_RDL_PINGPONG	Engine Parameters	
+par	$ENGINE_PAR_RDL_PINGPONG_FLIP	Engine Parameters	
+par	$ENGINE_PAR_RDL_SHUFFLE	Engine Parameters	
+par	$ENGINE_PAR_RDL_FEEL	Engine Parameters	
+par	$ENGINE_PAR_RDL_ACCENT	Engine Parameters	
+par	$ENGINE_PAR_RDL_PAN	Engine Parameters	
+par	$ENGINE_PAR_RDL_WIDTH	Engine Parameters	
+par	$ENGINE_PAR_RDL_LR_OFFSET	Engine Parameters	
+par	$ENGINE_PAR_RDL_DUCKING_SENSE	Engine Parameters	
+par	$ENGINE_PAR_RDL_DUCKING_RELEASE	Engine Parameters	
+par	$ENGINE_PAR_RDL_DUCKING_AMOUNT	Engine Parameters	
+par	$ENGINE_PAR_RDL_DEPTH	Engine Parameters	
+par	$ENGINE_PAR_RDL_RATE	Engine Parameters	
+par	$ENGINE_PAR_RDL_SATURATION	Engine Parameters	
+par	$ENGINE_PAR_RDL_BBDTYPE	Engine Parameters	
+par	$ENGINE_PAR_RDL_STEREO	Engine Parameters	
+par	$ENGINE_PAR_RDL_TAPEAGE	Engine Parameters	
+par	$ENGINE_PAR_RDL_FLUTTER	Engine Parameters	
+par	$ENGINE_PAR_RDL_NOISE	Engine Parameters	
+par	$ENGINE_PAR_RDL_QUALITY	Engine Parameters	
+par	$ENGINE_PAR_RDL_AMOUNT	Engine Parameters	
+par	$ENGINE_PAR_RDL_SIZE	Engine Parameters	
+par	$ENGINE_PAR_RDL_MODULATION	Engine Parameters	
+par	$ENGINE_PAR_RDL_DENSE	Engine Parameters	
+par	$ENGINE_PAR_TDL_PREDELAY_L	Engine Parameters	
+par	$ENGINE_PAR_TDL_PREDELAY_L_UNIT	Engine Parameters	
+par	$ENGINE_PAR_TDL_TIME_L	Engine Parameters	
+par	$ENGINE_PAR_TDL_TIME_L_UNIT	Engine Parameters	
+par	$ENGINE_PAR_TDL_FEEDBACK_L	Engine Parameters	
+par	$ENGINE_PAR_TDL_LEVEL_L	Engine Parameters	
+par	$ENGINE_PAR_TDL_PREDELAY_R	Engine Parameters	
+par	$ENGINE_PAR_TDL_PREDELAY_R_UNIT	Engine Parameters	
+par	$ENGINE_PAR_TDL_TIME_R	Engine Parameters	
+par	$ENGINE_PAR_TDL_TIME_R_UNIT	Engine Parameters	
+par	$ENGINE_PAR_TDL_FEEDBACK_R	Engine Parameters	
+par	$ENGINE_PAR_TDL_LEVEL_R	Engine Parameters	
+par	$ENGINE_PAR_TDL_CROSS_FEEDBACK	Engine Parameters	
+par	$ENGINE_PAR_TDL_WIDTH	Engine Parameters	
+par	$ENGINE_PAR_DL_TIME	Engine Parameters	
+par	$ENGINE_PAR_DL_TIME_UNIT	Engine Parameters	
+par	$ENGINE_PAR_DL_DAMPING	Engine Parameters	
+par	$ENGINE_PAR_DL_PAN	Engine Parameters	
+par	$ENGINE_PAR_DL_FEEDBACK	Engine Parameters	
+par	$ENGINE_PAR_IRC_PREDELAY	Engine Parameters	
+par	$ENGINE_PAR_IRC_LENGTH_RATIO_ER	Engine Parameters	
+par	$ENGINE_PAR_IRC_FREQ_LOWPASS_ER	Engine Parameters	
+par	$ENGINE_PAR_IRC_FREQ_HIGHPASS_ER	Engine Parameters	
+par	$ENGINE_PAR_IRC_LENGTH_RATIO_LR	Engine Parameters	
+par	$ENGINE_PAR_IRC_FREQ_LOWPASS_LR	Engine Parameters	
+par	$ENGINE_PAR_IRC_FREQ_HIGHPASS_LR	Engine Parameters	
+par	$ENGINE_PAR_IRC_ER_LR_BOUNDARY	Engine Parameters	
+par	$ENGINE_PAR_IRC_AUTO_GAIN	Engine Parameters	
+par	$ENGINE_PAR_IRC_REVERSE	Engine Parameters	
+par	$ENGINE_PAR_PR_DECAY	Engine Parameters	
+par	$ENGINE_PAR_PR_LOWSHELF	Engine Parameters	
+par	$ENGINE_PAR_PR_HIDAMP	Engine Parameters	
+par	$ENGINE_PAR_PR_PREDELAY	Engine Parameters	
+par	$ENGINE_PAR_PR_STEREO	Engine Parameters	
+par	$ENGINE_PAR_RAUM_TYPE	Engine Parameters	
+var	ni_raum_type_grounded	Engine Parameters	
+var	ni_raum_type_airy	Engine Parameters	
+var	ni_raum_type_cosmic	Engine Parameters	
+par	$ENGINE_PAR_RAUM_PREDELAY	Engine Parameters	
+par	$ENGINE_PAR_RAUM_PREDELAY_UNIT	Engine Parameters	
+par	$ENGINE_PAR_RAUM_FEEDBACK	Engine Parameters	
+par	$ENGINE_PAR_RAUM_LOWSHELF	Engine Parameters	
+par	$ENGINE_PAR_RAUM_HIGHCUT	Engine Parameters	
+par	$ENGINE_PAR_RAUM_DECAY	Engine Parameters	
+par	$ENGINE_PAR_RAUM_MOD	Engine Parameters	
+par	$ENGINE_PAR_RAUM_REVERB	Engine Parameters	
+par	$ENGINE_PAR_RAUM_DIFFUSION	Engine Parameters	
+par	$ENGINE_PAR_RAUM_SIZE	Engine Parameters	
+par	$ENGINE_PAR_RAUM_DAMPING	Engine Parameters	
+par	$ENGINE_PAR_RAUM_RATE	Engine Parameters	
+par	$ENGINE_PAR_RAUM_FREEZE	Engine Parameters	
+par	$ENGINE_PAR_RAUM_SPARSE	Engine Parameters	
+par	$ENGINE_PAR_RV2_TYPE	Engine Parameters	
+var	ni_reverb2_type_room	Engine Parameters	
+var	ni_reverb2_type_hall	Engine Parameters	
+par	$ENGINE_PAR_RV2_TIME	Engine Parameters	
+par	$ENGINE_PAR_RV2_SIZE	Engine Parameters	
+par	$ENGINE_PAR_RV2_DAMPING	Engine Parameters	
+par	$ENGINE_PAR_RV2_MOD	Engine Parameters	
+par	$ENGINE_PAR_RV2_DIFF	Engine Parameters	
+par	$ENGINE_PAR_RV2_PREDELAY	Engine Parameters	
+par	$ENGINE_PAR_RV2_HIGHCUT	Engine Parameters	
+par	$ENGINE_PAR_RV2_LOWSHELF	Engine Parameters	
+par	$ENGINE_PAR_RV2_STEREO	Engine Parameters	
+par	$ENGINE_PAR_RV_PREDELAY	Engine Parameters	
+par	$ENGINE_PAR_RV_SIZE	Engine Parameters	
+par	$ENGINE_PAR_RV_COLOUR	Engine Parameters	
+par	$ENGINE_PAR_RV_STEREO	Engine Parameters	
+par	$ENGINE_PAR_RV_DAMPING	Engine Parameters	
+par	$ENGINE_PAR_CH_DEPTH	Engine Parameters	
+par	$ENGINE_PAR_CH_SPEED	Engine Parameters	
+par	$ENGINE_PAR_CH_SPEED_UNIT	Engine Parameters	
+par	$ENGINE_PAR_CH_PHASE	Engine Parameters	
+par	$ENGINE_PAR_FL_DEPTH	Engine Parameters	
+par	$ENGINE_PAR_FL_SPEED	Engine Parameters	
+par	$ENGINE_PAR_FL_SPEED_UNIT	Engine Parameters	
+par	$ENGINE_PAR_FL_PHASE	Engine Parameters	
+par	$ENGINE_PAR_FL_FEEDBACK	Engine Parameters	
+par	$ENGINE_PAR_FL_COLOR	Engine Parameters	
+par	$ENGINE_PAR_PH_DEPTH	Engine Parameters	
+par	$ENGINE_PAR_PH_SPEED	Engine Parameters	
+par	$ENGINE_PAR_PH_SPEED_UNIT	Engine Parameters	
+par	$ENGINE_PAR_PH_PHASE	Engine Parameters	
+par	$ENGINE_PAR_PH_FEEDBACK	Engine Parameters	
+par	$ENGINE_PAR_GN_GAIN	Engine Parameters	
+par	$ENGINE_PAR_MOD_TARGET_INTENSITY	Engine Parameters	
+par	$ENGINE_PAR_MOD_TARGET_MP_INTENSITY	Engine Parameters	
+sym	$MOD_TARGET_INVERT_SOURCE	Engine Parameters	
+par	$ENGINE_PAR_INTMOD_BYPASS	Engine Parameters	
+par	$ENGINE_PAR_INTMOD_RETRIGGER	Engine Parameters	
+par	$ENGINE_PAR_ATK_CURVE	Engine Parameters	
+par	$ENGINE_PAR_ATTACK	Engine Parameters	
+par	$ENGINE_PAR_ATTACK_UNIT	Engine Parameters	
+par	$ENGINE_PAR_HOLD	Engine Parameters	
+par	$ENGINE_PAR_HOLD_UNIT	Engine Parameters	
+par	$ENGINE_PAR_DECAY	Engine Parameters	
+par	$ENGINE_PAR_DECAY_UNIT	Engine Parameters	
+par	$ENGINE_PAR_SUSTAIN	Engine Parameters	
+par	$ENGINE_PAR_RELEASE	Engine Parameters	
+par	$ENGINE_PAR_RELEASE_UNIT	Engine Parameters	
+par	$ENGINE_PAR_ENV_AHD	Engine Parameters	
+par	$ENGINE_PAR_DECAY1	Engine Parameters	
+par	$ENGINE_PAR_DECAY1_UNIT	Engine Parameters	
+par	$ENGINE_PAR_BREAK	Engine Parameters	
+par	$ENGINE_PAR_DECAY2	Engine Parameters	
+par	$ENGINE_PAR_DECAY2_UNIT	Engine Parameters	
+par	$ENGINE_PAR_ENV_DBD_EASY	Engine Parameters	
+par	$ENGINE_PAR_FLEXENV_LOOP	Engine Parameters	
+par	$ENGINE_PAR_FLEXENV_ONESHOT	Engine Parameters	
+par	$ENGINE_PAR_FLEXENV_NUM_STAGES	Engine Parameters	
+par	$ENGINE_PAR_FLEXENV_LOOP_START	Engine Parameters	
+par	$ENGINE_PAR_FLEXENV_LOOP_END	Engine Parameters	
+par	$ENGINE_PAR_FLEXENV_STAGE_TIME	Engine Parameters	
+par	$ENGINE_PAR_ENVF_ATTACK	Engine Parameters	
+par	$ENGINE_PAR_ENVF_RELEASE	Engine Parameters	
+par	$ENGINE_PAR_ENVF_GAIN_BOOST	Engine Parameters	
+par	$ENGINE_PAR_ENVF_ADAPTION	Engine Parameters	
+par	$ENGINE_PAR_INTMOD_FREQUENCY	Engine Parameters	
+par	$ENGINE_PAR_INTMOD_FREQUENCY_UNIT	Engine Parameters	
+par	$ENGINE_PAR_LFO_DELAY	Engine Parameters	
+par	$ENGINE_PAR_LFO_DELAY_UNIT	Engine Parameters	
+par	$ENGINE_PAR_LFO_PHASE	Engine Parameters	
+par	$ENGINE_PAR_INTMOD_PULSEWIDTH	Engine Parameters	
+par	$ENGINE_PAR_LFO_SINE	Engine Parameters	
+par	$ENGINE_PAR_LFO_RECT	Engine Parameters	
+par	$ENGINE_PAR_LFO_TRI	Engine Parameters	
+par	$ENGINE_PAR_LFO_SAW	Engine Parameters	
+par	$ENGINE_PAR_LFO_RAND	Engine Parameters	
+par	$ENGINE_PAR_LFO_NORMALIZE	Engine Parameters	
+par	$ENGINE_PAR_STEPSEQ_NUM_STEPS	Engine Parameters	
+par	$ENGINE_PAR_STEPSEQ_ONESHOT	Engine Parameters	
+par	$ENGINE_PAR_STEPSEQ_STEP_VALUE	Engine Parameters	
+par	$ENGINE_PAR_GLIDE_COEF	Engine Parameters	
+par	$ENGINE_PAR_GLIDE_COEF_UNIT	Engine Parameters	
+par	$ENGINE_PAR_EFFECT_TYPE	Engine Parameters	
+sym	$EFFECT_TYPE_NONE	Engine Parameters	
+sym	$EFFECT_TYPE_FILTER	Engine Parameters	
+sym	$EFFECT_TYPE_SOLID_GEQ	Engine Parameters	
+sym	$EFFECT_TYPE_COMPRESSOR	Engine Parameters	
+sym	$EFFECT_TYPE_FB_COMP	Engine Parameters	
+sym	$EFFECT_TYPE_LIMITER	Engine Parameters	
+sym	$EFFECT_TYPE_BUS_COMP	Engine Parameters	
+sym	$EFFECT_TYPE_SUPERGT	Engine Parameters	
+sym	$EFFECT_TYPE_TRANS_MASTER	Engine Parameters	
+sym	$EFFECT_TYPE_TRANSLIM	Engine Parameters	
+sym	$EFFECT_TYPE_ACBOX	Engine Parameters	
+sym	$EFFECT_TYPE_BASSINVADER	Engine Parameters	
+sym	$EFFECT_TYPE_BASSPRO	Engine Parameters	
+sym	$EFFECT_TYPE_CABINET	Engine Parameters	
+sym	$EFFECT_TYPE_EP_PREAMPS	Engine Parameters	
+sym	$EFFECT_TYPE_HOTSOLO	Engine Parameters	
+sym	$EFFECT_TYPE_JUMP	Engine Parameters	
+sym	$EFFECT_TYPE_SUPERFAST100	Engine Parameters	
+sym	$EFFECT_TYPE_TWANG	Engine Parameters	
+sym	$EFFECT_TYPE_VAN51	Engine Parameters	
+sym	$EFFECT_TYPE_BIGFUZZ	Engine Parameters	
+sym	$EFFECT_TYPE_CAT	Engine Parameters	
+sym	$EFFECT_TYPE_CHAINSAW	Engine Parameters	
+sym	$EFFECT_TYPE_CRYWAH	Engine Parameters	
+sym	$EFFECT_TYPE_DIRT	Engine Parameters	
+sym	$EFFECT_TYPE_DISTORTION	Engine Parameters	
+sym	$EFFECT_TYPE_DSTORTION	Engine Parameters	
+sym	$EFFECT_TYPE_FUZZ	Engine Parameters	
+sym	$EFFECT_TYPE_KOLOR	Engine Parameters	
+sym	$EFFECT_TYPE_SHAPER	Engine Parameters	
+sym	$EFFECT_TYPE_SKREAMER	Engine Parameters	
+sym	$EFFECT_TYPE_SKREAMERDLX	Engine Parameters	
+sym	$EFFECT_TYPE_BITE	Engine Parameters	
+sym	$EFFECT_TYPE_LOFI	Engine Parameters	
+sym	$EFFECT_TYPE_TAPE_SAT	Engine Parameters	
+sym	$EFFECT_TYPE_WOWFLUTTER	Engine Parameters	
+sym	$EFFECT_TYPE_PSYCHEDELAY	Engine Parameters	
+sym	$EFFECT_TYPE_REPLIKA	Engine Parameters	
+sym	$EFFECT_TYPE_TWINDELAY	Engine Parameters	
+sym	$EFFECT_TYPE_DELAY	Engine Parameters	
+sym	$EFFECT_TYPE_IRC	Engine Parameters	
+sym	$EFFECT_TYPE_PLATEREVERB	Engine Parameters	
+sym	$EFFECT_TYPE_RAUM	Engine Parameters	
+sym	$EFFECT_TYPE_REVERB2	Engine Parameters	
+sym	$EFFECT_TYPE_REVERB	Engine Parameters	
+sym	$EFFECT_TYPE_CHORAL	Engine Parameters	
+sym	$EFFECT_TYPE_FLAIR	Engine Parameters	
+sym	$EFFECT_TYPE_FREAK	Engine Parameters	
+sym	$EFFECT_TYPE_PHASIS	Engine Parameters	
+sym	$EFFECT_TYPE_RINGMOD	Engine Parameters	
+sym	$EFFECT_TYPE_ROTATOR	Engine Parameters	
+sym	$EFFECT_TYPE_VIBRATO_CHORUS	Engine Parameters	
+sym	$EFFECT_TYPE_CHORUS	Engine Parameters	
+sym	$EFFECT_TYPE_FLANGER	Engine Parameters	
+sym	$EFFECT_TYPE_PHASER	Engine Parameters	
+sym	$EFFECT_TYPE_BEATMASHER	Engine Parameters	
+sym	$EFFECT_TYPE_STEREO	Engine Parameters	
+sym	$EFFECT_TYPE_STEREO_TUNE	Engine Parameters	
+sym	$EFFECT_TYPE_SURROUND_PANNER	Engine Parameters	
+sym	$EFFECT_TYPE_AET_FILTER	Engine Parameters	
+sym	$EFFECT_TYPE_GAINER	Engine Parameters	
+sym	$EFFECT_TYPE_INVERTER	Engine Parameters	
+sym	$EFFECT_TYPE_SEND_LEVELS	Engine Parameters	
+par	$ENGINE_PAR_SEND_EFFECT_TYPE	Engine Parameters	
+par	$ENGINE_PAR_EFFECT_SUBTYPE	Engine Parameters	
+sym	$FILTER_TYPE_LP1POLE	Engine Parameters	
+sym	$FILTER_TYPE_HP1POLE	Engine Parameters	
+sym	$FILTER_TYPE_BP2POLE	Engine Parameters	
+sym	$FILTER_TYPE_LP2POLE	Engine Parameters	
+sym	$FILTER_TYPE_HP2POLE	Engine Parameters	
+sym	$FILTER_TYPE_LP4POLE	Engine Parameters	
+sym	$FILTER_TYPE_HP4POLE	Engine Parameters	
+sym	$FILTER_TYPE_BP4POLE	Engine Parameters	
+sym	$FILTER_TYPE_BR4POLE	Engine Parameters	
+sym	$FILTER_TYPE_LP6POLE	Engine Parameters	
+sym	$FILTER_TYPE_PHASER	Engine Parameters	
+sym	$FILTER_TYPE_VOWELA	Engine Parameters	
+sym	$FILTER_TYPE_VOWELB	Engine Parameters	
+sym	$FILTER_TYPE_PRO52	Engine Parameters	
+sym	$FILTER_TYPE_LADDER	Engine Parameters	
+sym	$FILTER_TYPE_VERSATILE	Engine Parameters	
+sym	$FILTER_TYPE_EQ1BAND	Engine Parameters	
+sym	$FILTER_TYPE_EQ2BAND	Engine Parameters	
+sym	$FILTER_TYPE_EQ3BAND	Engine Parameters	
+sym	$FILTER_TYPE_DAFT_LP	Engine Parameters	
+sym	$FILTER_TYPE_SV_LP1	Engine Parameters	
+sym	$FILTER_TYPE_SV_LP2	Engine Parameters	
+sym	$FILTER_TYPE_SV_LP4	Engine Parameters	
+sym	$FILTER_TYPE_SV_LP6	Engine Parameters	
+sym	$FILTER_TYPE_LDR_LP1	Engine Parameters	
+sym	$FILTER_TYPE_LDR_LP2	Engine Parameters	
+sym	$FILTER_TYPE_LDR_LP3	Engine Parameters	
+sym	$FILTER_TYPE_LDR_LP4	Engine Parameters	
+sym	$FILTER_TYPE_AR_LP2	Engine Parameters	
+sym	$FILTER_TYPE_AR_LP4	Engine Parameters	
+sym	$FILTER_TYPE_AR_LP24	Engine Parameters	
+sym	$FILTER_TYPE_SV_HP1	Engine Parameters	
+sym	$FILTER_TYPE_SV_HP2	Engine Parameters	
+sym	$FILTER_TYPE_SV_HP4	Engine Parameters	
+sym	$FILTER_TYPE_SV_HP6	Engine Parameters	
+sym	$FILTER_TYPE_LDR_HP1	Engine Parameters	
+sym	$FILTER_TYPE_LDR_HP2	Engine Parameters	
+sym	$FILTER_TYPE_LDR_HP3	Engine Parameters	
+sym	$FILTER_TYPE_LDR_HP4	Engine Parameters	
+sym	$FILTER_TYPE_AR_HP2	Engine Parameters	
+sym	$FILTER_TYPE_AR_HP4	Engine Parameters	
+sym	$FILTER_TYPE_AR_HP24	Engine Parameters	
+sym	$FILTER_TYPE_DAFT_HP	Engine Parameters	
+sym	$FILTER_TYPE_SV_BP2	Engine Parameters	
+sym	$FILTER_TYPE_SV_BP4	Engine Parameters	
+sym	$FILTER_TYPE_SV_BP6	Engine Parameters	
+sym	$FILTER_TYPE_LDR_BP2	Engine Parameters	
+sym	$FILTER_TYPE_LDR_BP4	Engine Parameters	
+sym	$FILTER_TYPE_AR_BP2	Engine Parameters	
+sym	$FILTER_TYPE_AR_BP4	Engine Parameters	
+sym	$FILTER_TYPE_AR_BP24	Engine Parameters	
+sym	$FILTER_TYPE_SV_NOTCH4	Engine Parameters	
+sym	$FILTER_TYPE_SV_NOTCH6	Engine Parameters	
+sym	$FILTER_TYPE_LDR_PEAK	Engine Parameters	
+sym	$FILTER_TYPE_LDR_NOTCH	Engine Parameters	
+sym	$FILTER_TYPE_SV_PAR_LPHP	Engine Parameters	
+sym	$FILTER_TYPE_SV_PAR_BPBP	Engine Parameters	
+sym	$FILTER_TYPE_SV_SER_LPHP	Engine Parameters	
+sym	$FILTER_TYPE_FORMANT_1	Engine Parameters	
+sym	$FILTER_TYPE_FORMANT_2	Engine Parameters	
+sym	$FILTER_TYPE_SIMPLE_LPHP	Engine Parameters	
+par	$ENGINE_PAR_INTMOD_TYPE	Engine Parameters	
+sym	$INTMOD_TYPE_NONE	Engine Parameters	
+sym	$INTMOD_TYPE_LFO	Engine Parameters	
+sym	$INTMOD_TYPE_ENVELOPE	Engine Parameters	
+sym	$INTMOD_TYPE_STEPMOD	Engine Parameters	
+sym	$INTMOD_TYPE_ENV_FOLLOW	Engine Parameters	
+sym	$INTMOD_TYPE_GLIDE	Engine Parameters	
+par	$ENGINE_PAR_INTMOD_SUBTYPE	Engine Parameters	
+sym	$ENV_TYPE_AHDSR	Engine Parameters	
+sym	$ENV_TYPE_FLEX	Engine Parameters	
+sym	$ENV_TYPE_DBD	Engine Parameters	
+sym	$LFO_TYPE_SINE	Engine Parameters	
+sym	$LFO_TYPE_RECTANGLE	Engine Parameters	
+sym	$LFO_TYPE_TRIANGLE	Engine Parameters	
+sym	$LFO_TYPE_SAWTOOTH	Engine Parameters	
+sym	$LFO_TYPE_RANDOM	Engine Parameters	
+sym	$LFO_TYPE_MULTI	Engine Parameters	
+par	$ENGINE_PAR_START_CRITERIA_MODE	Engine Parameters	
+sym	$START_CRITERIA_NONE	Engine Parameters	
+sym	$START_CRITERIA_ON_KEY	Engine Parameters	
+sym	$START_CRITERIA_ON_CONTROLLER	Engine Parameters	
+sym	$START_CRITERIA_CYCLE_ROUND_ROBIN	Engine Parameters	
+sym	$START_CRITERIA_CYCLE_RANDOM	Engine Parameters	
+sym	$START_CRITERIA_SLICE_TRIGGER	Engine Parameters	
+par	$ENGINE_PAR_START_CRITERIA_KEY_MIN	Engine Parameters	
+par	$ENGINE_PAR_START_CRITERIA_KEY_MAX	Engine Parameters	
+par	$ENGINE_PAR_START_CRITERIA_CONTROLLER	Engine Parameters	
+par	$ENGINE_PAR_START_CRITERIA_CC_MIN	Engine Parameters	
+par	$ENGINE_PAR_START_CRITERIA_CC_MAX	Engine Parameters	
+par	$ENGINE_PAR_START_CRITERIA_CYCLE_CLASS	Engine Parameters	
+par	$ENGINE_PAR_START_CRITERIA_ZONE_IDX	Engine Parameters	
+par	$ENGINE_PAR_START_CRITERIA_SLICE_IDX	Engine Parameters	
+par	$ENGINE_PAR_START_CRITERIA_SEQ_ONLY	Engine Parameters	
+par	$ENGINE_PAR_START_CRITERIA_NEXT_CRIT	Engine Parameters	
+sym	$START_CRITERIA_AND_NEXT	Engine Parameters	
+sym	$START_CRITERIA_AND_NOT_NEXT	Engine Parameters	
+sym	$START_CRITERIA_OR_NEXT	Engine Parameters	
+sym	$LOOP_PAR_MODE	Zone Parameters	
+sym	$LOOP_PAR_START	Zone Parameters	
+sym	$LOOP_PAR_LENGTH	Zone Parameters	
+sym	$LOOP_PAR_XFADE	Zone Parameters	
+sym	$LOOP_PAR_COUNT	Zone Parameters	
+sym	$LOOP_PAR_TUNING	Zone Parameters	
+var	ni_file_name	Zone Parameters	
+var	ni_file_full_path	Zone Parameters	
+var	ni_file_full_path_os	Zone Parameters	
+var	ni_file_extension	Zone Parameters	
+fn	set_midi	Multi Script	
