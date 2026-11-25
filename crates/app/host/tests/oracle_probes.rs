@@ -2,7 +2,8 @@
 //! (`tools/kontakt-oracle/probes/ksp/NAME.kspp` and `NAME.measured`, the
 //! `label<TAB>value` lines `ksp_probe.py` printed for Kontakt 8.13) reads the
 //! same values in KONTRA. A line marked `<TAB>unstable` read differently in
-//! repeated Kontakt runs (uninitialised memory) and is not compared.
+//! repeated Kontakt runs (uninitialised memory) and is not compared. A script
+//! Kontakt rejects reads -1000000 everywhere; so does one KONTRA rejects.
 #![cfg(test)]
 
 use std::path::Path;
@@ -13,9 +14,9 @@ use kontra_stream::{Store, StoreConfig};
 
 /// The probe as one init: `S` lines run in order, `R` (integer) and `T`
 /// (string) lines store their value, and the init ends with `message(cell)`:
-/// one result per run, as a message holds 320 bytes.
+/// one result per run, as a message holds 320 bytes. `X` lines follow it raw.
 fn script(probe: &str, cell: &str) -> String {
-    let (mut body, mut r, mut t) = (Vec::new(), 0, 0);
+    let (mut body, mut tail, mut r, mut t) = (Vec::new(), Vec::new(), 0, 0);
     for line in probe.lines().map(str::trim) {
         let read = |rest: &str| rest.split_once(' ').expect("label expr").1.to_owned();
         if let Some(s) = line.strip_prefix("S ") {
@@ -26,6 +27,8 @@ fn script(probe: &str, cell: &str) -> String {
         } else if let Some(rest) = line.strip_prefix("T ") {
             body.push(format!("!oracle_t[{t}] := {}", read(rest)));
             t += 1;
+        } else if let Some(x) = line.strip_prefix("X ") {
+            tail.push(x.to_owned());
         } else {
             assert!(
                 line.is_empty() || line.starts_with('#'),
@@ -34,11 +37,12 @@ fn script(probe: &str, cell: &str) -> String {
         }
     }
     format!(
-        "on init\n declare %oracle_r[{}]\n declare !oracle_t[{}]\n{}\n message({})\nend on\n",
+        "on init\n declare %oracle_r[{}]\n declare !oracle_t[{}]\n{}\n message({})\nend on\n{}\n",
         r.max(1),
         t.max(1),
         body.join("\n"),
-        cell
+        cell,
+        tail.join("\n")
     )
 }
 
@@ -62,7 +66,9 @@ fn results(probe: &str) -> Vec<(&str, String)> {
 }
 
 fn run(source: &str) -> String {
-    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let Ok(script) = kontra_ksp::compile(source, &[]) else {
+        return "-1000000".to_owned();
+    };
     let store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(Vec::new(), 16);
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];

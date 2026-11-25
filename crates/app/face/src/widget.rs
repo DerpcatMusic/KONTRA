@@ -266,8 +266,10 @@ pub(super) fn widget(
             flags: p.int("wf_flags").unwrap_or(0) as u32,
             cursor_us: p.int("wf_cursor").map_or(0, i64::from),
             table: vec![],
-            highlighted: None,
-            midi_start_note: 60,
+            // set_ui_wf_property: one highlighted slice (-1 none) and the
+            // MIDI drag's first note, 60 until set (the wf_props probe).
+            highlighted: p.int("wf_highlight").and_then(|v| u32::try_from(v).ok()),
+            midi_start_note: p.int("wf_drag_note").map_or(60, |v| v.clamp(0, 127) as u8),
             peaks: vec![],
             length_us: 0,
             // Modes 2 (X-ray) and 3 (X-ray filled) draw alike (probe/wave.ksp).

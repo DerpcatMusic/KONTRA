@@ -188,6 +188,8 @@ const MAPPED: &[&str] = &[
     "level_meter_generic",
     "wf_flags",
     "wf_cursor",
+    "wf_highlight",
+    "wf_drag_note",
 ];
 
 /// The text style of each picture state, in [`ui::Widget::state_styles`] order.

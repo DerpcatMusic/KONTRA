@@ -1,0 +1,11 @@
+# Kontakt 8.13: fs_navigate outside a file selector's on ui_control (the manual allows it only
+# there). Measured 2026-11-25: every value -1000000 on two slots, so the script is rejected;
+# fs_navigate_unreached.kspp shows it is rejected when compiled, and fs_navigate_knob / _note /
+# _selector that any on ui_control takes it and on note does not.
+# Run: ksp_probe.py "ANALOG STRINGS.nki" this-file > fs_navigate.measured
+R before 1
+S declare ui_file_selector $fs
+S fs_navigate(get_ui_id($fs), 1)
+R after 2
+S fs_navigate(get_ui_id($fs), 0)
+R after_back 3

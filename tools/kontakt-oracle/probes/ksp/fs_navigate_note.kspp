@@ -1,0 +1,10 @@
+# Kontakt 8.13: fs_navigate in on note. If the script is rejected, every value reads -1000000
+# (fs_navigate.kspp: in on init it is rejected, even unreached).
+# Run: ksp_probe.py "ANALOG STRINGS.nki" this-file > fs_navigate_note.measured
+R before 1
+S declare ui_file_selector $fs
+S declare ui_knob $kn(0, 100, 1)
+R after 2
+X on note
+X   fs_navigate(get_ui_id($fs), 1)
+X end on

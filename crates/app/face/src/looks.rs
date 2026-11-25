@@ -58,7 +58,7 @@ impl Looks for Engine {
 /// a script that names one shares its id (`move_control` sets the
 /// `$CONTROL_PAR_GRID_X`/`_Y` cells); the table's shown steps have no
 /// constant, so always get their own.
-pub const LOOK: [&str; 19] = [
+pub const LOOK: [&str; 21] = [
     "$CONTROL_PAR_TEXT",
     "$CONTROL_PAR_LABEL",
     "$CONTROL_PAR_HELP",
@@ -75,6 +75,8 @@ pub const LOOK: [&str; 19] = [
     "level_meter_generic",
     "wf_flags",
     "wf_cursor",
+    "wf_highlight",
+    "wf_drag_note",
     "$CONTROL_PAR_WT_ZONE",
     "$CONTROL_PAR_PICTURE",
     "$CONTROL_PAR_PICTURE_STATE",

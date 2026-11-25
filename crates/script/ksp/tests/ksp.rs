@@ -769,7 +769,8 @@ fn an_array_loaded_in_init_is_persistent() {
 }
 
 /// Every oracle probe (`tools/kontakt-oracle/probes/ksp/*.kspp`) compiles with
-/// our compiler first, so a typo costs no oracle run (`ksp_probe.py` runs them in Kontakt).
+/// our compiler first, so a typo costs no oracle run (`ksp_probe.py` runs them in Kontakt);
+/// one Kontakt rejected fails.
 #[test]
 fn every_oracle_probe_compiles() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -798,8 +799,14 @@ fn every_oracle_probe_compiles() {
         }
         src += "end on\n";
         src += &extra;
-        if let Err(e) = kontra_ksp::compile(&src, &[]) {
-            panic!("{}: {e:?}", path.display());
+        // A probe Kontakt rejected (every value measured reads -1000000) must
+        // fail here too.
+        let measured = std::fs::read_to_string(path.with_extension("measured")).unwrap_or_default();
+        let rejected = !measured.is_empty() && measured.lines().all(|l| l.ends_with("\t-1000000"));
+        match kontra_ksp::compile(&src, &[]) {
+            Err(e) if !rejected => panic!("{}: {e:?}", path.display()),
+            Ok(_) if rejected => panic!("{}: Kontakt rejects it", path.display()),
+            _ => {}
         }
         seen += 1;
     }

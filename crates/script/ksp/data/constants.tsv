@@ -1,6 +1,6 @@
 # KSP constants whose value matters, every value measured in real Kontakt 8.13.1 (native
 # oracle, tools/kontakt-oracle/ksp_constants.py, 2026-10-28). Every other catalog
-# name is an opaque symbol.
+# name is an opaque symbol. $UI_WF_PROP_TABLE_IDX_HIGHLIGHT and _MIDI_DRAG_START_NOTE: probes/ksp/wf_props.kspp.
 $NI_WT_QUALITY_LOFI	0
 $NI_WT_QUALITY_MEDIUM	1
 $NI_WT_QUALITY_HIGH	2
@@ -634,6 +634,8 @@ $START_CRITERIA_OR_NEXT	2
 $START_CRITERIA_SLICE_TRIGGER	5
 $UI_WF_PROP_FLAGS	2
 $UI_WF_PROP_PLAY_CURSOR	1
+$UI_WF_PROP_MIDI_DRAG_START_NOTE	5
+$UI_WF_PROP_TABLE_IDX_HIGHLIGHT	4
 $UI_WF_PROP_TABLE_VAL	3
 # KONTRA has no edit view, so the viewed group is the first: Kontakt 8.13 reads 0 in on init
 # (conformance unit init_ref_group_only).
