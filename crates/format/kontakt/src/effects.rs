@@ -413,7 +413,10 @@ fn slot_effect(
                 Some(ir::EffectKind::Filter(_) | ir::EffectKind::Clocked(_))
             ) && params.output_gain == 0.0));
     let wow_mix = slot.mix.filter(|_| effect.id == 0x6a);
-    let raum_mix = slot.mix.filter(|_| effect.id == 0x65).map(crate::raum::mix_gains);
+    let raum_mix = slot
+        .mix
+        .filter(|_| effect.id == 0x65)
+        .map(crate::raum::mix_gains);
     let effect_out = ir::Effect {
         kind: kind.unwrap_or(if parallel {
             ir::EffectKind::OtherWet

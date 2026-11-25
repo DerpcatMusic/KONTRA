@@ -459,7 +459,11 @@ fn a_mono_sample_pans_by_its_instruments_mono_law() {
         (0..8).map(|_| level(&mut e, &[])).last().unwrap()
     };
     let [unity, _] = render(0.0, None);
-    for (pan, want) in [(0.0, [0.5, 0.5]), (0.5, [0.146_447, 0.853_553]), (-1.0, [1.0, 0.0])] {
+    for (pan, want) in [
+        (0.0, [0.5, 0.5]),
+        (0.5, [0.146_447, 0.853_553]),
+        (-1.0, [1.0, 0.0]),
+    ] {
         let [l, r] = render(pan, Some(kontra_ir::Balance::HalfSine)).map(|side| side / unity);
         assert!(
             (l - want[0]).abs() < 1e-3 && (r - want[1]).abs() < 1e-3,
