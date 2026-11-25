@@ -431,17 +431,32 @@ impl Store {
             }
             return Some(value);
         }
+        // The reference 8.13 (the wf_props probe): the highlighted slice
+        // (-1 until set) and the MIDI drag's first note (60) are one value
+        // each, whatever the index, kept as set; the table keeps one value
+        // per slice (0 until set).
+        let table = |index: i32| (index >= 0).then(|| WF_TABLE.wrapping_add(index));
         if call.action == Action::GetUiWfProperty {
             // What `set_ui_wf_property` stored; a property KONTRA does not keep reads 0.
-            let par = [
-                (look.wf_prop_cursor, look.wf_cursor),
-                (look.wf_prop_flags, look.wf_flags),
-            ]
-            .into_iter()
-            .find_map(|(prop, par)| (prop == a).then_some(par));
-            let value = par.map_or(0, |par| self.control_par(c, slot, call.cells, id, par));
+            let held = |par: i32, or: i32| {
+                n.and_then(|n| self.pars(slot, n).iter().find(|p| p.0 == par).map(|p| p.1))
+                    .unwrap_or(or)
+            };
+            let value = match a {
+                _ if a == look.wf_prop_highlight => held(look.wf_highlight, -1),
+                _ if a == look.wf_prop_drag_note => held(look.wf_drag_note, 60),
+                _ if a == look.wf_prop_table => table(b).map_or(0, |k| held(k, 0)),
+                _ if a == look.wf_prop_cursor => {
+                    self.control_par(c, slot, call.cells, id, look.wf_cursor)
+                }
+                _ if a == look.wf_prop_flags => {
+                    self.control_par(c, slot, call.cells, id, look.wf_flags)
+                }
+                _ => 0,
+            };
             return Some(HostValue::Int(value));
         }
+        let cell;
         let pars: &[(i32, i32)] = match call.action {
             Action::SetKnobUnit => &[(look.unit, a)],
             Action::SetKnobDefval => &[(look.default, a)],
@@ -455,6 +470,19 @@ impl Store {
             Action::AttachZone => &[(look.wf_zone, a), (look.wf_flags, b)],
             Action::SetUiWfProperty if a == look.wf_prop_cursor => &[(look.wf_cursor, int(3))],
             Action::SetUiWfProperty if a == look.wf_prop_flags => &[(look.wf_flags, int(3))],
+            Action::SetUiWfProperty if a == look.wf_prop_highlight => {
+                &[(look.wf_highlight, int(3))]
+            }
+            Action::SetUiWfProperty if a == look.wf_prop_drag_note => {
+                &[(look.wf_drag_note, int(3))]
+            }
+            Action::SetUiWfProperty if a == look.wf_prop_table => match table(b) {
+                Some(k) => {
+                    cell = [(k, int(3))];
+                    &cell
+                }
+                None => &[],
+            },
             // Cells from 1 move the control and show it: the position reads
             // back on the reference grid without the first cell's corner
             // ((3, 2) reads 184, 21; the UI geometry tool page). A cell below 1
@@ -496,6 +524,10 @@ impl Store {
 
 /// `$HIDE_WHOLE_CONTROL`, the bit `move_control` sets and clears.
 const HIDE_WHOLE_CONTROL: i32 = 16;
+
+/// Where a waveform keeps its table's values among its parameters: slice n
+/// under `WF_TABLE + n`, below every catalog constant and symbol id.
+const WF_TABLE: i32 = -0x4000_0000;
 
 /// Where grid cell `cell` (from 1) of `pitch` reads.
 fn grid_pos(cell: i32, pitch: i32) -> i32 {

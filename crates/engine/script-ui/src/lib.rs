@@ -140,6 +140,13 @@ pub struct LookPars {
     /// The `set_ui_wf_property` properties for the cursor and the flags.
     pub wf_prop_cursor: i32,
     pub wf_prop_flags: i32,
+    /// The highlighted slice and the MIDI drag's first note, and the
+    /// `set_ui_wf_property` properties for them and the table's values.
+    pub wf_highlight: i32,
+    pub wf_drag_note: i32,
+    pub wf_prop_table: i32,
+    pub wf_prop_highlight: i32,
+    pub wf_prop_drag_note: i32,
     /// `$CONTROL_PAR_FILEPATH`: the file a file selector picked last, and
     /// `$CONTROL_PAR_BASEPATH`, the folder it may pick under.
     pub filepath: i32,

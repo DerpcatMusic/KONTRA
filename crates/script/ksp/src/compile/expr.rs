@@ -286,13 +286,18 @@ impl<'a> Compiler<'a> {
     /// Emits a builtin call; returns the type it leaves on the stack, if any.
     /// Built-in variables Kontakt rejects in on init (conformance
     /// `init_*_only`), and the RPN ones outside on rpn/nrpn (`note_reads_rpn`,
-    /// `rpn_reads_rpn`). ponytail: function bodies are not judged.
+    /// `rpn_reads_rpn`), and `fs_navigate` outside on ui_control (the manual;
+    /// the fs_navigate probes: rejected in on init, even unreached, and on
+    /// note; a knob's on ui_control takes it). ponytail: function bodies are
+    /// not judged.
     fn placed(&self, b: Builtin, span: Span) -> Result<(), Error> {
+        let ui_only = b == Builtin::FsNavigate;
         let rpn = matches!(b, Builtin::RpnAddress | Builtin::RpnValue);
         let not_init = rpn || matches!(b, Builtin::GroupsAffected | Builtin::KeyDownOct);
         let in_rpn = matches!(self.callback, Some(CallbackKind::Rpn | CallbackKind::Nrpn));
         if (not_init && self.callback == Some(CallbackKind::Init))
             || (rpn && !in_rpn && self.callback.is_some())
+            || (ui_only && self.callback.is_some_and(|c| c != CallbackKind::UiControl))
         {
             return Err(Error::new(
                 span,

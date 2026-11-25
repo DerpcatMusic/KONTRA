@@ -1,0 +1,43 @@
+# Kontakt 8.13: the waveform properties a script sets and reads (get/set_ui_wf_property), per slice
+# index, on a waveform with no zone and one attached to zone 0. Measured 2026-11-25: constants
+# 1..5; the highlight (-1 until set) and the MIDI drag's first note (60) are one value each,
+# whatever the index, kept unclamped; the table keeps one value per slice (0 until set).
+# Run: ksp_probe.py "ANALOG STRINGS.nki" this-file > wf_props.measured
+# KONTRA replays it: crates/app/host/tests/oracle_probes.rs.
+R k_cursor $UI_WF_PROP_PLAY_CURSOR
+R k_flags $UI_WF_PROP_FLAGS
+R k_table_val $UI_WF_PROP_TABLE_VAL
+R k_highlight $UI_WF_PROP_TABLE_IDX_HIGHLIGHT
+R k_drag_note $UI_WF_PROP_MIDI_DRAG_START_NOTE
+S declare ui_waveform $wf(6, 6)
+R hl_0 get_ui_wf_property($wf, $UI_WF_PROP_TABLE_IDX_HIGHLIGHT, 0)
+R md_0 get_ui_wf_property($wf, $UI_WF_PROP_MIDI_DRAG_START_NOTE, 0)
+R tv_0 get_ui_wf_property($wf, $UI_WF_PROP_TABLE_VAL, 0)
+S set_ui_wf_property($wf, $UI_WF_PROP_TABLE_IDX_HIGHLIGHT, 2, 1)
+R hl_2_set get_ui_wf_property($wf, $UI_WF_PROP_TABLE_IDX_HIGHLIGHT, 2)
+R hl_0_after get_ui_wf_property($wf, $UI_WF_PROP_TABLE_IDX_HIGHLIGHT, 0)
+R hl_3_after get_ui_wf_property($wf, $UI_WF_PROP_TABLE_IDX_HIGHLIGHT, 3)
+S set_ui_wf_property($wf, $UI_WF_PROP_TABLE_IDX_HIGHLIGHT, 1, 7)
+R hl_1_seven get_ui_wf_property($wf, $UI_WF_PROP_TABLE_IDX_HIGHLIGHT, 1)
+S set_ui_wf_property($wf, $UI_WF_PROP_TABLE_IDX_HIGHLIGHT, -1, 1)
+R hl_neg get_ui_wf_property($wf, $UI_WF_PROP_TABLE_IDX_HIGHLIGHT, -1)
+S set_ui_wf_property($wf, $UI_WF_PROP_TABLE_IDX_HIGHLIGHT, 5000, 1)
+R hl_5000 get_ui_wf_property($wf, $UI_WF_PROP_TABLE_IDX_HIGHLIGHT, 5000)
+S set_ui_wf_property($wf, $UI_WF_PROP_MIDI_DRAG_START_NOTE, 0, 60)
+R md_60 get_ui_wf_property($wf, $UI_WF_PROP_MIDI_DRAG_START_NOTE, 0)
+R md_60_idx5 get_ui_wf_property($wf, $UI_WF_PROP_MIDI_DRAG_START_NOTE, 5)
+S set_ui_wf_property($wf, $UI_WF_PROP_MIDI_DRAG_START_NOTE, 3, 200)
+R md_200 get_ui_wf_property($wf, $UI_WF_PROP_MIDI_DRAG_START_NOTE, 0)
+S set_ui_wf_property($wf, $UI_WF_PROP_MIDI_DRAG_START_NOTE, 0, -5)
+R md_neg get_ui_wf_property($wf, $UI_WF_PROP_MIDI_DRAG_START_NOTE, 0)
+S set_ui_wf_property($wf, $UI_WF_PROP_TABLE_VAL, 1, 500)
+R tv_1 get_ui_wf_property($wf, $UI_WF_PROP_TABLE_VAL, 1)
+R tv_0_after get_ui_wf_property($wf, $UI_WF_PROP_TABLE_VAL, 0)
+S declare ui_waveform $wz(6, 6)
+S attach_zone($wz, 0, 0)
+R z_hl_0 get_ui_wf_property($wz, $UI_WF_PROP_TABLE_IDX_HIGHLIGHT, 0)
+R z_md_0 get_ui_wf_property($wz, $UI_WF_PROP_MIDI_DRAG_START_NOTE, 0)
+S set_ui_wf_property($wz, $UI_WF_PROP_TABLE_IDX_HIGHLIGHT, 2, 1)
+R z_hl_2 get_ui_wf_property($wz, $UI_WF_PROP_TABLE_IDX_HIGHLIGHT, 2)
+S set_ui_wf_property($wz, $UI_WF_PROP_MIDI_DRAG_START_NOTE, 0, 72)
+R z_md_72 get_ui_wf_property($wz, $UI_WF_PROP_MIDI_DRAG_START_NOTE, 0)

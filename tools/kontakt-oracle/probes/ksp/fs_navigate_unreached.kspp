@@ -1,0 +1,9 @@
+# Kontakt 8.13: fs_navigate in an `on init` branch that never runs. Beside fs_navigate.kspp it
+# tells a compile-time rejection (this one fails too) from a run-time failure.
+# Run: ksp_probe.py "ANALOG STRINGS.nki" this-file > fs_navigate_unreached.measured
+R before 1
+S declare ui_file_selector $fs
+S if (0 = 1)
+S fs_navigate(get_ui_id($fs), 1)
+S end if
+R after 2
