@@ -42,8 +42,12 @@ oracle (`tools/kontakt-oracle/disp_sweep.py`), plus the KSP manual's parameter n
 - Raum's predelay and high-cut laws move to `kontra-law` as
   `FormulaId::RaumPredelayMs` / `RaumHighCutHz`. The DSP and the readout use
   the same law.
-- A readout's line is shown as `lo + (hi − lo)·x` in f32, as measured. The
-  law's own `lo·(1 − x) + hi·x` rounds differently at ties.
+- A readout's line is shown as `lo + (hi − lo)·x` and its curve as
+  `e^(ln lo + x·(ln hi − ln lo))`, both in f32, as measured. The laws' own forms
+  round differently at ties. The print formatter keeps ties to even: Morphology's
+  route intensity 6.25 reads "  6.2" (oracle 2026-10-29). Ring Mod's 31.25 Hz
+  reads " 31.3" because the f32 curve gives 31.250002, not because ties round
+  away from zero. No value has an end text for rounding.
 
 ## Acceptance criteria
 

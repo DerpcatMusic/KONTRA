@@ -48,6 +48,53 @@ pub struct Controls {
     pub kinds: Vec<u8>,
     /// The parameter ids of `$CONTROL_PAR_TYPE`, `_WIDTH` and `_HEIGHT`.
     pub shape_pars: [i32; 3],
+    /// Parameters that read something other than 0 before their script sets
+    /// them, or that do not keep every write as written.
+    pub laws: Vec<ParLaw>,
+}
+
+/// What parameter `par` of a control of type `kind` (a `$NI_CONTROL_TYPE_*`;
+/// 0 for every type) reads before its script sets it, and how a write lands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParLaw {
+    pub par: i32,
+    pub kind: u8,
+    pub unset: i32,
+    pub write: ParWrite,
+    pub read: ParRead,
+}
+
+/// How `get_control_par` reads a parameter the script set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParRead {
+    /// As kept.
+    Stored,
+    /// What it reads unset, whatever was set.
+    Unset,
+    /// A colour, with its alpha byte opaque: 13 reads 0xff00000d.
+    Opaque,
+    /// A grid cell, kept from 1, read from 0.
+    Cell,
+    /// Parameter `from` as kept (`opaque`: as a colour), else what `or` reads.
+    Inherit { from: i32, or: i32, opaque: bool },
+}
+
+/// The alpha byte of an opaque colour.
+const OPAQUE: i32 = 0xff00_0000_u32 as i32;
+
+/// How a `set_control_par` value is kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParWrite {
+    /// As written.
+    Keep,
+    /// Its low byte: 300 reads 44, -5 reads 251.
+    Byte,
+    /// 1 for any value but 0.
+    Flag,
+    /// Within `lo..=hi`; a write outside leaves the parameter as it was.
+    Within(i32, i32),
+    /// At least `lo`: below reads `lo`.
+    AtLeast(i32),
 }
 
 /// The size a control reads before its script sets one: every type answers
@@ -74,8 +121,14 @@ impl Controls {
         {
             Some(0) => i32::from(kind),
             Some(at) if kind != 0 => DEFAULT_SIZE.get(at - 1).copied().unwrap_or(0),
-            _ => 0,
+            _ => self.law(n, par).map_or(0, |l| l.unset),
         }
+    }
+
+    /// The law of parameter `par` of control `n`, if it has one.
+    fn law(&self, n: usize, par: i32) -> Option<&ParLaw> {
+        let kind = self.kinds.get(n).copied().filter(|&k| k != 0)?;
+        (self.laws.iter()).find(|l| l.par == par && (l.kind == kind || l.kind == 0))
     }
 
     /// Index of the control with UI id `id`.
@@ -143,12 +196,36 @@ impl Store {
     }
 
     fn control_par_of(&self, c: &Controls, slot: u8, cells: &[i64], id: i32, par: i32) -> i32 {
-        match c.control(id, par) {
-            Some((_, Some(cell))) => cells.get(cell).map_or(0, |&v| v as i32),
-            Some((n, None)) => (self.pars(slot, n).iter())
-                .find(|(p, _)| *p == par)
-                .map_or_else(|| c.unset(n, par), |&(_, v)| v),
-            None => 0,
+        let (n, cell) = match c.control(id, par) {
+            Some((_, Some(cell))) => return cells.get(cell).map_or(0, |&v| v as i32),
+            Some(found) => found,
+            None => return 0,
+        };
+        debug_assert!(cell.is_none());
+        let stored = |p: i32| {
+            self.pars(slot, n)
+                .iter()
+                .find(|(q, _)| *q == p)
+                .map(|&(_, v)| v)
+        };
+        let opaque = |v: i32| v | OPAQUE;
+        match c.law(n, par).map_or(ParRead::Stored, |l| l.read) {
+            ParRead::Unset => c.unset(n, par),
+            ParRead::Inherit {
+                from,
+                or,
+                opaque: o,
+            } => stored(from)
+                .map(|v| if o { opaque(v) } else { v })
+                .unwrap_or_else(|| self.control_par_of(c, slot, cells, id, or)),
+            read => stored(par).map_or_else(
+                || c.unset(n, par),
+                |v| match read {
+                    ParRead::Opaque => opaque(v),
+                    ParRead::Cell => v - 1,
+                    _ => v,
+                },
+            ),
         }
     }
 
@@ -211,22 +288,55 @@ impl Store {
                 }
             }
             Some((n, None)) => {
-                let Some(pars) = (self.pars.get_mut(usize::from(slot))).and_then(|s| s.get_mut(n))
-                else {
+                let value = match c.law(n, par).map(|l| l.write) {
+                    Some(ParWrite::Byte) => value & 0xff,
+                    Some(ParWrite::Flag) => i32::from(value != 0),
+                    Some(ParWrite::Within(lo, hi)) if !(lo..=hi).contains(&value) => return,
+                    Some(ParWrite::AtLeast(lo)) => value.max(lo),
+                    _ => value,
+                };
+                // A grid cell moves the control there and below 1 is cell 1; a
+                // pixel move leaves the cell (Kontakt 8.13 oracle,
+                // control_pars_2: cell 3 reads 2 at 184 px, 0 and 1 read 0 at
+                // 0). Cells are kept from 1, as `move_control` sets them.
+                let look = &c.look;
+                // A grid size sizes the control in 92 by 21 cells; a pixel
+                // size leaves it (control_pars_4: a label's 3 by 2 cells read
+                // 276 by 42, a 200 px label grid width 1).
+                let sizes = [(look.grid_width, 1, 92), (look.grid_height, 2, 21)];
+                if let Some(&(_, at, pitch)) = sizes.iter().find(|s| s.0 == par) {
+                    let px = c.shape_pars.get(at).copied().unwrap_or(i32::MIN);
+                    self.keep(slot, n, par, value);
+                    self.keep(slot, n, px, value.saturating_mul(pitch));
                     return;
-                };
-                let changed = match pars.iter_mut().find(|(p, _)| *p == par) {
-                    Some(slot) => std::mem::replace(&mut slot.1, value) != value,
-                    None => {
-                        pars.push((par, value));
-                        true
-                    }
-                };
-                if changed {
-                    self.touch(slot, n);
+                }
+                let grid = [(look.grid_x, look.pos_x, 92), (look.grid_y, look.pos_y, 21)];
+                if let Some(&(_, pos, pitch)) = grid.iter().find(|g| g.0 == par) {
+                    let cell = value.max(1);
+                    self.keep(slot, n, par, cell);
+                    self.keep(slot, n, pos, grid_pos(cell, pitch));
+                } else {
+                    self.keep(slot, n, par, value);
                 }
             }
             None => {}
+        }
+    }
+
+    /// Stores parameter `par` of control `n` as `value`.
+    fn keep(&mut self, slot: u8, n: usize, par: i32, value: i32) {
+        let Some(pars) = (self.pars.get_mut(usize::from(slot))).and_then(|s| s.get_mut(n)) else {
+            return;
+        };
+        let changed = match pars.iter_mut().find(|(p, _)| *p == par) {
+            Some(slot) => std::mem::replace(&mut slot.1, value) != value,
+            None => {
+                pars.push((par, value));
+                true
+            }
+        };
+        if changed {
+            self.touch(slot, n);
         }
     }
 
@@ -305,14 +415,22 @@ impl Store {
             Action::SetUiWfProperty if a == look.wf_prop_flags => &[(look.wf_flags, int(3))],
             // The position reads back on Kontakt's grid without the first
             // cell's corner, -1 when (0, 0) hides it (Kontakt 8 oracle,
-            // `tools/ksp-ui` geometry page: (3, 2) reads 184, 21).
+            // `tools/ksp-ui` geometry page: (3, 2) reads 184, 21). Stored as
+            // is: a cell set through `set_control_par` follows another law.
             // ponytail: one of x, y at 0 reads -1 too; only (0, 0) probed.
-            Action::MoveControl => &[
-                (look.grid_x, a),
-                (look.grid_y, b),
-                (look.pos_x, grid_pos(a, 92)),
-                (look.pos_y, grid_pos(b, 21)),
-            ],
+            Action::MoveControl => {
+                for (par, value) in [
+                    (look.grid_x, a),
+                    (look.grid_y, b),
+                    (look.pos_x, grid_pos(a, 92)),
+                    (look.pos_y, grid_pos(b, 21)),
+                ] {
+                    if let Some(n) = n {
+                        self.keep(slot, n, par, value);
+                    }
+                }
+                return Some(HostValue::Nothing);
+            }
             Action::MoveControlPx => &[(look.pos_x, a), (look.pos_y, b)],
             _ => return None,
         };

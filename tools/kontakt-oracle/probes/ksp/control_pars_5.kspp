@@ -1,0 +1,17 @@
+# Kontakt 8.13: whether an untouched ui_wavetable's end colour and alpha read the same each time (control_pars_3's
+# first wavetable read 0xff000072 and 0, control_pars_1's read -1), and after one unrelated set.
+# Run: ksp_probe.py "ANALOG STRINGS.nki" this-file > control_pars_5.measured
+S declare ui_wavetable $w0
+S declare ui_wavetable $w1
+S declare ui_wavetable $w2
+S declare ui_wavetable $w3
+R w0_end_color get_control_par(get_ui_id($w0), $CONTROL_PAR_WAVE_END_COLOR)
+R w0_end_alpha get_control_par(get_ui_id($w0), $CONTROL_PAR_WAVE_END_ALPHA)
+R w1_end_color get_control_par(get_ui_id($w1), $CONTROL_PAR_WAVE_END_COLOR)
+R w1_end_alpha get_control_par(get_ui_id($w1), $CONTROL_PAR_WAVE_END_ALPHA)
+R w2_end_color get_control_par(get_ui_id($w2), $CONTROL_PAR_WAVE_END_COLOR)
+R w2_end_alpha get_control_par(get_ui_id($w2), $CONTROL_PAR_WAVE_END_ALPHA)
+R w0_end_color_again get_control_par(get_ui_id($w0), $CONTROL_PAR_WAVE_END_COLOR)
+S set_control_par(get_ui_id($w3), $CONTROL_PAR_PARALLAX_X, 5)
+R w3_end_color get_control_par(get_ui_id($w3), $CONTROL_PAR_WAVE_END_COLOR)
+R w3_end_alpha get_control_par(get_ui_id($w3), $CONTROL_PAR_WAVE_END_ALPHA)

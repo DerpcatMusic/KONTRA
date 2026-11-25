@@ -1,6 +1,9 @@
 //! A compiled KSP script as the engine's [`ScriptPlan`].
 
-use kontra_engine::{Callbacks, Controls, EnginePar, EnginePars, LookPars, ScriptPlan, Text, ir};
+use kontra_engine::{
+    Callbacks, Controls, EnginePar, EnginePars, LookPars, ParLaw, ParRead, ParWrite, ScriptPlan,
+    Text, ir,
+};
 use kontra_face::LOOK;
 use kontra_ksp::ControlKind;
 use kontra_ksp::{CallbackKind, Cells, FIRST_UI_ID, SYMBOL_BASE, Script};
@@ -377,7 +380,140 @@ fn controls(script: &Script) -> Controls {
             "$CONTROL_PAR_HEIGHT",
         ]
         .map(|name| symbol(script, name)),
+        laws: laws(script),
     }
+}
+
+/// Control parameters that read something other than 0 before a script sets
+/// them, do not keep every write, or read other than as kept, by control type
+/// (`None`: every type; the first row that fits wins), as Kontakt 8.13
+/// answers `get_control_par` (oracle,
+/// `tools/kontakt-oracle/probes/ksp/control_pars_*.kspp`).
+#[rustfmt::skip]
+const LAWS: &[(&str, Option<ControlKind>, i32, ParWrite, Read)] = {
+    use ControlKind::{Knob, LevelMeter, Slider, Switch, Waveform, Wavetable, Xy};
+    use ParWrite::{AtLeast, Byte, Flag, Keep, Within};
+    use Read::{Cell, Inherit, Opaque, Stored, Unset};
+    &[
+        // Measured on a knob, a switch, a label, a slider and a wavetable.
+        ("$CONTROL_PAR_POS_X", None, -1, Keep, Stored),
+        ("$CONTROL_PAR_POS_Y", None, -1, Keep, Stored),
+        ("$CONTROL_PAR_GRID_X", None, -1, Keep, Cell),
+        ("$CONTROL_PAR_GRID_Y", None, -1, Keep, Cell),
+        // A knob reads 87 by 18 px and one cell whatever its script sets
+        // (control_pars_4, a knob without a picture); a label or a button
+        // takes both. Kept as set: how a knob with a picture draws a size is
+        // not measured.
+        ("$CONTROL_PAR_WIDTH", Some(Knob), 0, Keep, Unset),
+        ("$CONTROL_PAR_HEIGHT", Some(Knob), 0, Keep, Unset),
+        ("$CONTROL_PAR_GRID_WIDTH", Some(Knob), 1, Keep, Unset),
+        ("$CONTROL_PAR_GRID_HEIGHT", Some(Knob), 1, Keep, Unset),
+        ("$CONTROL_PAR_GRID_WIDTH", None, 1, Keep, Stored),
+        ("$CONTROL_PAR_GRID_HEIGHT", None, 1, Keep, Stored),
+        ("$CONTROL_PAR_ALLOW_AUTOMATION", Some(Knob), 1, Flag, Stored),
+        ("$CONTROL_PAR_ALLOW_AUTOMATION", Some(Slider), 1, Flag, Stored),
+        ("$CONTROL_PAR_ALLOW_AUTOMATION", Some(Switch), 1, Flag, Stored),
+        ("$CONTROL_PAR_ALLOW_AUTOMATION", None, 0, Flag, Stored),
+        ("$CONTROL_PAR_AUTOMATION_ID", None, 0, Within(0, 2047), Stored),
+        ("$CONTROL_PAR_DISABLE_TEXT_SHIFTING", None, 0, Flag, Stored),
+        ("$CONTROL_PAR_UNIT", None, 0, Within(0, 6), Stored),
+        ("$CONTROL_PAR_VALUEPOS_Y", None, 0, AtLeast(0), Stored),
+        ("$CONTROL_PAR_FONT_TYPE", None, 0, AtLeast(0), Stored),
+        ("$CONTROL_PAR_FONT_TYPE_ON", None, 0, AtLeast(0), Stored),
+        ("$CONTROL_PAR_FONT_TYPE_OFF_PRESSED", None, 0, AtLeast(0), Stored),
+        ("$CONTROL_PAR_FONT_TYPE_ON_PRESSED", None, 0, AtLeast(0), Stored),
+        ("$CONTROL_PAR_FONT_TYPE_OFF_HOVER", None, 0, AtLeast(0), Stored),
+        ("$CONTROL_PAR_FONT_TYPE_ON_HOVER", None, 0, AtLeast(0), Stored),
+        ("$CONTROL_PAR_RANGE_MAX", Some(LevelMeter), 1_000_000, Keep, Stored),
+        ("$CONTROL_PAR_PEAK_COLOR", Some(LevelMeter), -1, Keep, Stored),
+        ("$CONTROL_PAR_ON_COLOR", Some(LevelMeter), -1, Keep, Stored),
+        ("$CONTROL_PAR_OFF_COLOR", Some(LevelMeter), -9_934_744, Keep, Stored),
+        ("$CONTROL_PAR_OVERLOAD_COLOR", Some(LevelMeter), -65_536, Keep, Stored),
+        ("$CONTROL_PAR_BG_COLOR", Some(LevelMeter), -10_592_674, Keep, Stored),
+        ("$CONTROL_PAR_BG_ALPHA", Some(Waveform), 255, Byte, Stored),
+        ("$CONTROL_PAR_BG_COLOR", Some(Waveform), -14_935_012, Keep, Stored),
+        ("$CONTROL_PAR_WAVE_COLOR", Some(Waveform), 0xff_ffff, Keep, Stored),
+        ("$CONTROL_PAR_WAVE_CURSOR_COLOR", Some(Waveform), 0xff_ffff, Keep, Stored),
+        ("$CONTROL_PAR_SLICEMARKERS_COLOR", Some(Waveform), 0xff_ffff, Keep, Stored),
+        // A wavetable's getters read crossed (control_pars_3: each set to its
+        // own value, then all read); what is kept, and drawn, is as set.
+        ("$CONTROL_PAR_WT_ZONE", Some(Wavetable), -1, Keep, Stored),
+        ("$CONTROL_PAR_WT_VIS_MODE", Some(Wavetable), 1, Keep, Stored),
+        ("$CONTROL_PAR_BG_ALPHA", Some(Wavetable), 255, Byte, Stored),
+        ("$CONTROL_PAR_BG_COLOR", Some(Wavetable), -14_935_012, Keep, Opaque),
+        ("$CONTROL_PAR_WAVE_COLOR", Some(Wavetable), 0, Keep, Unset),
+        ("$CONTROL_PAR_WAVE_ALPHA", Some(Wavetable), 0, Keep, Unset),
+        ("$CONTROL_PAR_WAVETABLE_COLOR", Some(Wavetable), -1, Keep, Opaque),
+        ("$CONTROL_PAR_WAVETABLE_ALPHA", Some(Wavetable), 80, Byte, Stored),
+        (
+            "$CONTROL_PAR_WAVE_END_COLOR",
+            Some(Wavetable),
+            -1,
+            Keep,
+            Inherit(
+                "$CONTROL_PAR_WAVETABLE_END_COLOR",
+                "$CONTROL_PAR_WAVETABLE_COLOR",
+                true,
+            ),
+        ),
+        (
+            "$CONTROL_PAR_WAVE_END_ALPHA",
+            Some(Wavetable),
+            80,
+            Keep,
+            Inherit(
+                "$CONTROL_PAR_WAVETABLE_END_ALPHA",
+                "$CONTROL_PAR_WAVETABLE_ALPHA",
+                false,
+            ),
+        ),
+        ("$CONTROL_PAR_WAVETABLE_END_COLOR", Some(Wavetable), 0, Keep, Unset),
+        ("$CONTROL_PAR_WAVETABLE_END_ALPHA", Some(Wavetable), 0, Keep, Unset),
+        ("$CONTROL_PAR_MOUSE_BEHAVIOUR_X", Some(Xy), 1000, Keep, Stored),
+        ("$CONTROL_PAR_MOUSE_BEHAVIOUR_Y", Some(Xy), 1000, Keep, Stored),
+    ]
+};
+
+/// [`LAWS`] keyed by the ids `script` uses. A name neither the script nor
+/// the look uses takes an id of its own past both, which no call can pass.
+fn laws(script: &Script) -> Vec<ParLaw> {
+    let names: Vec<&str> = LAWS.iter().map(|l| l.0).collect();
+    let id = |name: &str| match symbol(script, name) {
+        i32::MIN if !LOOK.contains(&name) => {
+            let k = names.iter().position(|n| *n == name).unwrap_or(0);
+            SYMBOL_BASE + (script.symbols.len() + LOOK.len() + 1 + k) as i32
+        }
+        _ => look_par(script, name),
+    };
+    (LAWS.iter())
+        .map(|&(name, kind, unset, write, read)| ParLaw {
+            par: id(name),
+            kind: kind.map_or(0, |k| k as u8),
+            unset,
+            write,
+            read: match read {
+                Read::Stored => ParRead::Stored,
+                Read::Unset => ParRead::Unset,
+                Read::Opaque => ParRead::Opaque,
+                Read::Cell => ParRead::Cell,
+                Read::Inherit(from, or, opaque) => ParRead::Inherit {
+                    from: id(from),
+                    or: id(or),
+                    opaque,
+                },
+            },
+        })
+        .collect()
+}
+
+/// [`ParRead`] by parameter name.
+#[derive(Clone, Copy)]
+enum Read {
+    Stored,
+    Unset,
+    Opaque,
+    Cell,
+    Inherit(&'static str, &'static str, bool),
 }
 
 /// The id the look parameter `name` is stored under.
@@ -405,6 +541,8 @@ fn look(script: &Script) -> LookPars {
         hide: par("$CONTROL_PAR_HIDE"),
         grid_x: par("$CONTROL_PAR_GRID_X"),
         grid_y: par("$CONTROL_PAR_GRID_Y"),
+        grid_width: par("$CONTROL_PAR_GRID_WIDTH"),
+        grid_height: par("$CONTROL_PAR_GRID_HEIGHT"),
         steps_shown: par("table_steps_shown"),
         meter: par("level_meter"),
         meter_group: par("level_meter_group"),
