@@ -206,6 +206,9 @@ impl Look {
                     ink(0xfe_fefe)
                 };
                 let offset = if *shift { scale } else { 0. };
+                // TEXT_ALIGNMENT places a button's words too (the reference
+                // 8.13, tools/ksp-ui fields page).
+                let align = style.map_or(model::Align::Center, |s| s.align);
                 let label = if *on
                     && button.is_some()
                     && style.is_none_or(|s| matches!(s.font, model::Font::Stock(0 | 12)))
@@ -219,7 +222,7 @@ impl Look {
                     field_words(
                         caption,
                         ink,
-                        model::Align::Center,
+                        align,
                         (w, h, scale, device),
                         glyphs,
                         if stock {
@@ -234,8 +237,10 @@ impl Look {
                     words_at(
                         caption,
                         ink,
-                        model::Align::Center,
-                        (w, h, scale),
+                        align,
+                        // Kontakt keeps a button's words 4 px further from
+                        // its right edge than a menu's (fields page).
+                        ((w - 4. * scale).max(0.), h, scale),
                         wd.text_y,
                         style.and_then(|s| s.size),
                     )
@@ -313,10 +318,12 @@ impl Look {
                     );
                 }
                 let ink = ink(0xfe_fefe);
+                // A menu's words take its TEXT_ALIGNMENT and run under the
+                // arrow (the reference 8.13, tools/ksp-ui fields page).
                 parts.push(words_at(
                     caption,
                     ink,
-                    model::Align::Left,
+                    style.map_or(model::Align::Left, |s| s.align),
                     (w, h, scale),
                     wd.text_y,
                     None,

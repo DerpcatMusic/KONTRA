@@ -110,11 +110,25 @@ evidence_freshness_days: 180
   height (open: one size measured). The wheel cannot be driven in the rig.
 - Overlaps and hiding (tools/ksp-ui layers page): the click goes where
   KONTRA's draw order and visibility put it in every measured case, after
-  a control that sets no Z_LAYER took its panel's (it kept its own). A
-  child's own Z_LAYER inside a panel is not measured. Callback order
+  a panel that sets a Z_LAYER puts all it holds on it (it had kept each
+  control's own). Two nested panels that both set one are not measured;
+  KONTRA takes the outermost. A mouse area hears no click or mouse drag in
+  either; its file drops are not driven by the rig. Callback order
   (`ui_controls`, then `ui_control`; `persistence_changed` after init)
   matched already.
 - `$CONTROL_PAR_NONE`, `_DND_BEHAVIOUR` and `_MIDI_EXPORT_AREA_IDX` measured
   0, 40 and 105; KONTRA keeps CONTROL_PAR constants opaque.
 - `$CONTROL_PAR_WAVETABLE` in the coverage report is a wrapped table row of
   the manual (`_END_COLOR`), not a parameter.
+- Visual fidelity of the Original look (tools/ksp-ui fields page and nine
+  library instruments shot at 100 %, compared with `tools/ksp-ui/align.py`).
+  Fixed: a menu's, a button's and a switch's words follow TEXT_ALIGNMENT
+  (KONTRA had centred every button and set every menu from the left); a
+  menu's words run under its arrow. Open, and in the drawing rather than
+  the face: Kontakt's stock font (font 0) is a pixel font, which KONTRA
+  draws in a smooth face of another width (44 against 47 px for the
+  probe's line) and weight (Pacific's value edits, Vista's buttons); on a
+  field, fonts 1 and 13 draw 2–5 px wider than Kontakt's (their sizes were
+  fitted on labels). Two
+  instruments (Conflux, Shreddage 3.5) load empty in the oracle and are not
+  compared.

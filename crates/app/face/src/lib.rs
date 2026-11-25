@@ -757,22 +757,42 @@ fn build(
         }
         bld.ui.widgets.push(w);
     }
+    // Panels can be nested in any order; break a cycle rather than hand over
+    // a malformed tree,
+    // before panels hand down their layers.
+    if let Err(ui::Error::ParentCycle(at)) = bld.ui.validate()
+        && let Some(w) = bld.ui.widgets.get_mut(at.0)
+    {
+        let parent = w.parent.take();
+        bld.unsupported(
+            Some(at.0),
+            "$CONTROL_PAR_PARENT_PANEL",
+            format!("cycle via {:?}", parent.map(|p| p.0)),
+        );
+    }
     // A panel's Z_LAYER moves what it holds (script manual, ui_panel): a
-    // control that sets none takes its nearest panel's (the reference 8.13,
-    // tools/ksp-ui layers page: a back-layer panel's button sits under a
-    // default one).
-    // ponytail: a child's own Z_LAYER inside a panel is not measured; it keeps its own.
+    // panel that sets one puts everything in it on that layer, whatever the
+    // control's own; in a panel that sets none a control keeps its own (the
+    // reference 8.13, tools/ksp-ui layers page: a front-layer button in a
+    // back-layer panel sits under a default one, a back-layer button in a
+    // plain panel under one too).
+    // ponytail: with two nested panels that both set a layer the outermost
+    // wins, from the manual's wording; not measured.
     // Widget n is declaration n (the parent links above rely on it too).
-    for i in 0..decls.len() {
-        let mut at = i;
-        // At most one step per declaration, so a parent cycle ends.
+    let tree: Vec<(Option<ui::WidgetRef>, i32)> =
+        bld.ui.widgets.iter().map(|w| (w.parent, w.z)).collect();
+    for (i, w) in bld.ui.widgets.iter_mut().enumerate().take(decls.len()) {
+        let mut at = tree.get(i).and_then(|t| t.0);
+        // Bounded: one step per declaration.
         for _ in 0..decls.len() {
-            match bld.ui.widgets[at].parent {
-                Some(p) if !own_layer[at] => at = p.0,
-                _ => break,
+            let Some(&(parent, z)) = at.and_then(|p| tree.get(p.0)) else {
+                break;
+            };
+            if at.is_some_and(|p| own_layer.get(p.0) == Some(&true)) {
+                w.z = z;
             }
+            at = parent;
         }
-        bld.ui.widgets[i].z = bld.ui.widgets[at].z;
     }
     // A picture the script turns or moves with a knob or slider's value,
     // and one it picks by a menu's value: it spells that menu's item.
@@ -800,18 +820,6 @@ fn build(
         .and_then(|n| nui::face(bld, face, n, decls));
     for skipped in face.view.iter().flat_map(|v| &v.skipped) {
         bld.unsupported(None, "performance view control", skipped.clone());
-    }
-    // Panels can be nested in any order; break a cycle rather than hand over
-    // a malformed tree.
-    if let Err(ui::Error::ParentCycle(at)) = bld.ui.validate()
-        && let Some(w) = bld.ui.widgets.get_mut(at.0)
-    {
-        let parent = w.parent.take();
-        bld.unsupported(
-            Some(at.0),
-            "$CONTROL_PAR_PARENT_PANEL",
-            format!("cycle via {:?}", parent.map(|p| p.0)),
-        );
     }
     bld.ui.validate()?;
     Ok(native)
