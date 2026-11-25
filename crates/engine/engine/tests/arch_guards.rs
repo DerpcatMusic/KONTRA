@@ -142,7 +142,7 @@ fn ir_has_zero_fn_pointers_and_zero_fn_addr_eq() {
 fn vendor_word_ratchet_in_engine_dsp_and_model() {
     let crates_dir = kontra_crates_dir();
     // Tight ceilings measured at Wave 2A; only allowed to move DOWN.
-    let ceilings = [("engine", 291usize), ("dsp", 17usize), ("model", 176usize)];
+    let ceilings = [("engine", 280usize), ("dsp", 17usize), ("model", 176usize)];
     for (layer, max_allowed) in ceilings {
         let files = layer_rs_files(&crates_dir, layer);
         assert!(!files.is_empty(), "no source files found in {layer}");

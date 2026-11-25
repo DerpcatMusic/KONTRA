@@ -421,6 +421,8 @@ impl HostApi for Engine {
                 HostValue::Int(current.map_or(0, |n| i32::from(n.velocity_byte)))
             }
             Action::CcNum => HostValue::Int(i32::from(self.running.controller)),
+            Action::RpnAddress => HostValue::Int(self.rpn(false)),
+            Action::RpnValue => HostValue::Int(self.rpn(true)),
             // 1 for the controller this controller callback runs for.
             Action::CcTouched => flag(
                 self.running.kind == Kind::Controller

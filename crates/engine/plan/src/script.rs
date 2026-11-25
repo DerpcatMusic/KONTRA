@@ -206,6 +206,11 @@ pub struct Callbacks {
     pub note: Option<u32>,
     pub release: Option<u32>,
     pub controller: Option<u32>,
+    /// `on rpn` and `on nrpn`, run when a data entry LSB (CC 38) arrives
+    /// after an RPN (CC 101/100) or NRPN (CC 99/98) address
+    /// (the rpn_audio probe).
+    pub rpn: Option<u32>,
+    pub nrpn: Option<u32>,
     /// `on poly_at`, run for each polyphonic aftertouch message.
     pub poly_at: Option<u32>,
     /// `on note_controller` and `on midi_in`.

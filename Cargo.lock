@@ -2640,6 +2640,9 @@ dependencies = [
 name = "moose-dsp"
 version = "7.0.0"
 source = "git+https://github.com/Matari-Audio/moose#bd92271ccf2bc02bcf0319fec521f7f164528ae4"
+dependencies = [
+ "rustfft",
+]
 
 [[package]]
 name = "moose-loader"

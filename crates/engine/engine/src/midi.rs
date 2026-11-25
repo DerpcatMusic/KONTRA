@@ -93,6 +93,18 @@ impl Engine {
                 self.set_control(slot, link.id, link.value(value));
             }
         }
+        // The reference 8.13 runs on rpn / on nrpn as the data entry LSB arrives,
+        // before that CC's on controller (probes/rpn_audio.py).
+        match controller {
+            101 | 100 => self.rpn_nrpn = Some(false),
+            99 | 98 => self.rpn_nrpn = Some(true),
+            38 => {
+                if let Some(nrpn) = self.rpn_nrpn {
+                    self.run_rpns(nrpn);
+                }
+            }
+            _ => {}
+        }
         if self.run_controllers(controller) != Heard::Passed {
             return;
         }
@@ -296,6 +308,34 @@ impl Engine {
             }
         }
         Heard::Passed
+    }
+
+    /// Each script's `on rpn` (or `on nrpn`).
+    fn run_rpns(&mut self, nrpn: bool) {
+        let plan = Arc::clone(&self.plan);
+        for (slot, script) in (0u8..).zip(&plan.scripts) {
+            let (entry, kind) = match nrpn {
+                false => (script.callbacks.rpn, Kind::Rpn),
+                true => (script.callbacks.nrpn, Kind::Nrpn),
+            };
+            if let Some(entry) = entry {
+                self.run_callback(slot, entry, Running::new(kind, None));
+            }
+        }
+    }
+
+    /// `$RPN_ADDRESS` and `$RPN_VALUE`: the 14-bit address of the running
+    /// callback's kind and the data entry, MSB times 128 plus LSB.
+    pub(crate) fn rpn(&self, value: bool) -> i32 {
+        let pair = |hi: usize, lo: usize| {
+            let cc = |n: usize| i32::from(self.cc_values.get(n).copied().unwrap_or(0));
+            cc(hi) * 128 + cc(lo)
+        };
+        match (value, self.running.kind == Kind::Nrpn) {
+            (true, _) => pair(6, 38),
+            (false, false) => pair(101, 100),
+            (false, true) => pair(99, 98),
+        }
     }
 
     /// The output's controllers set the instrument's fader and pan.

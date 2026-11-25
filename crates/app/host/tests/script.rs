@@ -2413,6 +2413,50 @@ fn a_control_change_runs_ui_update_last() {
     assert_eq!(e.last_message(), "k update 7");
 }
 
+/// Kontakt 8.13 (tools/kontakt-oracle/probes/rpn_audio.py): on rpn / on nrpn
+/// run as the data entry LSB (CC 38) arrives, before its on controller, with
+/// the 14-bit address of the last RPN or NRPN pair and the data entry; a data
+/// entry MSB alone or an increment runs only on controller.
+#[test]
+fn rpn_and_nrpn_run_on_the_data_entry_lsb() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare @log
+        end on
+        on rpn
+            @log := @log & \"rpn \" & $RPN_ADDRESS & \" \" & $RPN_VALUE & \" \" & $NI_CALLBACK_TYPE & \"|\"
+        end on
+        on nrpn
+            @log := @log & \"nrpn \" & $RPN_ADDRESS & \" \" & $RPN_VALUE & \" \" & $NI_CALLBACK_TYPE & \"|\"
+        end on
+        on controller
+            @log := @log & $CC_NUM & \"|\"
+            message(@log)
+        end on",
+    );
+    let steps = [
+        (101, 0),
+        (100, 1),
+        (6, 64),
+        (38, 10),
+        (99, 1),
+        (98, 5),
+        (6, 3),
+        (38, 7),
+        (6, 9),
+        (96, 0),
+    ];
+    level(&mut e, &steps.map(|(c, v)| cc(c, v)));
+    assert_eq!(
+        e.last_message(),
+        "101|100|6|rpn 1 8202 10|38|99|98|6|nrpn 133 391 11|38|6|96|"
+    );
+}
+
 /// KSP manual: `group_name` returns a group's name (zero-based index, empty
 /// past the last group); `get_sel_zones_idx` ends its list with -1, and with
 /// no Mapping Editor nothing is selected; `%EVENT_PAR[$EVENT_PAR_n]` reads
@@ -5704,6 +5748,11 @@ fn detections_read_what_kontakt_reads_of_a_tone() {
             @out := @out & \" \" & real_to_int(~v * 1000.0)
             detect_pitch(0, ~v)
             @out := @out & \" \" & real_to_int(~v * 1000.0)
+            detect_tempo(0, ~v)
+            @out := @out & \" \" & real_to_int(~v * 1000.0)
+            declare $k
+            detect_key(0, $k)
+            @out := @out & \" \" & $k
             detect_loudness(0, ~v)
             message(@out & \" \" & real_to_int(~v * 1000.0))
         end on",
@@ -5711,7 +5760,9 @@ fn detections_read_what_kontakt_reads_of_a_tone() {
     level(&mut e, &[]);
     let got = e.last_message();
     let (head, loudness) = got.rsplit_once(' ').unwrap();
-    assert_eq!(head, "5000 -9237 -6227 69000");
+    // Tempo 120 from the 1 s length, key 14 (D minor) from Kontakt's chroma
+    // (docs/re/MIR.md).
+    assert_eq!(head, "5000 -9237 -6227 69000 120000 14");
     // ponytail: within 0.1 LU; Kontakt's K-weighting at 44.1 kHz is one point off ours (-9.916).
     let loudness: i32 = loudness.parse().unwrap();
     assert!((loudness + 9961).abs() < 100, "{loudness}");
@@ -5790,7 +5841,7 @@ fn a_user_zone_takes_parameters_a_sample_and_a_loop_in_init() {
 #[test]
 fn a_user_zones_sample_reads_rate_tempo_and_bounded_start() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
-    let mut e = engine_with_tone_zone(
+    let e = engine_with_tone_zone(
         &mut store,
         &format!(
             "on init
@@ -5818,7 +5869,7 @@ fn a_user_zones_sample_reads_rate_tempo_and_bounded_start() {
 #[test]
 fn a_user_zones_edges_meet_and_fades_clamp_to_its_width() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
-    let mut e = engine_with_tone_zone(
+    let e = engine_with_tone_zone(
         &mut store,
         "on init
             declare $y
@@ -5835,6 +5886,48 @@ fn a_user_zones_edges_meet_and_fades_clamp_to_its_width() {
         end on",
     );
     assert_eq!(e.last_message(), "50 50 50 50 1 1");
+}
+
+/// Kontakt 8.13 (probes/ksp/user_zones_fades.kspp, user_zones_readonly.kspp):
+/// a zone's two fades share its key (velocity) width, the later one set
+/// shortening the other; a start under 0 reads 0; `$ZONE_PAR_SELECTED`
+/// reads 0 and ignores a set, as `$ZONE_PAR_SAMPLE_RATE` does.
+#[test]
+fn a_user_zones_fades_share_its_width() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let path = tone_path();
+    let e = engine_with_tone_zone(
+        &mut store,
+        &format!(
+            "on init
+                declare $z
+                declare @o
+                set_num_user_zones(1)
+                $z := %NI_USER_ZONE_IDS[0]
+                set_sample($z, \"{path}\")
+                set_zone_par($z, $ZONE_PAR_LOW_KEY, 60)
+                set_zone_par($z, $ZONE_PAR_HIGH_KEY, 71)
+                set_zone_par($z, $ZONE_PAR_LOW_VELO, 1)
+                set_zone_par($z, $ZONE_PAR_HIGH_VELO, 100)
+                set_zone_par($z, $ZONE_PAR_FADE_LOW_KEY, 5000)
+                @o := get_zone_par($z, $ZONE_PAR_FADE_LOW_KEY)
+                set_zone_par($z, $ZONE_PAR_FADE_HIGH_KEY, 4)
+                @o := @o & \" \" & get_zone_par($z, $ZONE_PAR_FADE_HIGH_KEY) & \" \" & get_zone_par($z, $ZONE_PAR_FADE_LOW_KEY)
+                set_zone_par($z, $ZONE_PAR_FADE_LOW_VELO, -5)
+                @o := @o & \" \" & get_zone_par($z, $ZONE_PAR_FADE_LOW_VELO)
+                set_zone_par($z, $ZONE_PAR_FADE_HIGH_VELO, 500)
+                @o := @o & \" \" & get_zone_par($z, $ZONE_PAR_FADE_HIGH_VELO)
+                set_zone_par($z, $ZONE_PAR_FADE_LOW_VELO, 30)
+                @o := @o & \" \" & get_zone_par($z, $ZONE_PAR_FADE_LOW_VELO) & \" \" & get_zone_par($z, $ZONE_PAR_FADE_HIGH_VELO)
+                set_zone_par($z, $ZONE_PAR_SAMPLE_START, -5)
+                @o := @o & \" \" & get_zone_par($z, $ZONE_PAR_SAMPLE_START)
+                set_zone_par($z, $ZONE_PAR_SELECTED, 1)
+                set_zone_par($z, $ZONE_PAR_SAMPLE_RATE, 22050)
+                message(@o & \" \" & get_zone_par($z, $ZONE_PAR_SELECTED) & \" \" & get_zone_par($z, $ZONE_PAR_SAMPLE_RATE))
+            end on"
+        ),
+    );
+    assert_eq!(e.last_message(), "12 4 8 0 100 30 70 0 0 44100");
 }
 
 /// KSP manual (`set_sample`): outside `on init` it returns an async id; the

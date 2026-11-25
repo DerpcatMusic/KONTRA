@@ -129,10 +129,10 @@ impl UserZone {
             ZonePar::Volume => self.volume = value.clamp(VOLUME_RANGE.0, VOLUME_RANGE.1),
             ZonePar::Pan => self.pan = value.clamp(PAN_RANGE.0, PAN_RANGE.1),
             ZonePar::Tune => self.tune = value.clamp(TUNE_RANGE.0, TUNE_RANGE.1),
-            ZonePar::FadeLowKey => self.fades[0] = value.clamp(0, width),
-            ZonePar::FadeHighKey => self.fades[1] = value.clamp(0, width),
-            ZonePar::FadeLowVelocity => self.fades[2] = value.clamp(0, vwidth),
-            ZonePar::FadeHighVelocity => self.fades[3] = value.clamp(0, vwidth),
+            ZonePar::FadeLowKey => share(&mut self.fades, 0, value, width),
+            ZonePar::FadeHighKey => share(&mut self.fades, 1, value, width),
+            ZonePar::FadeLowVelocity => share(&mut self.fades, 2, value, vwidth),
+            ZonePar::FadeHighVelocity => share(&mut self.fades, 3, value, vwidth),
             ZonePar::SampleStart => {
                 self.start = bound(value).min(self.end.saturating_sub(4));
             }
@@ -713,5 +713,23 @@ mod bpm_tests {
         ] {
             assert_eq!(secs(len), bpm, "{len} s");
         }
+    }
+}
+
+/// Sets fade `i` of `fades` (low key, high key, low velocity, high velocity)
+/// within `width`, shortening its pair so the two never overlap: the reference 8.13
+/// reads a 12-key zone's fades 12 then 4 and 8 (the user_zones_fades probe).
+pub(crate) fn share<T: Copy + Into<i32> + TryFrom<i32>>(
+    fades: &mut [T],
+    i: usize,
+    value: i32,
+    width: i32,
+) {
+    let v = value.clamp(0, width);
+    let other = i ^ 1;
+    let rest = (width - v).min(fades[other].into());
+    if let (Ok(v), Ok(rest)) = (T::try_from(v), T::try_from(rest)) {
+        fades[i] = v;
+        fades[other] = rest;
     }
 }

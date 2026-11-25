@@ -466,18 +466,10 @@ impl ZoneTable {
                 let v = value.clamp(TUNE_RANGE.0, TUNE_RANGE.1);
                 p.tune_semitones = v as f32 / 100.0;
             }
-            ZonePar::FadeLowKey => {
-                p.key_fade[0] = u8::try_from(value.clamp(0, width)).unwrap_or(u8::MAX)
-            }
-            ZonePar::FadeHighKey => {
-                p.key_fade[1] = u8::try_from(value.clamp(0, width)).unwrap_or(u8::MAX)
-            }
-            ZonePar::FadeLowVelocity => {
-                p.vel_fade[0] = u8::try_from(value.clamp(0, vwidth)).unwrap_or(u8::MAX)
-            }
-            ZonePar::FadeHighVelocity => {
-                p.vel_fade[1] = u8::try_from(value.clamp(0, vwidth)).unwrap_or(u8::MAX)
-            }
+            ZonePar::FadeLowKey => crate::zones::share(&mut p.key_fade, 0, value, width),
+            ZonePar::FadeHighKey => crate::zones::share(&mut p.key_fade, 1, value, width),
+            ZonePar::FadeLowVelocity => crate::zones::share(&mut p.vel_fade, 0, value, vwidth),
+            ZonePar::FadeHighVelocity => crate::zones::share(&mut p.vel_fade, 1, value, vwidth),
             ZonePar::SampleStart => {
                 p.start = bound(value).min(p.end.saturating_sub(4));
             }

@@ -8,6 +8,9 @@ pub enum Kind {
     Note,
     Release,
     Controller,
+    /// `on rpn` and `on nrpn`.
+    Rpn,
+    Nrpn,
     PolyAt,
     /// `on note_controller`: a per-note controller another script slot set.
     NoteController,
@@ -83,6 +86,8 @@ impl Running {
             Kind::Note => 1,
             Kind::Release => 2,
             Kind::Controller => 3,
+            Kind::Rpn => 10,
+            Kind::Nrpn => 11,
             Kind::PolyAt => POLY_AT,
             Kind::NoteController => kontra_vm::midi::CB_NOTE_CONTROLLER,
             Kind::MidiIn => kontra_vm::midi::CB_MIDI_IN,

@@ -65,13 +65,6 @@ const CONTROL_VALUE: &str = "$CONTROL_PAR_VALUE";
 /// Callbacks a KSP instrument may have running or waiting at once.
 const COROUTINES: usize = 64;
 
-/// Whether the engine runs callbacks of `kind` (the ones [`plan`] wires),
-/// for coverage reports.
-#[must_use]
-pub fn runs(kind: CallbackKind) -> bool {
-    !matches!(kind, CallbackKind::Rpn | CallbackKind::Nrpn)
-}
-
 /// The script's arrays, by first cell, for the array files it names.
 fn arrays(script: &Script) -> Vec<(u32, bool, Box<str>)> {
     let array = |v: &kontra_ksp::Variable| match v.cells {
@@ -104,6 +97,8 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
             note: entry(CallbackKind::Note),
             release: entry(CallbackKind::Release),
             controller: entry(CallbackKind::Controller),
+            rpn: entry(CallbackKind::Rpn),
+            nrpn: entry(CallbackKind::Nrpn),
             poly_at: entry(CallbackKind::PolyAt),
             note_controller: entry(CallbackKind::NoteController),
             midi_in: entry(CallbackKind::MidiIn),
@@ -624,6 +619,8 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
             note: entry(defined.note, kontra_lua::Callbacks::NOTE),
             release: entry(defined.release, kontra_lua::Callbacks::RELEASE),
             controller: entry(defined.controller, kontra_lua::Callbacks::CONTROLLER),
+            rpn: None,
+            nrpn: None,
             poly_at: entry(defined.poly_at, kontra_lua::Callbacks::POLY_AT),
             note_controller: None,
             midi_in: None,

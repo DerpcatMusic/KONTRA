@@ -1,0 +1,53 @@
+# detect_key/detect_tempo laws in Kontakt 8.13 on init (run: ksp_probe.py <nki> this-file), one user
+# zone per WAV of detect_signals.py (44.1 kHz mono). Model of Kontakt 8.exe (detectKey [ref],
+# detectTempo [ref]) predicts: key 0 21 4 invalid 14, tempo*1000 120000 120000 96000 120000 80000.
+# Measured 2026-11-25: key 0 21 4 -1 14 (so -1, not $NI_DETECT_KEY_INVALID 6, and C major 0 though
+# $NI_DETECT_KEY_C_MAJOR reads 1), tempo 120000 120000 96000 120000 159995 (the 0.75 s tone is 16538
+# samples at 22050 Hz), sample type 0 for all five.
+S declare $r
+S declare $k
+S declare ~v
+S declare $z
+S set_num_user_zones(5)
+S $z := %NI_USER_ZONE_IDS[0]
+S $r := set_sample($z, "Z:/data/dev/workspace/BuildScratch/oracle-mf/c_major.wav")
+S detect_key($z, $k)
+R key_c_major $k
+S detect_tempo($z, ~v)
+R tempo_c_major real_to_int(~v * 1000.0)
+S detect_sample_type($z, $k)
+R type_c_major $k
+S $z := %NI_USER_ZONE_IDS[1]
+S $r := set_sample($z, "Z:/data/dev/workspace/BuildScratch/oracle-mf/a_minor.wav")
+S detect_key($z, $k)
+R key_a_minor $k
+S detect_tempo($z, ~v)
+R tempo_a_minor real_to_int(~v * 1000.0)
+S detect_sample_type($z, $k)
+R type_a_minor $k
+S $z := %NI_USER_ZONE_IDS[2]
+S $r := set_sample($z, "Z:/data/dev/workspace/BuildScratch/oracle-mf/e_major.wav")
+S detect_key($z, $k)
+R key_e_major $k
+S detect_tempo($z, ~v)
+R tempo_e_major real_to_int(~v * 1000.0)
+S detect_sample_type($z, $k)
+R type_e_major $k
+S $z := %NI_USER_ZONE_IDS[3]
+S $r := set_sample($z, "Z:/data/dev/workspace/BuildScratch/oracle-mf/quiet.wav")
+S detect_key($z, $k)
+R key_quiet $k
+S detect_tempo($z, ~v)
+R tempo_quiet real_to_int(~v * 1000.0)
+S detect_sample_type($z, $k)
+R type_quiet $k
+S $z := %NI_USER_ZONE_IDS[4]
+S $r := set_sample($z, "Z:/data/dev/workspace/BuildScratch/oracle-mf/tone_750ms.wav")
+S detect_key($z, $k)
+R key_tone_750ms $k
+S detect_tempo($z, ~v)
+R tempo_tone_750ms real_to_int(~v * 1000.0)
+S detect_sample_type($z, $k)
+R type_tone_750ms $k
+R key_invalid $NI_DETECT_KEY_INVALID
+R key_c_major $NI_DETECT_KEY_C_MAJOR
