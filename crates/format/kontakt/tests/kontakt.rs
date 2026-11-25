@@ -424,3 +424,40 @@ fn a_saved_default_keyswitch_is_carried() {
         i.diagnostics
     );
 }
+
+/// BParScript's reader reads strings through [ref], where a
+/// negative i32 length is a null string with no bytes. An empty script slot of a
+/// repo-saved instrument is 23 bytes of public data, all of them read (decode fails on
+/// trailing bytes).
+#[test]
+fn empty_script_slot_reads_its_null_strings() {
+    use ni_file::kontakt::native_schema;
+    use ni_file::kontakt::{Chunk, KontaktChunks, StructuredObject};
+    use std::io::Cursor;
+
+    fn scripts(chunk: &Chunk, out: &mut Vec<StructuredObject>) {
+        let Ok(o) = StructuredObject::read(Cursor::new(chunk.data.as_slice())) else {
+            return;
+        };
+        for c in &o.children {
+            scripts(c, out);
+        }
+        if chunk.id == 0x06 {
+            out.push(o);
+        }
+    }
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../tools/ksp-ui/lib/Instruments/text.nki");
+    let (bytes, _) = kontra_format_kontakt::decode(&path).unwrap();
+    let mut found = Vec::new();
+    for c in &KontaktChunks::read(Cursor::new(bytes)).unwrap().0 {
+        scripts(c, &mut found);
+    }
+    // One script and four empty slots; before N, every one was rejected.
+    let sizes: Vec<usize> = found.iter().map(|o| o.public_data.len()).collect();
+    assert_eq!(sizes.iter().filter(|&&n| n == 23).count(), 4, "{sizes:?}");
+    for o in &found {
+        let d = native_schema::decode(0x06, o.version, &o.public_data).unwrap();
+        assert!(d.opaque.is_empty(), "{:?}", d.opaque);
+    }
+}

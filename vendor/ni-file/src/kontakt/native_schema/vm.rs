@@ -12,10 +12,17 @@ use std::sync::OnceLock;
 use super::curated::{CURATED_PRIVATE, CURATED_PROGRAMS, CURATED_READERS, CURATED_UNFRAMED};
 use super::programs::{ProgramSrc, ReaderSrc, PROGRAMS, READERS};
 
-/// The generated programs and the curated ones (curated.rs).
+/// The generated programs and the curated ones (curated.rs); a curated program replaces the
+/// generated one of the same name.
 fn all_programs() -> &'static [&'static ProgramSrc] {
     static ALL: OnceLock<Vec<&'static ProgramSrc>> = OnceLock::new();
-    ALL.get_or_init(|| CURATED_PROGRAMS.iter().chain(PROGRAMS).collect())
+    ALL.get_or_init(|| {
+        let curated = |p: &ProgramSrc| CURATED_PROGRAMS.iter().any(|c| c.name == p.name);
+        CURATED_PROGRAMS
+            .iter()
+            .chain(PROGRAMS.iter().filter(|p| !curated(p)))
+            .collect()
+    })
 }
 
 /// The generated readers, with a curated reader (curated.rs) in place of the row of the same
@@ -444,6 +451,7 @@ impl Builder<'_> {
                             "Q" => 'Q',
                             "S" => 'S',
                             "W" => 'W',
+                            "N" => 'N',
                             "O" => return Ok(self.rd_obj()),
                             other => return Err(IrError(format!("unknown IR read kind {other}"))),
                         };
@@ -863,12 +871,17 @@ impl<'a> Machine<'a> {
                 let id = self.record(kind, start, n, Some(v));
                 Ok(Some((v as i64, id)))
             }
-            'S' | 'W' => {
+            'S' | 'W' | 'N' => {
                 let b = self.take(4, true)?;
                 let len_bytes: [u8; 4] = b
                     .get(..4)
                     .and_then(|s| s.try_into().ok())
                     .ok_or(Stop::Throw)?;
+                // N (FUN_140743010): a negative i32 length is a null string and reads nothing.
+                if kind == 'N' && i32::from_le_bytes(len_bytes) < 0 {
+                    self.record(kind, start, 4, Some(0));
+                    return Ok(None);
+                }
                 let n = u32::from_le_bytes(len_bytes) as usize;
                 if n > 1 << 24 {
                     return Err(Stop::Throw);

@@ -25,9 +25,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from cparse import parse_functions  # noqa: E402
 
+# N: FUN_140743010 reads an i32 length (FUN_142a78270) and, only when it is not negative,
+# that many bytes; a negative length is a null string and reads nothing more. The S readers
+# FUN_142a78330 / FUN_14093ff90 take the length as unsigned.
 PRIMS = {
     "FUN_142a780f0": "F", "FUN_142a780c0": "B", "FUN_142a78220": "H", "FUN_142a78270": "I",
-    "FUN_142a78400": "Q", "FUN_142a78330": "S", "FUN_14093ff90": "S", "FUN_140743010": "S",
+    "FUN_142a78400": "Q", "FUN_142a78330": "S", "FUN_14093ff90": "S", "FUN_140743010": "N",
     "FUN_142a784b0": "W", "FUN_14093d6c0": "O",
 }
 

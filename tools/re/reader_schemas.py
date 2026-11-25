@@ -94,7 +94,7 @@ def render(reads):
     """Compact layout string from read records."""
     seq = []
     for kind, _, n, _ in reads:
-        k = kind if kind in "FBHIQSW" else ("O" if kind.startswith("O") else "R")
+        k = kind if kind in "FBHIQSWN" else ("O" if kind.startswith("O") else "R")
         seq.append(k)
     out, i = [], 0
     while i < len(seq):
@@ -159,7 +159,7 @@ def analyze(rows, progs, readers, sites=None):
                 key = render(r.reads)
                 if key not in seen and len(r.out) <= 400 and len(samples) < 3:
                     seen.add(key)
-                    samples.append((key, bytes(r.out), "".join(k[0] if k[0] in "FBHIQSWR" else "O" for k, *_ in r.reads)))
+                    samples.append((key, bytes(r.out), "".join(k[0] if k[0] in "FBHIQSWNR" else "O" for k, *_ in r.reads)))
             info["versions"][v] = {"layout": render(longest.reads), "status": status, "host": hits,
                                    "exprs": exprs[:6], "paths": len({render(r.reads) for r, _ in runs}),
                                    "samples": samples}
