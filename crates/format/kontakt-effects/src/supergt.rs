@@ -15,7 +15,7 @@
 //!   0.16 dB) and per CHAR_MODE a change at CHARACTER 1 ([`CHARACTER`],
 //!   within 0.41, 1.16 and 0.94 dB) whose gains in dB scale with CHARACTER
 //!   (CHARACTER 0.5 sits midway in dB, measured in two modes).
-//! - MIX crossfades the dry input back in (`mix_dry`).
+//! - MIX crossfades the dry input back in (`dry`).
 //!
 //! - COMPRESS is the engine's compressor before all of it ([`SQUEEZE`],
 //!   fitted to level steps), ATTACK and RELEASE its time constants (burst
@@ -328,7 +328,7 @@ const DETECTOR: [(f32, f32); 2] = [(100.0, -1.5), (300.0, -3.0)];
 /// The record as the engine's compressor into its waveshaper, the
 /// compressor built at every COMPRESS (passing at 0), so a script or knob
 /// raising it later is heard; a group rack runs both on each voice. MIX scales the wet path (the slot's dry level carries the rest,
-/// [`mix_dry`]).
+/// [`dry`]).
 pub fn supergt(k: Knobs) -> ir::EffectKind {
     let [trim, saturation, character, mix, compress, attack, release] = [
         k.trim,
@@ -458,13 +458,6 @@ pub fn saved(public: &[u8]) -> Option<Knobs> {
         sat_mode: mode(32)?,
         char_mode: mode(36)?,
     })
-}
-
-/// The slot's dry level for the saved MIX at `output`: the input crossfaded
-/// back in.
-#[must_use]
-pub fn mix_dry(public: &[u8], output: f32) -> f32 {
-    saved(public).map_or(0.0, |k| dry(k.mix, output))
 }
 
 /// The slot's dry level for MIX `mix` at `output`.

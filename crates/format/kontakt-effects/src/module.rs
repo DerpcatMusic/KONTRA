@@ -74,7 +74,7 @@ impl ir::EffectModel for Module {
     }
 
     /// As the default, except Supercharger GT's slot dry level follows its
-    /// live MIX with the law it loads by ([`crate::supergt::mix_dry`]).
+    /// live MIX with the law it loads by ([`crate::supergt::dry`]).
     fn build_effect(&self, params: &[f32], current: &ir::Effect) -> Option<ir::Effect> {
         let kind = (self.build)(params)?;
         let dry = if self.id == ids::SUPERGT {
