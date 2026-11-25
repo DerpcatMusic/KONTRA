@@ -3,7 +3,7 @@
 //! Each is a named [`Law`]; the law evaluator does the maths.
 
 use kontra_ir::{self as ir, Law};
-use kontra_script_ui::readout::{write, Readout};
+use kontra_script_ui::readout::{Readout, write};
 use kontra_vm::Text;
 
 use crate::{EnginePar, EnginePars, Group};

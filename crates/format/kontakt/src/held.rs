@@ -96,7 +96,10 @@ mod tests {
         public[25] = 1;
         let got = super::saved(0x4d, 0x10, &public);
         let key = kontra_ir::held_key;
-        assert!(got.contains(&(key("$ENGINE_PAR_JMP_PREAMP"), 250_000)), "{got:?}");
+        assert!(
+            got.contains(&(key("$ENGINE_PAR_JMP_PREAMP"), 250_000)),
+            "{got:?}"
+        );
         assert!(got.contains(&(key("$ENGINE_PAR_JMP_MONO"), 1)));
         assert!(
             super::saved(0x4d, 0x11, &public).is_empty(),
