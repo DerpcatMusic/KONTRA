@@ -44,6 +44,29 @@ on init
   declare ui_panel $pz
   declare ui_button $pzin
   make_persistent($pzin)
+  declare ui_button $cout
+  make_persistent($cout)
+  declare ui_panel $ca
+  declare ui_button $cin
+  make_persistent($cin)
+  declare ui_button $cbo
+  make_persistent($cbo)
+  declare ui_panel $cb
+  declare ui_button $cbin
+  make_persistent($cbin)
+  declare ui_panel $no
+  declare ui_panel $ni
+  declare ui_button $nin
+  make_persistent($nin)
+  declare ui_button $nout
+  make_persistent($nout)
+  declare ui_button $nbo
+  make_persistent($nbo)
+  declare ui_panel $nbout
+  declare ui_panel $nbmid
+  declare ui_button $nbin
+  make_persistent($nbin)
+  declare ui_mouse_area $mal
   set_control_par(get_ui_id($da), $CONTROL_PAR_POS_X, 10)
   set_control_par(get_ui_id($da), $CONTROL_PAR_POS_Y, 20)
   set_control_par(get_ui_id($da), $CONTROL_PAR_WIDTH, 80)
@@ -133,6 +156,66 @@ on init
   set_control_par(get_ui_id($pzin), $CONTROL_PAR_WIDTH, 80)
   set_control_par(get_ui_id($pzin), $CONTROL_PAR_HEIGHT, 30)
   set_control_par(get_ui_id($pzin), $CONTROL_PAR_PARENT_PANEL, get_ui_id($pz))
+  set_control_par(get_ui_id($cout), $CONTROL_PAR_POS_X, 20)
+  set_control_par(get_ui_id($cout), $CONTROL_PAR_POS_Y, 230)
+  set_control_par(get_ui_id($cout), $CONTROL_PAR_WIDTH, 80)
+  set_control_par(get_ui_id($cout), $CONTROL_PAR_HEIGHT, 30)
+  set_control_par(get_ui_id($ca), $CONTROL_PAR_POS_X, 0)
+  set_control_par(get_ui_id($ca), $CONTROL_PAR_POS_Y, 220)
+  set_control_par(get_ui_id($cin), $CONTROL_PAR_POS_X, 0)
+  set_control_par(get_ui_id($cin), $CONTROL_PAR_POS_Y, 0)
+  set_control_par(get_ui_id($cin), $CONTROL_PAR_WIDTH, 80)
+  set_control_par(get_ui_id($cin), $CONTROL_PAR_HEIGHT, 30)
+  set_control_par(get_ui_id($cin), $CONTROL_PAR_PARENT_PANEL, get_ui_id($ca))
+  set_control_par(get_ui_id($cin), $CONTROL_PAR_Z_LAYER, -1)
+  set_control_par(get_ui_id($cbo), $CONTROL_PAR_POS_X, 130)
+  set_control_par(get_ui_id($cbo), $CONTROL_PAR_POS_Y, 230)
+  set_control_par(get_ui_id($cbo), $CONTROL_PAR_WIDTH, 80)
+  set_control_par(get_ui_id($cbo), $CONTROL_PAR_HEIGHT, 30)
+  set_control_par(get_ui_id($cb), $CONTROL_PAR_POS_X, 110)
+  set_control_par(get_ui_id($cb), $CONTROL_PAR_POS_Y, 220)
+  set_control_par(get_ui_id($cb), $CONTROL_PAR_Z_LAYER, -1)
+  set_control_par(get_ui_id($cbin), $CONTROL_PAR_POS_X, 0)
+  set_control_par(get_ui_id($cbin), $CONTROL_PAR_POS_Y, 0)
+  set_control_par(get_ui_id($cbin), $CONTROL_PAR_WIDTH, 80)
+  set_control_par(get_ui_id($cbin), $CONTROL_PAR_HEIGHT, 30)
+  set_control_par(get_ui_id($cbin), $CONTROL_PAR_PARENT_PANEL, get_ui_id($cb))
+  set_control_par(get_ui_id($cbin), $CONTROL_PAR_Z_LAYER, 1)
+  set_control_par(get_ui_id($no), $CONTROL_PAR_POS_X, 220)
+  set_control_par(get_ui_id($no), $CONTROL_PAR_POS_Y, 220)
+  set_control_par(get_ui_id($ni), $CONTROL_PAR_POS_X, 0)
+  set_control_par(get_ui_id($ni), $CONTROL_PAR_POS_Y, 0)
+  set_control_par(get_ui_id($ni), $CONTROL_PAR_PARENT_PANEL, get_ui_id($no))
+  set_control_par(get_ui_id($nin), $CONTROL_PAR_POS_X, 0)
+  set_control_par(get_ui_id($nin), $CONTROL_PAR_POS_Y, 0)
+  set_control_par(get_ui_id($nin), $CONTROL_PAR_WIDTH, 80)
+  set_control_par(get_ui_id($nin), $CONTROL_PAR_HEIGHT, 30)
+  set_control_par(get_ui_id($nin), $CONTROL_PAR_PARENT_PANEL, get_ui_id($ni))
+  set_control_par(get_ui_id($nout), $CONTROL_PAR_POS_X, 20)
+  set_control_par(get_ui_id($nout), $CONTROL_PAR_POS_Y, 10)
+  set_control_par(get_ui_id($nout), $CONTROL_PAR_WIDTH, 80)
+  set_control_par(get_ui_id($nout), $CONTROL_PAR_HEIGHT, 30)
+  set_control_par(get_ui_id($nout), $CONTROL_PAR_PARENT_PANEL, get_ui_id($no))
+  set_control_par(get_ui_id($nbo), $CONTROL_PAR_POS_X, 350)
+  set_control_par(get_ui_id($nbo), $CONTROL_PAR_POS_Y, 230)
+  set_control_par(get_ui_id($nbo), $CONTROL_PAR_WIDTH, 80)
+  set_control_par(get_ui_id($nbo), $CONTROL_PAR_HEIGHT, 30)
+  set_control_par(get_ui_id($nbout), $CONTROL_PAR_POS_X, 330)
+  set_control_par(get_ui_id($nbout), $CONTROL_PAR_POS_Y, 220)
+  set_control_par(get_ui_id($nbout), $CONTROL_PAR_Z_LAYER, -1)
+  set_control_par(get_ui_id($nbmid), $CONTROL_PAR_POS_X, 0)
+  set_control_par(get_ui_id($nbmid), $CONTROL_PAR_POS_Y, 0)
+  set_control_par(get_ui_id($nbmid), $CONTROL_PAR_PARENT_PANEL, get_ui_id($nbout))
+  set_control_par(get_ui_id($nbin), $CONTROL_PAR_POS_X, 0)
+  set_control_par(get_ui_id($nbin), $CONTROL_PAR_POS_Y, 0)
+  set_control_par(get_ui_id($nbin), $CONTROL_PAR_WIDTH, 80)
+  set_control_par(get_ui_id($nbin), $CONTROL_PAR_HEIGHT, 30)
+  set_control_par(get_ui_id($nbin), $CONTROL_PAR_PARENT_PANEL, get_ui_id($nbmid))
+  set_control_par(get_ui_id($mal), $CONTROL_PAR_POS_X, 450)
+  set_control_par(get_ui_id($mal), $CONTROL_PAR_POS_Y, 220)
+  set_control_par(get_ui_id($mal), $CONTROL_PAR_WIDTH, 80)
+  set_control_par(get_ui_id($mal), $CONTROL_PAR_HEIGHT, 30)
+  set_control_par(get_ui_id($mal), $CONTROL_PAR_RECEIVE_DRAG_EVENTS, 1)
   pgs_set_key_val(KLOG, 0, $n)
 end on
 
@@ -314,5 +397,125 @@ on ui_control ($pzin)
     & get_control_par(get_ui_id($pzin), $CONTROL_PAR_KEY_SHIFT) & "," ...
     & get_control_par(get_ui_id($pzin), $CONTROL_PAR_KEY_ALT) & "," ...
     & get_control_par(get_ui_id($pzin), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($cout)
+  !log[$n] := "uc,cout," & $cout & "," ...
+    & get_control_par(get_ui_id($cout), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($cout), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($cout), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($ca)
+  !log[$n] := "uc,ca," & $ca & "," ...
+    & get_control_par(get_ui_id($ca), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($ca), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($ca), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($cin)
+  !log[$n] := "uc,cin," & $cin & "," ...
+    & get_control_par(get_ui_id($cin), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($cin), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($cin), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($cbo)
+  !log[$n] := "uc,cbo," & $cbo & "," ...
+    & get_control_par(get_ui_id($cbo), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($cbo), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($cbo), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($cb)
+  !log[$n] := "uc,cb," & $cb & "," ...
+    & get_control_par(get_ui_id($cb), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($cb), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($cb), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($cbin)
+  !log[$n] := "uc,cbin," & $cbin & "," ...
+    & get_control_par(get_ui_id($cbin), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($cbin), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($cbin), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($no)
+  !log[$n] := "uc,no," & $no & "," ...
+    & get_control_par(get_ui_id($no), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($no), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($no), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($ni)
+  !log[$n] := "uc,ni," & $ni & "," ...
+    & get_control_par(get_ui_id($ni), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($ni), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($ni), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($nin)
+  !log[$n] := "uc,nin," & $nin & "," ...
+    & get_control_par(get_ui_id($nin), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($nin), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($nin), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($nout)
+  !log[$n] := "uc,nout," & $nout & "," ...
+    & get_control_par(get_ui_id($nout), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($nout), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($nout), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($nbo)
+  !log[$n] := "uc,nbo," & $nbo & "," ...
+    & get_control_par(get_ui_id($nbo), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($nbo), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($nbo), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($nbout)
+  !log[$n] := "uc,nbout," & $nbout & "," ...
+    & get_control_par(get_ui_id($nbout), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($nbout), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($nbout), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($nbmid)
+  !log[$n] := "uc,nbmid," & $nbmid & "," ...
+    & get_control_par(get_ui_id($nbmid), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($nbmid), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($nbmid), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($nbin)
+  !log[$n] := "uc,nbin," & $nbin & "," ...
+    & get_control_par(get_ui_id($nbin), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($nbin), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($nbin), $CONTROL_PAR_KEY_CONTROL)
+  call log_line
+end on
+
+on ui_control ($mal)
+  !log[$n] := "uc,mal," & $NI_MOUSE_EVENT_TYPE & "," & $NI_MOUSE_OVER_CONTROL & "," ...
+    & get_control_par(get_ui_id($mal), $CONTROL_PAR_KEY_SHIFT) & "," ...
+    & get_control_par(get_ui_id($mal), $CONTROL_PAR_KEY_ALT) & "," ...
+    & get_control_par(get_ui_id($mal), $CONTROL_PAR_KEY_CONTROL)
   call log_line
 end on

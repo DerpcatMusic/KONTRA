@@ -1,6 +1,6 @@
 # KSP UI probe suite
 
-Five probe instruments that use every KSP UI control type with a spread of control
+The probe instruments that use every KSP UI control type with a spread of control
 parameters, self-made pictures and fonts. Each page logs what its init reads and every
 `ui_control` / `ui_controls` / `persistence_changed` to an array it saves by path, so the
 oracle Kontakt and KONTRA can be diffed on screen and on what scripts see.
@@ -14,6 +14,7 @@ oracle Kontakt and KONTRA can be diffed on screen and on what scripts see.
 | data | menus (rename, values, visibility, selection), tables, xy pad, level meter, waveform, wavetable, file selector, mouse area, key modifiers |
 | behaviour | how far each drag, Shift drag and ctrl-press moves knobs, sliders (with `MOUSE_BEHAVIOUR`) and value edits; shoot with `DPI=96` |
 | layers | who hears a click where controls overlap: Z_LAYER, widget type, declaration order, labels, hidden controls and panels; shoot with `DPI=96` |
+| fields | where a menu's, a button's and a switch's words sit for each `TEXT_ALIGNMENT`, in the stock font and fonts 0, 1 and 13; shoot with `DPI=96` |
 
 ## Run
 
@@ -28,6 +29,21 @@ python3 tools/ksp-ui/trace.py OUT/k-PAGE-150.nka OUT/o-PAGE.nka   # the rows tha
 ```
 
 `cargo test -p kontra-ksp --test ui_probes` checks that every probe compiles.
+
+## Library instruments
+
+`shoot.sh` also takes the path of an existing `.nki`: it loads the instrument without building it,
+and, because Kontakt keeps its window 728 px tall, it drags the rack down and also shoots
+`OUT-lower.png`. Shoot KONTRA's page at the same size with `ui-shots`, then compare:
+
+```sh
+tools/oracle/oracle-slot env DPI=96 tools/ksp-ui/shoot.sh OUT/k-NAME.png /path/to/Instrument.nki
+cargo run -p ui-shots -- OUT/ours /path/to/Instrument.nki
+python3 tools/ksp-ui/align.py OUT/ours/NAME-0-initial.png OUT/k-NAME.png OUT/k-NAME-lower.png OUT/NAME-diff.png
+```
+
+`align.py` finds the page in each Kontakt shot and prints every 64-px block of it that sits 2 px
+or more elsewhere, or has no close match (a different picture or text).
 
 - `drive.py` replays `probes/PAGE.drive` (click, double-click, drag, modifier drag, keys, typing)
   in page pixels. It finds the page from its background, or from `ORIGIN=x,y,scale`; Kontakt's is
@@ -56,7 +72,9 @@ python3 tools/ksp-ui/trace.py OUT/k-PAGE-150.nka OUT/o-PAGE.nka   # the rows tha
   the wheel is not measured. Most value-edit drags are lost too (see the measured file).
 - Overlaps (layers page, `probes/layers.measured`): a click goes to the front layer, then by widget
   type, then the later declaration; a label passes it to what is under it, and so does a control
-  hidden whole or in a hidden panel (one without its background still takes it). A panel's
-  Z_LAYER holds for what it contains. A button over a mouse area takes the click.
+  hidden whole or in a hidden panel (one without its background still takes it). A panel that
+  sets a Z_LAYER puts all it holds on that layer, whatever their own; in one that sets none a
+  control keeps its own. Nested panels add nothing: the later declaration wins. A button over a
+  mouse area takes the click, and a mouse area alone hears neither a click nor a mouse drag.
 - `on ui_controls` runs before `on ui_control` for every motion, and `on persistence_changed`
   once after `on init`, before any control callback.

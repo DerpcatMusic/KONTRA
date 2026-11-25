@@ -8,3 +8,10 @@ click 720 45
 click 830 45
 click 50 135
 click 170 145
+click 50 245
+click 160 245
+click 270 245
+click 380 245
+click 490 235
+drag 460 235 100 0
+drag 600 235 -110 0

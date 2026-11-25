@@ -483,6 +483,55 @@ def layers():
     p.at(pzin, 0, 0, 80, 30)
     p.par(pzin, "PARENT_PANEL", "__ID_pz")
     p.act("click", 170, 145)
+    # Row 3: a control's own Z_LAYER inside a panel, nested panels, and a mouse area on its own.
+    def button(name, x, y, panel=None, layer=None):
+        v = p.control("ui_button", name)
+        p.at(v, x, y, 80, 30)
+        if panel:
+            p.par(v, "PARENT_PANEL", f"__ID_{panel}")
+        if layer is not None:
+            p.par(v, "Z_LAYER", layer)
+        return v
+
+    def panel(name, x, y, parent=None, layer=None):
+        v = p.control("ui_panel", name)
+        p.at(v, x, y)
+        if parent:
+            p.par(v, "PARENT_PANEL", f"__ID_{parent}")
+        if layer is not None:
+            p.par(v, "Z_LAYER", layer)
+        return v
+
+    y = 220
+    # A back-layer button in a default panel, under a default button declared before it.
+    button("cout", 20, y + 10)
+    panel("ca", 0, y)
+    button("cin", 0, 0, "ca", -1)
+    p.act("click", 50, y + 25)
+    # A front-layer button in a back-layer panel, under a default button declared before it.
+    button("cbo", 130, y + 10)
+    panel("cb", 110, y, layer=-1)
+    button("cbin", 0, 0, "cb", 1)
+    p.act("click", 160, y + 25)
+    # Nested: a button in an inner panel against a later button in the outer one.
+    panel("no", 220, y)
+    panel("ni", 0, 0, "no")
+    button("nin", 0, 0, "ni")
+    button("nout", 20, 10, "no")
+    p.act("click", 270, y + 25)
+    # Nested under a back-layer outer panel, against a default button declared before.
+    button("nbo", 350, y + 10)
+    panel("nbout", 330, y, layer=-1)
+    panel("nbmid", 0, 0, "nbout")
+    button("nbin", 0, 0, "nbmid")
+    p.act("click", 380, y + 25)
+    # A mouse area alone (drag events on): a click, a drag across and out of it, a hover.
+    ma = p.control("ui_mouse_area", "mal")
+    p.at(ma, 450, y, 80, 30)
+    p.par(ma, "RECEIVE_DRAG_EVENTS", 1)
+    p.act("click", 490, y + 15)
+    p.act("drag", 460, y + 15, 100, 0)
+    p.act("drag", 600, y + 15, -110, 0)
     return p
 
 
@@ -546,7 +595,35 @@ def behaviour():
     return p
 
 
-PAGES = [widgets, geometry, pictures_page, text, data, behaviour, layers]
+def fields():
+    """Where a menu's, a button's and a switch's text starts, and how heavy it is: each kind in
+    the stock font and in fonts 0, 1 and 13, with each alignment, and a value edit and a label
+    in the stock font."""
+    p = Page("fields")
+    fonts = [None, 0, 1, 13]
+    for r, kind in enumerate(["ui_menu", "ui_button", "ui_switch"]):
+        for c, font in enumerate(fonts):
+            for a in range(3):
+                name = f"{kind[3:]}{c}{a}"
+                var = p.control(kind, name, log=False)
+                p.at(var, 10 + (c * 3 + a) * 76, 10 + r * 40, 72, 20)
+                if kind == "ui_menu":
+                    p.setup.append(f'add_menu_item({var}, "Lowpass 4", 0)')
+                else:
+                    p.par(var, "TEXT", "Lowpass 4")
+                if font is not None:
+                    p.par(var, "FONT_TYPE", font)
+                p.par(var, "TEXT_ALIGNMENT", a)
+    ve = p.control("ui_value_edit", "ve", "(0, 127, 1)", log=False)
+    p.at(ve, 10, 130, 150, 20)
+    p.setup.append("$ve := 61")
+    lab = p.control("ui_label", "lab", "(1, 1)", log=False)
+    p.at(lab, 170, 130, 150, 20)
+    p.setup.append('set_text($lab, "Lowpass 4")')
+    return p
+
+
+PAGES = [widgets, geometry, pictures_page, text, data, behaviour, layers, fields]
 
 
 def main():

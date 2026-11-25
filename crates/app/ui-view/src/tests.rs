@@ -1705,3 +1705,65 @@ fn kontra_fader_thumb_leaves_what_paints_under_it_visible() {
         "the thumb's outline"
     );
 }
+
+/// A button's and a menu's words follow TEXT_ALIGNMENT (the reference 8.13,
+/// tools/ksp-ui fields page): left, centre and right start further right in turn.
+#[test]
+fn stock_button_and_menu_words_follow_their_text_alignment() {
+    let first_ink = |kind: Kind, align: model::Align| {
+        let mut tree = Interface {
+            stock_skin: model::StockSkin::Kontakt,
+            ..Interface::default()
+        };
+        tree.pages.push(Page {
+            size: Size {
+                width: 120.,
+                height: 20.,
+            },
+            background: model::Background {
+                color: Some(Rgba::rgb(0)),
+                ..Default::default()
+            },
+            ..Page::default()
+        });
+        tree.styles.push(model::TextStyle {
+            font: model::Font::Stock(0),
+            color: Rgba::rgb(0xff_ffff),
+            align,
+            ..model::TextStyle::default()
+        });
+        let mut w = Widget::new("$w", PageRef(0), Rect::new(0, 0, 120, 20), kind);
+        w.text = "Lowpass".into();
+        w.value = Some(model::Value::Integer(0));
+        w.style = Some(model::StyleRef(0));
+        w.hide.background = true;
+        w.menu_arrow = false;
+        tree.widgets.push(w);
+        let mut ui = crate::ui();
+        let mut pictures = Pictures::new(Box::new(|_| None));
+        let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+        let px = paint(&mut ui, el, 120, 20);
+        (0..120)
+            .find(|&x| (0..20).any(|y| px.get(y * 120 + x).is_some_and(|p| p[0] > 128)))
+            .unwrap_or(usize::MAX)
+    };
+    let item = || model::MenuItem {
+        text: "Lowpass".into(),
+        value: 0,
+        visible: true,
+    };
+    for kind in [
+        Kind::Button { momentary: false },
+        Kind::Menu {
+            items: vec![item()],
+        },
+    ] {
+        let [l, c, r] = [
+            model::Align::Left,
+            model::Align::Center,
+            model::Align::Right,
+        ]
+        .map(|a| first_ink(kind.clone(), a));
+        assert!(l < c && c < r && r < 120, "{kind:?}: {l} {c} {r}");
+    }
+}

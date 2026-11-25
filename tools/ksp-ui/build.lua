@@ -4,6 +4,7 @@
 local kt = Kontakt
 local out = assert(io.open(ORACLE_OUT, "w"))
 for _, page in ipairs(ORACLE_PAGES) do
+  if page[1] == "" then goto continue end -- an existing instrument: load it as it is
   kt.reset_multi()
   local src = assert(io.open(page[1], "r")):read("a")
   local i = kt.add_instrument()
@@ -13,6 +14,7 @@ for _, page in ipairs(ORACLE_PAGES) do
   local s2, e2 = pcall(kt.save_instrument, i, page[2], {})
   out:write(string.format('{"page":"%s","rc":%s,"re":"%s","save1":%s,"ok":%s,"err":"%s","save2":%s,"e2":"%s"}\n',
     page[2]:gsub("\\", "/"), tostring(rc), tostring(re), tostring(s1), tostring(ok), tostring(err), tostring(s2), tostring(e2)))
+  ::continue::
 end
 kt.reset_multi()
 for _, page in ipairs(ORACLE_PAGES) do

@@ -1011,6 +1011,40 @@ fn a_click_on_overlapping_controls_reaches_the_one_kontakt_picked() {
              set_control_par(get_ui_id(${v}), $CONTROL_PAR_HEIGHT, 30)\n"
         );
     }
+    // Row 3, declared as the page does: a control's own layer in a panel,
+    // and nested panels (each button 80 by 30).
+    let layer =
+        |v: &str, z: i32| format!("set_control_par(get_ui_id(${v}), $CONTROL_PAR_Z_LAYER, {z})\n");
+    let into = |v: &str, p: &str| {
+        format!("set_control_par(get_ui_id(${v}), $CONTROL_PAR_PARENT_PANEL, get_ui_id(${p}))\n")
+    };
+    let button = |v: &str, x: i32, y: i32| {
+        format!(
+            "declare ui_button ${v}\nmove_control_px(${v}, {x}, {y})\n\
+             set_control_par(get_ui_id(${v}), $CONTROL_PAR_WIDTH, 80)\n\
+             set_control_par(get_ui_id(${v}), $CONTROL_PAR_HEIGHT, 30)\n"
+        )
+    };
+    let panel = |v: &str, x: i32, y: i32| {
+        format!("declare ui_panel ${v}\nmove_control_px(${v}, {x}, {y})\n")
+    };
+    src += &[
+        button("cout", 20, 230),
+        panel("ca", 0, 220),
+        button("cin", 0, 0) + &into("cin", "ca") + &layer("cin", -1),
+        button("cbo", 130, 230),
+        panel("cb", 110, 220) + &layer("cb", -1),
+        button("cbin", 0, 0) + &into("cbin", "cb") + &layer("cbin", 1),
+        panel("no", 220, 220),
+        panel("ni", 0, 0) + &into("ni", "no"),
+        button("nin", 0, 0) + &into("nin", "ni"),
+        button("nout", 20, 10) + &into("nout", "no"),
+        button("nbo", 350, 230),
+        panel("nbout", 330, 220) + &layer("nbout", -1),
+        panel("nbmid", 0, 0) + &into("nbmid", "nbout"),
+        button("nbin", 0, 0) + &into("nbin", "nbmid"),
+    ]
+    .concat();
     src += "end on";
     let ui = tree(&src);
     // The topmost shown control under the point that takes a click (labels,
@@ -1043,4 +1077,17 @@ fn a_click_on_overlapping_controls_reaches_the_one_kontakt_picked() {
         Some("$pzo"),
         "a back-layer panel's button"
     );
+    let row3 = [
+        (50., "$cout", "a back-layer button in a plain panel"),
+        (160., "$cbo", "a front-layer button in a back-layer panel"),
+        (
+            270.,
+            "$nout",
+            "a button in a nested panel against a later one",
+        ),
+        (380., "$nbo", "a button two panels under a back layer"),
+    ];
+    for (x, want, case) in row3 {
+        assert_eq!(hears(x, 245.).as_deref(), Some(want), "{case}");
+    }
 }

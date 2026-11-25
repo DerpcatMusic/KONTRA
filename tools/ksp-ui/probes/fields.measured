@@ -1,0 +1,21 @@
+# Kontakt 8.13 at 100 % (shoot.sh, DPI=96), oracle run 2026-11-25: where each field's words sit
+# (gen.py fields(); 72x20 controls, the line "Lowpass 4"). `first` is the first column of ink
+# from the control's left edge; `width` the line's ink width. Font 0 draws as the stock font.
+# TEXT_ALIGNMENT 0 = left, 1 = centre, 2 = right; a menu's words run under its arrow.
+# KONTRA checks the order: crates/app/ui-view/src/tests.rs
+# (stock_button_and_menu_words_follow_their_text_alignment); KONTRA's line is 47 px wide in the
+# stock font (first 5/11/16 for a button, 5/13/20 for a menu).
+kind    font   align  first  width
+menu    stock  0      6      44
+menu    stock  1      15     44
+menu    stock  2      25     44
+button  stock  0      6      44
+button  stock  1      12     44
+button  stock  2      19     44
+switch  stock  0      6      44
+switch  stock  1      12     44
+switch  stock  2      19     44
+button  1      0      7      54
+button  1      1      8      54
+button  1      2      9      54
+# Font 1 on a button or switch: the line nearly fills the field (KONTRA's is 59 px, first 5).
