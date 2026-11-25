@@ -395,7 +395,7 @@ pub(crate) fn flex_gate(e: &ir::Breakpoints) -> ir::Envelope {
 /// (scratch probe lfo_freq.lua: ANALOG STRINGS LFO_P1 unsynced, 14 knob
 /// values saved and read back): Hz = 0.010415 · 20465^x, within 0.4 %,
 /// 0.0104 to 213.14 Hz.
-pub(crate) const LFO_RATE_HZ: [f32; 2] = [0.010_415, 213.14];
+pub(crate) const LFO_RATE_HZ: [f32; 2] = [0.010_415, 0.010_415 * 20_465.0];
 
 /// A route on an LFO's rate knob, `intensity` in knob units.
 pub(crate) fn lfo_rate(source: ir::Source, lfo: u8, intensity: f32) -> ir::ModRoute {

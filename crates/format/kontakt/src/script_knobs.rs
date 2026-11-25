@@ -7,6 +7,7 @@ use kontra_law::common::BIPOLAR;
 /// through Kontakt's law from the knob to the physical value: one row per
 /// name; coupled modules contribute their rows directly.
 pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
+    const LFO_HZ: [f32; 2] = crate::laws::LFO_RATE_HZ;
     use ir::EffectParam as E;
     use ir::KnobTarget::{Effect, LfoPhase, LfoRate, LfoSteps, LfoWeight, LfoWidth, Slot, Speed};
     use ir::SlotKnob as S;
@@ -93,8 +94,8 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
         ("$ENGINE_PAR_TR_ATTACK", Effect(E::TransientAttack), lin(-120.0, 120.0)),
         ("$ENGINE_PAR_TR_SUSTAIN", Effect(E::TransientSustain), lin(-115.0, 115.0)),
         ("$ENGINE_PAR_TR_INPUT", Effect(E::TransientGain), tr_in()),
-        ("$ENGINE_PAR_INTMOD_FREQUENCY", LfoRate, exp(0.010_415, 0.010_415 * 20_465.0)),
-        ("$ENGINE_PAR_INTMOD_FREQUENCY", LfoSteps, exp(48.0 / 0.010_415, 48.0 / (0.010_415 * 20_465.0))),
+        ("$ENGINE_PAR_INTMOD_FREQUENCY", LfoRate, exp(LFO_HZ[0], LFO_HZ[1])),
+        ("$ENGINE_PAR_INTMOD_FREQUENCY", LfoSteps, exp(48.0 / LFO_HZ[0], 48.0 / LFO_HZ[1])),
         ("$ENGINE_PAR_INTMOD_PULSEWIDTH", LfoWidth, lin(0.05, 0.95)),
         ("$ENGINE_PAR_LFO_PHASE", LfoPhase, lin(0.0, 1.0)),
         ("$ENGINE_PAR_LFO_SINE", LfoWeight(0), BIPOLAR),

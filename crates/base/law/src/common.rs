@@ -3,6 +3,10 @@
 
 use crate::{FormulaId, Law};
 
+/// A script volume setting at 0 dB: volume is cubic in the setting, so `1e6/∛4` puts
+/// +12 dB at 1 000 000. The engine's `$ENGINE_PAR_VOLUME` and a format's top dB share it.
+pub const UNITY_VOLUME: f64 = 629_960.524_947_436_1;
+
 /// A 0..=1 setting as −1..=1 (Kontakt [ref] on 0..=1).
 pub const BIPOLAR: Law = Law::Linear { lo: -1.0, hi: 1.0 };
 

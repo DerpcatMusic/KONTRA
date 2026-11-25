@@ -9,8 +9,7 @@ use crate::{EnginePar, Level};
 /// Effect gains are cubic, unity at this value, so 1_000_000 is +24 dB.
 pub const UNITY_EFFECT_GAIN: f64 = 396_851.0;
 
-/// Volume is cubic in the setting, 0 dB at this value, +12 dB at 1_000_000.
-pub const UNITY_VOLUME: f64 = 629_960.524_947_436_1;
+pub use kontra_ir::common::UNITY_VOLUME;
 
 /// Bus n is `BUS_OFFSET + n` in the default rack addressing scheme.
 pub const BUS_OFFSET: i32 = 1024;
