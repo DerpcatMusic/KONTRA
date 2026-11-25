@@ -928,9 +928,14 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         }
         items.push(warn.el);
     }
-    let more = icon_button(ui, "app-menu", Icon::Menu, "Menu", false);
+    // Open or shut before the button is built: no tip while its menu is
+    // open, from the frame it opens, or the tip covers the menu.
+    let hit = ui.get("app-menu").activated();
+    let open = kit::toggle(ui, &mut app.view.menu, "app-menu", hit);
+    let name = if open { "" } else { "Menu" };
+    let more = icon_button(ui, "app-menu", Icon::Menu, name, open);
     let mut header = vec![strip(items).grow(1).shrink(1).min_w(0), more.el];
-    if kit::toggle(ui, &mut app.view.menu, "app-menu", more.changed) {
+    if open {
         let picked = kit::menu(ui, "app-menu", &["Settings", "About"], 1, None);
         if let Some(n) = picked.changed {
             app.view.sheet = [Sheet::Settings, Sheet::About].get(n).copied();

@@ -241,7 +241,9 @@ pub fn sync(ui: &mut Ui) {
 #[must_use]
 pub fn ui() -> Ui {
     kontra_ui_pictures::stock::prewarm();
-    let mut ui = Ui::new(look().theme());
+    // Hover and press snap: eased, they lit a control frames late and kept
+    // frames coming for half a second after every move.
+    let mut ui = Ui::new(look().theme()).snap_pointer_states();
     let mut limits = ui.layout_limits();
     limits.nodes = 65_536;
     let _ = ui.set_layout_limits(limits);

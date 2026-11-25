@@ -851,7 +851,7 @@ fn library_grid_content(ui: &mut Ui, app: &mut App, starred_only: bool) -> Optio
         .collect();
 
     // Detect hover across all visible library cards up front so every non-
-    // hovered sibling can smoothly dim in the same frame.
+    // hovered sibling dims in the same frame.
     let hovered_lib = shown
         .iter()
         .zip(&ids)
@@ -916,8 +916,9 @@ fn library_grid_content(ui: &mut Ui, app: &mut App, starred_only: bool) -> Optio
         } else {
             0.
         };
-        let pop = ui.tween(format!("lib-pop-{n}"), target_pop).max(0.);
-        let dim = ui.tween(format!("lib-dim-{n}"), target_dim).clamp(0., 0.75);
+        // Hover snaps: a tween here kept the whole grid repainting for
+        // half a second after every move (tests/motion.rs).
+        let (pop, dim) = (target_pop, target_dim);
 
         let image = covers.as_deref_mut().and_then(|c| cover(c, n, &l.art));
         let count = entry

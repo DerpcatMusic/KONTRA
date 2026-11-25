@@ -780,14 +780,14 @@ pub fn sectioned_menu(
     }
 }
 
-/// A float's frame: lifted, hairlined, easing in from just above.
+/// A float's frame: lifted and hairlined. It opens and closes on the next
+/// frame, with no slide or fade.
 fn popup_frame(content: El) -> El {
     content
         .fill(lift(2))
         .stroke(hairline())
         .stroke_width(HAIR)
         .pad(TIGHT)
-        .appear(Appear::Slide(0., -TIGHT))
 }
 
 /// `content` floated over everything, pinned under the element `anchor`

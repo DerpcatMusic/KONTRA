@@ -1135,11 +1135,6 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 p.shared.open_editor();
             }
         }
-        // Moose's changed hook needs a frame tick to see external changes.
-        // Keep a deadline for telemetry and async completions when the host
-        // is idle. A dedicated wake hook could remove this periodic deadline.
-        let busy = p.shared.loading() || p.shared.scanning.load(Ordering::Acquire);
-        ui.repaint_in(if busy { 0.05 } else { 0.25 });
         // On opening, and whenever the host loads a state: its view.
         let now = p.shared.restored.load(Ordering::Acquire);
         if restored != Some(now) {
@@ -1430,6 +1425,10 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         }
         library || !instruments.is_empty() || !folders.is_empty()
     })
+    // Telemetry, the tick's copies and async completions move outside the
+    // window: poll for them. A poll that finds nothing builds nothing; a
+    // repaint deadline here rebuilt the tree 8 times a second while idle.
+    .poll(std::time::Duration::from_millis(50))
     .changed({
         let previous = std::sync::atomic::AtomicU64::new(u64::MAX);
         let last_scan_wake = std::sync::atomic::AtomicU64::new(0);
