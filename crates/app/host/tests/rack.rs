@@ -2673,3 +2673,46 @@ fn a_load_blocked_on_the_disk_returns_at_once_and_the_latest_wins() {
     let part = rack.parts()[0].as_ref().expect("the latest load is in");
     assert_eq!(part.path.as_deref(), Some(latest.as_path()));
 }
+
+/// A restore whose instrument waits on a slow disk (a FIFO no one writes
+/// yet) returns at once, a save meanwhile keeps the part as the state
+/// had it, and its mix, mute and the rest apply once the load lands.
+#[cfg(unix)]
+#[test]
+fn a_restore_blocked_on_the_disk_returns_at_once_and_its_settings_land_after() {
+    use kontra_host::state::{Saved, SavedPart};
+    use std::time::{Duration, Instant};
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("slow-restore");
+    let _ = std::fs::remove_dir_all(&dir);
+    sfz_library(&dir, "");
+    let slow = dir.join("slow.sfz");
+    let made = std::process::Command::new("mkfifo").arg(&slow).status();
+    assert!(made.unwrap().success());
+    let mut part = SavedPart::new(0, slow.clone(), Mix::DEFAULT);
+    (part.channel, part.gain, part.mute) = (3, 0.5, true);
+    let (mut rack, _audio) = rack();
+    rack.load_in_background();
+    let asked = Instant::now();
+    assert!(rack.restore(&Saved::new(vec![part.clone()])).is_empty());
+    assert!(
+        asked.elapsed() < Duration::from_millis(500),
+        "no wait on the read"
+    );
+    assert_eq!(rack.in_flight(), 1);
+    assert_eq!(rack.save().parts, [part.clone()], "a save keeps the part");
+    // The disk answers: every open of the FIFO reads the instrument.
+    std::thread::spawn(move || {
+        for _ in 0..8 {
+            let _ = std::fs::write(&slow, "<region> sample=a.wav key=60\n");
+        }
+    });
+    let mut failed = Vec::new();
+    let until = Instant::now() + Duration::from_secs(20);
+    while rack.in_flight() > 0 && Instant::now() < until {
+        failed.extend(rack.finish_loads().1);
+        std::thread::yield_now();
+    }
+    assert!(failed.is_empty(), "{failed:?}");
+    let p = rack.parts()[0].as_ref().expect("the restored part is in");
+    assert_eq!((p.mix.channel, p.mix.gain, p.mute), (3, 0.5, true));
+}
