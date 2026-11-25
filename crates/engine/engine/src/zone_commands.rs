@@ -47,7 +47,7 @@ pub fn detect_sample(sample: &ir::Sample, what: u8) -> Option<f64> {
         rate,
     };
     match kind {
-        Kind::Key => detect::key(&audio).map(|k| f64::from(detect::key_tag(k))),
+        Kind::Key => detect::key(&audio).map(f64::from),
         Kind::Pitch => detect::pitch(&audio),
         Kind::Loudness => detect::loudness(&audio, sample.channels),
         Kind::Peak => detect::peak(&audio),
@@ -60,8 +60,9 @@ pub fn detect_sample(sample: &ir::Sample, what: u8) -> Option<f64> {
 /// What a failed detection reads, as the constants `~NI_DETECT_*_INVALID`.
 fn invalid(what: u8) -> f64 {
     match kind_of(what) {
-        Kind::Key => f64::from(detect::KEY_INVALID),
-        Kind::Class => -1.0,
+        // The reference 8.13 writes -1 for a key it cannot find, not its
+        // invalid-key constant (the detect_laws probe).
+        Kind::Key | Kind::Class => -1.0,
         // The reference 8.13 (conformance units real_const_detect_*).
         Kind::Tempo => -1.0,
         Kind::Pitch | Kind::Loudness | Kind::Peak | Kind::Rms => 1_000_000.0,

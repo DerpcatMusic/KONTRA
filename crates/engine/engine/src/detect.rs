@@ -2,14 +2,14 @@
 //! Retrieval): measurements of a zone's whole sample, run off the audio
 //! thread. Levels follow ITU-R BS.1770-4 (K-weighted, gated loudness; the
 //! peak is the sample peak, not the oversampled true peak); the pitch is
-//! YIN (de Cheveigné and Kawahara 2002); the key correlates a chromagram with
-//! the Krumhansl-Schmuckler profiles; the tempo is the strongest period of an
-//! energy-onset envelope. Kontakt classifies sample, drum and instrument
+//! YIN (de Cheveigné and Kawahara 2002); the key and the tempo follow
+//! the reference 8.13.1's own code (docs/re/MIR.md). The reference classifies sample, drum and instrument
 //! types with a trained model KONTRA does not have: those always fail.
 
 use std::f64::consts::PI;
 
 use moose_dsp::biquad::{Biquad, k_weighting};
+use moose_dsp::fft::{Complex, Fft};
 
 /// A sample's stereo frames and rate.
 pub struct Audio<'a> {
@@ -189,128 +189,224 @@ fn yin(x: &[f32], window: usize, min_tau: usize, max_tau: usize, rate: f64) -> O
     Some(69.0 + 12.0 * (f / 440.0).log2())
 }
 
-/// Krumhansl-Schmuckler major and minor key profiles.
-const MAJOR: [f64; 12] = [
-    6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88,
-];
-const MINOR: [f64; 12] = [
-    6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17,
+/// The reference 8.13.1's key profiles (the reference binary 0x147c105b0..0x147c106c8, read by
+/// 0x141d63ad0), each with its mode: 0 major, 1 minor.
+const PROFILES: [([f64; 12], i32); 5] = [
+    (
+        [
+            3.1319, 0.1491, 1.8413, 0.1816, 3.8298, 0.2926, 0.3723, 4.0026, 0.838, 0.4966, 0.4935,
+            1.9564,
+        ],
+        0,
+    ),
+    (
+        [
+            14.4599, 1.7079, 9.006, 1.9282, 11.8119, 4.6, 2.9245, 15.3782, 2.1456, 7.6573, 1.932,
+            8.515,
+        ],
+        0,
+    ),
+    (
+        [
+            3.2564, 0.3292, 1.5121, 2.9781, 1.0332, 0.6649, 0.1437, 4.6696, 0.0274, 0.4966, 1.7293,
+            0.7452,
+        ],
+        1,
+    ),
+    (
+        [
+            15.91, 0.8688, 8.978, 8.5319, 4.4277, 6.7738, 1.4509, 16.5083, 4.0324, 3.9101, 7.7925,
+            2.8821,
+        ],
+        1,
+    ),
+    (
+        [
+            15.5378, 1.0974, 8.311, 9.3425, 4.4277, 5.538, 2.662, 16.3838, 3.8523, 4.2393, 4.9959,
+            5.6787,
+        ],
+        1,
+    ),
 ];
 
-/// `$NI_DETECT_KEY_INVALID` as Kontakt 8.13.1 prints it
-/// (probes/ksp/detect_tags.kspp).
-pub const KEY_INVALID: i32 = 6;
-
-/// The `$NI_DETECT_KEY_*` value of key `index` (0..12 C major upward, 12..24
-/// C minor upward). Kontakt numbers C major 1, the same as C# major, then D 2
-/// ... B 11, C minor 12 ... B minor 23 (measured, not a typo).
-pub fn key_tag(index: i32) -> i32 {
-    index.max(1)
+/// `x` at `to` Hz: windowed-sinc interpolation, cut off below both Nyquists.
+// ponytail: the reference resamples with its own polyphase filter (0x141ee5da0); a key
+// is an argmax over whole-sample chroma, so the filter's shape does not move it.
+fn resample(x: &[f32], from: u32, to: u32) -> Vec<f64> {
+    if from == to {
+        return x.iter().map(|&v| f64::from(v)).collect();
+    }
+    const TAPS: i64 = 16;
+    let ratio = f64::from(from) / f64::from(to);
+    let cut = 0.95 / ratio.max(1.0);
+    let len = (x.len() as f64 / ratio).ceil() as usize;
+    (0..len)
+        .map(|i| {
+            let t = i as f64 * ratio;
+            let c = t.floor() as i64;
+            let span = (TAPS as f64 * ratio.max(1.0)).ceil() as i64;
+            (c - span + 1..=c + span)
+                .filter_map(|j| Some((j, f64::from(*x.get(usize::try_from(j).ok()?)?))))
+                .map(|(j, v)| {
+                    let d = t - j as f64;
+                    let w = 0.5 + 0.5 * (PI * d / span as f64).cos();
+                    let s = if d == 0.0 {
+                        1.0
+                    } else {
+                        (PI * cut * d).sin() / (PI * cut * d)
+                    };
+                    v * cut * s * w
+                })
+                .sum()
+        })
+        .collect()
 }
 
-/// The key as an index (0..12 C major upward, 12..24 C minor upward).
+/// `v` less its mean, over its standard deviation (n − 1), as 0x141de44d0.
+fn standardised(v: &[f64; 12]) -> [f64; 12] {
+    let mean = v.iter().sum::<f64>() / 12.0;
+    let var = v.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / 11.0;
+    let sd = var.sqrt().max(f64::from(f32::EPSILON));
+    v.map(|x| (x - mean) / sd)
+}
+
+/// The key as an index (0..12 C major upward, 12..24 C minor upward), the way
+/// the reference 8.13.1 finds it (ni::kreator::mir::detectKey, the reference binary
+/// 0x141c24e10, docs/re/MIR.md): the channel mean at 22050 Hz, cut in
+/// Hann-windowed 5513-sample frames every 2756 samples into an 8192-point
+/// spectrum; 96 Gaussian semitone bands from MIDI 27, in dB above -80 less a
+/// hearing curve and less what each band's neighbours mask; the bands from
+/// MIDI 33 to 116 folded to a chroma that is averaged, standardised and
+/// matched to five profiles at every root, minor ones weighted 1.05. None when
+/// the mean power is under -60 dB.
 pub fn key(a: &Audio) -> Option<i32> {
-    const FRAME: usize = 8192;
-    let x = mono(a);
-    let rate = f64::from(a.rate);
-    let frames = (x.len() / FRAME).min(24);
-    if frames == 0 {
+    const N: usize = 5513;
+    const HOP: usize = 2756;
+    const FFT: usize = 8192;
+    const BANDS: usize = 96;
+    let x = resample(&mono(a), a.rate, 22050);
+    let power = x.iter().map(|v| v * v).sum::<f64>() / x.len().max(1) as f64;
+    if x.is_empty() || 10.0 * power.log10() < -60.0 {
         return None;
     }
-    let mut chroma = [0.0f64; 12];
-    for f in 0..frames {
-        // Spread the frames over the whole sample.
-        let start = f * (x.len() - FRAME) / frames.saturating_sub(1).max(1);
-        let Some(seg) = x.get(start..start + FRAME) else {
-            continue;
-        };
-        for note in 36..96u32 {
-            let freq = 440.0 * 2f64.powf((f64::from(note) - 69.0) / 12.0);
-            if freq > rate / 2.2 {
-                break;
-            }
-            // Goertzel with a Hann window.
-            let w = 2.0 * PI * freq / rate;
-            let coeff = 2.0 * w.cos();
-            let (mut s1, mut s2) = (0.0, 0.0);
-            for (i, &v) in seg.iter().enumerate() {
-                let hann = 0.5 - 0.5 * (2.0 * PI * i as f64 / FRAME as f64).cos();
-                let s = f64::from(v) * hann + coeff * s1 - s2;
-                s2 = s1;
-                s1 = s;
-            }
-            if let Some(c) = chroma.get_mut((note % 12) as usize) {
-                *c += s1 * s1 + s2 * s2 - coeff * s1 * s2;
+    let bin_hz = 22050.0 / FFT as f64;
+    // Band n is MIDI note 27 + n; a Gaussian a quarter semitone wide, cut at 3σ
+    // and scaled to unit sum (0x141df54d0, 0x141df6280).
+    let bank: Vec<(usize, Vec<f64>)> = (0..BANDS)
+        .map(|n| {
+            let fc = 440.0 * 2f64.powf((27 + n) as f64 / 12.0 - 69.0 / 12.0);
+            let sigma = (fc - fc * 2f64.powf(-1.0 / 12.0)) * 0.25;
+            let lo = ((fc - 3.0 * sigma) / bin_hz).ceil().max(0.0) as usize;
+            let hi = (((fc + 3.0 * sigma) / bin_hz).floor() as usize).min(FFT / 2 - 1);
+            let w: Vec<f64> = (lo..=hi)
+                .map(|k| (-0.5 * ((k as f64 * bin_hz - fc) / sigma).powi(2)).exp())
+                .collect();
+            let sum: f64 = w.iter().sum();
+            (
+                lo,
+                w.into_iter()
+                    .map(|v| if sum > 0.0 { v / sum } else { v })
+                    .collect(),
+            )
+        })
+        .collect();
+    let window: Vec<f64> = (0..N)
+        .map(|i| 0.5 + 0.5 * (PI * (2.0 * i as f64 / (N - 1) as f64 - 1.0)).cos())
+        .collect();
+    let mut fft = Fft::<f64>::new(FFT);
+    let mut buf = vec![Complex::new(0.0, 0.0); FFT];
+    let mut frame = |seg: &[f64]| {
+        buf.fill(Complex::new(0.0, 0.0));
+        for ((b, &s), &w) in buf.iter_mut().zip(seg).zip(&window) {
+            b.re = s * w;
+        }
+        fft.forward(&mut buf);
+        let mut db = [0.0f64; BANDS];
+        for (n, (lo, w)) in bank.iter().enumerate() {
+            let e: f64 = w
+                .iter()
+                .zip(&buf[*lo..])
+                .map(|(w, c)| w * c.norm() / 4096.0)
+                .sum();
+            let curve = 63.706_027_98 - 30.534_534_45 * ((n + 27) as f64).log10();
+            db[n] = (20.0 * e.max(1e-4).log10() + 80.0 - curve).max(0.0);
+        }
+        // Each band masks its two neighbours either side, 2/3 then 1/3 of its
+        // level (0x141df5bd0, 0x141df6d30).
+        let mut masked = [0.0f64; BANDS];
+        for (c, m) in masked.iter_mut().enumerate() {
+            let spread: f64 = (c.saturating_sub(2)..(c + 3).min(BANDS))
+                .filter(|&r| r != c)
+                .map(|r| 10f64.powf((1.0 - r.abs_diff(c) as f64 / 3.0) * db[r] * 0.05) - 1.0)
+                .sum();
+            *m = (db[c] - 20.0 * (spread + 1.0).log10()).max(0.0);
+        }
+        let mut chroma = [0.0f64; 12];
+        for (i, v) in masked.iter().enumerate().take(90).skip(6) {
+            chroma[(i + 3) % 12] += v;
+        }
+        chroma
+    };
+    let mut sum = [0.0f64; 12];
+    let mut add = |c: [f64; 12]| sum.iter_mut().zip(c).for_each(|(s, c)| *s += c);
+    if x.len() < N {
+        let mut padded = x.clone();
+        padded.resize(N, 0.0);
+        add(frame(&padded));
+    } else {
+        for start in (0..=x.len() - N).step_by(HOP) {
+            add(frame(&x[start..start + N]));
+        }
+    }
+    let chroma = standardised(&sum);
+    let mut best = (-1.0, None);
+    for (profile, mode) in &PROFILES {
+        let p = standardised(profile);
+        let weight = if *mode == 1 { 1.05 } else { 1.0 };
+        for root in 0..12 {
+            let score = weight
+                * (0..12)
+                    .map(|k| chroma[k] * p[(k + 12 - root) % 12])
+                    .sum::<f64>()
+                / 12.0;
+            if score > best.0 {
+                best = (score, Some(root as i32 + 12 * mode));
             }
         }
     }
-    if chroma.iter().sum::<f64>() <= 0.0 {
-        return None;
-    }
-    let mc = chroma.iter().sum::<f64>() / 12.0;
-    let corr = |profile: &[f64; 12], shift: usize| {
-        let rotated: Vec<f64> = profile
-            .iter()
-            .cycle()
-            .skip((12 - shift) % 12)
-            .take(12)
-            .copied()
-            .collect();
-        let mp = rotated.iter().sum::<f64>() / 12.0;
-        let pairs = chroma.iter().zip(&rotated);
-        let num: f64 = pairs.clone().map(|(c, r)| (c - mc) * (r - mp)).sum();
-        let den = (pairs.clone().map(|(c, _)| (c - mc).powi(2)).sum::<f64>()
-            * pairs.map(|(_, r)| (r - mp).powi(2)).sum::<f64>())
-        .sqrt();
-        if den > 0.0 { num / den } else { -1.0 }
-    };
-    (0..24usize)
-        .map(|k| (k, corr(if k < 12 { &MAJOR } else { &MINOR }, k % 12)))
-        .max_by(|p, q| p.1.total_cmp(&q.1))
-        .map(|(k, _)| k as i32)
+    best.1
 }
 
-/// Tempo in beats per minute (60 to 200): the lag where the onset envelope
-/// (the rise of 512-frame energies) repeats most strongly.
+/// Tempo in beats per minute the way the reference 8.13.1 reads it
+/// (ni::kreator::mir::detectTempo, the reference binary 0x141c25550 → 0x141d641f0
+/// with its flag 1 → 0x141d61cf0): not from the beats it tracks but from the
+/// sample's length, as the power-of-two multiple of one beat per sample that
+/// lies nearest 120 (between 60 and 300; on a tie the slower); 0 for a sample
+/// of 5 ms or less.
 pub fn tempo(a: &Audio) -> Option<f64> {
-    const HOP: usize = 512;
-    let x = mono(a);
-    let rate = f64::from(a.rate);
-    if (x.len() as f64) < rate * 2.0 {
+    if a.frames.is_empty() {
         return None;
     }
-    let energy: Vec<f64> = x
-        .as_chunks::<HOP>()
-        .0
-        .iter()
-        .map(|c| c.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>())
-        .collect();
-    let rise: Vec<f64> = energy
-        .windows(2)
-        .map(|w| match w {
-            [p, q] => (q.sqrt() - p.sqrt()).max(0.0),
-            _ => 0.0,
-        })
-        .collect();
-    let per_second = rate / HOP as f64;
-    let (lo, hi) = (
-        (per_second * 60.0 / 200.0) as usize,
-        (per_second * 60.0 / 60.0) as usize,
-    );
-    let auto = |lag: usize| {
-        rise.iter()
-            .zip(rise.iter().skip(lag))
-            .map(|(p, q)| p * q)
-            .sum::<f64>()
-    };
-    let zero = auto(0);
-    if zero <= 0.0 || hi + 1 >= rise.len() {
-        return None;
+    // The length at 22050 Hz, rounded up as the resampler does: 0.75 s at
+    // 44.1 kHz is 16538 samples, so it reads 159.995 (the detect_laws probe).
+    let seconds = (a.frames.len() as f64 * 22050.0 / f64::from(a.rate)).ceil() / 22050.0;
+    if seconds <= 0.005 {
+        return Some(0.0);
     }
-    let (lag, best) = (lo.max(1)..=hi)
-        .map(|l| (l, auto(l)))
-        .max_by(|p, q| p.1.total_cmp(&q.1))?;
-    (best > 0.05 * zero).then(|| 60.0 * per_second / lag as f64)
+    let mut bpm = 60.0 / seconds;
+    while bpm >= 60.0 {
+        bpm *= 0.5;
+    }
+    let mut best = f64::INFINITY;
+    loop {
+        bpm *= 2.0;
+        if (120.0 - bpm).abs() < (120.0 - best).abs() {
+            best = bpm;
+        }
+        if bpm > 300.0 {
+            break Some(best);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -367,21 +463,24 @@ mod tests {
     }
 
     #[test]
-    fn clicks_at_120_bpm_read_120() {
+    fn tempo_is_the_length_law() {
         let rate = 44_100;
-        let mut clicks = vec![[0.0f32; 2]; rate as usize * 10];
-        for beat in 0..20 {
-            let at = beat * rate as usize / 2;
-            for i in 0..200 {
-                clicks[at + i] = [(1.0 - i as f32 / 200.0) * 0.8; 2];
-            }
-        }
-        let bpm = tempo(&Audio {
-            frames: &clicks,
-            rate,
-        })
-        .unwrap();
-        assert!((bpm - 120.0).abs() < 3.0, "{bpm}");
+        let bpm = |seconds: f64| {
+            let frames = vec![[0.0f32; 2]; (seconds * f64::from(rate)) as usize];
+            tempo(&Audio {
+                frames: &frames,
+                rate,
+            })
+        };
+        // 1 s: 60, 120, 240, 480 -> 120; 2.5 s: 48, 96, 192, 384 -> 96; 0.75 s
+        // is 16538 samples at 22050 Hz: 79.9975 or 159.995 -> the faster;
+        // 10 s: ... 96, 192 -> 96 (the reference 8.13, the detect_laws probe).
+        assert_eq!(bpm(1.0), Some(120.0));
+        assert_eq!(bpm(2.5), Some(96.0));
+        assert!((bpm(0.75).unwrap() - 159.995).abs() < 0.001);
+        assert_eq!(bpm(10.0), Some(96.0));
+        assert_eq!(bpm(0.003), Some(0.0));
+        assert_eq!(bpm(0.0), None);
         assert!(
             peak(&Audio {
                 frames: &[[0.0; 2]; 100],

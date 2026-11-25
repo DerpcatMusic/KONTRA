@@ -266,6 +266,9 @@ pub struct Engine {
     refresh_later: Vec<NoteRef>,
     /// Latest controller values on any channel, as scripts read them.
     cc_values: [u8; 130],
+    /// Which address a data entry LSB answers: RPN (false) or NRPN (true),
+    /// whichever pair arrived last; none before one did.
+    rpn_nrpn: Option<bool>,
     /// Each key's last polyphonic aftertouch (`%POLY_AT`).
     poly_at: [u8; 128],
     /// Time Machine Pro voice limits: standard, high quality.
@@ -581,6 +584,7 @@ impl Engine {
             stretch_scratch: vec![modulators::EnvScale::UNITY; envelopes].into(),
             refresh_later: Vec::with_capacity(64),
             cc_values: [0; 130],
+            rpn_nrpn: None,
             poly_at: [0; 128],
             voice_limits: kontra_vm::midi::VL_DEFAULT,
             midi_made: (0, [[0; 4]; midi_in::MADE]),

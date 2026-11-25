@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use kontra_engine::{Action, Engine, Event, HostNote, HostPattern, SampleTime, Timed, ir};
-use kontra_host::script::{runs, understood};
+use kontra_host::script::understood;
 use kontra_ksp::Builtin;
 use kontra_stream::{Store, StoreConfig};
 
@@ -570,8 +570,7 @@ fn judge(key: &str, status_of: &BTreeMap<u16, &str>) -> (bool, &'static str, Str
         "c" => {
             let good = kontra_ksp::CallbackKind::ALL
                 .iter()
-                .find(|k| format!("{k:?}") == name)
-                .is_some_and(|&k| runs(k));
+                .any(|k| format!("{k:?}") == name);
             (good, "callback", "never runs".into(), 3)
         }
         "g" => {
