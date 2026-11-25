@@ -73,9 +73,13 @@ if [ ! -d "$P/drive_c" ]; then
   mkdir -p "$ROOT"
   rm -rf "$P.tmp"
   cp -a --reflink=auto "$SRC_PREFIX" "$P.tmp"
-  sed -i "s/^\(AB2 AudioDevice=.*\)kontra_ref\r\?\$/\1$SINK/" "$P.tmp/drive_c/Program Files/Common Files/VST3/Portapotty/UserData/Settings.cfg" 2>/dev/null || true
   mv "$P.tmp" "$P"
 fi
+# Kontakt's audio device is this slot's sink, set on every start: Kontakt saves the device it
+# opened on exit, so one session that fell back to a hardware output would keep it (2026-11-25:
+# all three slots had drifted to hardware devices, and slot 1's timer listener never fired).
+SETTINGS="$P/drive_c/Program Files/Common Files/VST3/Portapotty/UserData/Settings.cfg"
+[ ! -f "$SETTINGS" ] || sed -i "s/^AB2 AudioDevice=[^\r]*\(\r\?\)\$/AB2 AudioDevice=sz:WASAPI (Shared Mode) $SINK\1/" "$SETTINGS"
 mkdir -p "$WORK"
 
 export ORACLE_SLOT=$slot ORACLE_PREFIX="$P" ORACLE_DISPLAY="$D" ORACLE_SINK="$SINK" ORACLE_WORK="$WORK"
