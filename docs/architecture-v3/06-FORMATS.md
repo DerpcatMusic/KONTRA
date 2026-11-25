@@ -59,7 +59,7 @@ loop modes).
 
 | Crate | Today (production) | Target |
 |---|---|---|
-| `format/kontakt` | readers 2.7k + mapping 8.0k + `kontakt-effects` 3.5k = 11.4k mapping (production lines, `tools/migrations/kontakt-sizes.sh`, 2026-11-25; stream and DSP moved out); effects map through one `MODULES` table, KSP knobs through typed rows (specs/kontakt-mapping-tables.md) | file readers (unchanged, mostly vendor/) + ~8k mapping |
+| `format/kontakt` | readers 2.7k + mapping 8.1k + `kontakt-effects` 3.5k = 11.5k mapping (production lines, `tools/migrations/kontakt-sizes.sh`, 2026-11-25; stream and DSP moved out); effects map through one `MODULES` table, KSP knobs through typed rows, held values only for controls no processor plays (specs/kontakt-mapping-tables.md) | file readers (unchanged, mostly vendor/) + ~8k mapping |
 | `format/uvi` | `src/` minus tests, measured 2026-11-25: 8,114 lines, 6,613 code (not blank or comment), was 8,456 / 6,966 on b19c21ca3. Readers (`bank`, `keys`, `lib`) 1,311 / 1,107; mapping 6,803 / 5,506. Script, thread and stream already moved out. Effects map through one `UviModule` table each ([spec](../specs/uvi-mapping-tables.md)); modulators and zone fields are still hand-mapped | readers + ~6k mapping |
 | `format/sfz` | (inside root) | ~1.5k, both directions (export for debugging) |
 | `format/native` | `sampler-native` 3.2k | ~1.5k, serde of IR + sample pack |

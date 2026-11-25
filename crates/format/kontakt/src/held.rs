@@ -88,22 +88,46 @@ pub(crate) fn fresh() -> Vec<(i32, u32, i32)> {
 
 #[cfg(test)]
 mod tests {
-    /// Bite's record (IFFFFFFFFFFB): HPF 2, BITS 0.25 at byte 8, DC_QUANT on.
+    /// Jump's record (no processor): PREAMP 0.25 at byte 0, MONO on at 25.
     #[test]
-    fn a_saved_bite_reads_back_as_scripts_see_it() {
-        let mut public = vec![0u8; 45];
-        public[..4].copy_from_slice(&2i32.to_le_bytes());
-        public[8..12].copy_from_slice(&0.25f32.to_le_bytes());
-        public[44] = 1;
-        let got = super::saved(0x66, 0x10, &public);
+    fn a_saved_held_only_module_reads_back_as_scripts_see_it() {
+        let mut public = vec![0u8; 26];
+        public[..4].copy_from_slice(&0.25f32.to_le_bytes());
+        public[25] = 1;
+        let got = super::saved(0x4d, 0x10, &public);
         let key = kontra_ir::held_key;
-        assert!(got.contains(&(key("$ENGINE_PAR_BITE_HPF"), 2)), "{got:?}");
-        assert!(got.contains(&(key("$engine_par_bite_bits"), 250_000)));
-        assert!(got.contains(&(key("$ENGINE_PAR_BITE_DC_QUANT"), 1)));
+        assert!(got.contains(&(key("$ENGINE_PAR_JMP_PREAMP"), 250_000)), "{got:?}");
+        assert!(got.contains(&(key("$ENGINE_PAR_JMP_MONO"), 1)));
         assert!(
-            super::saved(0x66, 0x11, &public).is_empty(),
+            super::saved(0x4d, 0x11, &public).is_empty(),
             "another version"
         );
+    }
+
+    /// Every row names a control no processor plays: a name `engine_pars`
+    /// binds to a knob or a processor is never read from its slot's held
+    /// values (the engine reads them only through `EnginePar::Opaque`).
+    /// After regenerating the table, pipe these names to
+    /// tools/migrations/held-dead-rows.py.
+    #[test]
+    fn held_rows_are_controls_no_processor_plays() {
+        let bound: std::collections::HashSet<String> = crate::engine_pars::engine_pars()
+            .into_iter()
+            .filter(|p| {
+                !matches!(
+                    p.drives,
+                    kontra_ir::Drives::Engine(kontra_ir::EnginePar::Opaque(_))
+                )
+            })
+            .map(|p| p.name.to_ascii_uppercase())
+            .collect();
+        let dead: Vec<&str> = super::FIELDS
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|l| l.split('\t').nth(2))
+            .filter(|n| bound.contains(&n.to_ascii_uppercase()))
+            .collect();
+        assert!(dead.is_empty(), "bound, never held:\n{}", dead.join("\n"));
     }
 
     /// A synced time reads back as its unit: 1/8 is unit 12 (half a beat),

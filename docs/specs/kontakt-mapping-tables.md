@@ -75,6 +75,7 @@ audit.rs and fit.rs are not production): on main after #191 and #196
 | Step | Deletes | mapping after |
 |---|---|---|
 | KT-18 knob rows (script_knobs.tsv and its string parser become typed rows; `tools/migrations/script-knobs-table.py`) | TSV 107 lines, parser 35 net .rs lines | 11,333 |
+| KT-17 held rows and single parses (109 of 140 held_fields.tsv rows named controls `engine_pars` binds to a processor, never read; `tools/migrations/held-dead-rows.py`; Wow/Flutter and Raum MIX and Supercharger GT dry read once by their rows; `supergt::mix_dry` deleted) | 109 TSV rows; .rs net 0 | 11,333 (11,524 on main e4dbdc6625 with #203 and #208 merged in) |
 
 ## Verification Matrix
 

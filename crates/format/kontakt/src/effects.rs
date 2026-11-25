@@ -124,14 +124,19 @@ const MODULES: &[Fx] = &[
     }),
     fx(0x64, "Ring Modulator", 50, false, Unread),
     model(&crate::raum::MODULE, "Raum", true, |s| {
-        let (p, _mix, lost) = crate::raum::saved(s.version, s.public)?;
+        let (p, mix, lost) = crate::raum::saved(s.version, s.public)?;
+        s.mix = Some(mix);
         lost.into_iter().for_each(|feature| s.lost(feature));
         Some(crate::raum::model_from(p))
     }),
     model(&crate::bite::MODULE, "Bite", false, |s| crate::bite::saved(s.public).map(crate::bite::model)),
     model(&crate::freak::MODULE, "Freak", false, |s| crate::freak::saved(s.public).map(crate::freak::model)),
     model(&crate::vibrato::MODULE, "Vibrato Chorus", false, |s| crate::vibrato::saved(s.version, s.public).map(crate::vibrato::model)),
-    model(&crate::wowflutter::MODULE, "Wow / Flutter", false, |s| crate::wowflutter::saved(s.version, s.public).map(|(p, _mix)| crate::wowflutter::model_from(p))),
+    model(&crate::wowflutter::MODULE, "Wow / Flutter", false, |s| {
+        let (p, mix) = crate::wowflutter::saved(s.version, s.public)?;
+        s.mix = Some(mix.clamp(0.0, 1.0));
+        Some(crate::wowflutter::model_from(p))
+    }),
     fx(0x6b, "Twin Delay", 57, true, Unread),
     fx(0x70, "Stereo Tune", 61, false, Unread),
     fx(0x71, "Beat Masher", 62, false, Unread),
@@ -316,6 +321,9 @@ struct Slot<'a, 'i> {
     impulses: &'a mut Impulses<'i>,
     knobs: &'a mut Vec<crate::script_knobs::SlotKnob>,
     model: &'a mut Option<ir::KnobModel>,
+    /// Wow/Flutter's or Raum's MIX, which splits the slot's output into
+    /// wet and dry; read once by its row.
+    mix: Option<f32>,
 }
 
 impl Slot<'_, '_> {
@@ -380,6 +388,7 @@ fn slot_effect(
         impulses,
         knobs,
         model,
+        mix: None,
     };
     let kind = match lookup(effect.id).map(|m| &m.map) {
         None | Some(Map::Unread) => None,
@@ -403,14 +412,8 @@ fn slot_effect(
                 kind,
                 Some(ir::EffectKind::Filter(_) | ir::EffectKind::Clocked(_))
             ) && params.output_gain == 0.0));
-    let wow_mix = (effect.id == 0x6a)
-        .then(|| crate::wowflutter::saved(object.version, &public).map(|(_, m)| m.clamp(0.0, 1.0)))
-        .flatten();
-    let raum_mix = (effect.id == 0x65)
-        .then(|| {
-            crate::raum::saved(object.version, &public).map(|(_, m, _)| crate::raum::mix_gains(m))
-        })
-        .flatten();
+    let wow_mix = slot.mix.filter(|_| effect.id == 0x6a);
+    let raum_mix = slot.mix.filter(|_| effect.id == 0x65).map(crate::raum::mix_gains);
     let effect_out = ir::Effect {
         kind: kind.unwrap_or(if parallel {
             ir::EffectKind::OtherWet
@@ -432,7 +435,9 @@ fn slot_effect(
         } else if parallel || effect.id == 0x13 {
             params.dry_level
         } else if effect.id == 0x60 && object.version == 0x51 {
-            crate::supergt::mix_dry(&public, params.output_gain)
+            // Its model's last knob is MIX, read once by its row.
+            (model.as_ref().and_then(|m| m.saved.get(9)))
+                .map_or(0.0, |&mix| crate::supergt::dry(mix, params.output_gain))
         } else if let Some(mix) = wow_mix {
             params.output_gain * (1.0 - mix)
         } else {
