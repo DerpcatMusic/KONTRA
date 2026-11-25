@@ -52,9 +52,9 @@ pub fn rms(a: &Audio) -> Option<f64> {
 }
 
 /// Integrated loudness, LUFS: 400 ms blocks every 100 ms, gated at -70 LUFS
-/// and then 10 LU under the mean of what passed. A mono sample (`channels`
-/// 1) counts once: the reference 8.13 reads a 440 Hz mono sine at -6.23 dBFS peak
-/// as -9.961 LUFS (the detect_tone probe), not 3 dB louder.
+/// and then 10 LU under the mean of what passed. A mono sample
+/// (`channels` 1) counts once: the reference 8.13 reads a 440 Hz mono sine at
+/// -6.23 dBFS peak as -9.961 LUFS (the detect_tone probe), not 3 dB louder.
 pub fn loudness(a: &Audio, channels: u8) -> Option<f64> {
     let rate = f64::from(a.rate);
     let channels: Vec<Vec<f64>> = (0..channels.clamp(1, 2))
@@ -322,28 +322,31 @@ pub fn key(a: &Audio) -> Option<i32> {
         }
         fft.forward(&mut buf);
         let mut db = [0.0f64; BANDS];
-        for (n, (lo, w)) in bank.iter().enumerate() {
+        for (n, ((lo, w), d)) in bank.iter().zip(db.iter_mut()).enumerate() {
             let e: f64 = w
                 .iter()
-                .zip(&buf[*lo..])
+                .zip(buf.get(*lo..).unwrap_or(&[]))
                 .map(|(w, c)| w * c.norm() / 4096.0)
                 .sum();
             let curve = 63.706_027_98 - 30.534_534_45 * ((n + 27) as f64).log10();
-            db[n] = (20.0 * e.max(1e-4).log10() + 80.0 - curve).max(0.0);
+            *d = (20.0 * e.max(1e-4).log10() + 80.0 - curve).max(0.0);
         }
         // Each band masks its two neighbours either side, 2/3 then 1/3 of its
         // level (0x141df5bd0, 0x141df6d30).
         let mut masked = [0.0f64; BANDS];
-        for (c, m) in masked.iter_mut().enumerate() {
+        for (c, (m, &d)) in masked.iter_mut().zip(&db).enumerate() {
             let spread: f64 = (c.saturating_sub(2)..(c + 3).min(BANDS))
                 .filter(|&r| r != c)
-                .map(|r| 10f64.powf((1.0 - r.abs_diff(c) as f64 / 3.0) * db[r] * 0.05) - 1.0)
+                .filter_map(|r| Some((r, *db.get(r)?)))
+                .map(|(r, l)| 10f64.powf((1.0 - r.abs_diff(c) as f64 / 3.0) * l * 0.05) - 1.0)
                 .sum();
-            *m = (db[c] - 20.0 * (spread + 1.0).log10()).max(0.0);
+            *m = (d - 20.0 * (spread + 1.0).log10()).max(0.0);
         }
         let mut chroma = [0.0f64; 12];
         for (i, v) in masked.iter().enumerate().take(90).skip(6) {
-            chroma[(i + 3) % 12] += v;
+            if let Some(ch) = chroma.get_mut((i + 3) % 12) {
+                *ch += v;
+            }
         }
         chroma
     };
@@ -354,8 +357,8 @@ pub fn key(a: &Audio) -> Option<i32> {
         padded.resize(N, 0.0);
         add(frame(&padded));
     } else {
-        for start in (0..=x.len() - N).step_by(HOP) {
-            add(frame(&x[start..start + N]));
+        for seg in x.windows(N).step_by(HOP) {
+            add(frame(seg));
         }
     }
     let chroma = standardised(&sum);
@@ -365,8 +368,10 @@ pub fn key(a: &Audio) -> Option<i32> {
         let weight = if *mode == 1 { 1.05 } else { 1.0 };
         for root in 0..12 {
             let score = weight
-                * (0..12)
-                    .map(|k| chroma[k] * p[(k + 12 - root) % 12])
+                * chroma
+                    .iter()
+                    .enumerate()
+                    .map(|(k, c)| c * p.get((k + 12 - root) % 12).copied().unwrap_or(0.0))
                     .sum::<f64>()
                 / 12.0;
             if score > best.0 {
