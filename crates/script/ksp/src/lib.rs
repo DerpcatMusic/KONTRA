@@ -82,6 +82,10 @@ pub struct Script {
     /// frame or position from the control's value alone:
     /// `set_control_par(get_ui_id($picture), $CONTROL_PAR_PICTURE_STATE, 179 * $control / 1000000)`.
     pub shows: Vec<(u32, u32)>,
+    /// `(picture, control)` variables where the script picks the picture's
+    /// file by the control's value alone:
+    /// `set_control_par_str(get_ui_id($name), $CONTROL_PAR_PICTURE, "label_" & $menu)`.
+    pub picks: Vec<(u32, u32)>,
 }
 
 impl Script {

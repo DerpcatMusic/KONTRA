@@ -72,7 +72,10 @@ pub(super) fn page<'a>(
             // KONTRA's control shows the value this picture showed, while
             // the control is shown.
             let shown_elsewhere = bare && w.shows.is_some_and(|c| tree.visible(c));
-            if shown_elsewhere
+            // What it spelled stays, as words in its place.
+            let menu = (w.spells.filter(|_| shown_elsewhere)).and_then(|m| tree.widgets.get(m.0));
+            let spelled = menu.map(caption);
+            if (shown_elsewhere && spelled.is_none())
                 || !tree.visible(index)
                 || (!on_page(raw) && tree.scroller(index).is_none())
             {
@@ -127,9 +130,11 @@ pub(super) fn page<'a>(
             let shown = (faces.iter())
                 .find(|u| over && u.role == hover)
                 .or(faces.first());
-            let picture =
-                (shown.filter(|u| !bare || !u.role.replaced_by_vector())).and_then(|u| picture(u));
-            let style_ref = resolve_style(w, held, over);
+            let picture = (shown.filter(|u| !bare || !u.role.replaced_by_vector()))
+                .filter(|_| spelled.is_none())
+                .and_then(|u| picture(u));
+            // Spelled in the menu's own font, as the instrument writes it there.
+            let style_ref = resolve_style(menu.unwrap_or(w), held, over);
             let style = style_ref.and_then(|s| tree.styles.get(s.0));
             let text_shift = held
                 && w.text_shift_on_press
@@ -145,10 +150,10 @@ pub(super) fn page<'a>(
                 text_shift,
             );
             let stock = look.is_none() && stock::shows(tree, w, bare);
-            let words = if look.is_some() {
-                String::new()
-            } else {
-                caption(w)
+            let words = match spelled {
+                Some(words) => words,
+                None if look.is_some() => String::new(),
+                None => caption(w),
             };
             Some(Widget {
                 index,

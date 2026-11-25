@@ -37,6 +37,8 @@ pub struct Face {
     controls: Vec<(Control, Box<str>, Cells)>,
     /// `kontra_ksp::Script::shows`.
     shows: Vec<(u32, u32)>,
+    /// `kontra_ksp::Script::picks`.
+    picks: Vec<(u32, u32)>,
     symbols: Vec<Box<str>>,
     /// The performance view the script loads, if any.
     view: Option<View>,
@@ -60,6 +62,7 @@ impl Face {
         Self {
             controls,
             shows: script.shows.clone(),
+            picks: script.picks.clone(),
             symbols: script.symbols.clone(),
             view: crate::perf_view::find(data).map(|(_, view)| view),
             native: nui::Native::of(data),
@@ -644,7 +647,7 @@ impl Live {
             let props = props(face, d);
             let mut w = widget(&mut bld, slot, d, &props, engine);
             if let Some(old) = bld.ui.widgets.get_mut(*n) {
-                (w.parent, w.shows) = (old.parent, old.shows);
+                (w.parent, w.shows, w.spells) = (old.parent, old.shows, old.spells);
                 w.hidden = w.hidden || self.native.is_some();
                 *old = w;
                 out.push(ui::WidgetRef(*n));
@@ -750,17 +753,24 @@ fn build(
         }
         bld.ui.widgets.push(w);
     }
-    // A picture the script turns or moves with a knob or slider's value.
-    for &(picture, control) in &face.shows {
-        let at = |v: u32| by_id.get(&(FIRST_UI_ID + i32::try_from(v).ok()?)).copied();
+    // A picture the script turns or moves with a knob or slider's value,
+    // and one it picks by a menu's value: it spells that menu's item.
+    let at = |v: u32| by_id.get(&(FIRST_UI_ID + i32::try_from(v).ok()?)).copied();
+    let links = (face.shows.iter().map(|l| (l, false))).chain(face.picks.iter().map(|l| (l, true)));
+    for (&(picture, control), spells) in links {
         let (Some(p), Some(c)) = (at(picture), at(control)) else {
             continue;
         };
-        let turns = decls
-            .get(c)
-            .is_some_and(|d| matches!(d.kind, ControlKind::Knob | ControlKind::Slider));
-        if let Some(w) = bld.ui.widgets.get_mut(p).filter(|_| turns) {
-            w.shows = Some(ui::WidgetRef(c));
+        let kind = decls.get(c).map(|d| d.kind);
+        let Some(w) = bld.ui.widgets.get_mut(p) else {
+            continue;
+        };
+        match kind {
+            Some(ControlKind::Menu) if spells => w.spells = Some(ui::WidgetRef(c)),
+            Some(ControlKind::Knob | ControlKind::Slider) if !spells => {
+                w.shows = Some(ui::WidgetRef(c));
+            }
+            _ => {}
         }
     }
     let native = face

@@ -815,3 +815,34 @@ fn a_picture_the_script_turns_with_a_control_shows_that_control() {
     assert_eq!(widget(&ui, "$both").shows, None, "two controls");
     assert_eq!(widget(&ui, "$amount").shows, None);
 }
+
+/// A picture the script picks by a menu's value spells that menu's item
+/// (Analog Strings' `"macro_slider_label_" & $macros__name0`).
+#[test]
+fn a_picture_the_script_picks_by_a_menu_spells_its_item() {
+    let ui = tree(
+        "on init
+            declare ui_slider $amount (0, 1000000)
+            declare ui_menu $name
+            add_menu_item($name, \"Rhythm\", 0)
+            declare ui_label $word (1, 1)
+            declare ui_label $other (1, 1)
+            set_control_par_str(get_ui_id($word), $CONTROL_PAR_PICTURE, \"label_\" & $name)
+            set_control_par(get_ui_id($word), $CONTROL_PAR_PICTURE_STATE, $amount / 5556)
+            set_control_par_str(get_ui_id($other), $CONTROL_PAR_PICTURE, \"label_\" & $amount)
+        end on",
+    );
+    let at = |name| {
+        ui.widgets
+            .iter()
+            .position(|w| w.name == name)
+            .map(ui::WidgetRef)
+    };
+    let word = widget(&ui, "$word");
+    assert_eq!((word.shows, word.spells), (at("$amount"), at("$name")));
+    assert_eq!(
+        widget(&ui, "$other").spells,
+        None,
+        "picked by a slider, not a menu"
+    );
+}
