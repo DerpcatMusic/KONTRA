@@ -37,6 +37,8 @@ pub enum Form {
     Times,
     /// A whole number in three places and ` BPM`: a tempo.
     Bpm,
+    /// A note name and octave, C-2 at 0 (`%s%d`): a pitch in notes.
+    Note,
     /// Two decimals under 1, else one, unpadded: a rate in Hz.
     Rate,
     /// One of these texts: entry `floor(n·x)`, the last at 1.

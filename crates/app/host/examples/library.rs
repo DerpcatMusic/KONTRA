@@ -45,6 +45,9 @@ fn main() {
             for issue in &catalog.issues {
                 println!("issue {}: {}", issue.path.display(), issue.reason);
             }
+            for root in &catalog.roots {
+                println!("root {}: {}", root.path.display(), root.summary());
+            }
         }
         println!(
             "{pass}: {} libraries in {ms:.1} ms ({} files read)",

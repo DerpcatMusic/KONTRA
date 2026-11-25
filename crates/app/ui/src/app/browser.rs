@@ -15,7 +15,7 @@ use kontra_ui_model::{AssetRef, ImageMeta};
 use super::find::{self, found};
 use super::{Action, App, Format, LibraryFilter, LibrarySort, LibraryView, Shelf, Tiles, tidy};
 use crate::Pictures;
-use crate::kit::{self, Icon, button, field, glyph, icon_button, interactive, rule, tab};
+use crate::kit::{self, Icon, button, field, glyph, icon_button, interactive, rule};
 use crate::theme::{CONTROL, SIDEBAR, SMALL, SPACE, TEXT, TIGHT, accent, secondary};
 
 pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
@@ -247,6 +247,39 @@ fn shelf_chip(
     (interactive(el), changed)
 }
 
+/// A format filter: a small pill with its count, lit when current.
+fn format_chip(ui: &mut Ui, id: &str, label: &str, count: usize, current: bool) -> (El, bool) {
+    let hit = ui.get(id).activated();
+    let ink = if current {
+        Fill::from(Role::Ink)
+    } else {
+        secondary()
+    };
+    let el = row![
+        caption(label.to_owned())
+            .text_size(SMALL)
+            .fill(ink)
+            .lines(1),
+        caption(count.to_string())
+            .text_size(SMALL * 0.9)
+            .fill(secondary())
+            .lines(1),
+    ]
+    .gap(TIGHT * 0.75)
+    .align(Align::Center)
+    .pad((TIGHT * 1.5, TIGHT * 0.5))
+    .pill()
+    .shrink(0)
+    .when(current, |e| {
+        e.fill(Role::Raised).stroke(accent()).stroke_width(1)
+    })
+    .focusable()
+    .a11y(A11y::Button)
+    .named(format!("{label} ({count})"))
+    .id(id.to_owned());
+    (interactive(el), hit)
+}
+
 fn libraries(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let total_in_scope = app
         .libraries
@@ -407,35 +440,39 @@ fn libraries(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let format_bar = {
         let count = |f: Format| app.libraries.iter().filter(|l| l.format == f).count();
         let unified = v.library_view == LibraryView::Unified;
-        let mut tabs = Vec::new();
-        let all = tab(
+        let mut chips = Vec::new();
+        let (all, hit) = format_chip(
             ui,
             "format-All",
-            &format!("All formats {}", app.libraries.len()),
+            "All formats",
+            app.libraries.len(),
             unified,
         );
-        if all.changed {
+        if hit {
             v.library_view = LibraryView::Unified;
         }
-        tabs.push(all.el);
+        chips.push(all);
         for (format, label) in [(Format::Kontakt, "Kontakt"), (Format::Uvi, "Falcon / UVI")] {
             let current = !unified && v.format == format;
-            let t = tab(
+            let (chip, hit) = format_chip(
                 ui,
-                format!("format-{label}"),
-                &format!("{label} {}", count(format)),
+                &format!("format-{label}"),
+                label,
+                count(format),
                 current,
             );
-            if t.changed && !current {
+            if hit && !current {
                 (v.library_view, v.format, v.library) = (LibraryView::Separated, format, None);
             }
-            tabs.push(t.el);
+            chips.push(chip);
         }
-        tabs.push(spacer());
-        row(tabs)
-            .gap(TIGHT)
+        // Secondary to the shelves above: small pills that wrap onto a
+        // second line in a narrow sidebar instead of running off its edge.
+        row(chips)
+            .wrap()
+            .gap(TIGHT * 0.5)
+            .line_gap(TIGHT * 0.5)
             .align(Align::Center)
-            .pad(kit::edges(0., SPACE, 0., SPACE))
     };
 
     let list = match app.view.shelf {
@@ -470,11 +507,12 @@ fn libraries(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         .align(Align::Center)
         .pad(kit::edges(0., SPACE, 0., SPACE))
     });
-    col![
+    // Search, then the shelves (the primary scope) with their view
+    // options, then the format filter: one gap between the three.
+    let head = col![
         row![search.el.grow(1).min_w(0), machine.el, add.el, hide.el]
             .gap(TIGHT)
-            .align(Align::Center)
-            .pad(kit::edges(SPACE, SPACE, TIGHT, SPACE)),
+            .align(Align::Center),
         row![
             all_chip,
             fav_chip,
@@ -483,10 +521,14 @@ fn libraries(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             options.el,
             tiles.el
         ]
-        .gap(TIGHT * 0.5)
-        .align(Align::Center)
-        .pad(kit::edges(0., SPACE, 0., SPACE)),
+        .gap(TIGHT)
+        .align(Align::Center),
         format_bar,
+    ]
+    .gap(TIGHT)
+    .pad(kit::edges(SPACE, SPACE, SPACE, SPACE));
+    col![
+        head,
         rule(),
         col(progress.into_iter().collect::<Vec<_>>()),
         list.grow(1).min_h(0),
@@ -1165,15 +1207,14 @@ fn card(
     .w(Len::Pct(100.))
     .h(Len::Pct(100.));
 
-    let (a11y_name, tooltip) = match protection {
-        super::Protection::Open => (
-            format!("{name}, {count} presets"),
-            format!("{name}\nShow its presets below"),
-        ),
-        super::Protection::Protected { system, detail } => (
-            format!("{name}, {count} presets, locked ({system})"),
-            format!("{name}\nLocked ({system}): {detail}"),
-        ),
+    // No hover tip: the tile shows its name and count already, and a tip
+    // over a grid the pointer sweeps covers the next row. The lock badge
+    // says it is locked; why is in its accessible name.
+    let a11y_name = match protection {
+        super::Protection::Open => format!("{name}, {count} presets"),
+        super::Protection::Protected { system, detail } => {
+            format!("{name}, {count} presets, locked ({system}): {detail}")
+        }
     };
 
     let mut layers = vec![picture(image, height, name), scrim(0.84), label];
@@ -1199,7 +1240,6 @@ fn card(
         .focusable()
         .a11y(A11y::Button)
         .named(a11y_name)
-        .tip(tooltip)
         .id(id.to_owned())
         .shrink(0);
 

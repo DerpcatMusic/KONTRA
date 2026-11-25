@@ -288,7 +288,7 @@ pub(crate) fn script_knobs() -> [(&'static str, ir::KnobTarget, ir::Law); 7] {
         ("$ENGINE_PAR_IRC_FREQ_LOWPASS_ER", cut(false, true), hz()),
         ("$ENGINE_PAR_IRC_FREQ_HIGHPASS_LR", cut(true, false), hz()),
         ("$ENGINE_PAR_IRC_FREQ_LOWPASS_LR", cut(true, true), hz()),
-        // The size knob's 0.5..1.5, taken as linear (good enough: unmeasured).
+        // The size knob's 0.5..1.5, linear (its text reads 50..150 %, 2026-11-25).
         (
             "$ENGINE_PAR_IRC_LENGTH_RATIO_ER",
             Impulse(Size { late: false }),

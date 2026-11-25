@@ -663,7 +663,7 @@ fn mui_audit_passes_across_sizes_and_views() {
 }
 
 #[test]
-fn protected_library_surfaces_lock_badge_tooltip_banner_and_passes_audit() {
+fn protected_library_surfaces_lock_badge_name_banner_and_passes_audit() {
     let mut ui = kontra_ui::ui();
     let mut app = App {
         libraries: vec![
@@ -691,7 +691,8 @@ fn protected_library_surfaces_lock_badge_tooltip_banner_and_passes_audit() {
     app.view.format = Format::Uvi;
     settle(&mut ui, &mut app);
 
-    // Card carries locked status in its accessibility name and hover tooltip.
+    // Card carries locked status in its accessibility name; no hover tip
+    // covers the grid (the lock badge shows it).
     let card_surface = ui.scene().and_then(|s| s.surface("library-0")).cloned();
     assert!(card_surface.is_some(), "protected library card is rendered");
     let card_frame = card_surface.as_ref().map(|s| s.frame);
@@ -717,10 +718,15 @@ fn protected_library_surfaces_lock_badge_tooltip_banner_and_passes_audit() {
             );
             tip = res.ok().and_then(|out| out.tip.map(|(t, _)| t));
         }
+        assert_eq!(tip, None, "no hover tip on a library card");
+        let name = card_surface
+            .as_ref()
+            .and_then(|s| s.semantics.as_ref())
+            .and_then(|s| s.label.clone());
         assert!(
-            tip.as_deref()
-                .is_some_and(|t| t.contains("Locked (PACE / iLok)") && t.contains("iLok")),
-            "expected lock tooltip on protected library card, got {tip:?}"
+            name.as_deref()
+                .is_some_and(|n| n.contains("locked (PACE / iLok)")),
+            "lock in the card's name, got {name:?}"
         );
     }
 
@@ -848,6 +854,17 @@ fn unified_and_separated_library_views_filter_and_sort_cleanly() {
     assert!(ui.scene().and_then(|s| s.surface("library-1")).is_some());
     assert!(ui.scene().and_then(|s| s.surface("library-2")).is_some());
     assert!(ui.scene().and_then(|s| s.surface("format-All")).is_some());
+
+    // The format pills stay inside the sidebar, wrapping if they must.
+    let scene = ui.scene().expect("scene");
+    let edge = kontra_ui::theme::SIDEBAR;
+    for id in ["format-All", "format-Kontakt", "format-Falcon / UVI"] {
+        let f = scene.surface(id).expect(id).frame;
+        assert!(
+            f.x >= 0. && f.x + f.size.width <= edge + 1.,
+            "{id} {f:?} past {edge}"
+        );
+    }
 
     // A format tab separates: only Kontakt libraries remain.
     click(&mut ui, &mut app, "format-Kontakt");

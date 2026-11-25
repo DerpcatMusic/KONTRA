@@ -14,6 +14,31 @@ use kontra_ui::app::{
 };
 use mui::prelude::{Buttons, Input, Point, PointerInput, Size, Ui};
 
+/// This thread's CPU time where Linux reports it, else the wall clock: a
+/// frame's cost on a busy machine is what it ran, not what it waited.
+enum Cpu {
+    Thread(u64),
+    Wall(Instant),
+}
+
+impl Cpu {
+    fn thread_ns() -> Option<u64> {
+        let s = std::fs::read_to_string("/proc/thread-self/schedstat").ok()?;
+        s.split_whitespace().next()?.parse().ok()
+    }
+    fn now() -> Self {
+        Self::thread_ns().map_or_else(|| Self::Wall(Instant::now()), Self::Thread)
+    }
+    fn elapsed_us(&self) -> u128 {
+        match self {
+            Self::Thread(t) => {
+                u128::from(Self::thread_ns().unwrap_or(*t).saturating_sub(*t) / 1000)
+            }
+            Self::Wall(t) => t.elapsed().as_micros(),
+        }
+    }
+}
+
 struct Shot {
     ui: Ui,
     app: App,
@@ -25,7 +50,7 @@ struct Shot {
 impl Shot {
     /// One frame; its cost in µs and whether motion is still running.
     fn frame(&mut self, input: Input) -> Result<(u128, bool), Box<dyn Error>> {
-        let t = Instant::now();
+        let t = Cpu::now();
         // As the editor does each frame: take in the covers decoded since.
         let decoding = self.app.covers.as_mut().is_some_and(|c| {
             c.poll();
@@ -38,7 +63,7 @@ impl Shot {
             .ui
             .frame(r.el, Some(size), input, 1. / 60.)
             .map_err(|e| format!("{e:?}"))?;
-        Ok((t.elapsed().as_micros(), f.animating || decoding))
+        Ok((t.elapsed_us(), f.animating || decoding))
     }
 
     /// Frames until nothing moves: the ones an action costs after it.
@@ -75,6 +100,39 @@ impl Shot {
             })?;
         }
         self.settle()?;
+        Ok(())
+    }
+
+    /// Median cost of a frame that scrolls `id` by a wheel notch, as the
+    /// user does scrolling it: `{"state":"<id>-scroll","frame_us":..}`.
+    fn scroll(&mut self, id: &str) -> Result<(), Box<dyn Error>> {
+        let s = self
+            .ui
+            .scene()
+            .and_then(|s| s.surface(id))
+            .ok_or("no scroller")?;
+        let at = Point::new(s.frame.x + s.frame.size.width / 2., s.frame.y + 40.);
+        let mut costs = Vec::new();
+        for i in 0..60 {
+            let pointer = PointerInput {
+                pos: Some(at),
+                ..Default::default()
+            };
+            let dy = if i < 30 { 40. } else { -40. };
+            let input = Input {
+                pointer,
+                wheel: mui::prelude::Vec2::new(0., dy),
+                ..Default::default()
+            };
+            costs.push(self.frame(input)?.0);
+        }
+        costs.sort_unstable();
+        let frame_us = costs.get(costs.len() / 2).copied().unwrap_or(0);
+        let min_us = costs.first().copied().unwrap_or(0);
+        println!(
+            "{{\"state\":\"{id}-scroll\",\"width\":{},\"frame_us\":{frame_us},\"min_us\":{min_us}}}",
+            self.size.0
+        );
         Ok(())
     }
 
@@ -273,6 +331,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         s.save("empty")?;
         s.click("library-0")?;
         s.save("presets")?;
+        s.scroll("library-list")?;
         s.click("preset-0")?;
         s.app.loading = Some(app::Loading::New);
         s.app.load_progress = kontra_protocol::LoadSnapshot {
@@ -327,6 +386,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         s.click("theme-reset")?;
         s.click("settings-about")?;
         s.save("about")?;
+        s.scroll("about-changelog")?;
         s.click("sheet-close")?;
         s.click("browser")?;
         s.save("browser-hidden")?;

@@ -51,9 +51,9 @@ const fn stage(base: f32) -> Law {
 pub const STAGE_15S: Law = stage(7_501.0);
 /// Decay and release: 0..=25 s on the stage law (Kontakt [ref], `C = 9.4336`).
 pub const STAGE_25S: Law = stage(12_501.0);
-/// An LFO's fade-in: 0..=10 s on the stage law (measured only, no ln 5001 in the binary; probe
-/// probes/mod_par_laws.lua: 500_000 saves 139.45 ms, 1_000_000 10 002 ms).
-pub const STAGE_10S: Law = stage(5_001.0);
+/// An LFO's fade-in: 0..=10.002 s on the stage law (Kontakt [ref], `C = 8.5176`, ln 5002;
+/// probe probes/mod_par_laws.lua: 500_000 saves 139.45 ms, 1_000_000 10 002 ms).
+pub const STAGE_10S: Law = stage(5_002.0);
 
 /// An LFO's fade-in over its fade time: Kontakt runs a state from 0.3 to 1.3
 /// by a constant ratio and scales by `state − 0.3`, so `0.3·((13/3)^x − 1)` rises to 1.

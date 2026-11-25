@@ -15,16 +15,16 @@ use crate::script_knobs::{
 // each filter kind when a library shows another.
 pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
     use ir::Form::{
-        Blank, Bpm, Decimal, Hundredths, Menu, Padded, Pan, Rate, Ratio, Times, Whole, Wide,
+        Blank, Bpm, Decimal, Hundredths, Menu, Note, Padded, Pan, Rate, Ratio, Times, Whole, Wide,
         WideWhole,
     };
     use kontra_law::FormulaId::{
-        BassProGainDb, BassProGeqDb, BassProGeqVolumeDb, BassProMasterDb, BassProMidDb, BiteBits,
-        BiteFrequencyHz, BusCompMakeupDb, BusCompThresholdDb, ChoralRateHz, FlairRateHz,
-        FreakBandPassHz, FreakCarrierHz, FreakFrequencyHz, PhasisCenterHz, PhasisRateHz,
-        PsycheDetuneCents, PsychePitchSemitones, RaumDecayMs, RaumRateHz, RotatorFast,
-        RotatorMixDb, SolidEqHfHz, SolidEqHmfHz, SolidEqLfHz, SolidEqLmfHz, SolidEqQ,
-        TwinDelayTimeMs,
+        AttackCurvePercent, BassProGainDb, BassProGeqDb, BassProGeqVolumeDb, BassProMasterDb,
+        BassProMidDb, BiteBits, BiteFrequencyHz, BusCompMakeupDb, BusCompThresholdDb, ChoralRateHz,
+        FlairPitchNote, FlairRateHz, FreakBandPassHz, FreakCarrierHz, FreakFrequencyHz,
+        PhasisCenterHz, PhasisNotches, PhasisRateHz, PsycheDetuneCents, PsychePitchSemitones,
+        RaumDecayMs, RaumRateHz, RotatorFast, RotatorMixDb, SolidEqHfHz, SolidEqHmfHz, SolidEqLfHz,
+        SolidEqLmfHz, SolidEqQ, TwinDelayTimeMs,
     };
     let lin = |lo, hi| ir::Law::Linear { lo, hi };
     let exp = |lo, hi| ir::Law::Exp { lo, hi };
@@ -132,7 +132,12 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
             [Some("mono"), None],
         ),
         ("$ENGINE_PAR_STEREO_PAN", lin(0.0, 1.0), Pan, none),
-        ("$ENGINE_PAR_ATK_CURVE", lin(-100.0, 100.0), Whole, none),
+        (
+            "$ENGINE_PAR_ATK_CURVE",
+            formula(AttackCurvePercent),
+            Whole,
+            none,
+        ),
         (
             "$ENGINE_PAR_BITS",
             lin(0.0, 16.0),
@@ -238,10 +243,10 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
             Padded,
             none,
         ),
-        // An LFO's delay: the envelope stage law, 0..10 s.
+        // An LFO's delay (Fade In, [ref]): `e^(ln 5002·x + ln 2) − 2`, 0..10.002 s.
         (
             "$ENGINE_PAR_LFO_DELAY",
-            curve([(0.0, 0.0, 5001f32.ln()), (1.0, 10_000.0, 0.0)]),
+            curve([(0.0, 0.0, 5002f32.ln()), (1.0, 10_002.0, 0.0)]),
             Padded,
             none,
         ),
@@ -270,6 +275,12 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
             none,
         ),
         ("$ENGINE_PAR_LFO_PHASE", lin(0.0, 360.0), WideWhole, none),
+        // An LFO's waveform mixes, bipolar percents ([ref] on −1..1).
+        ("$ENGINE_PAR_LFO_RECT", lin(-100.0, 100.0), Decimal, none),
+        ("$ENGINE_PAR_LFO_TRI", lin(-100.0, 100.0), Decimal, none),
+        ("$ENGINE_PAR_LFO_SAW", lin(-100.0, 100.0), Decimal, none),
+        ("$ENGINE_PAR_LFO_RAND", lin(-100.0, 100.0), Decimal, none),
+        ("$ENGINE_PAR_WT_PHASE_RAND", lin(0.0, 100.0), Decimal, none),
         // Una Corda's Solid G-EQ, bus 0 slot 7 (Kontakt 8.13.1, 2026-11-12,
         // scratch/lane-scripts/probes/b2): every band's gain ±20 dB; the
         // bell switches show nothing.
@@ -762,6 +773,18 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
         ("$ENGINE_PAR_BITE_BITS", formula(BiteBits), Whole, none),
         ("$ENGINE_PAR_FLAIR_RATE", formula(FlairRateHz), Padded, none),
         (
+            "$ENGINE_PAR_FLAIR_PITCH",
+            formula(FlairPitchNote),
+            Note,
+            none,
+        ),
+        (
+            "$ENGINE_PAR_PHASIS_NOTCHES",
+            formula(PhasisNotches),
+            Whole,
+            none,
+        ),
+        (
             "$ENGINE_PAR_PHASIS_RATE",
             formula(PhasisRateHz),
             Padded,
@@ -806,18 +829,18 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
             none,
         ),
     ]);
-    // The Convolution's knobs read what they set: the measured knob laws
-    // (impulse.rs). ponytail: the print forms are unmeasured.
+    // The Convolution's knobs read what they set: its cut-offs through the measured knob laws
+    // (impulse.rs), its sizes as 50..150 % in one decimal (`get_engine_par_disp_ext`,
+    // 2026-11-25).
     rows.extend(
         crate::impulse::script_knobs()
             .into_iter()
             .map(|(name, _, law)| {
-                let form = if name.contains("LENGTH") {
-                    Hundredths
+                if name.contains("LENGTH") {
+                    (name, lin(50.0, 150.0), Decimal, none)
                 } else {
-                    Padded
-                };
-                (name, law, form, none)
+                    (name, law, Padded, none)
+                }
             }),
     );
     rows.into_iter()

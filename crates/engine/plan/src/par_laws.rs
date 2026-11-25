@@ -97,6 +97,14 @@ pub fn text(pars: &EnginePars, id: i32, raw: i32, out: &mut Text) -> bool {
         ir::Form::Blank | ir::Form::Menu(_) => return true,
         ir::Form::Times => return out.push_fmt(format_args!("x {v:.1}")),
         ir::Form::Bpm => return out.push_fmt(format_args!("{v:3.0} BPM")),
+        ir::Form::Note => {
+            const NAMES: [&str; 12] = [
+                "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+            ];
+            let n = v as i32;
+            let name = NAMES.get(n.rem_euclid(12) as usize).unwrap_or(&"");
+            return out.push_fmt(format_args!("{name}{}", n.div_euclid(12) - 2));
+        }
         ir::Form::Rate if v.abs() < 1.0 => return out.push_fmt(format_args!("{v:.2}")),
         ir::Form::Rate => return out.push_fmt(format_args!("{v:.1}")),
     };
@@ -220,7 +228,7 @@ mod tests {
         for (law, top) in [
             (STAGE_15S, 15_000.0),
             (STAGE_25S, 25_000.0),
-            (STAGE_10S, 10_000.0),
+            (STAGE_10S, 10_002.0),
         ] {
             for raw in RAWS {
                 let x = f64::from(raw) / 1e6;

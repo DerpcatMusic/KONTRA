@@ -286,3 +286,43 @@ fn walk_speed_on_a_synthetic_tree() {
     assert!(took.as_secs() < 10, "20k folders took {took:?}");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// UVI Workstation keeps the folders it searches for soundbanks in
+/// `SoundBanksFolders` under `com.uvisoundsource`, written in two forms
+/// (as found in real Wine prefixes); a Wine prefix's `.reg` file names them
+/// as Windows paths, and each that exists is found.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[test]
+fn uvi_soundbank_folders_come_from_uvi_s_own_setting() {
+    let prefix = tree(
+        "uvi-prefix",
+        &["system.reg", "Banks A/A.ufs", "Banks B/B.ufs"],
+    );
+    let z = |dir: &str| format!("Z:{}", prefix.join(dir).display()).replace('/', "\\\\");
+    let reg = format!(
+        "[Software\\\\com.uvisoundsource\\\\UVIWorkstation] 1794784652\n\
+         \"SoundBanksFolders\"=\"<?xml version=\\\"1.0\\\"?>\\n<SearchPaths>\\n\\t<folder path=\\\"{a}\\\" recursive=\\\"false\\\" indexed=\\\"true\\\" />\\n\\t<folder path=\\\"C:\\\\users\\\\u\\\\Documents\\\\UVISoundBanks\\\" />\\n</SearchPaths>\\n\"\n\
+         [Software\\\\com.uvisoundsource\\\\UVIWorkstation\\\\VST] 1794784652\n\
+         \"SoundBanksFolders\"=\"<SearchPaths>\\n    <folder path=\\\"{b}\\\" recursive=\\\"0\\\"/>\\n</SearchPaths>\\n\"\n\
+         [Software\\\\Other] 1\n\
+         \"SoundBanksFolders\"=\"<folder path=\\\"Z:\\\\elsewhere\\\" />\"\n",
+        a = z("Banks A"),
+        b = z("Banks B").replace("\\\\", "/"),
+    );
+    std::fs::write(prefix.join("user.reg"), &reg).unwrap();
+    assert_eq!(
+        discover::uvi_reg_file(&reg),
+        [
+            z("Banks A").replace("\\\\", "\\"),
+            "C:\\users\\u\\Documents\\UVISoundBanks".into(),
+            z("Banks B").replace("\\\\", "/"),
+        ]
+    );
+    let found = discover::in_prefix(&prefix);
+    assert!(found.contains(&prefix.join("Banks A")), "{found:?}");
+    assert!(found.contains(&prefix.join("Banks B")), "{found:?}");
+    assert!(!found.iter().any(|p| p.ends_with("elsewhere")));
+    let query = "\r\nHKEY_CURRENT_USER\\SOFTWARE\\com.uvisoundsource\\Falcon\r\n    SoundBanksFolders    REG_SZ    <SearchPaths>\n    <folder path=\"D:\\UVI &amp; Co\" recursive=\"0\"/>\n</SearchPaths>\n\r\n";
+    assert_eq!(discover::uvi_soundbank_folders(query), ["D:\\UVI & Co"]);
+    std::fs::remove_dir_all(&prefix).unwrap();
+}
