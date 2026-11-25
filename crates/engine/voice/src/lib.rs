@@ -51,6 +51,12 @@ const SCRATCH: usize = 512;
 /// (loops unrolled, crossfades blended): chunks slice it instead of
 /// assembling their window from the sample each time.
 const AHEAD: usize = 1024;
+/// A voice whose gain matrix and its target both stay under this (-140 dB)
+/// is culled: it renders nothing, while its cursor, envelope and gain move on.
+const CULL: f32 = 1e-7;
+/// Source frames a culled voice with pre-amp inserts replays through them,
+/// output discarded, when it comes back: their state as if they had run.
+const PREROLL: usize = 2048;
 /// Highest pitch step (source frames per output frame): +4 octaves at 4× rate.
 pub const MAX_STEP: f64 = 64.0;
 /// Output frames of source asked for ahead of the cursor each render.
@@ -297,6 +303,8 @@ pub struct Voice {
     /// After a read ahead met frames not yet streamed, chunks before this
     /// position read their own window.
     ahead_retry: i64,
+    /// Its last chunk was culled ([`CULL`]).
+    culled: bool,
 }
 
 /// The buffers a voice renders through, one set for every voice an engine
@@ -368,6 +376,7 @@ impl Voice {
             ahead_len: 0,
             ahead_key: (None, None),
             ahead_retry: i64::MIN,
+            culled: false,
             offline_wait_timeouts: 0,
         }
     }
@@ -382,6 +391,7 @@ impl Voice {
     pub fn start(&mut self, start: VoiceStart) {
         self.ahead_len = 0;
         self.ahead_retry = i64::MIN;
+        self.culled = false;
         self.loops.clear();
         if let Some(loops) = &start.region.loops {
             // Capped at inline capacity (8) so the audio thread never spills to the heap.
@@ -585,8 +595,12 @@ impl Voice {
         self.fade.settled()
             && !self.fade.ended()
             && (self.lagged.iter().zip(&self.lag)).all(|(&at, l)| still(at, l.gain, l.coef))
-            && (self.gain.as_flattened().iter().zip(self.target.as_flattened()))
-                .all(|(&g, &t)| still(g, t, self.gain_smooth))
+            && (self
+                .gain
+                .as_flattened()
+                .iter()
+                .zip(self.target.as_flattened()))
+            .all(|(&g, &t)| still(g, t, self.gain_smooth))
     }
 
     fn tick_lags(&mut self) -> f32 {
@@ -867,12 +881,18 @@ impl Voice {
             }
             let missing_before = self.missing;
             let releasing = self.released.is_some() || self.is_ending();
-            let silent = PLAIN
+            // A voice with post-amp inserts is never culled: their tails ring on.
+            let silent = !POST
                 && !synth
                 && !stretched
                 && !releasing
-                && self.gain.as_flattened().iter().all(|&g| g == 0.0)
-                && self.target.as_flattened().iter().all(|&g| g == 0.0);
+                && self.gain.as_flattened().iter().all(|g| g.abs() < CULL)
+                && self.target.as_flattened().iter().all(|g| g.abs() < CULL);
+            if silent {
+                self.culled = true;
+            } else if std::mem::take(&mut self.culled) && !PLAIN && !synth && !stretched {
+                self.preroll(scratch, client, &region, &mut insert);
+            }
             let filled = if silent {
                 let cursor = (self.anchor, self.elapsed, self.step * self.loop_tune);
                 let ramp = Ramp {
@@ -924,7 +944,7 @@ impl Voice {
             let chunk_missing = self.missing != missing_before;
             let limit = filled.min(out.len().saturating_sub(done));
             let raw = scratch.raw.get_mut(..limit).unwrap_or_default();
-            if !raw.is_empty() {
+            if !raw.is_empty() && !silent {
                 insert(VoiceStage::PreAmp, raw);
             }
             if silent {
@@ -1081,6 +1101,39 @@ impl Voice {
         }
     }
 
+    /// Replays the [`PREROLL`] source frames before the cursor through the
+    /// pre-amp inserts at the current step, output discarded: a voice back
+    /// from being culled resumes with its filters' state as if they had run.
+    fn preroll(
+        &mut self,
+        scratch: &mut Scratch,
+        client: &StreamClient,
+        region: &Region,
+        insert: &mut impl FnMut(VoiceStage, &mut [[f32; 2]]),
+    ) {
+        let (step, now, missing) = (self.step(), self.at(0), self.missing);
+        let frames = PREROLL.min((now / step).max(0.0) as usize);
+        let margin = if step > 1.0 {
+            2 * (sinc_params(step).0 + 1) + 2
+        } else {
+            4
+        };
+        // As many as the window holds, and no more than `raw` takes.
+        let fit = ((SCRATCH.saturating_sub(margin) as f64 / step) as usize).clamp(1, SCRATCH);
+        let mut done = 0;
+        while done < frames {
+            let n = fit.min(frames - done);
+            let from = now - step * (frames - done) as f64;
+            let filled = self.read_window(scratch, client, region, n, (from, 0, step), Ramp::NONE);
+            let Some(raw) = scratch.raw.get_mut(..filled).filter(|r| !r.is_empty()) else {
+                break;
+            };
+            insert(VoiceStage::PreAmp, raw);
+            done += n;
+        }
+        self.missing = missing;
+    }
+
     /// `n` frames of a stretching voice into `raw`: its two heads read at the
     /// pitch's rate, each faded in and out over its grain (triangles that sum
     /// to one), so the cursor moves at `speed` while the pitch holds. Head 0
@@ -1161,7 +1214,11 @@ impl Voice {
                 && lo >= v.ahead_lo
                 && lo + span as i64 <= v.ahead_lo + v.ahead_len as i64
         };
-        if self.mode == RenderMode::Live && self.speed == 1.0 && lo >= self.ahead_retry && !held(self) {
+        if self.mode == RenderMode::Live
+            && self.speed == 1.0
+            && lo >= self.ahead_retry
+            && !held(self)
+        {
             let missing = fill_window(
                 region,
                 client,
@@ -1230,7 +1287,10 @@ impl Voice {
             && let Some(raw) = scratch.raw.get_mut(..n)
         {
             let x = |i: usize| base + first_step * (frames + i as u64) as f64 - lo as f64;
-            if n > 0 && reads(window.len(), x(0), first_step) && reads(window.len(), x(n - 1), first_step) {
+            if n > 0
+                && reads(window.len(), x(0), first_step)
+                && reads(window.len(), x(n - 1), first_step)
+            {
                 for (i, frame) in raw.iter_mut().enumerate() {
                     let x = x(i);
                     let base = x.floor() as usize;
@@ -1344,7 +1404,9 @@ fn fill_window(
                     .missing;
                 dst.reverse();
             } else {
-                missing += sample.read_cached(client, run.first, dst, mix, Some(main)).missing;
+                missing += sample
+                    .read_cached(client, run.first, dst, mix, Some(main))
+                    .missing;
             }
             if let Some(xf) = run.crossfade()
                 && let (Some(blend), Some(head)) = (

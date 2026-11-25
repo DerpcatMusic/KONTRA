@@ -1,6 +1,7 @@
-//! A voice that cannot be heard skips reading its source; everything it does
-//! must match the same voice rendered in full. The reference is
-//! `render_through` with no insert: the same code, which never skips.
+//! A voice that cannot be heard (gain under -140 dB) skips reading its
+//! source; everything it does must match the same voice rendered in full,
+//! its output within float noise. The reference is `render_through_stages`
+//! with no inserts: the same code, which never culls (a post-amp stage rings).
 use std::sync::Arc;
 
 use kontra_stream::{
@@ -67,9 +68,9 @@ fn voice(region: Region, step: f64, gain: Gain, envelope: Ahdsr) -> Voice {
     voice
 }
 
-/// What a block of one voice leaves behind: its output bits, whether it
-/// still plays, and where its cursor is.
-type Trace = Vec<(Vec<u32>, bool, u64)>;
+/// What a block of one voice leaves behind: its output, whether it still
+/// plays, and where its cursor is.
+type Trace = Vec<(Vec<f32>, bool, u64)>;
 
 /// Renders `blocks` blocks of 128 frames; before block `b`, `at(b, voice)`
 /// changes the voice (gain, release).
@@ -87,12 +88,12 @@ fn play(
             let mut out = vec![[0.0f32; 2]; 128];
             let now = (b * 128) as u64;
             if full {
-                voice.render_through(&mut scratch, client, now, &mut out, |_| {});
+                voice.render_through_stages(&mut scratch, client, now, &mut out, |_, _| {});
             } else {
                 voice.render(&mut scratch, client, now, &mut out);
             }
-            let bits = out.as_flattened().iter().map(|v| v.to_bits()).collect();
-            (bits, voice.is_active(), voice.position().to_bits())
+            let values = out.as_flattened().to_vec();
+            (values, voice.is_active(), voice.position().to_bits())
         })
         .collect()
 }
@@ -126,7 +127,13 @@ fn same(
         at,
     );
     for (b, (s, f)) in skip.iter().zip(&full).enumerate() {
-        assert_eq!(s, f, "block {b}");
+        assert_eq!((s.1, s.2), (f.1, f.2), "block {b}");
+        let worst =
+            s.0.iter()
+                .zip(&f.0)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0, f32::max);
+        assert!(worst <= 1e-6, "block {b}: off by {worst}");
     }
 }
 
@@ -223,7 +230,7 @@ fn a_silent_voice_stays_active_and_counts_as_playing() {
     assert!(
         trace
             .iter()
-            .all(|(bits, active, _)| *active && bits.iter().all(|&b| b == 0))
+            .all(|(values, active, _)| *active && values.iter().all(|&v| v == 0.0))
     );
 }
 
@@ -253,8 +260,63 @@ fn a_silent_voice_does_not_read_its_source() {
     );
     let mut out = vec![[0.0; 2]; 3 * PAGE_FRAMES as usize];
     skipped.render(&mut Scratch::allocate(), &client, 0, &mut out);
-    full.render_through(&mut Scratch::allocate(), &client, 0, &mut out, |_| {});
+    full.render_through_stages(&mut Scratch::allocate(), &client, 0, &mut out, |_, _| {});
     assert!(full.missing_frames() > 0);
     assert_eq!(skipped.missing_frames(), 0);
     assert_eq!(skipped.position(), full.position());
+}
+
+/// A one-pole lowpass (about 100 frames) with its state in the closure.
+fn lowpass(frames: &std::cell::Cell<usize>) -> impl FnMut(&mut [[f32; 2]]) + '_ {
+    let mut z = [0.0f32; 2];
+    move |io| {
+        frames.set(frames.get() + io.len());
+        for f in io {
+            for (z, x) in z.iter_mut().zip(f.iter_mut()) {
+                *z += (*x - *z) * 0.01;
+                *x = *z;
+            }
+        }
+    }
+}
+
+/// A filtered voice muted long enough to be culled, then brought back: its
+/// filter replays the frames before the cursor first, so it comes back as a
+/// voice that never stopped filtering does, without a click.
+#[test]
+fn a_culled_filtered_voice_comes_back_without_a_click() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let client = store.client();
+    let regions = [0, 1].map(|_| region(&mut store, 20_000, 20_000, crossfaded_loop()));
+    let [mut culled, mut kept] = regions.map(|r| voice(r, 0.9187, UNITY, Ahdsr::GATE));
+    let (culled_frames, kept_frames) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
+    let (mut a, mut b) = (lowpass(&culled_frames), lowpass(&kept_frames));
+    let (mut sa, mut sb) = (Scratch::allocate(), Scratch::allocate());
+    let mut worst = 0.0f32;
+    for block in 0..100 {
+        for v in [&mut culled, &mut kept] {
+            match block {
+                4 => v.set_gain(ZERO),
+                70 => v.set_gain(UNITY),
+                _ => {}
+            }
+        }
+        let now = block as u64 * 128;
+        let (mut x, mut y) = (vec![[0.0f32; 2]; 128], vec![[0.0f32; 2]; 128]);
+        culled.render_through(&mut sa, &client, now, &mut x, &mut a);
+        kept.render_through_stages(&mut sb, &client, now, &mut y, |stage, io| {
+            if stage == kontra_voice::VoiceStage::PreAmp {
+                b(io);
+            }
+        });
+        let mut here = 0.0f32;
+        for (p, q) in x.as_flattened().iter().zip(y.as_flattened()) {
+            here = here.max((p - q).abs());
+        }
+        worst = worst.max(here);
+    }
+    // It was culled (its filter skipped frames, net of the replay) ...
+    assert!(culled_frames.get() < kept_frames.get(), "never culled");
+    // ... and came back within float noise of the voice that kept filtering.
+    assert!(worst <= 1e-6, "off by {worst}");
 }
