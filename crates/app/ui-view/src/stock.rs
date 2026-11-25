@@ -386,7 +386,8 @@ impl Look {
     }
 }
 
-/// A label in the 9 px pixel font, as Kontakt draws it: the line laid out
+/// A label in a stock picture font, as Kontakt draws it, a space `space`
+/// px wide: the line laid out
 /// in whole font pixels, then scaled to the screen by area, so at 150 % a
 /// one-pixel stem is one full and one half-lit column (probed in Kontakt 8).
 pub(super) fn label(
@@ -395,7 +396,7 @@ pub(super) fn label(
     text_y: Option<i32>,
     (w, h, s, device): (f64, f64, f64, f64),
     (left, right): (f64, f64),
-    glyphs: &kontra_ui_pictures::Glyphs,
+    (glyphs, space): (&kontra_ui_pictures::Glyphs, u32),
 ) -> Option<El> {
     let cells: Option<Vec<&Arc<Image>>> = text
         .chars()
@@ -407,14 +408,16 @@ pub(super) fn label(
         })
         .collect();
     let cells = cells?;
-    let advance = |c: char, g: &Image| if c == ' ' { 3 } else { g.width };
+    let advance = |c: char, g: &Image| if c == ' ' { space } else { g.width };
     let width: u32 = text.chars().zip(&cells).map(|(c, g)| advance(c, g)).sum();
     let (lw, lh) = ((w / s).ceil() as u32, (h / s).ceil() as u32);
     let room = (w / s - left - right - f64::from(width)).max(0.);
     let mut x = (left
         + match style.align {
             model::Align::Left => 0.,
-            model::Align::Center => room / 2.,
+            // A centred line sits 1 px right of the middle (the reference
+            // 8.13, text probe: fonts 1, 4, 10 and 13 in 160 px labels).
+            model::Align::Center => (room / 2. + 1.).min(room),
             model::Align::Right => room,
         }) as u32;
     // Without TEXTPOS_Y the cell sits 2 px down (probed at 100 % and 150 %).
@@ -814,7 +817,7 @@ fn label_words(
     (w, h, scale, device): (f64, f64, f64, f64),
 ) -> Option<El> {
     let style = style.filter(|s| match s.font {
-        model::Font::Stock(id) => super::stock_atlas(id).is_none(),
+        model::Font::Stock(id) => super::pixel_atlas(id).is_none(),
         _ => false,
     })?;
     let mut label = Widget::new(wd.name.clone(), wd.page, wd.rect, Kind::Label);

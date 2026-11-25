@@ -49,9 +49,49 @@ fn stock_atlas_label_uses_the_authored_left_inset() {
         color: Rgba::rgb(0xff0000),
         ..model::TextStyle::default()
     };
-    let label = stock::label("A", &style, Some(0), (24., 8., 1., 1.), (13., 3.), &glyphs).unwrap();
+    let label = stock::label(
+        "A",
+        &style,
+        Some(0),
+        (24., 8., 1., 1.),
+        (13., 3.),
+        (&glyphs, 3),
+    )
+    .unwrap();
     let pixels = paint(&mut Ui::default(), label, 24, 8);
     assert_eq!(pixels.iter().position(|p| *p == [255, 0, 0, 255]), Some(13));
+}
+
+#[test]
+fn a_centred_atlas_label_sits_one_pixel_right_of_the_middle() {
+    let glyph = Arc::new(Image::rgba(2, 1, vec![255; 8]).unwrap());
+    let glyphs: kontra_ui_pictures::Glyphs = vec![glyph; 256].into();
+    let style = model::TextStyle {
+        align: model::Align::Center,
+        color: Rgba::rgb(0xff0000),
+        ..model::TextStyle::default()
+    };
+    // 20 px, 2 px each side and a 2 px glyph: the middle is x 9, Kontakt 10.
+    let label = stock::label(
+        "A",
+        &style,
+        Some(0),
+        (20., 4., 1., 1.),
+        (2., 2.),
+        (&glyphs, 3),
+    );
+    let pixels = paint(&mut Ui::default(), label.unwrap(), 20, 4);
+    assert_eq!(pixels.iter().position(|p| *p == [255, 0, 0, 255]), Some(10));
+}
+
+#[test]
+fn fonts_1_and_13_count_an_unset_textpos_y_as_0_then_drop_2_px() {
+    let (pixel, face) = (model::Font::Stock(0), model::Font::Stock(13));
+    assert_eq!(super::atlas_top(&pixel, None), None);
+    assert_eq!(super::atlas_top(&pixel, Some(0)), Some(0));
+    assert_eq!(super::atlas_top(&face, None), Some(2));
+    assert_eq!(super::atlas_top(&face, Some(0)), Some(2));
+    assert_eq!(super::atlas_top(&face, Some(6)), Some(8));
 }
 
 /// A 20x10 page: grey, a wallpaper 10 px tall whose top 4 rows the skin

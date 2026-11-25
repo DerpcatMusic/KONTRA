@@ -22,6 +22,7 @@ use kontra_ui_model::{AssetRef, ImageMeta, Orientation};
 mod cache;
 mod canvas;
 mod discovery;
+mod face_atlas;
 mod metrics;
 mod outline;
 mod squash;
@@ -396,15 +397,16 @@ fn glyphs(image: &Image) -> Option<Glyphs> {
         .collect()
 }
 
+/// Windows-1252's bytes 0x80 to 0x9f, its undefined ones as C1 controls.
+const EXTENDED: [char; 32] = [
+    '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}',
+    '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
+];
+
 /// The glyph `c` is drawn with: its Windows-1252 byte, the font's question
 /// mark for characters outside that alphabet (v1's `font_glyph`).
 #[must_use]
 pub fn glyph(c: char) -> usize {
-    const EXTENDED: [char; 32] = [
-        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž',
-        '\u{8f}', '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}',
-        'ž', 'Ÿ',
-    ];
     match c as u32 {
         0..=127 | 160..=255 => c as usize,
         _ => (EXTENDED.iter().position(|&g| g == c)).map_or(usize::from(b'?'), |n| n + 128),

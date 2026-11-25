@@ -170,6 +170,31 @@ None — all verification tiers execute on the current host.
   - Beat Masher gate: `(x − 0.5)·200`.
   - The rest are percents or empty switches and menus. These modules have no
     processor, so a script's set is held and shown only.
+- Missing names, batch 2 (2026-11-25, `EXT`):
+  - New owners: Cabinet type, EP Preamps, Cat (`CT_`), Chainsaw (`CS_`), Lo-Fi's
+    noise level and colour, Distortion's type and Shaper's type.
+  - Distortion's and Shaper's types are provisional owners. The manual lists
+    `$ENGINE_PAR_DISTORTION_TYPE` and `$ENGINE_PAR_SHAPE_TYPE` only in its 5.7.0
+    new-features notes, under no effect. Change them if the oracle shows another
+    module takes them.
+  - The EP tremolo rate is `19.99·x² + 0.01` Hz.
+  - Lo-Fi's noise is `ln(clamp(x)³)·8.65617` dB (`18·log2 x`; [ref], then
+    [ref]), and reads "-inf" below 1e−9.
+  - Cabinet treble/bass and Chainsaw low/high are bipolar percents. The rest are
+    percents, or empty switches and menus.
+- Missing names, batch 3 (2026-11-25, `EXT`), the remaining effects:
+  - Transparent Limiter: threshold `40x − 40`, ceiling `39.7x − 40`, release `500^x`.
+  - Surround Panner: LFE `72x − 36` dB, size `0.9x + 0.1`, azimuth −180..180.
+  - Plate Reverb ([ref], one case per control): predelay `250x`, decay
+    `6400x + 556`, low shelf `5.625 − 34.375x`, damping `10851 − 4851x`.
+  - Solid G-EQ: HP `10^(1.30103x + 1.4771212)`, LP `10^(4.69897 − 1.2218485x)`.
+  - The simple filter's LP/HP cut-offs read the exponential table Freak uses, at
+    `799.085x + 1281.88`.
+  - The rest are percents, or empty switches and menus.
+  - New owners, from the manual's sections: `TRANSLIM_`, `SP_`, `PR_`,
+    `EXP_FILTER_` (AET Filter), `PHASE_INVERT`/`LR_SWAP` (Inverter) and
+    `STEREO_PSEUDO` (Stereo). The ladder HQ switch, the simple filter's cut-offs and
+    the S1200 mode join the uncarried filter controls.
 - V5 and SF100 had no owner family, so their controls were not held and read
   nothing. They are now held by `$EFFECT_TYPE_VAN51` / `$EFFECT_TYPE_SUPERFAST100`.
 - The manual and `crates/script/ksp/data/vendor_constants.txt` spell

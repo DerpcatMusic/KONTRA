@@ -519,8 +519,9 @@ pub(super) fn label_fits(
     width: f64,
     scale: f64,
     (left, right): (f64, f64),
+    space: u32,
 ) -> bool {
-    let space = 3.;
+    let space = f64::from(space);
     let advance: f64 = text
         .chars()
         .map(|c| {

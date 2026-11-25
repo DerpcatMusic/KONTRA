@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 fn root() -> Option<PathBuf> {
-    Some(dirs::cache_dir()?.join("kontra/stock-art-v8"))
+    Some(dirs::cache_dir()?.join("kontra/stock-art-v9"))
 }
 
 fn index(root: &Path, path: &Path) -> Option<PathBuf> {
@@ -25,6 +25,8 @@ pub(super) struct Art {
     pub(super) font12: Option<Image>,
     pub(super) field: Option<Image>,
     pub(super) outline: Option<Vec<u8>>,
+    /// The face stock fonts 1 and 13 draw in.
+    pub(super) stock_face: Option<Vec<u8>>,
 }
 
 pub(super) enum Cached {
@@ -72,10 +74,14 @@ fn load_at(root: &Path, path: &Path, dims: &[(u32, u32); 8]) -> Option<Cached> {
         }
         Image::rgba(w, h, data)
     };
-    let outline = super::outline::read(&dir.join("outline.ttf"));
-    if dir.join("outline-expected").is_file() && outline.is_none() {
-        return None;
-    }
+    let face = |face: &super::outline::Face, name: &str| {
+        let bytes = face.read(&dir.join(format!("{name}.ttf")));
+        // A damaged cached face is not a hit; the next scan repairs it.
+        let broken = dir.join(format!("{name}-expected")).is_file() && bytes.is_none();
+        (!broken).then_some(bytes)
+    };
+    let outline = face(&super::outline::RALDO, "outline")?;
+    let stock_face = face(&super::outline::STOCK, "stock-face")?;
     Some(Cached::Images(Box::new(Art {
         main: [image(0)?, image(1)?, image(2)?, image(3)?],
         font13: image(4),
@@ -83,6 +89,7 @@ fn load_at(root: &Path, path: &Path, dims: &[(u32, u32); 8]) -> Option<Cached> {
         font12: image(6),
         field: image(7),
         outline,
+        stock_face,
     })))
 }
 
@@ -121,12 +128,17 @@ fn save_at(root: &Path, path: &Path, hash: &str, images: &Art) {
             return;
         }
     }
-    if let Some(font) = &images.outline {
-        let target = dir.join("outline.ttf");
-        let temporary = dir.join(format!("outline.{}.tmp", std::process::id()));
+    let faces = [
+        ("outline", &images.outline),
+        ("stock-face", &images.stock_face),
+    ];
+    for (name, font) in faces {
+        let Some(font) = font else { continue };
+        let target = dir.join(format!("{name}.ttf"));
+        let temporary = dir.join(format!("{name}.{}.tmp", std::process::id()));
         if std::fs::write(&temporary, font).is_err()
             || std::fs::rename(temporary, target).is_err()
-            || std::fs::write(dir.join("outline-expected"), b"1").is_err()
+            || std::fs::write(dir.join(format!("{name}-expected")), b"1").is_err()
         {
             return;
         }
@@ -158,6 +170,7 @@ mod tests {
             font12: Some(image()),
             field: Some(image()),
             outline: None,
+            stock_face: None,
         };
         let root = dir.path().join("cache");
         super::save_at(&root, &exe, &"a".repeat(64), &images);
@@ -189,6 +202,7 @@ mod tests {
             font12: Some(image()),
             field: None,
             outline: None,
+            stock_face: None,
         };
         super::save_at(&root, &fallback, &"b".repeat(64), &without_font);
         let Some(super::Cached::Images(cached)) = super::load_at(&root, &fallback, &[(1, 1); 8])

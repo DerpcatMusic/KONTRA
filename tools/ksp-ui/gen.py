@@ -339,7 +339,7 @@ def text():
         p.par(lab, "FONT_TYPE", f)
         p.par(lab, "TEXT_ALIGNMENT", f % 3)
         p.setup.append(f'set_text({lab}, "Font {f} AaBb 019")')
-    p.par("$f0", "HIDE", 2 ** 3)  # $HIDE_PART_BG on a text-only label
+    p.par("$f0", "HIDE", 1)  # $HIDE_PART_BG on a text-only label
     ml = p.control("ui_label", "lines", "(2, 3)", log=False)
     p.at(ml, 10, 220, 200, 70)
     for i in range(5):
@@ -695,7 +695,31 @@ def tables():
     return p
 
 
-PAGES = [widgets, geometry, pictures_page, text, data, behaviour, layers, fields, tables]
+def hiding():
+    """Whether a label's face and a table's frame come back when a control hidden whole is shown
+    again (a library's step sequencer hides its page with $HIDE_WHOLE_CONTROL, then sets
+    $HIDE_PART_NOTHING). Rows: untouched; whole then nothing; nothing alone; part bg then nothing."""
+    p = Page("hiding")
+    for r, seq in enumerate([[], [16, 0], [0], [1, 0]]):
+        lab = p.control("ui_label", f"cap{r}", "(1, 1)", log=False)
+        p.at(lab, 10, 10 + r * 60)
+        p.setup.append(f'set_text({lab}, "/2T")')
+        sized = p.control("ui_label", f"box{r}", "(1, 1)", log=False)
+        p.at(sized, 110, 10 + r * 60, 60, 18)
+        p.setup.append(f'set_text({sized}, "x1")')
+        t = p.control("ui_table", f"t{r}", "[16](4, 4, 127)", log=False)
+        p.at(t, 190, 10 + r * 60, 247, 40)
+        p.setup.append(f"set_table_steps_shown({t}, 16)")
+        p.par(t, "BAR_COLOR", 0xF6B05C)
+        for i in range(16):
+            p.setup.append(f"%t{r}[{i}] := {127 if i % 4 == 0 else 40}")
+        for v in seq:
+            for var in (lab, sized, t):
+                p.par(var, "HIDE", v)  # 16 $HIDE_WHOLE_CONTROL, 1 $HIDE_PART_BG, 0 nothing
+    return p
+
+
+PAGES = [widgets, geometry, pictures_page, text, data, behaviour, layers, fields, tables, hiding]
 
 
 def main():

@@ -93,6 +93,20 @@ pub enum FormulaId {
     /// Transpose Stretch's key in semitones: `120x − 60` below the
     /// middle, `24·(x − 0.5)` from it.
     TransStretchKey,
+    /// EP Preamps' tremolo rate in Hz: `19.99·x² + 0.01`.
+    EppTremoloRateHz,
+    /// Lo-Fi's noise level in dB: `ln(clamp(x)³)·8.65617`
+    /// (`18·log2 x`), `−∞` below 1e−9.
+    LofiNoiseDb,
+    /// Transparent Limiter's release in ms: `500^x`.
+    TransLimReleaseMs,
+    /// Solid G-EQ's high-pass in Hz: `10^(1.30103·x + 1.4771212)`, 30..600.
+    SolidEqHpHz,
+    /// Solid G-EQ's low-pass in Hz: `10^(4.69897 − 1.2218485·x)`, 50k..3k.
+    SolidEqLpHz,
+    /// The simple filter's cut-offs in Hz ([ref] case 1): the exponential table at
+    /// `799.085·x + 1281.8816`.
+    SimpleFilterCutoffHz,
     /// Phasis's centre in Hz ([ref], Ultra off): note `30 + 90·x`,
     /// `440·2^((note − 69)/12)` by a quartic exp2.
     PhasisCenterHz,
@@ -161,6 +175,27 @@ impl FormulaId {
                 T::of((2 - (x.to_f32().clamp(0.0, 1.0) * -11.0) as i32).clamp(2, 12) as f32)
             }
             Self::StereoTuneDriftPercent => T::of(x.to_f32().clamp(0.0, 1.0) * 0.99 * 100.0 + 1.0),
+            Self::EppTremoloRateHz => {
+                let x = x.to_f32();
+                T::of(x * x * 19.99 + 0.01)
+            }
+            Self::TransLimReleaseMs => T::of(500f32.powf(x.to_f32())),
+            Self::SolidEqHpHz => {
+                T::of(10f64.powf(f64::from(x.to_f32() * 1.301_030_1 + 1.477_121_2)) as f32)
+            }
+            Self::SolidEqLpHz => {
+                T::of(10f64.powf(f64::from(4.698_97 - x.to_f32() * 1.221_848_5)) as f32)
+            }
+            Self::SimpleFilterCutoffHz => T::of(exp_table(x.to_f32() * 799.085 + 1_281.881_6)),
+            Self::LofiNoiseDb => {
+                let x = x.to_f32().clamp(0.0, 1.0);
+                let g = x * x * x;
+                T::of(if g < 1e-9 {
+                    f32::NEG_INFINITY
+                } else {
+                    g.ln() * 8.656_17
+                })
+            }
             Self::TransStretchKey => {
                 let x = x.to_f32();
                 T::of(if x >= 0.5 {
@@ -238,6 +273,12 @@ impl FormulaId {
             | Self::AttackCurvePercent
             | Self::StereoTuneDriftPercent
             | Self::TransStretchKey
+            | Self::EppTremoloRateHz
+            | Self::LofiNoiseDb
+            | Self::TransLimReleaseMs
+            | Self::SolidEqHpHz
+            | Self::SolidEqLpHz
+            | Self::SimpleFilterCutoffHz
             | Self::PhasisCenterHz
             | Self::FreakFrequencyHz
             | Self::RotatorMixDb
