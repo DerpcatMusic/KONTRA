@@ -53,8 +53,8 @@ pub fn rms(a: &Audio) -> Option<f64> {
 
 /// Integrated loudness, LUFS: 400 ms blocks every 100 ms, gated at -70 LUFS
 /// and then 10 LU under the mean of what passed. A mono sample (`channels`
-/// 1) counts once: Kontakt 8.13 reads a 440 Hz mono sine at -6.23 dBFS peak
-/// as -9.961 LUFS (probes/ksp/detect_tone.kspp), not 3 dB louder.
+/// 1) counts once: the reference 8.13 reads a 440 Hz mono sine at -6.23 dBFS peak
+/// as -9.961 LUFS (the detect_tone probe), not 3 dB louder.
 pub fn loudness(a: &Audio, channels: u8) -> Option<f64> {
     let rate = f64::from(a.rate);
     let channels: Vec<Vec<f64>> = (0..channels.clamp(1, 2))

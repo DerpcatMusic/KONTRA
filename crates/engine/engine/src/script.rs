@@ -270,7 +270,7 @@ impl Engine {
             event::NOTE if !n.started => n.key = value.clamp(0, 127) as u8,
             event::ZONE_SLOT if !n.started => n.zone_slot = value,
             event::START_OFFSET if !n.started => n.offset = value.max(0).unsigned_abs(),
-            // KSP manual, on release: `set_event_par($EVENT_ID,
+            // Script manual, on release: `set_event_par($EVENT_ID,
             // $EVENT_PAR_REL_VELOCITY, 127)`.
             event::REL_VELOCITY => n.release_velocity = value.clamp(0, 127) as f32 / 127.0,
             event::VELOCITY if !n.started => {
@@ -748,7 +748,7 @@ impl HostApi for Engine {
             }
             Action::ResetRlsTrigCounter => self.reset_rls_trig_counter(int(0)),
             Action::CallbackId => HostValue::Int(self.running.callback_id as i32),
-            // The KSP manual: `$EVENT_PAR_0..3`, then `$EVENT_PAR_CUSTOM` 4..15,
+            // The script manual: `$EVENT_PAR_0..3`, then `$EVENT_PAR_CUSTOM` 4..15,
             // of `$EVENT_ID` (one custom array holds both).
             Action::EventParAt => HostValue::Int(
                 running

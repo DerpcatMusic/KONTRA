@@ -329,7 +329,7 @@ pub fn set_ramp(
             Ramp {
                 from,
                 // The caller clamps `$EVENT_PAR_MOD_VALUE_ID`; `_EX_ID` is
-                // "unbounded" (KSP manual, set_event_par_arr()).
+                // "unbounded" (script manual, set_event_par_arr()).
                 to,
                 start: now.0,
                 frames,
