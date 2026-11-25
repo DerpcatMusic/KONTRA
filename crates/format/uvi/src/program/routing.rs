@@ -813,8 +813,13 @@ pub(super) const PART_CONTROLLERS: ir::OutputControllers = ir::OutputControllers
 /// element's PanLaw) turns the far channel to `(1 + sin(π/2 + π·|pan|))/2`
 /// via sinf 0x1419ede10. PanLaw (0 by default, never saved by the programs
 /// read) picks only the mono-to-stereo law: 0 is `(1 ∓ sin(π/2·pan))/2`
-/// (0x141353c40), 1 the equal-power `sin(π/4·(1 ∓ pan))` (0x141353820).
+/// (0x141353c40, [`PART_MONO`]), 1 the equal-power `sin(π/4·(1 ∓ pan))`
+/// (0x141353820), which no program read asks for.
 pub(super) const PART_BALANCE: ir::Balance = ir::Balance::Cosine;
+
+/// A mono sample's pan into stereo at the default PanLaw 0 (see
+/// [`PART_BALANCE`]).
+pub(super) const PART_MONO: ir::Balance = ir::Balance::HalfSine;
 
 /// The voices a program sounds: `Polyphony` times the most zones a keygroup
 /// makes, one per oscillator or bundle member. A UVI voice is a keygroup's,

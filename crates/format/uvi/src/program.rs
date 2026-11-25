@@ -101,6 +101,7 @@ pub(crate) fn unfinished<'a, L: Library>(
             output: ir::Output {
                 controllers: Some(routing::PART_CONTROLLERS),
                 balance: routing::PART_BALANCE,
+                mono: Some(routing::PART_MONO),
                 ..ir::Output::UNITY
             },
             ..ir::Instrument::DEFAULT

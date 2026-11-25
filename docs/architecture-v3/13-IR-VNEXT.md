@@ -31,7 +31,7 @@ The numbers come from `git grep -c` on main.
 | Phase | PRs | Landed | Still to do |
 |---|---|---|---|
 | 0: hygiene, vendor leaks | #102, #146 | `ByteTransform` keystream, `Cow` tables, `ir::validate`, compact regions, typed fast paths for zone and group `ignored_fields`; every translator (Kontakt, SFZ, SF2, DecentSampler, UVI, native) and `prepare` run `ir::validate` ✅ #132, #146; the Kontakt program-level `ignored_fields` is typed too, ratcheted in arch_guards.rs ✅ (kontakt-mapping-tables) | none |
-| 1: one modulation and envelope core | #109, #110, #123, #128 | separate decay/release curves, equal-power and CC crossfades, `lorand`/`hirand`, `PerNoteCc`, `NoteExpr`, `RrScope::Key`; every route is a `ModRoute`, `ModKind` deleted, `WARPS = 8` lifted, brightness reads `NoteExpr`, UVI macros are `Source::Macro` ✅ #128; `PROBE_GRID` 23 → 0 ✅ #123 | UVI mono-to-stereo pan laws (B P1-8) |
+| 1: one modulation and envelope core | #109, #110, #123, #128 | separate decay/release curves, equal-power and CC crossfades, `lorand`/`hirand`, `PerNoteCc`, `NoteExpr`, `RrScope::Key`; every route is a `ModRoute`, `ModKind` deleted, `WARPS = 8` lifted, brightness reads `NoteExpr`, UVI macros are `Source::Macro` ✅ #128; `PROBE_GRID` 23 → 0 ✅ #123; UVI mono-to-stereo pan law (`Output.mono`, B P1-8) ✅ #201 | |
 | 2: compact zones, SDK, native | #96, #111, #116, #123 | `ZoneMatch`/`ZonePlay` SoA used by `ZoneIndex`, format SDK, `.kontra` native format; `ZoneFacts`/`zone_facts` deleted, Areia 8.11 → 2.93 MiB ✅ #123 | nothing |
 | 3: graph, generators, effect families | #112, #113, #114, #155, #186, #189, #190 | `AudioGraph` with sidechain and multi-stem output, `Generator` (PCM, oscillator, granular), `Engine::set_param(ParamAddr)`; per-pair null test of every rack kind ([report](effect-family-null-report.md)) ✅ #155; one effect encoding: the unread `EffectFamily`/`EffectSpec` deleted, references 25 → 0, ratchet in `arch_guards.rs` ([spec](../specs/effect-family-subtract.md)); one routing path: every instrument's buses run as `InstrumentBus` graph nodes, the engine's bus loop deleted, A/B bit-exact on Areia, Conflux, VWinds and AO, guard in `arch_guards.rs` ([spec](../specs/effect-racks-on-audiograph.md)) ✅ #189 #190 | KT-22: Kontakt bus output routing and phase/swap flags are diagnosed, not yet modelled |
 
@@ -56,7 +56,7 @@ or VWinds).
 | App fixes and features ✅ | #160 Conflux double-open and silent Analog Strings; #163 automatic library discovery and scan diagnostics; #166 classic panner, wheels, master volume; #174 persistent event-driven library index with relocation; #175 preset browser redesign; #179 About, settings and theming, standalone app, Kontakto retired | `app/*` | — |
 
 What is really left, in order: L4's 52 unproved Kontakt laws, the Phase 3
-rack → `AudioGraph` move, UVI mono-to-stereo pan laws, and the Kontakt program-level
+rack → `AudioGraph` move and the Kontakt program-level
 Debug reflection. The v3 board (TASKS.md) has no open task: each one there is
 `landed` or `retired` in tasks.toml.
 
@@ -81,7 +81,7 @@ These items are still open on main:
 | B P0-9 | ✅ (#120) `fx_idx_amp_split_point`: group inserts run on their true side of the amp envelope | `amp_split: u8` on `ir::Group`/`plan::Group`, `Voice::render_through_stages`, `Kind::Matrix` around drives, `group_racks::split`; `ignored("group.fx_idx_amp_split_point")` uses: 1 → 0 (verified on ANALOG STRINGS `amp_split = 6`) |
 | B P1-5 | Several lagged routes on volume or pitch collapse into one smoother | ✅ #128: one lag per route (`LAGS = 4` per voice, later ones folded in), live `LfoParam::Rate` routes integrated into the warp |
 | B P1-7 | Block-rate modulation stepping (`MAX_SPAN = 256` frames) | ✅ #123 — `MAX_SPAN` lowered 256 → 64 (750 Hz / 1.33 ms at 48 kHz; `Dsp::Wet` chunks > `wet.len()`) |
-| B P1-8 | Pan law is linear balance for every format | ✅ #128: voices balance by `Output.balance` (Kontakt linear, UVI cosine); UVI's mono-to-stereo laws are still open |
+| B P1-8 | Pan law is linear balance for every format | ✅ #128: voices balance by `Output.balance` (Kontakt linear, UVI cosine); ✅ #201: mono samples pan by `Output.mono` (UVI's PanLaw 0 half-sine, −6 dB centre, from binary RE, not yet render-verified) |
 | B P2-2 | Kontakt vendor leaks in ir and plan | this plan's Phases 0–1 |
 | B P2-3 | Per-note vs per-channel separation for pitch bend and CC (MPE) | ✅ #128: `Source::PitchBend` adds the note's own bend (48-semitone wheel) on non-pitch targets |
 | B P2-4 | `BParGroupDynamics` (0x4A) is not read | ✅ #144: translated in `format/kontakt/src/translate.rs` |

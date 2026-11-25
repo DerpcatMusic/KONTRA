@@ -197,7 +197,10 @@ impl Engine {
             pan: group_pan,
             ..self.level(zone)
         };
-        let [l, r] = gain(zone, note, level, pan, self.plan.output.balance);
+        let out = &self.plan.output;
+        let mono = zone.region.mix.is_none() && zone.region.sample.fmt().channels == 1;
+        let law = out.mono.filter(|_| mono).unwrap_or(out.balance);
+        let [l, r] = gain(zone, note, level, pan, law);
         let g = crossfade * mods * factor;
         let amp = [[l * g, 0.0], [0.0, r * g]];
         let gain = self.groups.get(zone.group as usize).map_or(amp, |g| {
