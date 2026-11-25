@@ -395,16 +395,20 @@ pub(super) fn widget(
             .and_then(|n| u32::try_from(n).ok()),
     };
     let font = p.int("$CONTROL_PAR_FONT_TYPE");
-    // Kontakt sets a label's and a menu's words from the left and centres
-    // the rest (KSP manual: "Set and center text in labels"; a menu from the
-    // reference 8.13 widgets page).
+    // Kontakt sets a label's, a menu's, a button's and a switch's words from
+    // the left unless TEXT_ALIGNMENT says otherwise (the reference 8.13,
+    // tools/ksp-ui widgets and fields pages), and centres the rest.
     let align = p.int("$CONTROL_PAR_TEXT_ALIGNMENT");
     let set = align.is_some();
     // A text edit too, in font 0's glyphs but #181818 ink when unset
     // (Kontakt 8 oracle, probe/wave.ksp).
     let left = matches!(
         kind,
-        ControlKind::Label | ControlKind::TextEdit | ControlKind::Menu
+        ControlKind::Label
+            | ControlKind::TextEdit
+            | ControlKind::Menu
+            | ControlKind::Button
+            | ControlKind::Switch
     );
     let align = align.unwrap_or(i32::from(!left));
     if font.is_some() || set || kind == ControlKind::TextEdit {

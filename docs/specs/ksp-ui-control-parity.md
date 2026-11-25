@@ -120,15 +120,20 @@ evidence_freshness_days: 180
   0, 40 and 105; KONTRA keeps CONTROL_PAR constants opaque.
 - `$CONTROL_PAR_WAVETABLE` in the coverage report is a wrapped table row of
   the manual (`_END_COLOR`), not a parameter.
-- Visual fidelity of the Original look (tools/ksp-ui fields page and nine
-  library instruments shot at 100 %, compared with `tools/ksp-ui/align.py`).
-  Fixed: a menu's, a button's and a switch's words follow TEXT_ALIGNMENT
-  (KONTRA had centred every button and set every menu from the left); a
-  menu's words run under its arrow. Open, and in the drawing rather than
-  the face: Kontakt's stock font (font 0) is a pixel font, which KONTRA
-  draws in a smooth face of another width (44 against 47 px for the
-  probe's line) and weight (Pacific's value edits, Vista's buttons); on a
-  field, fonts 1 and 13 draw 2–5 px wider than Kontakt's (their sizes were
-  fitted on labels). Two
-  instruments (Conflux, Shreddage 3.5) load empty in the oracle and are not
-  compared.
+- Visual fidelity of the Original look (tools/ksp-ui fields page and
+  seventeen library instruments shot at 100 %, compared with
+  `tools/ksp-ui/align.py`; probes/fields.measured). Fixed: a menu's, a
+  button's and a switch's words follow TEXT_ALIGNMENT and are set from the
+  left when it is unset; a menu's words run under its arrow. Font 0 and an
+  unset font on a field draw in the stock pixel atlas (`@stock/font`, read
+  from the installed Kontakt at run time like font 13's; nothing is
+  distributed), lit ones too, in dark ink; fonts 1 and 13 on a field draw
+  as a label in that font; `$CONTROL_PAR_TEXTPOS_Y` on a button or switch is
+  an offset from the centred place; a label's face darkens the page under
+  it (black at alpha 129). Vista's and Pacific's buttons and value edits
+  now match. Open: font 1 on a field is 3 px wider than Kontakt's (57
+  against 54); stock tables (Areia Measured Tremolo) draw a grey frame and
+  inset columns where Kontakt runs them edge to edge with dim empty cells;
+  that instrument also shows dark boxes behind its tempo labels. Only
+  eleven libraries are installed; Conflux and Shreddage 3.5 load empty in
+  the oracle and are not compared.

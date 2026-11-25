@@ -1767,3 +1767,79 @@ fn stock_button_and_menu_words_follow_their_text_alignment() {
         assert!(l < c && c < r && r < 120, "{kind:?}: {l} {c} {r}");
     }
 }
+
+/// A script label's face is black at half alpha over the page (the reference
+/// 8.13, tools/ksp-ui text page): #777671 on the default page, dark red on red.
+#[test]
+fn a_label_face_darkens_what_lies_under_it() {
+    let mut tree = Interface {
+        stock_skin: model::StockSkin::Kontakt,
+        ..Interface::default()
+    };
+    tree.pages.push(Page {
+        size: Size {
+            width: 40.,
+            height: 20.,
+        },
+        background: model::Background {
+            color: Some(Rgba::rgb(0xff_3322)),
+            ..Default::default()
+        },
+        ..Page::default()
+    });
+    let mut label = Widget::new("$l", PageRef(0), Rect::new(0, 0, 40, 20), Kind::Label);
+    label.source_id = Some(1);
+    tree.widgets.push(label);
+    let mut ui = crate::ui();
+    let mut pictures = Pictures::new(Box::new(|_| None));
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+    let px = paint(&mut ui, el, 40, 20);
+    let [r, g, b, _] = px.get(10 * 40 + 20).copied().unwrap_or_default();
+    assert!((120..=132).contains(&r) && g < 32 && b < 24, "{r} {g} {b}");
+}
+
+/// A button's words in a chosen font with no pixel atlas draw as a label's
+/// in that font (the reference 8.13, tools/ksp-ui fields page).
+#[test]
+fn a_chosen_font_draws_a_buttons_words_as_a_labels() {
+    let ink = |kind: Kind| {
+        let mut tree = Interface {
+            stock_skin: model::StockSkin::Kontakt,
+            ..Interface::default()
+        };
+        tree.pages.push(Page {
+            size: Size {
+                width: 72.,
+                height: 20.,
+            },
+            background: model::Background {
+                color: Some(Rgba::rgb(0)),
+                ..Default::default()
+            },
+            ..Page::default()
+        });
+        tree.styles.push(model::TextStyle {
+            font: model::Font::Stock(1),
+            size: Some(12.6),
+            weight: Some(700.),
+            color: Rgba::rgb(0xff_ffff),
+            align: model::Align::Left,
+            ..model::TextStyle::default()
+        });
+        let mut w = Widget::new("$w", PageRef(0), Rect::new(0, 0, 72, 20), kind);
+        w.text = "Lowpass 4".into();
+        w.style = Some(model::StyleRef(0));
+        w.hide.background = true;
+        tree.widgets.push(w);
+        let mut ui = crate::ui();
+        let mut pictures = Pictures::new(Box::new(|_| None));
+        let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+        paint(&mut ui, el, 72, 20)
+            .iter()
+            .map(|p| p[0] > 128)
+            .collect::<Vec<_>>()
+    };
+    let label = ink(Kind::Label);
+    assert!(label.iter().any(|&on| on));
+    assert_eq!(ink(Kind::Button { momentary: false }), label);
+}

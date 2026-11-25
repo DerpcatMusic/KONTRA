@@ -614,6 +614,30 @@ def fields():
                 if font is not None:
                     p.par(var, "FONT_TYPE", font)
                 p.par(var, "TEXT_ALIGNMENT", a)
+    # The same line in a label, for each font: how its size compares with a field's.
+    for c, font in enumerate(fonts):
+        lab = p.control("ui_label", f"label{c}", "(1, 1)", log=False)
+        p.at(lab, 10 + c * 3 * 76, 170, 72, 20)
+        p.setup.append(f'set_text({lab}, "Lowpass 4")')
+        if font is not None:
+            p.par(lab, "FONT_TYPE", font)
+    # A lit switch's words, and TEXTPOS_Y on a field: unset, 0 and 6, off and on.
+    for c, (font, ty, on) in enumerate([(None, None, 1), (0, None, 1), (13, None, 1), (0, 0, 0),
+                                        (0, 0, 1), (0, 6, 0), (0, 6, 1), (None, 0, 1)]):
+        sw = p.control("ui_switch", f"lit{c}", log=False)
+        p.at(sw, 10 + c * 76, 210, 72, 20)
+        p.par(sw, "TEXT", "Lowpass 4")
+        p.setup.append(f"{sw} := {on}")
+        if font is not None:
+            p.par(sw, "FONT_TYPE", font)
+        if ty is not None:
+            p.par(sw, "TEXTPOS_Y", ty)
+    # A button with no TEXT_ALIGNMENT, off and on: where its words sit by default.
+    for c in range(2):
+        b = p.control("ui_button", f"plain{c}", log=False)
+        p.at(b, 10 + (8 + c) * 76, 210, 72, 20)
+        p.par(b, "TEXT", "Lowpass 4")
+        p.setup.append(f"{b} := {c}")
     ve = p.control("ui_value_edit", "ve", "(0, 127, 1)", log=False)
     p.at(ve, 10, 130, 150, 20)
     p.setup.append("$ve := 61")
