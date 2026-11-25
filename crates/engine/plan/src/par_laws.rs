@@ -78,6 +78,11 @@ pub fn text(pars: &EnginePars, id: i32, raw: i32, out: &mut Text) -> bool {
         }
         ref law => f64::from(law.eval(x)),
     };
+    // A level below the floor prints the bare text (the reference 8.13's Bass Pro gain).
+    if v == f64::NEG_INFINITY {
+        out.push("-inf");
+        return true;
+    }
     let readout = match r.form {
         ir::Form::Padded => Readout::Padded(v),
         ir::Form::Decimal => Readout::Signed(v),
