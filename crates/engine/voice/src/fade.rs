@@ -143,6 +143,11 @@ impl Fade {
     }
 
     /// Whether a stopping fade has reached silence.
+    /// No ramp in flight: each frame returns the same level.
+    pub(crate) fn settled(&self) -> bool {
+        self.left == 0
+    }
+
     pub(crate) fn ended(&self) -> bool {
         self.stop && self.left == 0
     }

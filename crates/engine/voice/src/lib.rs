@@ -556,6 +556,17 @@ impl Voice {
     }
 
     /// Steps each route's lag one frame and returns their product.
+    /// Whether a frame leaves its fade, lags and gain bit for bit as they
+    /// are (the envelope aside): then frames can be skipped in one step.
+    fn settled(&self) -> bool {
+        let still = |at: f32, to: f32, coef: f32| (at + (to - at) * coef).to_bits() == at.to_bits();
+        self.fade.settled()
+            && !self.fade.ended()
+            && (self.lagged.iter().zip(&self.lag)).all(|(&at, l)| still(at, l.gain, l.coef))
+            && (self.gain.as_flattened().iter().zip(self.target.as_flattened()))
+                .all(|(&g, &t)| still(g, t, self.gain_smooth))
+    }
+
     fn tick_lags(&mut self) -> f32 {
         let mut lagged = 1.0;
         for (at, l) in self.lagged.iter_mut().zip(&self.lag) {
@@ -896,8 +907,13 @@ impl Voice {
             }
             if silent {
                 // The amp stage of a voice that adds exactly zero: its
-                // envelope, fade, lags and gain step frame by frame as below.
-                for _ in 0..limit {
+                // envelope, fade, lags and gain step frame by frame as below,
+                // or all at once while each frame would leave them as they are.
+                let skipped = limit > 0 && self.settled() && self.env.skip_sustain(limit);
+                if skipped {
+                    self.silent_tail = 0;
+                }
+                for _ in 0..if skipped { 0 } else { limit } {
                     self.env.tick();
                     self.fade.next();
                     self.tick_lags();

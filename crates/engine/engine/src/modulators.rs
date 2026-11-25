@@ -196,7 +196,7 @@ impl Engine {
     pub(crate) fn refresh_timed(&mut self) {
         let plan = self.plan.clone();
         let ramping = self.now.0 < self.ramping_until;
-        for i in 0..self.voices.len() {
+        for i in 0..self.live_end.min(self.voices.len()) {
             let Some(slot) = self.voices.get(i) else {
                 continue;
             };

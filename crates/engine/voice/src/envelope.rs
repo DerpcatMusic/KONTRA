@@ -435,6 +435,21 @@ impl Envelope {
         }
     }
 
+    /// Moves `frames` ticks on in one step while it holds its sustain (each
+    /// tick there only counts down `wait`, then reads the sustain level);
+    /// false, nothing moved, in any other stage.
+    pub fn skip_sustain(&mut self, frames: usize) -> bool {
+        if self.stage != Stage::Sustain {
+            return false;
+        }
+        let frames = u32::try_from(frames).unwrap_or(u32::MAX);
+        if frames > self.wait {
+            self.level = self.settings.sustain;
+        }
+        self.wait = self.wait.saturating_sub(frames);
+        true
+    }
+
     /// The next frame's envelope level.
     fn step(&mut self) -> f32 {
         let s = self.settings;

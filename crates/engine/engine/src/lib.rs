@@ -229,6 +229,9 @@ pub struct Engine {
     notes: Ledger,
     behaviour: Behaviour,
     voices: Vec<Slot>,
+    /// One past the last slot that may be playing: slots start lowest free
+    /// first, so the per-span loops stop here (`render_span` lowers it).
+    live_end: usize,
     /// The buffers every voice renders through, in turn.
     voice_scratch: Scratch,
     buses: Vec<BusState>,
@@ -621,6 +624,7 @@ impl Engine {
             group_chain: Box::new([]),
             group_private: Box::new([]),
             group_moved: Box::new([]),
+            live_end: 0,
             groups_moved: false,
             voice_units: Box::new([]),
             group_split: Box::new([]),

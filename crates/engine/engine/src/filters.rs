@@ -168,6 +168,18 @@ impl Engine {
                 continue;
             };
             let inserts = &group.inserts[..];
+            // Its own racks take the written slots; they run them every span.
+            for chain in &mut self.chains {
+                if let Some((owner, rack)) = &mut chain.group
+                    && *owner == g
+                {
+                    for (slot, now) in rack.slots.iter_mut().zip(inserts) {
+                        if slot.is_some() {
+                            slot.clone_from(now);
+                        }
+                    }
+                }
+            }
             if self.group_split.get(g).copied().flatten().is_some() || graph_groups {
                 for chain in self.chains.iter_mut().filter(|c| c.owner() == Some(g)) {
                     chain.follow(inserts, rate);
@@ -211,8 +223,8 @@ impl Engine {
         }
         self.graph_redirected = false;
         let has_graph = self.graph_groups();
-        for (_index, slot) in self
-            .voices
+        let live_end = self.live_end.min(self.voices.len());
+        for (_index, slot) in self.voices[..live_end]
             .iter_mut()
             .enumerate()
             .filter(|(_, s)| s.voice.is_active())
@@ -329,6 +341,8 @@ impl Engine {
                 );
             }
         }
+        let ended = self.voices[..live_end].iter().rposition(|s| s.voice.is_active());
+        self.live_end = ended.map_or(0, |i| i + 1);
         self.mix_chains(len);
     }
 
@@ -349,15 +363,8 @@ impl Engine {
             let Some(mix) = chain.mix.get_mut(..len) else {
                 continue;
             };
-            if let Some((g, rack)) = &mut chain.group {
-                // A script may have changed the group's slots since.
-                if let Some(group) = self.groups.get(*g) {
-                    for (slot, now) in rack.slots.iter_mut().zip(&group.inserts) {
-                        if slot.is_some() {
-                            slot.clone_from(now);
-                        }
-                    }
-                }
+            if let Some((_, rack)) = &mut chain.group {
+                // A script's writes reached its slots in `follow_groups`.
                 rack.process(mix, &mut [], tempo);
             }
             if has_graph && to_graph_group {
