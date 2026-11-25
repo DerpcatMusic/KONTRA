@@ -48,6 +48,9 @@ pub(crate) struct Resolver {
     /// Archive member headers a lookup read (not checked beforehand).
     #[cfg(test)]
     header_reads: std::cell::Cell<usize>,
+    /// Names the warm searched the bases for.
+    #[cfg(test)]
+    searches: std::cell::Cell<usize>,
 }
 
 /// A file read at a position of its own (`pread`), so threads share one
@@ -133,6 +136,8 @@ impl Resolver {
             inside_checks: std::cell::Cell::new(0),
             #[cfg(test)]
             header_reads: std::cell::Cell::new(0),
+            #[cfg(test)]
+            searches: std::cell::Cell::new(0),
         })
     }
 
@@ -405,9 +410,29 @@ impl Resolver {
         // thousands of samples sit in a few archives, and each check stats
         // and canonicalizes it.
         let mut checked: HashMap<PathBuf, bool> = HashMap::new();
+        // The archive (or none) each container prefix (`../Samples/a.nkx`)
+        // found: it depends on the prefix alone, so the names after the
+        // first in an archive skip the search.
+        let mut by_prefix: HashMap<String, Option<PathBuf>> = HashMap::new();
         for name in names {
             let normalized = normalize_separators(name);
             let rel = normalized.trim_start_matches('/');
+            // Only a plain member (no `.`/`..`/empty part, no archive in it)
+            // reads the same however its path is cleaned.
+            let plain = split_container_reference(rel, ARCHIVE_EXTS).filter(|(_, member)| {
+                member
+                    .split('/')
+                    .all(|p| !p.is_empty() && p != "." && p != "..")
+                    && split_container_reference(&format!("{member}/x"), ARCHIVE_EXTS).is_none()
+            });
+            if let Some((prefix, member)) = plain
+                && let Some(archive) = by_prefix.get(prefix)
+            {
+                named.extend(archive.clone().map(|a| (name, a, member.to_owned())));
+                continue;
+            }
+            #[cfg(test)]
+            self.searches.set(self.searches.get() + 1);
             let mut found = None;
             for at in 0..self.bases.len() {
                 let Some(base) = self.bases.get(at).cloned() else {
@@ -435,6 +460,13 @@ impl Resolver {
                     found = Some((name, archive, member));
                     break;
                 }
+            }
+            if let Some((prefix, member)) = plain
+                && found
+                    .as_ref()
+                    .is_none_or(|f: &(&str, PathBuf, String)| f.2 == member)
+            {
+                by_prefix.insert(prefix.to_owned(), found.as_ref().map(|f| f.1.clone()));
             }
             named.extend(found);
         }
@@ -766,6 +798,7 @@ mod tests {
             .collect();
         resolver.warm(names.iter().map(String::as_str));
         assert_eq!(resolver.resolved.len(), 200, "every name found by the warm");
+        assert_eq!(resolver.searches.get(), 1, "one search for the archive");
         for name in &names {
             let at = resolver.resolve(name).unwrap().expect(name);
             assert_eq!(at.size, Some(4), "{name}");
