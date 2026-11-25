@@ -13,6 +13,7 @@ oracle Kontakt and KONTRA can be diffed on screen and on what scripts see.
 | text | fonts 0–25, alignment, multi-line labels, text edit, value edit modes, colours, `set_ui_color` |
 | data | menus (rename, values, visibility, selection), tables, xy pad, level meter, waveform, wavetable, file selector, mouse area, key modifiers |
 | behaviour | how far each drag, Shift drag and ctrl-press moves knobs, sliders (with `MOUSE_BEHAVIOUR`) and value edits; shoot with `DPI=96` |
+| layers | who hears a click where controls overlap: Z_LAYER, widget type, declaration order, labels, hidden controls and panels; shoot with `DPI=96` |
 
 ## Run
 
@@ -53,3 +54,9 @@ python3 tools/ksp-ui/trace.py OUT/k-PAGE-150.nka OUT/o-PAGE.nka   # the rows tha
   0..1000. Shift drags ten times finer. Each motion runs the callback, and the release once more.
 - Wheel notches sent by xdotool reach no control in this rig, Kontakt's own Tune knob neither, so
   the wheel is not measured. Most value-edit drags are lost too (see the measured file).
+- Overlaps (layers page, `probes/layers.measured`): a click goes to the front layer, then by widget
+  type, then the later declaration; a label passes it to what is under it, and so does a control
+  hidden whole or in a hidden panel (one without its background still takes it). A panel's
+  Z_LAYER holds for what it contains. A button over a mouse area takes the click.
+- `on ui_controls` runs before `on ui_control` for every motion, and `on persistence_changed`
+  once after `on init`, before any control callback.

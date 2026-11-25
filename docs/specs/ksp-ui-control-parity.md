@@ -96,7 +96,8 @@ evidence_freshness_days: 180
   missing one (`filepath_base.kspp`, not replayed). KONTRA keeps the
   manual's rule instead (kept under a non-empty BASEPATH, by prefix): its
   engine cannot see files. Matching needs the host to lend an existence
-  check. With no basepath and an existing file nothing is measured yet.
+  check; none crosses into the engine today, and `set_control_par_str` may
+  run on the audio thread, so it is left for a design of its own. With no basepath and an existing file nothing is measured yet.
 - A button's and a knob's TEXT read their last line after a TEXTLINE, as a
   label's does (control_pars_11, replayed).
 - Drags (tools/ksp-ui behaviour page, 100 %): knobs, plain sliders and
@@ -107,6 +108,12 @@ evidence_freshness_days: 180
   the rig loses those drags. A stock slider with a negative
   `MOUSE_BEHAVIOUR` sweeps in 2000/|m| × 15 px; KONTRA uses its 18-point
   height (open: one size measured). The wheel cannot be driven in the rig.
+- Overlaps and hiding (tools/ksp-ui layers page): the click goes where
+  KONTRA's draw order and visibility put it in every measured case, after
+  a control that sets no Z_LAYER took its panel's (it kept its own). A
+  child's own Z_LAYER inside a panel is not measured. Callback order
+  (`ui_controls`, then `ui_control`; `persistence_changed` after init)
+  matched already.
 - `$CONTROL_PAR_NONE`, `_DND_BEHAVIOUR` and `_MIDI_EXPORT_AREA_IDX` measured
   0, 40 and 105; KONTRA keeps CONTROL_PAR constants opaque.
 - `$CONTROL_PAR_WAVETABLE` in the coverage report is a wrapped table row of

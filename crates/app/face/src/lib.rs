@@ -724,8 +724,10 @@ fn build(
         .iter()
         .map(|d| (d.name.to_ascii_lowercase(), d.id))
         .collect();
+    let mut own_layer = Vec::with_capacity(decls.len());
     for (i, d) in decls.iter().enumerate() {
         let props = props(face, d);
+        own_layer.push(props.int("$CONTROL_PAR_Z_LAYER").is_some());
         let mut w = widget(bld, slot, d, &props, engine);
         let parent = props.int("$CONTROL_PAR_PARENT_PANEL").or_else(|| {
             let name = d.view?.parent.as_deref()?;
@@ -752,6 +754,23 @@ fn build(
             }
         }
         bld.ui.widgets.push(w);
+    }
+    // A panel's Z_LAYER moves what it holds (script manual, ui_panel): a
+    // control that sets none takes its nearest panel's (the reference 8.13,
+    // tools/ksp-ui layers page: a back-layer panel's button sits under a
+    // default one).
+    // ponytail: a child's own Z_LAYER inside a panel is not measured; it keeps its own.
+    // Widget n is declaration n (the parent links above rely on it too).
+    for i in 0..decls.len() {
+        let mut at = i;
+        // At most one step per declaration, so a parent cycle ends.
+        for _ in 0..decls.len() {
+            match bld.ui.widgets[at].parent {
+                Some(p) if !own_layer[at] => at = p.0,
+                _ => break,
+            }
+        }
+        bld.ui.widgets[i].z = bld.ui.widgets[at].z;
     }
     // A picture the script turns or moves with a knob or slider's value,
     // and one it picks by a menu's value: it spells that menu's item.

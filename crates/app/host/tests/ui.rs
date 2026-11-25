@@ -918,3 +918,129 @@ fn a_drag_moves_each_control_as_far_as_kontakt_did() {
         );
     }
 }
+
+/// Who hears a click where two controls overlap, as Kontakt 8.13 answered
+/// on the `tools/ksp-ui` layers page (`probes/layers.measured`): the later
+/// declaration on top, a front layer over an earlier one, a back layer
+/// under, a button over a later knob (type before declaration), a label
+/// passing the click to the switch under it, a hidden control or a hidden
+/// panel's child passing it on, one without its background still taking
+/// it, a back-layer panel's child under a default button, and a button over
+/// a mouse area.
+#[test]
+fn a_click_on_overlapping_controls_reaches_the_one_kontakt_picked() {
+    let mut src = String::from("on init\n");
+    let pairs = [
+        ("ui_button", "da", "ui_button", "db", ""),
+        (
+            "ui_button",
+            "fa",
+            "ui_button",
+            "fb",
+            "set_control_par(get_ui_id($fa), $CONTROL_PAR_Z_LAYER, 1)",
+        ),
+        (
+            "ui_button",
+            "ga",
+            "ui_button",
+            "gb",
+            "set_control_par(get_ui_id($gb), $CONTROL_PAR_Z_LAYER, -1)",
+        ),
+        ("ui_button", "ta", "ui_knob", "tb", ""),
+        (
+            "ui_switch",
+            "la",
+            "ui_label",
+            "lb",
+            "set_control_par(get_ui_id($lb), $CONTROL_PAR_Z_LAYER, 1)",
+        ),
+        (
+            "ui_button",
+            "ha",
+            "ui_button",
+            "hb",
+            "set_control_par(get_ui_id($hb), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)",
+        ),
+        (
+            "ui_button",
+            "pa",
+            "ui_button",
+            "pb",
+            "set_control_par(get_ui_id($pb), $CONTROL_PAR_HIDE, $HIDE_PART_BG)",
+        ),
+        ("ui_mouse_area", "ma", "ui_button", "mb", ""),
+    ];
+    for (c, (ka, a, kb, b, extra)) in pairs.iter().enumerate() {
+        let x = 10 + 110 * c;
+        let args = |k: &str| match k {
+            "ui_knob" => " (0, 100, 1)",
+            "ui_label" => " (1, 1)",
+            _ => "",
+        };
+        src += &format!(
+            "declare {ka} ${a}{}\ndeclare {kb} ${b}{}\n\
+             move_control_px(${a}, {x}, 20)\nmove_control_px(${b}, {}, 30)\n",
+            args(ka),
+            args(kb),
+            x + 20
+        );
+        for v in [a, b] {
+            src += &format!(
+                "set_control_par(get_ui_id(${v}), $CONTROL_PAR_WIDTH, 80)\n\
+                 set_control_par(get_ui_id(${v}), $CONTROL_PAR_HEIGHT, 30)\n"
+            );
+        }
+        src += extra;
+        src += "\n";
+    }
+    src += "declare ui_panel $hp
+        move_control_px($hp, 10, 120)
+        set_control_par(get_ui_id($hp), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)
+        declare ui_button $hpin
+        set_control_par(get_ui_id($hpin), $CONTROL_PAR_PARENT_PANEL, get_ui_id($hp))
+        declare ui_button $pzo
+        move_control_px($pzo, 140, 130)
+        declare ui_panel $pz
+        move_control_px($pz, 120, 120)
+        set_control_par(get_ui_id($pz), $CONTROL_PAR_Z_LAYER, -1)
+        declare ui_button $pzin
+        set_control_par(get_ui_id($pzin), $CONTROL_PAR_PARENT_PANEL, get_ui_id($pz))\n";
+    for v in ["hpin", "pzo", "pzin"] {
+        src += &format!(
+            "set_control_par(get_ui_id(${v}), $CONTROL_PAR_WIDTH, 80)\n\
+             set_control_par(get_ui_id(${v}), $CONTROL_PAR_HEIGHT, 30)\n"
+        );
+    }
+    src += "end on";
+    let ui = tree(&src);
+    // The topmost shown control under the point that takes a click (labels,
+    // panels and mouse areas pass it on, as the renderer's input does).
+    let hears = |x: f64, y: f64| {
+        ui.draw_order(ui::PageRef(0))
+            .into_iter()
+            .rev()
+            .find(|&n| {
+                let w = &ui.widgets[n.0];
+                let r = ui.page_rect(n);
+                ui.visible(n)
+                    && !matches!(
+                        w.kind,
+                        ui::Kind::Label | ui::Kind::Panel | ui::Kind::MouseArea { .. }
+                    )
+                    && (r.x..r.x + r.width).contains(&x)
+                    && (r.y..r.y + r.height).contains(&y)
+            })
+            .map(|n| ui.widgets[n.0].name.clone())
+    };
+    let kontakt = ["$db", "$fa", "$ga", "$ta", "$la", "$ha", "$pb", "$mb"];
+    for (c, want) in kontakt.iter().enumerate() {
+        let x = 10. + 110. * c as f64 + 50.;
+        assert_eq!(hears(x, 45.).as_deref(), Some(*want), "case {c}");
+    }
+    assert_eq!(hears(50., 135.), None, "a hidden panel's button");
+    assert_eq!(
+        hears(170., 145.).as_deref(),
+        Some("$pzo"),
+        "a back-layer panel's button"
+    );
+}
