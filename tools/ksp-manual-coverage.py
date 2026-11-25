@@ -116,6 +116,11 @@ text = subprocess.run(
      "crates/script/ksp/tests", "crates/app/host/tests", "tools/ksp-conformance", "tools/ui-probe", "tools/ksp-ui"],
     cwd=ROOT, capture_output=True, text=True).stdout.split()
 test_text = "\n".join((ROOT / f).read_text(errors="ignore") for f in text if (ROOT / f).is_file()).lower()
+# Engine parameters whose get_engine_par_disp text a kontra-host test checks against Kontakt's,
+# row by row (docs/re/kontakt-bindings/engine-par-disp.tsv), less the ones it lists as pending.
+disp = (ROOT / "docs/re/kontakt-bindings/engine-par-disp.tsv").read_text().splitlines()
+pending = {n for l in disp if l.startswith("# pending:") for n in l[len("# pending:"):].split()}
+test_text += "\n" + "\n".join({l.split("\t")[0] for l in disp if not l.startswith("#")} - pending).lower()
 
 CB = {"init": "init", "note": "note", "release": "release", "controller": "controller", "poly_at": "polyat",
       "ui_control": "uicontrol", "ui_controls": "uicontrols", "ui_update": "uiupdate", "listener": "listener",

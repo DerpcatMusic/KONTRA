@@ -445,11 +445,7 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
         compressor_knobs(0, COMPRESSOR_INIT, true).into(),
     ));
     for (id, public, model) in [
-        (
-            26,
-            &TAPE_INIT[..],
-            crate::tape::model as fn(&[u8]) -> _,
-        ),
+        (26, &TAPE_INIT[..], crate::tape::model as fn(&[u8]) -> _),
         (36, &DSTORTION_INIT[..], crate::dstortion::model),
         (46, &SUPERGT_INIT[..], crate::supergt::model),
     ] {

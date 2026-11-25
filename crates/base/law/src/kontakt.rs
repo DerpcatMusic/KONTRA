@@ -188,6 +188,12 @@ pub const FEEDBACK_THRESHOLD: Law = Law::Power {
 /// The feedback compressor's ratio to its knee width factor.
 pub const FEEDBACK_KNEE: Law = Law::Formula(FormulaId::FeedbackKnee);
 
+/// Raum's predelay in ms ([`FormulaId::RaumPredelayMs`]).
+pub const RAUM_PREDELAY_MS: Law = Law::Formula(FormulaId::RaumPredelayMs);
+
+/// Raum's post-loop high cut in Hz ([`FormulaId::RaumHighCutHz`]).
+pub const RAUM_HIGH_CUT_HZ: Law = Law::Formula(FormulaId::RaumHighCutHz);
+
 /// Saved modulation-shaper points as an evaluator law.
 ///
 /// Kontakt [ref] scales curvature by 16 and reverses it on a falling
