@@ -136,12 +136,14 @@ None — all verification tiers execute on the current host.
     path (`0x1408a6c4a` → `0x140514930` mode 2 → w3 → w4 at `0x1408a7250`)
     hands the formatter `xmm0 = x`, as it does for the knobs that read right.
     Only their unit word (`0x14470787b`) sets them apart. The probe of
-    `get_engine_par` after each set (same 10 points, one tick later) settles it:
-    Flair pitch reads 0 and Phasis notches 2 at every set value, the fresh unit's
-    stored values (notches unscaled), while rate and centre read back what was
-    set. So `set_engine_par` leaves these two unchanged, and the display prints
-    the stored value. Why the setter skips them is not read yet; KONTRA should not
-    copy it until it is.
+    `get_engine_par` after each set (same 10 points, one tick later) read Flair
+    pitch 0 and Phasis notches 2 throughout, the fresh unit's values. The
+    setter (`0x140789c30`) says why: it takes notches as a count 2..12
+    (stored `(n − 2)·0.1`) and pitch as a note 0..96 (stored `n/96`), and
+    refuses anything else with an error, storing nothing. Every sweep value
+    but pitch's 0 is out of range. The same unsigned range check guards the
+    menu controls (Replika type, Flair mode, Choral mode, …); KONTRA now
+    refuses those sets too (`kontra_format_kontakt::accepts`).
 - V5 and SF100 had no owner family, so their controls were not held and read
   nothing. They are now held by `$EFFECT_TYPE_VAN51` / `$EFFECT_TYPE_SUPERFAST100`.
 - The manual and `crates/script/ksp/data/vendor_constants.txt` spell

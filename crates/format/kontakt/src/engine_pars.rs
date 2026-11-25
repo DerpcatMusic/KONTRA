@@ -91,6 +91,50 @@ pub fn held(name: &str) -> bool {
             .any(|n| name.eq_ignore_ascii_case(n))
 }
 
+/// The values `set_engine_par` takes for `name`, when it takes only some:
+/// any other is refused, and the control keeps what it held.
+#[must_use]
+pub fn accepts(name: &str) -> Option<(i32, i32)> {
+    ACCEPTS
+        .iter()
+        .find(|(n, ..)| name.eq_ignore_ascii_case(n))
+        .map(|&(_, lo, hi)| (lo, hi))
+}
+
+/// The reference 8.13's setter (`0x140789c30`) takes these in their own
+/// units (a count, a note, a menu index), each checked unsigned against its
+/// range; outside it the script gets an error ("Phasis notch count must be
+/// between 2 and 12!", "Invalid Replika delay type!", ...) and nothing is
+/// stored. Notches store `(n − 2)·0.1` and Flair's pitch `n/96`; the rest as
+/// given. Each range is the one its message's check gives, and the
+/// measured `$NI_*` value sets agree. Checks whose message names no one
+/// control (the wavetable forms, a filter feedback type, the reverb mode,
+/// S1200's filter) are not listed.
+const ACCEPTS: &[(&str, i32, i32)] = &[
+    ("$ENGINE_PAR_PHASIS_NOTCHES", 2, 12),
+    ("$ENGINE_PAR_FLAIR_PITCH", 0, 96),
+    ("$ENGINE_PAR_FLAIR_MODE", 0, 2),
+    ("$ENGINE_PAR_FLAIR_SCANMODE", 0, 2),
+    ("$ENGINE_PAR_FLAIR_CHORD", 0, 23),
+    ("$ENGINE_PAR_RDL_TYPE", 0, 4),
+    ("$ENGINE_PAR_CHORAL_MODE", 0, 3),
+    ("$ENGINE_PAR_SHAPE_TYPE", 0, 2),
+    ("$ENGINE_PAR_DISTORTION_TYPE", 0, 1),
+    ("$ENGINE_PAR_SUPERGT_HPF_MODE", 0, 2),
+    ("$ENGINE_PAR_SUPERGT_SAT_MODE", 0, 2),
+    ("$ENGINE_PAR_SUPERGT_CHAR_MODE", 0, 2),
+    ("$ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE", 0, 2),
+    ("$ENGINE_PAR_RINGMOD_LFO_WAVE", 0, 1),
+    ("$ENGINE_PAR_WT_MOD_TYPE", 0, 9),
+    ("$ENGINE_PAR_WT_MOD_WAVE", 0, 12),
+    ("$ENGINE_PAR_WT_MOD_TUNE_UNIT", 0, 2),
+    ("$ENGINE_PAR_HQI_MODE", 0, 2),
+    ("$ENGINE_PAR_STEPSEQ_NUM_STEPS", 2, 32),
+    ("$ENGINE_PAR_FLEXENV_LOOP_START", 1, 30),
+    ("$ENGINE_PAR_FLEXENV_LOOP_END", 2, 31),
+    ("$ENGINE_PAR_FLEXENV_NUM_STAGES", 3, 31),
+];
+
 /// Filter-slot controls (KSP manual, "Filters") with no processor yet.
 const UNCARRIED_FILTER: &[&str] = &["$ENGINE_PAR_GAIN", "$ENGINE_PAR_BANDWIDTH"];
 

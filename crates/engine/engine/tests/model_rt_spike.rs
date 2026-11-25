@@ -107,6 +107,7 @@ fn tape_engine() -> (Engine, Store) {
             .into(),
             readouts: Box::default(),
             owners: Box::default(),
+            accepts: Box::default(),
         },
         view: None,
         reverb_laws: ir::ReverbControls::from_fn(|_| ir::Law::Linear { lo: 0.0, hi: 1.0 }),
