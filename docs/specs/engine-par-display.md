@@ -114,19 +114,34 @@ None — all verification tiers execute on the current host.
   - The shared formatter [ref] (Freak frequency, Phasis rate and center)
     prints its argument as Padded with no law of its own, and its k form tests
     `|v| ≥ 1000`. KONTRA's Padded now masks the sign too.
+- Phasis rate and center (now encoded): with a value given, `get_engine_par_disp`'s
+  [ref] sends ids 0x16f/0x170 of a type-0x24 module through
+  [ref] before the shared formatter. Both are a quartic
+  exp2 times 440: rate `2^((1.6667 + 10)·x − 15.75)` (note −120..20; Ultra, flag
+  +0x2c, `(9.25 + 10)·x`, to 111; synced, flag +0x40, the value as given), centre
+  note `30 + 90·x` (Ultra −30..190), `·1/12 − 69/12`. These are the ranges
+  phasis.rs already plays. A fresh unit is Ultra off, so only that form is
+  encoded; the 201-point sweep reads it to the printed digit.
 - Still pending:
-  - Phasis rate and center: the formatter gets the module's stored field through
-    identity w2/w3, and the Phasis setter that fills it is not yet read. Center
-    tracks the exp table near `450x + 1532`, but no code ties those constants to
-    Phasis, so it is not encoded.
   - Phasis notches ([ref]: `2 − trunc(−11·clamp(x))`, 2..12) and Flair
     pitch ([ref]: `i = trunc(97x)`, 0..96, note `i % 12`, octave
     `i/12 − 2`) read their floor (2, C-2) at every set value. Both descriptors are
     identity and their defaults are 1.0, so the value handed to the formatter is 0,
     not the set or default value. It is not a read-before-set artefact: read one
     200 ms audio tick after each set (the same 10 points), both still show 2 and
-    C-2, while Phasis rate in the same run reads as in the direct sweep. The
-    getter that supplies the value is the next read.
+    C-2, while Phasis rate in the same run reads as in the direct sweep.
+    Read so far, and not the cause: both descriptors (0x174, 0x17b) have identity
+    w2/w3 and no bipolar flag (+0x38); the name map [ref] gives Phasis
+    0x16f..0x177 and Flair 0x17a..0x17c in order; and [ref]'s generic
+    path ([ref] → [ref] mode 2 → w3 → w4 at [ref])
+    hands the formatter `xmm0 = x`, as it does for the knobs that read right.
+    Only their unit word sets them apart. The probe of
+    `get_engine_par` after each set (same 10 points, one tick later) settles it:
+    Flair pitch reads 0 and Phasis notches 2 at every set value, the fresh unit's
+    stored values (notches unscaled), while rate and centre read back what was
+    set. So `set_engine_par` leaves these two unchanged, and the display prints
+    the stored value. Why the setter skips them is not read yet; KONTRA should not
+    copy it until it is.
 - V5 and SF100 had no owner family, so their controls were not held and read
   nothing. They are now held by `$EFFECT_TYPE_VAN51` / `$EFFECT_TYPE_SUPERFAST100`.
 - The manual and `crates/script/ksp/data/vendor_constants.txt` spell

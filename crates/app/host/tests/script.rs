@@ -4380,7 +4380,7 @@ fn a_script_finds_zones_and_reads_their_slots_types() {
 }
 
 /// A module KONTRA has no processor for keeps the values it was saved with
-/// and those a script sets (Conflux's Replika, Bite and Freak slots): they
+/// and those a script sets (Replika's saturation): they
 /// read back, and on a slot holding another type the control names nothing
 /// and reads 0.
 #[test]
@@ -4398,16 +4398,16 @@ fn an_uncarried_modules_controls_hold_what_a_script_sets() {
     // Slot 0 holds a Replika (40), slot 1 a Jump (31).
     plan.slot_shapes.saved_types = vec![(ir::RackAt::Inserts, 0, 40), (ir::RackAt::Inserts, 1, 31)];
     // What the instrument saved there (the translator's held seeds).
-    let age = ir::held_key("$ENGINE_PAR_RDL_TAPEAGE");
-    plan.slot_shapes.held = vec![(ir::RackAt::Inserts, 0, age, 123_456)];
+    let saturation = ir::held_key("$ENGINE_PAR_RDL_SATURATION");
+    plan.slot_shapes.held = vec![(ir::RackAt::Inserts, 0, saturation, 123_456)];
     let script = kontra_ksp::compile(
         "on init
             declare $saved
-            $saved := get_engine_par($ENGINE_PAR_RDL_TAPEAGE, -1, 0, 1)
-            set_engine_par($ENGINE_PAR_RDL_TAPEAGE, 300000, -1, 0, 1)
-            set_engine_par($ENGINE_PAR_RDL_TAPEAGE, 420000, -1, 1, 1)
-            message($saved & \" \" & get_engine_par($ENGINE_PAR_RDL_TAPEAGE, -1, 0, 1) ...
-                & \" \" & get_engine_par($ENGINE_PAR_RDL_TAPEAGE, -1, 1, 1))
+            $saved := get_engine_par($ENGINE_PAR_RDL_SATURATION, -1, 0, 1)
+            set_engine_par($ENGINE_PAR_RDL_SATURATION, 300000, -1, 0, 1)
+            set_engine_par($ENGINE_PAR_RDL_SATURATION, 420000, -1, 1, 1)
+            message($saved & \" \" & get_engine_par($ENGINE_PAR_RDL_SATURATION, -1, 0, 1) ...
+                & \" \" & get_engine_par($ENGINE_PAR_RDL_SATURATION, -1, 1, 1))
         end on",
         &[],
     )

@@ -45,10 +45,6 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
         ("$ENGINE_PAR_DL_FEEDBACK", Slot(S::DelayFeedback), lin(0.0, 1.0)),
         ("$ENGINE_PAR_DL_PAN", Slot(S::DelayPan), lin(0.0, 1.0)),
         ("$ENGINE_PAR_DL_DAMPING", Slot(S::DelayDamping), lin(0.0, 1.0)),
-        ("$ENGINE_PAR_RDL_TIME", Slot(S::DelayTime), lin(0.0, 1.0)),
-        ("$ENGINE_PAR_RDL_FEEDBACK", Slot(S::DelayFeedback), lin(0.0, 1.0)),
-        ("$ENGINE_PAR_RDL_LOWCUT", Slot(S::DelayLowCut), lin(0.0, 1.0)),
-        ("$ENGINE_PAR_RDL_HIGHCUT", Slot(S::DelayHighCut), lin(0.0, 1.0)),
         ("$ENGINE_PAR_LIM_IN_GAIN", Effect(E::LimiterInput), lin(-24.0, 24.0)),
         ("$ENGINE_PAR_LIM_RELEASE", Effect(E::LimiterRelease), ir::Law::Breakpoints(LIMITER_RELEASE_MS.into())),
         ("$ENGINE_PAR_COMP_ATTACK", Slot(S::Attack), lin(0.0, 1.0)),
@@ -131,6 +127,7 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
     rows.extend(crate::freak::rows());
     rows.extend(crate::psyche::rows());
     rows.extend(crate::vibrato::rows());
+    rows.extend(crate::replika::rows());
     rows.extend(crate::delays::rows());
     rows
 }
@@ -374,13 +371,10 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
         },
         ty(39, false, 0, reverb, [].into()),
         ty(11, false, 0, sends, [].into()),
-        ty(
-            40,
-            false,
-            0,
-            replika,
-            crate::replika::knobs(crate::replika::INIT).into(),
-        ),
+        ir::SlotType {
+            model: Some(crate::replika::model(crate::replika::INIT)),
+            ..ty(40, false, 0, replika, [].into())
+        },
         ty(0, false, 0, None, [].into()),
         ty(7, false, 100, filter, shape_laws(100)),
         ty(24, true, 24, eq, eq_knobs(&saved).into()),

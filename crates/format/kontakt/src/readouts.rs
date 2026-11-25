@@ -20,8 +20,8 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
     use kontra_law::FormulaId::{
         BassProGainDb, BassProGeqDb, BassProGeqVolumeDb, BassProMasterDb, BassProMidDb, BiteBits,
         BiteFrequencyHz, ChoralRateHz, FlairRateHz, FreakBandPassHz, FreakCarrierHz,
-        FreakFrequencyHz, PsycheDetuneCents, PsychePitchSemitones, RaumDecayMs, RaumRateHz,
-        RotatorFast, RotatorMixDb, TwinDelayTimeMs,
+        FreakFrequencyHz, PhasisCenterHz, PhasisRateHz, PsycheDetuneCents, PsychePitchSemitones,
+        RaumDecayMs, RaumRateHz, RotatorFast, RotatorMixDb, TwinDelayTimeMs,
     };
     let lin = |lo, hi| ir::Law::Linear { lo, hi };
     let exp = |lo, hi| ir::Law::Exp { lo, hi };
@@ -624,6 +624,18 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
         ),
         ("$ENGINE_PAR_BITE_BITS", formula(BiteBits), Whole, none),
         ("$ENGINE_PAR_FLAIR_RATE", formula(FlairRateHz), Padded, none),
+        (
+            "$ENGINE_PAR_PHASIS_RATE",
+            formula(PhasisRateHz),
+            Padded,
+            none,
+        ),
+        (
+            "$ENGINE_PAR_PHASIS_CENTER",
+            formula(PhasisCenterHz),
+            Padded,
+            none,
+        ),
         (
             "$ENGINE_PAR_FREAK_FREQUENCY",
             formula(FreakFrequencyHz),

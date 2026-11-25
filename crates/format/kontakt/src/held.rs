@@ -54,7 +54,6 @@ fn unit(beats: f32) -> i32 {
 /// reads nothing until a script sets it.
 pub(crate) fn fresh() -> Vec<(i32, u32, i32)> {
     let key = ir::held_key;
-    let x = |v: f32| (f64::from(v.clamp(0.0, 1.0)) * 1e6).round() as i32;
     let mut out = Vec::new();
     for (ty, module, version, record) in crate::script_knobs::init_records() {
         out.extend(
@@ -63,23 +62,9 @@ pub(crate) fn fresh() -> Vec<(i32, u32, i32)> {
                 .map(|(k, v)| (ty, k, v)),
         );
     }
-    let r = crate::replika::INIT;
-    let replika = [
-        ("$ENGINE_PAR_RDL_TYPE", r.mode),
-        ("$ENGINE_PAR_RDL_TAPEAGE", x(r.tape_age)),
-        ("$ENGINE_PAR_RDL_FLUTTER", x(r.flutter)),
-        ("$ENGINE_PAR_RDL_QUALITY", x(r.quality)),
-        ("$ENGINE_PAR_RDL_DEPTH", x(r.depth)),
-        ("$ENGINE_PAR_RDL_RATE", x(r.rate)),
-        ("$ENGINE_PAR_RDL_STEREO", i32::from(r.stereo)),
-        ("$ENGINE_PAR_RDL_PINGPONG", i32::from(r.pingpong)),
-        ("$ENGINE_PAR_RDL_PINGPONG_FLIP", i32::from(r.flip)),
-        ("$ENGINE_PAR_RDL_PAN", x(r.pan)),
-        ("$ENGINE_PAR_RDL_WIDTH", x(r.width)),
-        ("$ENGINE_PAR_RDL_LR_OFFSET", x(r.offset)),
-        ("$ENGINE_PAR_RDL_TIME_UNIT", r.beats.map_or(0, unit)),
-    ];
-    out.extend(replika.map(|(n, v)| (40, key(n), v)));
+    // Replika's controls are knobs of its model; its synced time's unit is held.
+    let beats = crate::replika::INIT.beats.map_or(0, unit);
+    out.push((40, key("$ENGINE_PAR_RDL_TIME_UNIT"), beats));
     // Psyche Delay's time is free (Freak's MODE is a knob of its model).
     let psyche = crate::psyche::INIT.beats.map_or(0, unit);
     out.push((49, key("$ENGINE_PAR_PSYDL_TIME_UNIT"), psyche));

@@ -27,7 +27,7 @@
 
 use kontra_ir as ir;
 
-use crate::script_knobs::SlotKnob;
+use kontra_kontakt_effects::module::{KNOBS, MixMode, Module, ids};
 
 /// The saved fields the Modern mode reads.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -55,6 +55,8 @@ pub(crate) struct Replika {
     pub pan: f32,
     pub width: f32,
     pub offset: f32,
+    /// SATURATION (offset 20): read only to report that it is not run.
+    pub saturation: f32,
 }
 
 /// Kontakt's INIT Replika (oracle save, 2026-10-29).
@@ -77,6 +79,7 @@ pub(crate) const INIT: Replika = Replika {
     pan: 0.5,
     width: 0.5,
     offset: 0.3,
+    saturation: 0.1,
 };
 
 /// The record (reader layout: i32 mode, ten floats from TIME to RATE, the
@@ -109,6 +112,7 @@ pub(crate) fn saved(version: u16, public: &[u8]) -> Option<Replika> {
         width: f(93)?,
         offset: f(97)?,
         flip: flag(113)?,
+        saturation: f(20)?,
     })
 }
 
@@ -118,6 +122,7 @@ pub(crate) fn lost(r: Replika) -> impl Iterator<Item = &'static str> {
         (r.beats.is_some(), "Replika tempo sync"),
         (!r.stereo && !r.pingpong, "Replika mono mode"),
         (r.pingpong && r.flip, "Replika ping-pong flip"),
+        (r.saturation > 0.0, "Replika saturation"),
     ]
     .into_iter()
     .filter_map(|(on, what)| on.then_some(what))
@@ -380,37 +385,156 @@ pub(crate) fn delay(r: Replika) -> Option<ir::Delay> {
     })
 }
 
-/// The time, feedback, low-cut and high-cut knobs, each sampled with the
-/// others at `r`.
-pub(crate) fn knobs(r: Replika) -> Vec<SlotKnob> {
-    use ir::EffectParam as E;
-    use ir::SlotKnob as K;
-    let cells: Vec<_> = (0..4).map(E::DelayLoop).collect();
-    type Knob<'a> = (K, &'a [E], fn(&mut Replika, f32));
-    let knobs: [Knob; 4] = [
-        (K::DelayTime, &[E::DelayMs], |r, x| r.ms = 2000.0 * x),
-        (K::DelayFeedback, &cells, |r, x| r.feedback = x),
-        (K::DelayLowCut, &[E::DelayLowCutHz], |r, x| r.low_cut = x),
-        (
-            K::DelayHighCut,
-            &[E::DelayShelfHz, E::DelayShelfDb],
-            |r, x| r.high_cut = x,
-        ),
-    ];
-    let mut out = Vec::new();
-    for (knob, fields, set) in knobs {
-        out.extend(crate::script_knobs::sampled(knob, fields, &|x| {
-            let mut r = r;
-            set(&mut r, x);
-            delay(r).map(ir::EffectKind::Delay)
-        }));
+/// Replika as a script moves it: every field [`delay`] reads is a knob, in [`knobs`]
+/// order, and each move rebuilds the delay from all of them, as load does.
+pub(crate) static MODULE: Module = Module {
+    id: ids::REPLIKA,
+    module_id: 0x5a,
+    versions: (0x12, 0x12),
+    name: "Replika",
+    script_type: 40,
+    mix: MixMode::WetDry,
+    knobs: KNOBS.split_at(18).0,
+    build: |p| delay(from_knobs(p.try_into().ok()?)).map(ir::EffectKind::Delay),
+};
+
+/// `r` as [`MODULE`]'s knobs: mode, TIME ms, the 0..1 controls as saved, the switches
+/// as 0/1, and the synced TIME's beats (−1 free; TIME_UNIT is not bound).
+fn knobs(r: Replika) -> [f32; 18] {
+    let on = |b: bool| f32::from(u8::from(b));
+    [
+        r.mode as f32,
+        r.ms,
+        r.feedback,
+        r.low_cut,
+        r.high_cut,
+        r.tape_age,
+        r.flutter,
+        r.quality,
+        r.depth,
+        r.rate,
+        on(r.stereo),
+        on(r.noise),
+        on(r.pingpong),
+        on(r.flip),
+        r.pan,
+        r.width,
+        r.offset,
+        r.beats.unwrap_or(-1.0),
+    ]
+}
+
+fn from_knobs(k: [f32; 18]) -> Replika {
+    let [
+        mode,
+        ms,
+        feedback,
+        low_cut,
+        high_cut,
+        tape_age,
+        flutter,
+        quality,
+        depth,
+        rate,
+    ] = [k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7], k[8], k[9]];
+    let on = |x: f32| x >= 0.5;
+    Replika {
+        mode: mode.round() as i32,
+        ms,
+        feedback,
+        low_cut,
+        high_cut,
+        tape_age,
+        flutter,
+        quality,
+        depth,
+        rate,
+        stereo: on(k[10]),
+        noise: on(k[11]),
+        pingpong: on(k[12]),
+        flip: on(k[13]),
+        pan: k[14],
+        width: k[15],
+        offset: k[16],
+        beats: Some(k[17]).filter(|&b| b >= 0.0),
+        saturation: 0.0,
     }
-    out
+}
+
+/// `r`'s knobs as a script moves them.
+pub(crate) fn model(r: Replika) -> ir::KnobModel {
+    MODULE.knob_model(&knobs(r))
+}
+
+/// The KSP names of [`MODULE`]'s knobs, each as the reference 8.13 stores it: TIME
+/// `2000·x` ms (descriptor 0x251, [ref]), the continuous controls as set
+/// (identity, 0x252..=0x264), TYPE and the switches as raw values (no descriptor).
+pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 17] {
+    use ir::KnobTarget::Slot;
+    use ir::SlotKnob::Knob;
+    let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
+    let raw = || ir::Law::Linear { lo: 0.0, hi: 1e6 };
+    [
+        ("$ENGINE_PAR_RDL_TYPE", Slot(Knob(0)), raw()),
+        (
+            "$ENGINE_PAR_RDL_TIME",
+            Slot(Knob(1)),
+            ir::Law::Linear {
+                lo: 0.0,
+                hi: 2000.0,
+            },
+        ),
+        ("$ENGINE_PAR_RDL_FEEDBACK", Slot(Knob(2)), unit()),
+        ("$ENGINE_PAR_RDL_LOWCUT", Slot(Knob(3)), unit()),
+        ("$ENGINE_PAR_RDL_HIGHCUT", Slot(Knob(4)), unit()),
+        ("$ENGINE_PAR_RDL_TAPEAGE", Slot(Knob(5)), unit()),
+        ("$ENGINE_PAR_RDL_FLUTTER", Slot(Knob(6)), unit()),
+        ("$ENGINE_PAR_RDL_QUALITY", Slot(Knob(7)), unit()),
+        ("$ENGINE_PAR_RDL_DEPTH", Slot(Knob(8)), unit()),
+        ("$ENGINE_PAR_RDL_RATE", Slot(Knob(9)), unit()),
+        ("$ENGINE_PAR_RDL_STEREO", Slot(Knob(10)), raw()),
+        ("$ENGINE_PAR_RDL_NOISE", Slot(Knob(11)), raw()),
+        ("$ENGINE_PAR_RDL_PINGPONG", Slot(Knob(12)), raw()),
+        ("$ENGINE_PAR_RDL_PINGPONG_FLIP", Slot(Knob(13)), raw()),
+        ("$ENGINE_PAR_RDL_PAN", Slot(Knob(14)), unit()),
+        ("$ENGINE_PAR_RDL_WIDTH", Slot(Knob(15)), unit()),
+        ("$ENGINE_PAR_RDL_LR_OFFSET", Slot(Knob(16)), unit()),
+    ]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A script's move reaches the delay (audit KT-05): each row's law gives the knob, and
+    /// the model rebuilds from every knob, so a held control moves the sound and LOWCUT
+    /// at 0 is off exactly, not interpolated toward its first step.
+    #[test]
+    fn script_rows_rebuild_the_replika_delay() {
+        let rows = rows();
+        let law = |name: &str| rows.iter().find(|r| r.0 == name).unwrap().2.clone();
+        let mut k = knobs(INIT);
+        let build = |k: &[f32; 18]| match (MODULE.build)(k) {
+            Some(ir::EffectKind::Delay(d)) => d,
+            _ => panic!("no delay"),
+        };
+        assert_eq!(build(&k), delay(INIT).unwrap(), "INIT's knobs build INIT");
+        k[8] = law("$ENGINE_PAR_RDL_DEPTH").eval(0.5);
+        assert_eq!(build(&k).depth_ms, MODERN_DEPTH_MS * 0.5);
+        k[1] = law("$ENGINE_PAR_RDL_TIME").eval(0.125);
+        assert_eq!(build(&k).time, ir::DelayTime::Ms(250.0));
+        k[3] = law("$ENGINE_PAR_RDL_LOWCUT").eval(0.0);
+        assert_eq!(build(&k).low_cut_hz, 0.0);
+        // TYPE and the switches take raw values: Tape, ping-pong.
+        k[0] = law("$ENGINE_PAR_RDL_TYPE").eval(2e-6);
+        k[12] = law("$ENGINE_PAR_RDL_PINGPONG").eval(1e-6);
+        let d = build(&k);
+        assert_eq!(d.input, [[0.5, 0.5], [0.0, 0.0]]);
+        assert_eq!(
+            d.feedback[0][1], INIT.feedback,
+            "Tape's loop gain is FEEDBACK"
+        );
+    }
 
     /// The INIT record as Kontakt 8.13.1 saves it.
     const INIT_RECORD: &str = "000000000000fa431f85eb3e000000003333733fcdcccc3d0000803e9a99993e0000803f00000000cdcccc3d010000000080bf000000000000803f000000803f0000003f0000003f0000003f01000000000000003f0000003f0000003f0000003f9a99993e00000000000000000000000000";
