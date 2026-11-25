@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
-use std::sync::{Arc, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use std::time::{Duration, Instant};
 
@@ -16,6 +16,10 @@ use kontra_library::{Cache, Catalog, Library, Prefs, Progress, Root, discover, i
 /// How often [`Browser::poll`] checks, off thread, whether the roots or
 /// libraries changed on disk ([`index::stale`]).
 const WATCH: Duration = Duration::from_secs(30);
+
+/// How often a running scan's libraries so far are saved to the index, so a
+/// host quit mid-scan keeps them for the next launch.
+const KEEP: Duration = Duration::from_secs(10);
 
 /// Whether `path` is a Kontakt instrument file.
 fn nki(path: &Path) -> bool {
@@ -94,6 +98,15 @@ pub struct Browser {
     watch: (Option<mpsc::Receiver<bool>>, Instant),
     /// The library [`Browser::locate`] looks for.
     locating: Option<String>,
+    /// An instrument is loading: scans wait ([`Browser::pause`]).
+    paused: bool,
+    /// When the index last got a running scan's libraries ([`KEEP`]).
+    kept: Instant,
+    /// Scans started, numbering their index saves.
+    scans: u64,
+    /// The last index save that landed: (scan, final). An older one is
+    /// dropped ([`save_index`]).
+    saved: Arc<Mutex<(u64, bool)>>,
     /// What the player should hear about, for the report.
     pub notices: Vec<String>,
     /// The player's presets folder ([`crate::presets`]), listed after each
@@ -140,6 +153,10 @@ impl Browser {
             index_path,
             watch: (None, Instant::now()),
             locating: None,
+            paused: false,
+            kept: Instant::now(),
+            scans: 0,
+            saved: Arc::default(),
             notices: Vec::new(),
             user: None,
         };
@@ -171,8 +188,17 @@ impl Browser {
     /// Stops a running scan; the catalog stays as it was.
     pub fn cancel(&mut self) {
         if let Some(running) = self.scan.take() {
-            running.progress.cancel.store(true, Ordering::Relaxed);
+            running.progress.stop();
             self.generation += 1;
+        }
+    }
+
+    /// Holds scans while `on`, so an instrument load is not slowed by a
+    /// scan reading the same disk.
+    pub fn pause(&mut self, on: bool) {
+        self.paused = on;
+        if let Some(running) = &self.scan {
+            running.progress.pause(on);
         }
     }
 
@@ -239,9 +265,10 @@ impl Browser {
 
     fn start(&mut self, find: Find) {
         if let Some(running) = self.scan.take() {
-            running.progress.cancel.store(true, Ordering::Relaxed);
+            running.progress.stop();
         }
         let progress = Arc::new(Progress::default());
+        progress.pause(self.paused);
         let (send, receive) = mpsc::channel();
         let (user, known, hidden) = (
             self.prefs.roots.clone(),
@@ -251,11 +278,27 @@ impl Browser {
         let found = self.prefs.found.clone();
         let cache_path = self.cache_path.clone();
         let index_path = self.index_path.clone();
-        let previous = self.catalog.libraries.clone();
+        let mut previous = self.catalog.libraries.clone();
         let scanning = Arc::clone(&progress);
+        self.scans += 1;
+        let (scan, saved) = (self.scans, Arc::clone(&self.saved));
         let spawned = std::thread::Builder::new()
             .name("kontra-scan".into())
             .spawn(move || {
+                // One scan at a time reads the disk, across this host's
+                // instances and processes. The next starts from what the
+                // last one saved, so it mostly stats.
+                // ponytail: a scan canceled while it waits still waits for
+                // the running one to end; it then returns at once.
+                let _turn = index_path.as_deref().and_then(turn);
+                if scanning.cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                if let Some(saved) = index_path.as_deref().map(index::load) {
+                    if !saved.is_empty() {
+                        previous = saved;
+                    }
+                }
                 let (mut auto, mut found_now) = (None, None);
                 let mut all = known;
                 match find {
@@ -326,7 +369,7 @@ impl Browser {
                         let _saved = cache.save(path);
                     }
                     if let Some(path) = &index_path {
-                        let _saved = index::save(path, &catalog.libraries);
+                        save_index(&saved, (scan, true), path, &catalog.libraries);
                     }
                     let _gone = send.send(Scanned {
                         catalog,
@@ -369,6 +412,10 @@ impl Browser {
                     None => self.catalog.libraries.push(library.clone()),
                 }
             }
+            if !partial.is_empty() && self.kept.elapsed() >= KEEP {
+                self.kept = Instant::now();
+                self.keep();
+            }
             self.generation += u64::from(!partial.is_empty());
             return !partial.is_empty();
         };
@@ -400,6 +447,19 @@ impl Browser {
         self.catalog = catalog;
         self.generation += 1;
         true
+    }
+
+    /// Saves the libraries listed now to the index, off this thread. It
+    /// never lands after the running scan's own final save.
+    fn keep(&self) {
+        let Some(path) = self.index_path.clone() else {
+            return;
+        };
+        let libraries = self.catalog.libraries.clone();
+        let (scan, saved) = (self.scans, Arc::clone(&self.saved));
+        let _spawned = std::thread::Builder::new()
+            .name("kontra-index".into())
+            .spawn(move || save_index(&saved, (scan, false), &path, &libraries));
     }
 
     /// Lists the player's presets from `folder` from now on.
@@ -705,6 +765,26 @@ fn save(path: &Path, value: &impl serde::Serialize) {
     }
 }
 
+/// Writes the index unless a later save landed first: one of a later scan,
+/// or the final one of this scan (`at` is (scan, final)).
+fn save_index(saved: &Mutex<(u64, bool)>, at: (u64, bool), path: &Path, libraries: &[Library]) {
+    let mut last = saved.lock().unwrap_or_else(PoisonError::into_inner);
+    if at >= *last {
+        let _saved = index::save(path, libraries);
+        *last = at;
+    }
+}
+
+/// The scan lock beside the index, held until dropped; `None` when it
+/// can't be opened (then scans don't wait).
+fn turn(index: &Path) -> Option<std::fs::File> {
+    let path = index.with_file_name("scan.lock");
+    let _made = path.parent().map(std::fs::create_dir_all);
+    let file = std::fs::File::create(path).ok()?;
+    file.lock().ok()?;
+    Some(file)
+}
+
 /// The roots v2 scans (`<config>/kontra/settings.json`), read only.
 fn v2_roots(config: &Path) -> Vec<Root> {
     #[derive(serde::Deserialize)]
@@ -793,6 +873,43 @@ mod tests {
         // The browsers' background index writes can still be landing in the
         // temp dir; cleanup is best effort, not what this test checks.
         drop((b, again));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A running scan's mid-scan save never lands after its final one; the
+    /// next scan's do.
+    #[test]
+    fn a_mid_scan_save_never_lands_after_the_final_one() {
+        let dir = std::env::temp_dir().join(format!("kontra-saves-{}", std::process::id()));
+        let path = dir.join("library-index.json");
+        let saved = Mutex::new((0, false));
+        let named = |name: &str| {
+            vec![Library {
+                dir: Path::new("/libs").join(name),
+                name: name.into(),
+                ..Library::default()
+            }]
+        };
+        let landed = || index::load(&path).remove(0).name;
+        save_index(&saved, (1, true), &path, &named("Final"));
+        save_index(&saved, (1, false), &path, &named("Partial"));
+        assert_eq!(landed(), "Final");
+        save_index(&saved, (2, false), &path, &named("Next"));
+        assert_eq!(landed(), "Next");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One scan at a time holds the scan lock; another handle (another
+    /// instance or process) waits until it is let go.
+    #[test]
+    fn one_scan_holds_the_disk_at_a_time() {
+        let dir = std::env::temp_dir().join(format!("kontra-turn-{}", std::process::id()));
+        let index = dir.join("library-index.json");
+        let held = turn(&index).expect("the lock");
+        let other = std::fs::File::open(dir.join("scan.lock")).unwrap();
+        assert!(other.try_lock().is_err(), "a second scan waits");
+        drop(held);
+        assert!(other.try_lock().is_ok(), "its turn once the first ends");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

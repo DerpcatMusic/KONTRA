@@ -1330,10 +1330,20 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         dropping.shared.dirty.store(true, Ordering::Release);
         let library = paths.iter().any(|p| is_dropped(p));
         let instruments: Vec<_> = paths.iter().filter(|p| is_instrument(p)).cloned().collect();
-        let folders: Vec<_> = paths.iter().filter(|p| p.is_dir()).cloned().collect();
+        // A UVI bank holds many programs: it is added like a folder.
+        let folders: Vec<_> = (paths.iter())
+            .filter(|p| p.is_dir() || is_bank(p))
+            .cloned()
+            .collect();
         if dropped {
             for path in &folders {
                 dropping.shared.request(Request::AddRoot(path.clone()));
+                if is_bank(path) {
+                    dropping.shared.request(Request::Notice(format!(
+                        "{} is a bank of programs: it is added to the browser, load one from there",
+                        path.display()
+                    )));
+                }
             }
             for path in &instruments {
                 dropping.shared.request(Request::Load {
@@ -1571,6 +1581,12 @@ fn is_dropped(path: &std::path::Path) -> bool {
     )
 }
 
+/// Whether a dropped file is a UVI bank (`.ufs`).
+fn is_bank(path: &std::path::Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("ufs"))
+}
+
 /// Whether a dropped file is an instrument the rack loads: a Kontakt
 /// instrument or snapshot, a UVI program in its bank, an SFZ file, a
 /// DecentSampler preset, or a SoundFont 2 bank.
@@ -1757,10 +1773,11 @@ mod tests {
     }
 
     #[test]
-    fn sfz_files_can_be_dropped_into_the_player() {
+    fn instruments_and_banks_can_be_dropped_into_the_player() {
         assert!(super::is_instrument(std::path::Path::new("instrument.SFZ")));
         assert!(super::is_instrument(std::path::Path::new("piano.dspreset")));
         assert!(super::is_instrument(std::path::Path::new("bank.SF2")));
+        assert!(super::is_bank(std::path::Path::new("Falcon.UFS")));
     }
 
     #[test]

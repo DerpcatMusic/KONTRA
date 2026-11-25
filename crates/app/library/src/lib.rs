@@ -237,11 +237,32 @@ pub struct Progress {
     /// Each library as it is catalogued, for the browser to show before the
     /// scan ends; the browser takes them.
     pub partial: std::sync::Mutex<Vec<Library>>,
+    /// Held while an instrument loads ([`Progress::pause`]).
+    paused: (std::sync::Mutex<bool>, std::sync::Condvar),
 }
 
 impl Progress {
+    /// Whether the scan is canceled. While it is paused, waits first.
     fn canceled(&self) -> bool {
+        let (paused, resume) = &self.paused;
+        let held = paused.lock().unwrap_or_else(PoisonError::into_inner);
+        let _held = resume
+            .wait_while(held, |p| *p && !self.cancel.load(Ordering::Relaxed))
+            .unwrap_or_else(PoisonError::into_inner);
         self.cancel.load(Ordering::Relaxed)
+    }
+
+    /// Holds the scan at its next check while `on`, so an instrument load
+    /// has the disk to itself (one HDD serves both badly).
+    pub fn pause(&self, on: bool) {
+        *self.paused.0.lock().unwrap_or_else(PoisonError::into_inner) = on;
+        self.paused.1.notify_all();
+    }
+
+    /// Stops the scan at its next check, paused or not.
+    pub fn stop(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        self.pause(false);
     }
 
     /// The libraries catalogued since the last call.
@@ -300,6 +321,12 @@ const COMPANIONS: [&str; 11] = [
 
 /// A folder with this many audio files and no presets holds samples only.
 pub(crate) const SAMPLE_ONLY: usize = 64;
+/// Threads listing one root. A root sits on one drive, and on a spinning
+/// one more parallel listings cost more seeks than they save.
+// ponytail: fixed for every drive. Telling an HDD from an SSD takes the
+// seek-penalty query per OS (Windows IOCTL, Linux sysfs, macOS IOKit);
+// add it if first scans of SSD roots get slow.
+const ROOT_THREADS: usize = 2;
 /// Folders a library keeps no presets in, never searched for libraries.
 const SKIP: [&str; 6] = [
     "samples",
@@ -339,10 +366,10 @@ pub fn scan_with_inspector(
 }
 
 /// Like [`scan_with_inspector`], but a library of `previous` whose stamped
-/// folders are all unchanged is taken as it was, without walking it again.
-// ponytail: only the per-library walk is skipped; finding libraries still
-// lists the folders above them. Skip unchanged subtrees there if a drive
-// scan stays slow.
+/// folders are all unchanged is taken as it was: neither its folders nor
+/// its presets are listed again, only stat-ed.
+// ponytail: the folders above libraries are still listed. Stamp them too if
+// a drive of loose vendor folders stays slow.
 pub fn scan_incremental(
     roots: &[Root],
     progress: &Progress,
@@ -365,7 +392,7 @@ pub fn scan_incremental(
         };
         let (files, other) = counted(progress);
         let mut duplicates = 0;
-        let founds = detect(root, progress, &mut issues);
+        let founds = detect(root, progress, &mut issues, previous);
         // Every library found under this root, nested ones included: a library
         // inside another is catalogued as itself, so the outer one's walk stops
         // at it rather than listing its presets a second time
@@ -624,7 +651,12 @@ fn issue_with_protection(
 }
 
 /// The library folders and loose banks in `root`.
-fn detect(root: &Root, progress: &Progress, issues: &mut Vec<Issue>) -> Vec<Found> {
+fn detect(
+    root: &Root,
+    progress: &Progress,
+    issues: &mut Vec<Issue>,
+    previous: &[Library],
+) -> Vec<Found> {
     let dir = root.path.clone();
     match std::fs::metadata(&dir) {
         Err(e) => {
@@ -650,7 +682,7 @@ fn detect(root: &Root, progress: &Progress, issues: &mut Vec<Issue>) -> Vec<Foun
                 vendor: None,
             }]
         }
-        Ok(_) => search(dir, progress, issues),
+        Ok(_) => search(dir, progress, issues, previous),
     }
 }
 
@@ -706,7 +738,12 @@ impl Search {
 /// folders of many audio files without presets. Inside a library, only a
 /// `.nicnt` makes a folder a library of its own. Symlinks are followed, and
 /// canonical paths guard against cycles.
-fn search(root: PathBuf, progress: &Progress, issues: &mut Vec<Issue>) -> Vec<Found> {
+fn search(
+    root: PathBuf,
+    progress: &Progress,
+    issues: &mut Vec<Issue>,
+    previous: &[Library],
+) -> Vec<Found> {
     let shared = std::sync::Mutex::new(Search::default());
     let lock = || {
         shared
@@ -720,7 +757,7 @@ fn search(root: PathBuf, progress: &Progress, issues: &mut Vec<Issue>) -> Vec<Fo
         within: false,
         through_symlink: false,
     };
-    discover::par_walk(vec![start], discover::threads(), |v: Visit| {
+    discover::par_walk(vec![start], ROOT_THREADS, |v: Visit| {
         if progress.canceled() {
             return Vec::new();
         }
@@ -738,6 +775,29 @@ fn search(root: PathBuf, progress: &Progress, issues: &mut Vec<Issue>) -> Vec<Fo
                     s.visited.insert((canonical.clone(), v.within), is_symlink);
                 }
             }
+        }
+        // A library the index knows, unchanged with every library inside
+        // it, is found from its stamps without listing it again.
+        if !v.within
+            && let Some(known) = unchanged_libraries(&v.dir, previous)
+        {
+            let mut s = lock();
+            for l in known {
+                let rel = l.dir.strip_prefix(&v.dir).unwrap_or(Path::new(""));
+                let key = if rel.as_os_str().is_empty() {
+                    canonical.clone()
+                } else {
+                    canonical.join(rel)
+                };
+                let vendor = (l.dir == v.dir).then(|| v.vendor.clone()).flatten();
+                let candidate = Found {
+                    dir: l.dir.clone(),
+                    nicnt: None,
+                    vendor,
+                };
+                s.found(key, (is_symlink, v.depth), candidate, progress);
+            }
+            return Vec::new();
         }
         progress.folders.fetch_add(1, Ordering::Relaxed);
         let mut found_issues = Vec::new();
@@ -823,6 +883,17 @@ fn search(root: PathBuf, progress: &Progress, issues: &mut Vec<Issue>) -> Vec<Fo
     let mut out: Vec<Found> = s.found.into_values().map(|(_, f)| f).collect();
     out.sort_by(|a, b| a.dir.cmp(&b.dir));
     out
+}
+
+/// The libraries of `previous` in `dir`, when `dir` is one of them and
+/// none changed since its stamps ([`index::unchanged`]).
+fn unchanged_libraries<'a>(dir: &Path, previous: &'a [Library]) -> Option<Vec<&'a Library>> {
+    let inside: Vec<&Library> = (previous.iter())
+        .filter(|l| l.dir.starts_with(dir))
+        .collect();
+    let known = inside.iter().any(|l| l.dir == dir)
+        && (inside.iter()).all(|l| !l.stamps.is_empty() && index::unchanged(&l.stamps));
+    known.then_some(inside)
 }
 
 fn file_name(path: &Path) -> String {
