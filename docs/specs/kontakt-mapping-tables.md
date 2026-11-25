@@ -3,7 +3,7 @@ status: in-progress
 project: kontra
 owner: agent (tables lane)
 created: 2026-11-24
-updated: 2026-11-24
+updated: 2026-11-25
 proof_scope: internal
 evidence_freshness_days: 180
 ---
@@ -66,6 +66,28 @@ and rack emission are untouched (the AudioGraph lane owns racks).
 
 The move is size-neutral; it removes a dispatch, not lines. The ~8k target
 needs the follow-ups below.
+
+Measured split (`tools/migrations/kontakt-sizes.sh`; the cfg(test) rigs
+audit.rs and fit.rs are not production): on main after #191 and #196
+(b19c21ca37), readers 2,711 and mapping 7,904 in `format/kontakt`, plus
+3,464 in `kontakt-effects`: 11,368 mapping against ~8k. With #203 (display readouts) merged in: mapping 7,957, total 11,421.
+
+| Step | Deletes | mapping after |
+|---|---|---|
+| KT-18 knob rows (script_knobs.tsv and its string parser become typed rows; `tools/migrations/script-knobs-table.py`) | TSV 107 lines, parser 35 net .rs lines | 11,333 |
+
+## Verification Matrix
+
+| Check | Tier | Target / OS | Exact Command | Pass Criterion | Status / Observed Evidence |
+|---|---|---|---|---|---|
+| Spec proof gate | Doc | any | `python3 tools/check-spec-proof.py plugins/kontra/docs/specs/kontakt-mapping-tables.md` | Exit 0, zero proof errors | PASS (2026-11-25, linux-x86_64) |
+| Fast unit/lib tests | Compile/ABI | linux-x86_64 | `matari fast kontra` | Exit 0, zero failures | PASS (2026-11-24, linux-x86_64) |
+| IR identical on real libraries | Validator/Runtime | linux-x86_64 | `plugins/kontra/tools/migrations/kontakt-ir-dump.sh` before/after, `diff -r` | Empty diff (held-row removals only for KT-17) | PASS (2026-11-24, linux-x86_64) |
+| Full PR verification gate | Validator/Runtime | linux-x86_64 | `matari check origin/main --project kontra` | CI `verify` green | PENDING |
+
+## Unverified Boundaries & Promotion Gate
+
+None — all verification tiers execute on the current host.
 
 ## Non-goals (this PR) and next steps
 
