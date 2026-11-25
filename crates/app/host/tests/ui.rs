@@ -549,16 +549,22 @@ fn a_file_dropped_on_a_mouse_area_reaches_its_callback() {
     assert_eq!(run(&mut engine, true, true), "1 /s/kick.wav");
 }
 
+/// A label's tab advances one space in the pixel font's family and about two
+/// in font 13 (the reference 8.13, tools/ksp-ui tables page).
 #[test]
-fn ksp_label_tabs_expand_to_two_spaces_in_face() {
+fn ksp_label_tabs_advance_as_the_font_spaces_them() {
     let ui = tree(
         "on init
             make_perfview
             declare ui_label $lbl (1, 1)
             set_text($lbl, \"\t\t\t   Marcato Short\")
+            declare ui_label $big (1, 1)
+            set_control_par(get_ui_id($big), $CONTROL_PAR_FONT_TYPE, 13)
+            set_text($big, \"\t\t\t   Marcato Short\")
         end on",
     );
-    assert_eq!(widget(&ui, "$lbl").text, "         Marcato Short");
+    assert_eq!(widget(&ui, "$lbl").text, "      Marcato Short");
+    assert_eq!(widget(&ui, "$big").text, "         Marcato Short");
 }
 
 /// A `Binding::Param` knob on a script-free interface updates engine audio

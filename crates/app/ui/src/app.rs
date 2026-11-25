@@ -395,6 +395,9 @@ pub struct View {
     pub menu: Option<String>,
     /// Files the window has dragged over it this frame.
     pub files: Option<crate::input::FileDrag>,
+    /// The pointer of the input this frame answers, when the host knows it:
+    /// a library control's drag follows it in this frame, not the next.
+    pub pointer: Option<Point>,
     pub mixer_wide: bool,
     pub report_search: String,
     /// The report entry shown whole.

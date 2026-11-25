@@ -47,6 +47,15 @@ if [ "$1" = "--exclusive" ]; then
   exit "${rc:-0}"
 fi
 
+# Nested call (a slot tool running another, e.g. ksp_probe.py -> dump.py): reuse the slot this
+# session already holds. Waiting for a second slot deadlocked the pool on 2026-11-25 once every
+# slot's holder nested. The per-call cleanup still runs, so each inner run starts fresh.
+if [ -n "${ORACLE_SLOT:-}" ] && [ -n "${ORACLE_PREFIX:-}" ]; then
+  trap 'pkill -f "Xvfb ${ORACLE_DISPLAY:-none}( |\$)" 2>/dev/null || true; WINEPREFIX="$ORACLE_PREFIX" wineserver -k 2>/dev/null || true' EXIT
+  "$@" && rc=0 || rc=$?
+  exit "$rc"
+fi
+
 exec 8>>"$LEGACY_LOCK"
 flock -s 8 # waits while a legacy/--exclusive job runs
 

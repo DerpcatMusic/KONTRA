@@ -48,7 +48,11 @@ pub(super) fn activate(saved: &str) -> (KontraParams, Dsp) {
 }
 
 /// One block with `events`; the first output pair, interleaved.
-fn block(params: &KontraParams, dsp: &mut Dsp, events: &[moose::prelude::Event]) -> Vec<f32> {
+pub(super) fn block(
+    params: &KontraParams,
+    dsp: &mut Dsp,
+    events: &[moose::prelude::Event],
+) -> Vec<f32> {
     let mut list = EventList::with_capacity(16);
     for &e in events {
         list.push(e);
@@ -123,7 +127,7 @@ fn library(path: &str) -> Option<PathBuf> {
 /// Lets the commands sent so far reach the audio side and a capture of the
 /// scripts' persistent values taken after them come back, as the control
 /// tick does between blocks (a capture already on its way is read first).
-fn settle(params: &KontraParams, dsp: &mut Dsp) {
+pub(super) fn settle(params: &KontraParams, dsp: &mut Dsp) {
     for _ in 0..2 {
         Tick.run(params);
         block(params, dsp, &[]);

@@ -1,0 +1,309 @@
+{ KSP UI probe suite, page tables: written by tools/ksp-ui/gen.py }
+on init
+  make_perfview
+  set_ui_width_px(900)
+  set_ui_height_px(380)
+  declare !log[1024]
+  declare $n := 0
+  pgs_create_key(KLOG, 1)
+  declare ui_table %t0[16](4, 4, 127)
+  make_persistent(%t0)
+  declare ui_table %t1[16](4, 4, 1)
+  make_persistent(%t1)
+  declare ui_table %t2[16](4, 4, 127)
+  make_persistent(%t2)
+  declare ui_table %t3[16](4, 4, 127)
+  make_persistent(%t3)
+  declare ui_table %t4[13](4, 4, 127)
+  make_persistent(%t4)
+  declare ui_table %t5[16](4, 4, 127)
+  make_persistent(%t5)
+  declare ui_table %t6[12](4, 4, -100)
+  make_persistent(%t6)
+  declare ui_table %t7[16](4, 4, 127)
+  make_persistent(%t7)
+  declare ui_label $cap0(1, 1)
+  declare ui_label $cap1(1, 1)
+  declare ui_label $cap2(1, 1)
+  declare ui_label $cap3(1, 1)
+  declare ui_label $cap4(1, 1)
+  declare ui_label $lead00(1, 1)
+  declare ui_label $lead01(1, 1)
+  declare ui_label $lead10(1, 1)
+  declare ui_label $lead11(1, 1)
+  declare ui_label $lead20(1, 1)
+  declare ui_label $lead21(1, 1)
+  declare ui_label $lead30(1, 1)
+  declare ui_label $lead31(1, 1)
+  declare ui_label $lead40(1, 1)
+  declare ui_label $lead41(1, 1)
+  set_control_par(get_ui_id(%t0), $CONTROL_PAR_POS_X, 10)
+  set_control_par(get_ui_id(%t0), $CONTROL_PAR_POS_Y, 10)
+  set_control_par(get_ui_id(%t0), $CONTROL_PAR_WIDTH, 247)
+  set_control_par(get_ui_id(%t0), $CONTROL_PAR_HEIGHT, 75)
+  %t0[0] := 127
+  %t0[1] := 14
+  %t0[2] := 22
+  %t0[3] := 0
+  %t0[4] := 127
+  %t0[5] := 44
+  %t0[6] := 52
+  %t0[7] := 0
+  %t0[8] := 127
+  %t0[9] := 74
+  %t0[10] := 82
+  %t0[11] := 0
+  %t0[12] := 127
+  %t0[13] := 104
+  %t0[14] := 112
+  %t0[15] := 0
+  set_control_par(get_ui_id(%t0), $CONTROL_PAR_BAR_COLOR, 16167004)
+  set_control_par(get_ui_id(%t1), $CONTROL_PAR_POS_X, 280)
+  set_control_par(get_ui_id(%t1), $CONTROL_PAR_POS_Y, 10)
+  set_control_par(get_ui_id(%t1), $CONTROL_PAR_WIDTH, 247)
+  set_control_par(get_ui_id(%t1), $CONTROL_PAR_HEIGHT, 16)
+  %t1[0] := 1
+  %t1[1] := 0
+  %t1[2] := 0
+  %t1[3] := 0
+  %t1[4] := 1
+  %t1[5] := 0
+  %t1[6] := 0
+  %t1[7] := 0
+  %t1[8] := 1
+  %t1[9] := 0
+  %t1[10] := 0
+  %t1[11] := 0
+  %t1[12] := 1
+  %t1[13] := 0
+  %t1[14] := 0
+  %t1[15] := 0
+  set_control_par(get_ui_id(%t1), $CONTROL_PAR_BAR_COLOR, 16167004)
+  set_control_par(get_ui_id(%t2), $CONTROL_PAR_POS_X, 550)
+  set_control_par(get_ui_id(%t2), $CONTROL_PAR_POS_Y, 10)
+  set_control_par(get_ui_id(%t2), $CONTROL_PAR_WIDTH, 240)
+  set_control_par(get_ui_id(%t2), $CONTROL_PAR_HEIGHT, 75)
+  %t2[0] := 127
+  %t2[1] := 14
+  %t2[2] := 22
+  %t2[3] := 0
+  %t2[4] := 127
+  %t2[5] := 44
+  %t2[6] := 52
+  %t2[7] := 0
+  %t2[8] := 127
+  %t2[9] := 74
+  %t2[10] := 82
+  %t2[11] := 0
+  %t2[12] := 127
+  %t2[13] := 104
+  %t2[14] := 112
+  %t2[15] := 0
+  set_control_par(get_ui_id(%t3), $CONTROL_PAR_POS_X, 10)
+  set_control_par(get_ui_id(%t3), $CONTROL_PAR_POS_Y, 110)
+  set_control_par(get_ui_id(%t3), $CONTROL_PAR_WIDTH, 100)
+  set_control_par(get_ui_id(%t3), $CONTROL_PAR_HEIGHT, 60)
+  %t3[0] := 127
+  %t3[1] := 14
+  %t3[2] := 22
+  %t3[3] := 0
+  %t3[4] := 127
+  %t3[5] := 44
+  %t3[6] := 52
+  %t3[7] := 0
+  %t3[8] := 127
+  %t3[9] := 74
+  %t3[10] := 82
+  %t3[11] := 0
+  %t3[12] := 127
+  %t3[13] := 104
+  %t3[14] := 112
+  %t3[15] := 0
+  set_control_par(get_ui_id(%t4), $CONTROL_PAR_POS_X, 130)
+  set_control_par(get_ui_id(%t4), $CONTROL_PAR_POS_Y, 110)
+  set_control_par(get_ui_id(%t4), $CONTROL_PAR_WIDTH, 200)
+  set_control_par(get_ui_id(%t4), $CONTROL_PAR_HEIGHT, 60)
+  %t4[0] := 127
+  %t4[1] := 18
+  %t4[2] := 27
+  %t4[3] := 0
+  %t4[4] := 127
+  %t4[5] := 54
+  %t4[6] := 63
+  %t4[7] := 0
+  %t4[8] := 127
+  %t4[9] := 90
+  %t4[10] := 99
+  %t4[11] := 0
+  %t4[12] := 127
+  set_control_par(get_ui_id(%t4), $CONTROL_PAR_BAR_COLOR, 16167004)
+  set_control_par(get_ui_id(%t5), $CONTROL_PAR_POS_X, 350)
+  set_control_par(get_ui_id(%t5), $CONTROL_PAR_POS_Y, 110)
+  set_control_par(get_ui_id(%t5), $CONTROL_PAR_WIDTH, 247)
+  set_control_par(get_ui_id(%t5), $CONTROL_PAR_HEIGHT, 60)
+  %t5[0] := 127
+  %t5[1] := 14
+  %t5[2] := 22
+  %t5[3] := 0
+  %t5[4] := 127
+  %t5[5] := 44
+  %t5[6] := 52
+  %t5[7] := 0
+  %t5[8] := 127
+  %t5[9] := 74
+  %t5[10] := 82
+  %t5[11] := 0
+  %t5[12] := 127
+  %t5[13] := 104
+  %t5[14] := 112
+  %t5[15] := 0
+  set_table_steps_shown(%t5, 12)
+  set_control_par(get_ui_id(%t5), $CONTROL_PAR_BAR_COLOR, 16167004)
+  set_control_par(get_ui_id(%t6), $CONTROL_PAR_POS_X, 620)
+  set_control_par(get_ui_id(%t6), $CONTROL_PAR_POS_Y, 110)
+  set_control_par(get_ui_id(%t6), $CONTROL_PAR_WIDTH, 201)
+  set_control_par(get_ui_id(%t6), $CONTROL_PAR_HEIGHT, 60)
+  %t6[0] := -100
+  %t6[1] := -16
+  %t6[2] := -24
+  %t6[3] := 0
+  %t6[4] := -100
+  %t6[5] := -47
+  %t6[6] := -54
+  %t6[7] := 0
+  %t6[8] := -100
+  %t6[9] := -77
+  %t6[10] := -85
+  %t6[11] := 0
+  set_control_par(get_ui_id(%t7), $CONTROL_PAR_POS_X, 10)
+  set_control_par(get_ui_id(%t7), $CONTROL_PAR_POS_Y, 200)
+  set_control_par(get_ui_id(%t7), $CONTROL_PAR_WIDTH, 247)
+  set_control_par(get_ui_id(%t7), $CONTROL_PAR_HEIGHT, 60)
+  %t7[0] := 127
+  %t7[1] := 14
+  %t7[2] := 22
+  %t7[3] := 0
+  %t7[4] := 127
+  %t7[5] := 44
+  %t7[6] := 52
+  %t7[7] := 0
+  %t7[8] := 127
+  %t7[9] := 74
+  %t7[10] := 82
+  %t7[11] := 0
+  %t7[12] := 127
+  %t7[13] := 104
+  %t7[14] := 112
+  %t7[15] := 0
+  set_control_par(get_ui_id(%t7), $CONTROL_PAR_BAR_COLOR, 16167004)
+  set_control_par(get_ui_id(%t7), $CONTROL_PAR_HIDE, 1)
+  set_control_par(get_ui_id($cap0), $CONTROL_PAR_POS_X, 290)
+  set_control_par(get_ui_id($cap0), $CONTROL_PAR_POS_Y, 210)
+  set_text($cap0, "/2T")
+  set_control_par(get_ui_id($cap1), $CONTROL_PAR_POS_X, 390)
+  set_control_par(get_ui_id($cap1), $CONTROL_PAR_POS_Y, 210)
+  set_text($cap1, "/2T")
+  set_control_par(get_ui_id($cap1), $CONTROL_PAR_FONT_TYPE, 13)
+  set_control_par(get_ui_id($cap2), $CONTROL_PAR_POS_X, 490)
+  set_control_par(get_ui_id($cap2), $CONTROL_PAR_POS_Y, 210)
+  set_text($cap2, "/2T")
+  set_control_par(get_ui_id($cap2), $CONTROL_PAR_FONT_TYPE, 15)
+  set_control_par(get_ui_id($cap3), $CONTROL_PAR_POS_X, 590)
+  set_control_par(get_ui_id($cap3), $CONTROL_PAR_POS_Y, 210)
+  set_control_par(get_ui_id($cap3), $CONTROL_PAR_WIDTH, 87)
+  set_control_par(get_ui_id($cap3), $CONTROL_PAR_HEIGHT, 18)
+  set_text($cap3, "/2T")
+  set_control_par(get_ui_id($cap4), $CONTROL_PAR_POS_X, 690)
+  set_control_par(get_ui_id($cap4), $CONTROL_PAR_POS_Y, 210)
+  set_control_par(get_ui_id($cap4), $CONTROL_PAR_WIDTH, 87)
+  set_control_par(get_ui_id($cap4), $CONTROL_PAR_HEIGHT, 18)
+  set_text($cap4, "/2T")
+  set_control_par(get_ui_id($cap4), $CONTROL_PAR_FONT_TYPE, 13)
+  set_control_par(get_ui_id($lead00), $CONTROL_PAR_POS_X, 10)
+  set_control_par(get_ui_id($lead00), $CONTROL_PAR_POS_Y, 290)
+  set_control_par(get_ui_id($lead00), $CONTROL_PAR_WIDTH, 140)
+  set_control_par(get_ui_id($lead00), $CONTROL_PAR_HEIGHT, 26)
+  set_control_par_str(get_ui_id($lead00), $CONTROL_PAR_TEXT, "Legato")
+  set_control_par(get_ui_id($lead00), $CONTROL_PAR_TEXT_ALIGNMENT, 0)
+  set_control_par(get_ui_id($lead00), $CONTROL_PAR_FONT_TYPE, 13)
+  set_control_par(get_ui_id($lead01), $CONTROL_PAR_POS_X, 10)
+  set_control_par(get_ui_id($lead01), $CONTROL_PAR_POS_Y, 330)
+  set_control_par(get_ui_id($lead01), $CONTROL_PAR_WIDTH, 140)
+  set_control_par(get_ui_id($lead01), $CONTROL_PAR_HEIGHT, 26)
+  set_control_par_str(get_ui_id($lead01), $CONTROL_PAR_TEXT, "Legato")
+  set_control_par(get_ui_id($lead01), $CONTROL_PAR_TEXT_ALIGNMENT, 0)
+  set_control_par(get_ui_id($lead10), $CONTROL_PAR_POS_X, 160)
+  set_control_par(get_ui_id($lead10), $CONTROL_PAR_POS_Y, 290)
+  set_control_par(get_ui_id($lead10), $CONTROL_PAR_WIDTH, 140)
+  set_control_par(get_ui_id($lead10), $CONTROL_PAR_HEIGHT, 26)
+  set_control_par_str(get_ui_id($lead10), $CONTROL_PAR_TEXT, "	Legato")
+  set_control_par(get_ui_id($lead10), $CONTROL_PAR_TEXT_ALIGNMENT, 0)
+  set_control_par(get_ui_id($lead10), $CONTROL_PAR_FONT_TYPE, 13)
+  set_control_par(get_ui_id($lead11), $CONTROL_PAR_POS_X, 160)
+  set_control_par(get_ui_id($lead11), $CONTROL_PAR_POS_Y, 330)
+  set_control_par(get_ui_id($lead11), $CONTROL_PAR_WIDTH, 140)
+  set_control_par(get_ui_id($lead11), $CONTROL_PAR_HEIGHT, 26)
+  set_control_par_str(get_ui_id($lead11), $CONTROL_PAR_TEXT, "	Legato")
+  set_control_par(get_ui_id($lead11), $CONTROL_PAR_TEXT_ALIGNMENT, 0)
+  set_control_par(get_ui_id($lead20), $CONTROL_PAR_POS_X, 310)
+  set_control_par(get_ui_id($lead20), $CONTROL_PAR_POS_Y, 290)
+  set_control_par(get_ui_id($lead20), $CONTROL_PAR_WIDTH, 140)
+  set_control_par(get_ui_id($lead20), $CONTROL_PAR_HEIGHT, 26)
+  set_control_par_str(get_ui_id($lead20), $CONTROL_PAR_TEXT, "			Legato")
+  set_control_par(get_ui_id($lead20), $CONTROL_PAR_TEXT_ALIGNMENT, 0)
+  set_control_par(get_ui_id($lead20), $CONTROL_PAR_FONT_TYPE, 13)
+  set_control_par(get_ui_id($lead21), $CONTROL_PAR_POS_X, 310)
+  set_control_par(get_ui_id($lead21), $CONTROL_PAR_POS_Y, 330)
+  set_control_par(get_ui_id($lead21), $CONTROL_PAR_WIDTH, 140)
+  set_control_par(get_ui_id($lead21), $CONTROL_PAR_HEIGHT, 26)
+  set_control_par_str(get_ui_id($lead21), $CONTROL_PAR_TEXT, "			Legato")
+  set_control_par(get_ui_id($lead21), $CONTROL_PAR_TEXT_ALIGNMENT, 0)
+  set_control_par(get_ui_id($lead30), $CONTROL_PAR_POS_X, 460)
+  set_control_par(get_ui_id($lead30), $CONTROL_PAR_POS_Y, 290)
+  set_control_par(get_ui_id($lead30), $CONTROL_PAR_WIDTH, 140)
+  set_control_par(get_ui_id($lead30), $CONTROL_PAR_HEIGHT, 26)
+  set_control_par_str(get_ui_id($lead30), $CONTROL_PAR_TEXT, "   Legato")
+  set_control_par(get_ui_id($lead30), $CONTROL_PAR_TEXT_ALIGNMENT, 0)
+  set_control_par(get_ui_id($lead30), $CONTROL_PAR_FONT_TYPE, 13)
+  set_control_par(get_ui_id($lead31), $CONTROL_PAR_POS_X, 460)
+  set_control_par(get_ui_id($lead31), $CONTROL_PAR_POS_Y, 330)
+  set_control_par(get_ui_id($lead31), $CONTROL_PAR_WIDTH, 140)
+  set_control_par(get_ui_id($lead31), $CONTROL_PAR_HEIGHT, 26)
+  set_control_par_str(get_ui_id($lead31), $CONTROL_PAR_TEXT, "   Legato")
+  set_control_par(get_ui_id($lead31), $CONTROL_PAR_TEXT_ALIGNMENT, 0)
+  set_control_par(get_ui_id($lead40), $CONTROL_PAR_POS_X, 610)
+  set_control_par(get_ui_id($lead40), $CONTROL_PAR_POS_Y, 290)
+  set_control_par(get_ui_id($lead40), $CONTROL_PAR_WIDTH, 140)
+  set_control_par(get_ui_id($lead40), $CONTROL_PAR_HEIGHT, 26)
+  set_control_par_str(get_ui_id($lead40), $CONTROL_PAR_TEXT, "			   Legato")
+  set_control_par(get_ui_id($lead40), $CONTROL_PAR_TEXT_ALIGNMENT, 0)
+  set_control_par(get_ui_id($lead40), $CONTROL_PAR_FONT_TYPE, 13)
+  set_control_par(get_ui_id($lead41), $CONTROL_PAR_POS_X, 610)
+  set_control_par(get_ui_id($lead41), $CONTROL_PAR_POS_Y, 330)
+  set_control_par(get_ui_id($lead41), $CONTROL_PAR_WIDTH, 140)
+  set_control_par(get_ui_id($lead41), $CONTROL_PAR_HEIGHT, 26)
+  set_control_par_str(get_ui_id($lead41), $CONTROL_PAR_TEXT, "			   Legato")
+  set_control_par(get_ui_id($lead41), $CONTROL_PAR_TEXT_ALIGNMENT, 0)
+  pgs_set_key_val(KLOG, 0, $n)
+end on
+
+function log_line
+  if ($n < 1023)
+    inc($n)
+  end if
+  pgs_set_key_val(KLOG, 0, $n)
+end function
+
+on ui_controls
+  !log[$n] := "ucs," & $NI_UI_ID
+  call log_line
+end on
+
+on persistence_changed
+  !log[$n] := "pc"
+  call log_line
+end on
+
+on pgs_changed
+  save_array_str(!log, "Z:/data/dev/workspace/scratch/ksp-ui-trace/tables.nka")
+end on

@@ -363,9 +363,15 @@ pub(super) fn widget(
         },
         Into::into,
     );
-    // Kontakt's label tabs advance without drawing a missing-glyph box.
+    // Kontakt's label tabs advance without drawing a missing-glyph box: one
+    // space in the 9 px pixel font's family, about two in the others (the
+    // reference 8.13, tools/ksp-ui tables page: 3 px in font 0, 5 px in 13).
     if kind == ControlKind::Label && w.text.contains('\t') {
-        w.text = w.text.replace('\t', "  ");
+        let pixel = matches!(
+            p.int("$CONTROL_PAR_FONT_TYPE"),
+            None | Some(0 | 2 | 3 | 4 | 6 | 8 | 9 | 10 | 11 | 15 | 26)
+        );
+        w.text = w.text.replace('\t', if pixel { " " } else { "  " });
     }
     // A text edit shows its variable once the script or the user wrote it.
     if let Cells::Text { base, .. } = cells
