@@ -7,7 +7,8 @@ The decompile dir is the per-64-KiB Ghidra export (`<base>.c`, functions headed
 `// ==== <addr> <name> size=<n>`). Prints one `ProgramSrc` entry per address, in the
 form gen_native_schemas.py writes, from reader_lower.py's lowering. A function that
 does not lower cleanly (parse error, or callees the IR would need) is reported and
-not printed: it stays out of the table.
+not printed: it stays out of the table. Callees programs.rs already holds are used
+from there and not printed again.
 """
 import re
 import sys
@@ -32,9 +33,16 @@ def extract(root, addr):
     sys.exit(f"no function at {addr}")
 
 
+GENERATED = Path(__file__).parents[2] / "vendor/ni-file/src/kontakt/native_schema/programs.rs"
+
+
 def main():
+    have = set(re.findall(r'name: "(FUN_[0-9a-f]+)"', GENERATED.read_text()))
     root, addrs = sys.argv[1], [a.removeprefix("0x").lower() for a in sys.argv[2:]]
     text = "".join(extract(root, a) for a in addrs)
+    # Callees programs.rs holds must be present for the lowering to call them by name.
+    known = {n for n in re.findall(r"\bFUN_([0-9a-f]+)\(", text) if f"FUN_{n}" in have} - set(addrs)
+    text += "".join(extract(root, n) for n in sorted(known))
     funcs = {}
     for name, addr, params, body, decls in parse_functions(text):
         if body[0] == "error":
@@ -45,12 +53,18 @@ def main():
     for a in addrs:
         n = f"FUN_{a}"
         p = progs.get(n)
+        if n in have:
+            print(f"{n}: already in programs.rs", file=sys.stderr)
+            continue
         if p is None:
             print(f"left out {n}: not lowered", file=sys.stderr)
             continue
         called = {m.group(1) for op in p["ops"] if (m := re.match(r"\(call (\w+) ", op))}
-        if missing := called - set(progs):
+        if missing := called - set(progs) - have:
             print(f"left out {n}: calls unlowered {sorted(missing)}", file=sys.stderr)
+            continue
+        if unread := [op for op in p["ops"] if op.startswith("(callx unread-helper")]:
+            print(f"left out {n}: {unread}", file=sys.stderr)
             continue
         params = ", ".join(f'"{x}"' for x in p["params"])
         body = "\n".join(p["ops"])

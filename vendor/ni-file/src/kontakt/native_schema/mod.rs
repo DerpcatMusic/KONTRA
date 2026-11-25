@@ -19,6 +19,19 @@ pub use vm::{
 mod tests {
     use super::*;
 
+    /// curated.rs BInsertBus (FUN_140d0d300): a name, two floats, then a u32 from 0x11
+    /// and two bytes from 0x12.
+    #[test]
+    fn curated_binsertbus_reads_by_version() {
+        let name = 0u32.to_le_bytes();
+        for (version, tail) in [(0x10u16, 8), (0x11, 12), (0x12, 14)] {
+            let bytes = [&name[..], &vec![0; tail]].concat();
+            assert_eq!(decode(0x45, version, &bytes).unwrap().consumed, bytes.len());
+            assert!(decode(0x45, version, &bytes[..bytes.len() - 1]).is_err());
+        }
+        assert!(!accepts(0x45, 0x13));
+    }
+
     /// curated.rs BParEnv (FUN_140d0d420): one u32 envelope type, 0, 1 or 2, at 0x90 only.
     #[test]
     fn curated_bparenv_reads_one_envelope_type() {

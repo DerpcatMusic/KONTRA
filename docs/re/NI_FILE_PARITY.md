@@ -212,3 +212,22 @@ another analysis does not reproduce it).
 
 Next: BInsertBus 0x45, then the unframed lists (ZoneList, FNTableImpl,
 GroupList, SlotList).
+
+## Batch 4: BInsertBus
+
+BInsertBus (0x45) had no catalog reader. Its constructor [ref]
+installs vtable [ref] at +0x10 (id 0x45, current version 0x12). The
+public reader (slot 10, [ref]) accepts versions 1, 0x10, 0x11 and 0x12:
+a name, two f32, then a u32 from 0x11 and two bytes from 0x12.
+The private reader (slot 11, [ref]) checks the version and reads
+nothing. Second entry of `native_schema/curated.rs`.
+
+| | Full | Partial | Unaccounted bytes |
+| --- | ---: | ---: | ---: |
+| Before (9fd6745cc) | 18432295 | 34257 | 9246529885 |
+| After | 18458541 | 8011 | 9243620936 |
+
+- 0x45 BInsertBus v0x11 / v0x12: 25344 objects, 685672 → 0 unaccounted, all full.
+- 0x4F BSnapshot v1 / v3: 2223277 → 0; all 1139 snapshots full.
+
+Next: the unframed lists (ZoneList, FNTableImpl, GroupList, SlotList).
