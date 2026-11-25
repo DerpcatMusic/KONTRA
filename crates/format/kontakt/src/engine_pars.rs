@@ -196,6 +196,8 @@ const OWNERS: &[(&str, &str)] = &[
     ("$ENGINE_PAR_CW_", "$EFFECT_TYPE_CRYWAH"),
     ("$ENGINE_PAR_TW_", "$EFFECT_TYPE_TWANG"),
     ("$ENGINE_PAR_CB_", "$EFFECT_TYPE_CABINET"),
+    ("$ENGINE_PAR_RG_", "$EFFECT_TYPE_REVGRAIN"),
+    ("$ENGINE_PAR_TS_", "$EFFECT_TYPE_TRANS_STRETCH"),
 ];
 
 /// The names with an engine parameter of their own.

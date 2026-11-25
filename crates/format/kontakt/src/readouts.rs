@@ -24,7 +24,7 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
         FlairPitchNote, FlairRateHz, FreakBandPassHz, FreakCarrierHz, FreakFrequencyHz,
         PhasisCenterHz, PhasisNotches, PhasisRateHz, PsycheDetuneCents, PsychePitchSemitones,
         RaumDecayMs, RaumRateHz, RotatorFast, RotatorMixDb, SolidEqHfHz, SolidEqHmfHz, SolidEqLfHz,
-        SolidEqLmfHz, SolidEqQ, TwinDelayTimeMs,
+        SolidEqLmfHz, SolidEqQ, StereoTuneDriftPercent, TransStretchKey, TwinDelayTimeMs,
     };
     let lin = |lo, hi| ir::Law::Linear { lo, hi };
     let exp = |lo, hi| ir::Law::Exp { lo, hi };
@@ -75,6 +75,19 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
         "$ENGINE_PAR_FORMANT_TALK",
         "$ENGINE_PAR_FORMANT_SHARP",
         "$ENGINE_PAR_FORMANT_SIZE",
+        "$ENGINE_PAR_BEATMASHER_MIX",
+        "$ENGINE_PAR_BEATMASHER_ROTATE",
+        "$ENGINE_PAR_BEATSLICER_BUZZ",
+        "$ENGINE_PAR_BEATSLICER_MIX",
+        "$ENGINE_PAR_RG_GRAIN",
+        "$ENGINE_PAR_RG_MIX",
+        "$ENGINE_PAR_RG_PITCH",
+        "$ENGINE_PAR_RG_SPEED",
+        "$ENGINE_PAR_TS_AMOUNT",
+        "$ENGINE_PAR_TS_MIX",
+        "$ENGINE_PAR_TS_SIZE",
+        "$ENGINE_PAR_STEREOTUNE_SPREAD",
+        "$ENGINE_PAR_STEREOTUNE_MIX",
     ];
     let none = [None; 2];
     let mut rows: Vec<_> = percent
@@ -85,6 +98,32 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
         // MIDI note 0 (8.176 Hz) to note 145, a semitone per 1/145.
         ("$ENGINE_PAR_CUTOFF", exp(8.176, 35_485.0), Padded, none),
         ("$ENGINE_PAR_SHAPE", lin(-100.0, 100.0), Decimal, none),
+        // Beat Masher's gate `(x − 0.5)·200`; Stereo Tune's split
+        // `(9x + 1)·100` and drift; Transpose Stretch's key, `%2.2f`.
+        (
+            "$ENGINE_PAR_BEATMASHER_GATE",
+            lin(-100.0, 100.0),
+            Decimal,
+            none,
+        ),
+        (
+            "$ENGINE_PAR_STEREOTUNE_SPLIT",
+            lin(100.0, 1_000.0),
+            Decimal,
+            none,
+        ),
+        (
+            "$ENGINE_PAR_STEREOTUNE_DRIFT",
+            formula(StereoTuneDriftPercent),
+            Decimal,
+            none,
+        ),
+        (
+            "$ENGINE_PAR_TS_KEY",
+            formula(TransStretchKey),
+            Hundredths,
+            none,
+        ),
         // Filter: Gain `60·x − 30`, Shift `80·x` and Type
         // `x`, all `%3.1f`; EQ bandwidth `0.33333334 + 2.6666667·x`
         // through the `k` formatter [ref].
@@ -383,6 +422,24 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
         "$ENGINE_PAR_TR_SMOOTH",
         "$ENGINE_PAR_VC_COLOR",
         "$ENGINE_PAR_VC_DEPTH",
+        "$ENGINE_PAR_WOWFLUTTER_GATE",
+        "$ENGINE_PAR_BEATMASHER_LENGTH",
+        "$ENGINE_PAR_BEATMASHER_MASH",
+        "$ENGINE_PAR_BEATMASHER_REVERSE",
+        "$ENGINE_PAR_BEATMASHER_WRAP",
+        "$ENGINE_PAR_BEATSLICER_GATE",
+        "$ENGINE_PAR_BEATSLICER_PATTERN",
+        "$ENGINE_PAR_BEATSLICER_SLICE",
+        "$ENGINE_PAR_BEATSLICER_STYLE",
+        "$ENGINE_PAR_BEATSLICER_TWOBARS",
+        "$ENGINE_PAR_GATER_MUTE_INPUT",
+        "$ENGINE_PAR_GATER_STUTTER",
+        "$ENGINE_PAR_RG_FORWARD",
+        "$ENGINE_PAR_RG_INVERT_GRAINS",
+        "$ENGINE_PAR_RG_REVERSE",
+        "$ENGINE_PAR_TS_GRAIN",
+        "$ENGINE_PAR_TS_STRETCH",
+        "$ENGINE_PAR_TS_TWOBARS",
     ];
     rows.extend(blank.map(|n| (n, lin(0.0, 1.0), Blank, none)));
     let bands = [

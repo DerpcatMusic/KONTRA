@@ -160,6 +160,16 @@ None — all verification tiers execute on the current host.
   - The text is empty for the switches and menus (`INTMOD_BYPASS`,
     `SEND_EFFECT_BYPASS`/`TYPE`, `WT_INHARMONIC_MODE`, `WT_MOD_TYPE`), and for a
     one-band EQ's `GAIN` and `BANDWIDTH` (`FILTER/EQ1BAND`).
+- Missing names, batch 1 (2026-11-25, `EXT`): Beat Masher, Beat Slicer, Reverse Grain
+  (`RG_`, now owned by `$EFFECT_TYPE_REVGRAIN`), Transpose Stretch (`TS_`, now owned by
+  `$EFFECT_TYPE_TRANS_STRETCH`) and Stereo Tune. The laws, from their formatters:
+  - Stereo Tune: split `(9x + 1)·100` and drift `0.99·100·x + 1`
+.
+  - Transpose Stretch key: `120x − 60` below 0.5 and `24·(x − 0.5)` from it, `%2.2f`
+.
+  - Beat Masher gate: `(x − 0.5)·200`.
+  - The rest are percents or empty switches and menus. These modules have no
+    processor, so a script's set is held and shown only.
 - V5 and SF100 had no owner family, so their controls were not held and read
   nothing. They are now held by `$EFFECT_TYPE_VAN51` / `$EFFECT_TYPE_SUPERFAST100`.
 - The manual and `crates/script/ksp/data/vendor_constants.txt` spell
