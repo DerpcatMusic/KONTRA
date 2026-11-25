@@ -77,6 +77,29 @@ pub struct SavedPart {
     pub modified: bool,
 }
 
+impl SavedPart {
+    /// Part `part` playing `path`, as `mix` sets it, nothing else changed.
+    #[must_use]
+    pub fn new(part: usize, path: PathBuf, mix: Mix) -> Self {
+        Self {
+            part,
+            path,
+            channel: mix.channel,
+            output: mix.output,
+            gain: mix.gain,
+            pan: mix.pan,
+            solo: false,
+            mute: false,
+            scripts: Vec::new(),
+            delays: None,
+            slot_types: Vec::new(),
+            slot_responses: Vec::new(),
+            preset: None,
+            modified: false,
+        }
+    }
+}
+
 pub use kontra_library::presets::{SavedRack, SlotResponse, SlotType};
 
 /// Effect types and responses scripts loaded after `on init`, by rack.
@@ -295,6 +318,9 @@ impl Rack {
                     modified: p.modified,
                 })
             })
+            // A part still loading saves as what it loads.
+            .filter(|p: &SavedPart| !self.running().any(|r| r.part == p.part))
+            .chain(self.running().cloned())
             .collect();
         let mut saved = Saved {
             multi: self.multi().map(std::path::Path::to_owned),
@@ -348,6 +374,8 @@ impl Rack {
     /// creation, then again on activation) loads nothing twice. A part that
     /// fails to load is left empty; its error is returned.
     pub fn restore(&mut self, saved: &Saved) -> Vec<(usize, String)> {
+        // Loads still running are of the rack this replaces.
+        self.supersede(None);
         let saved = &self.resolved(saved);
         self.awaiting.clear();
         let now = self.save().parts;

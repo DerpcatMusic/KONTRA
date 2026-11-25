@@ -475,3 +475,22 @@ fn stores_that_share_pages_in_the_process_pin_one_copy_of_an_instrument() {
     assert_eq!(b.client().stats().bytes_read, 0);
     drop((first, second));
 }
+
+/// A sample a loader handle loads streams through the owner's I/O thread,
+/// and dropping the handle leaves that thread serving.
+#[test]
+fn a_loader_handle_loads_into_the_store_and_its_drop_keeps_the_io_thread() {
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let client = store.client();
+    let (key, source) = ramp(8 * PAGE_FRAMES);
+    let mut loader = store.loader();
+    let sample = loader.load(&key, source, 8 * PAGE_FRAMES, &[]).unwrap();
+    drop(loader);
+    let first = 5 * PAGE_FRAMES + 100;
+    sample.prefetch(&client, first, 300, 0, 1.0, false);
+    let mut out = vec![[0.0; 2]; 300];
+    assert!(eventually(
+        || sample.read(&client, first, &mut out).missing == 0
+    ));
+    assert_eq!(out[0][0], value(first));
+}

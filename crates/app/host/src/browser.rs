@@ -294,10 +294,10 @@ impl Browser {
                 if scanning.cancel.load(Ordering::Relaxed) {
                     return;
                 }
-                if let Some(saved) = index_path.as_deref().map(index::load) {
-                    if !saved.is_empty() {
-                        previous = saved;
-                    }
+                if let Some(saved) = index_path.as_deref().map(index::load)
+                    && !saved.is_empty()
+                {
+                    previous = saved;
                 }
                 let (mut auto, mut found_now) = (None, None);
                 let mut all = known;
