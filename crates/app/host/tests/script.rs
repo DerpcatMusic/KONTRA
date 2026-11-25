@@ -815,6 +815,36 @@ fn a_script_finds_a_modulator_that_carries_no_route() {
     assert_eq!(e.last_message(), "33 33 0 -100 -100");
 }
 
+/// Kontakt 8.13.1 (probes/find_mod_index.lua, ni_not_found.lua): `get_target_idx`
+/// is the target's slot among its modulator's targets, `$NI_NOT_FOUND` for a
+/// miss: ANALOG STRINGS' LFO_P1 (slot 3) answers 3 for LFO_RES_F1_P1, its
+/// fourth target (the other three names stand in), and -100 for "nope".
+#[test]
+fn get_target_idx_is_the_targets_slot_of_its_modulator() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+    plan.groups[0].routes = vec![ir::Routes {
+        slot: 3,
+        name: "LFO_P1".into(),
+        names: ["LFO_PITCH", "LFO_VOL", "LFO_PAN", "LFO_RES_F1_P1"]
+            .map(String::from)
+            .to_vec(),
+        depths: vec![0.0; 4],
+    }];
+    let script = kontra_ksp::compile(
+        "on init
+            message(get_target_idx(0, get_mod_idx(0, \"LFO_P1\"), \"LFO_RES_F1_P1\") ...
+                & \" \" & get_target_idx(0, 3, \"nope\") & \" \" & get_target_idx(0, 9, \"LFO_VOL\"))
+        end on",
+        &[],
+    )
+    .unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "3 -100 -100");
+}
+
 #[test]
 fn route_intensities_follow_kontakts_laws() {
     use kontra_engine::ir;
@@ -5622,8 +5652,18 @@ fn the_midi_object_inserts_into_its_buffer() {
 /// A zone whose facts carry a one-second 440 Hz mono WAV, for the zone and
 /// detection commands.
 fn engine_with_tone_zone(store: &mut Store, source: &str) -> Engine {
+    let tone: Vec<i16> = (0..44_100)
+        .map(|i| (f64::from(i) * 440.0 * std::f64::consts::TAU / 44_100.0).sin() * 16_000.0)
+        .map(|v| v as i16)
+        .collect();
+    engine_with_sample_zone(store, source, "tone440", &tone)
+}
+
+/// An engine whose one zone (all keys, root 69) plays `pcm`, 16-bit mono at
+/// 44.1 kHz, written to `<name>.wav`.
+fn engine_with_sample_zone(store: &mut Store, source: &str, name: &str, pcm: &[i16]) -> Engine {
     use kontra_engine::{SavedZoneDesc, ir};
-    let (rate, frames) = (44_100u32, 44_100u32);
+    let (rate, frames) = (44_100u32, pcm.len() as u32);
     let mut wav = b"RIFF".to_vec();
     wav.extend((36 + frames * 2).to_le_bytes());
     wav.extend(b"WAVEfmt ");
@@ -5634,14 +5674,13 @@ fn engine_with_tone_zone(store: &mut Store, source: &str) -> Engine {
     wav.extend([2, 0, 16, 0]);
     wav.extend(b"data");
     wav.extend((frames * 2).to_le_bytes());
-    for i in 0..frames {
-        let v = (f64::from(i) * 440.0 * std::f64::consts::TAU / f64::from(rate)).sin() * 16_000.0;
-        wav.extend((v as i16).to_le_bytes());
+    for v in pcm {
+        wav.extend(v.to_le_bytes());
     }
-    let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("tone440.wav");
+    let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}.wav"));
     std::fs::write(&file, wav).unwrap();
     let sample = ir::Sample {
-        name: "tone440".into(),
+        name: name.into(),
         file,
         offset: 0,
         len: None,
@@ -5732,8 +5771,7 @@ fn detections_measure_a_zones_sample_in_init() {
 /// Measured (Kontakt 8.13, probes/ksp/detect_tone.kspp, the same 1 s 440 Hz
 /// tone): in `on init` RMS -9.237 dB, BS.1770 loudness -9.961 LUFS (a mono
 /// sample counts once), peak -6.227 dB, pitch 69; a zone with no sample
-/// leaves the variable as it was. Not matched yet: Kontakt reads key 14
-/// and tempo 120 of this tone (KONTRA: 9, and too short to detect).
+/// leaves the variable as it was; key 14 and tempo 120.
 #[test]
 fn detections_read_what_kontakt_reads_of_a_tone() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
@@ -5768,6 +5806,62 @@ fn detections_read_what_kontakt_reads_of_a_tone() {
     // ponytail: within 0.1 LU; Kontakt's K-weighting at 44.1 kHz is one point off ours (-9.916).
     let loudness: i32 = loudness.parse().unwrap();
     assert!((loudness + 9961).abs() < 100, "{loudness}");
+}
+
+/// Kontakt 8.13.1 (probes/ksp/detect_laws.kspp, signals of detect_signals.py):
+/// detect_key reads the key's index, -1 under the level gate; detect_tempo
+/// follows the sample's length (2.5 s: 96; 0.75 s: 159.995), silent or not.
+#[test]
+fn detections_follow_kontakts_laws() {
+    let chord = |freqs: &[f64], seconds: f64, amp: f64| -> Vec<i16> {
+        (0..(seconds * 44_100.0) as usize)
+            .map(|i| {
+                let t = i as f64 / 44_100.0;
+                let x: f64 = freqs
+                    .iter()
+                    .map(|f| (std::f64::consts::TAU * f * t).sin())
+                    .sum();
+                (x * amp / freqs.len() as f64 * 32_767.0)
+                    .round()
+                    .clamp(-32_767.0, 32_767.0) as i16
+            })
+            .collect()
+    };
+    let signals = [
+        (
+            "c_major",
+            chord(&[261.63, 329.63, 392.0], 4.0, 0.8),
+            "0 120000",
+        ),
+        (
+            "a_minor",
+            chord(&[220.0, 261.63, 329.63], 4.0, 0.8),
+            "21 120000",
+        ),
+        (
+            "e_major",
+            chord(&[329.63, 415.30, 493.88], 2.5, 0.8),
+            "4 96000",
+        ),
+        ("quiet", chord(&[440.0], 1.0, 0.0005), "-1 120000"),
+        ("tone_750ms", chord(&[440.0], 0.75, 0.5), "14 159995"),
+    ];
+    for (name, pcm, want) in signals {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let e = engine_with_sample_zone(
+            &mut store,
+            "on init
+                declare ~v
+                declare $k
+                detect_key(0, $k)
+                detect_tempo(0, ~v)
+                message($k & \" \" & real_to_int(~v * 1000.0))
+            end on",
+            name,
+            &pcm,
+        );
+        assert_eq!(e.last_message(), want, "{name}");
+    }
 }
 
 /// The path of the tone `engine_with_tone_zone` writes, for a script to load.
