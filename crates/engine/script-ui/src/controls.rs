@@ -53,7 +53,7 @@ pub struct Controls {
     pub laws: Vec<ParLaw>,
 }
 
-/// What parameter `par` of a control of type `kind` (a `$NI_CONTROL_TYPE_*`;
+/// What parameter `par` of a control of type `kind` (a control-type constant;
 /// 0 for every type) reads before its script sets it, and how a write lands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParLaw {
@@ -296,7 +296,7 @@ impl Store {
                     _ => value,
                 };
                 // A grid cell moves the control there and below 1 is cell 1; a
-                // pixel move leaves the cell (Kontakt 8.13 oracle,
+                // pixel move leaves the cell (reference 8.13 oracle,
                 // control_pars_2: cell 3 reads 2 at 184 px, 0 and 1 read 0 at
                 // 0). Cells are kept from 1, as `move_control` sets them.
                 let look = &c.look;
@@ -415,7 +415,7 @@ impl Store {
             Action::SetUiWfProperty if a == look.wf_prop_flags => &[(look.wf_flags, int(3))],
             // The position reads back on Kontakt's grid without the first
             // cell's corner, -1 when (0, 0) hides it (Kontakt 8 oracle,
-            // `tools/ksp-ui` geometry page: (3, 2) reads 184, 21). Stored as
+            // The UI geometry tool page: (3, 2) reads 184, 21). Stored as
             // is: a cell set through `set_control_par` follows another law.
             // ponytail: one of x, y at 0 reads -1 too; only (0, 0) probed.
             Action::MoveControl => {

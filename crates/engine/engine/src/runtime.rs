@@ -46,7 +46,7 @@ impl Engine {
                 self.timer_at = self.now;
                 HostValue::Nothing
             }
-            // With no edit view every group reads selected (Kontakt 8.13 in `on
+            // With no edit view every group reads selected (the reference 8.13 in `on
             // init`, conformance unit init_groups_selected).
             Action::GroupsSelected => {
                 flag(usize::try_from(int(0)).is_ok_and(|g| g < self.plan.groups.len()))

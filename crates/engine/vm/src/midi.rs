@@ -18,7 +18,7 @@ pub const PITCH_BEND: u8 = 0xE0;
 
 /// `$NI_VL_TMPRO_STANDARD` and `$NI_VL_TMPRO_HQ`, the voice types of
 /// `get_voice_limit` / `set_voice_limit`, and the limits Time Machine Pro
-/// starts with: 8 and 4 in Kontakt 8.13.1 (conformance `manual_voice_limit_default`).
+/// starts with: 8 and 4 in the reference 8.13.1 (conformance `manual_voice_limit_default`).
 pub const VL_STANDARD: i32 = 0;
 pub const VL_HQ: i32 = 1;
 pub const VL_DEFAULT: [i32; 2] = [8, 4];

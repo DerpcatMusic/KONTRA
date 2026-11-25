@@ -62,7 +62,7 @@ fn invalid(what: u8) -> f64 {
     match kind_of(what) {
         Kind::Key => f64::from(detect::KEY_INVALID),
         Kind::Class => -1.0,
-        // Kontakt 8.13 (conformance units real_const_detect_*).
+        // The reference 8.13 (conformance units real_const_detect_*).
         Kind::Tempo => -1.0,
         Kind::Pitch | Kind::Loudness | Kind::Peak | Kind::Rms => 1_000_000.0,
     }
@@ -233,7 +233,7 @@ impl Engine {
                 if self.building {
                     // Under construction (off the audio thread): measured at
                     // once. A zone with no sample leaves the variable as it
-                    // was (Kontakt 8.13, probes/ksp/detect_tone.kspp).
+                    // was (the reference 8.13, detect_tone probe).
                     let value = sample.map(|s| detect_sample(&s, what));
                     if let (Some(c), Some(value)) = (call.cells.get_mut(cell as usize), value) {
                         *c = cell_value(what, value);
