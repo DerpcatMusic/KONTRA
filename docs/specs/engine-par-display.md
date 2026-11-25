@@ -66,14 +66,16 @@ oracle (`tools/kontakt-oracle/disp_sweep.py`), plus the KSP manual's parameter n
 | after #203 | 115 | 263 | 289 |
 | after the amp/delay/ring batch (main 2597cd0d20) | 196 | 263 | 208 |
 | after the menu, multiple and rate forms (main fa56d6b5b2) | 197 → 200 | 263 → 260 | 207 |
+| after the display-code laws and the module batch (main 63fcf6ef62, fresh `ksp_status`) | 364 | 140 | 163 |
 
 ## Verification Matrix
 
 | Check | Tier | Target / OS | Exact Command | Pass Criterion | Status / Observed Evidence |
 |---|---|---|---|---|---|
 | Spec proof gate | Doc | any | `python3 tools/check-spec-proof.py plugins/kontra/docs/specs/engine-par-display.md` | Exit 0 | PASS (2026-11-25, linux-x86_64) |
-| Oracle measurement | Validator/Runtime | linux-x86_64 (Wine, Kontakt 8.13.1) | `tools/kontakt-oracle/disp_sweep.py` | 77 names, 1156 rows; two runs agree at shared points. Batch 2: 98 names, 980 rows (Bass Pro, Dirt, Kolor, V5, SF100, Twin Delay, Ring Mod) | PASS (2026-11-25, linux-x86_64) |
+| Oracle measurement | Validator/Runtime | linux-x86_64 (Wine, Kontakt 8.13.1) | `tools/kontakt-oracle/disp_sweep.py` | 77 names, 1156 rows; two runs agree at shared points. Batch 2: 98 names, 980 rows (Bass Pro, Dirt, Kolor, V5, SF100, Twin Delay, Ring Mod). Batch 3: 150 names (Bite, Freak, Flair, Phasis, Bass Invader, Super GT, the pedals, Rotator, Transient Master, Vibrato Chorus), 201-point runs of 11 names and a 199-step Psyche detune run | PASS (2026-11-25, linux-x86_64) |
 | Display test | Compile/ABI | linux-x86_64 | `matari fast kontra -p kontra-host -- -E 'test(every_measured_engine_par_text)'` | Every non-pending row equal | PASS (2026-11-25, linux-x86_64) |
+| Display code replay | Validator/Runtime | linux-x86_64 | each formatter re-run in f32 numpy from its decompiled operations and constants (`BuildScratch/oracle-probe/simdisp.py`) against the table (local scratch; the display test is the committed proof) | 0 differences over 20 names, 3,600 points | PASS (2026-11-25, linux-x86_64) |
 | Scoped package tests | Compile/ABI | linux-x86_64 | `matari fast kontra -p kontra-law / kontra-plan / kontra-format-kontakt / kontra-host`, `-p kontra-engine -- -E 'binary(arch_guards)'` | Exit 0 | PASS (2026-11-25, linux-x86_64) |
 | Full PR verification gate | Validator/Runtime | linux-x86_64 | CI `verify` | green | PENDING |
 
@@ -83,32 +85,37 @@ None — all verification tiers execute on the current host.
 
 ## Non-goals and next steps
 
-- The pending names: Raum's decay and rate laws and Choral's rate law, which need
-  the module display code or a fitted closed form. The 201-point Raum sweep is in
-  the table. Also menu names (Replika quality and BBD type), Choral delay's "x"
-  prefix, Psyche Delay's stepped pitch and its detune rounding.
-- Settled by 201-point runs (2026-11-25): Replika quality and BBD type are
-  menus (entry `floor(4x)`), Choral delay is "x " and `0.1 + 5x`, and Ring Mod's
-  LFO rate is `exp(1/32, 32)` with two decimals under 1. A curve readout is
-  `e^(ln lo + x·(ln hi − ln lo))` in f64 on f32 logs: 1/32..32 Hz at 0.2 reads
-  0.13, which pure f32 rounds to 0.12.
-- Still pending, each needing the module's display code from the binary and not a
-  fit: Psyche Delay's pitch (25 steps, but the edges at 0.300 and 0.520 fit no
-  single rounding of one line), Twin Delay's time (`(1 − x)² + 1999x²` misses
-  109 of 201), Bass Pro's gain (`(e^(kx) − 1)/(e^k − 1)`, k ≈ 3.228, misses 1 of
-  201; the binary reads a table), and its master, mid and GEQ curves.
-- Batch 2's pending names (before the 201-point runs): Bass Pro's gain, master, mid, GEQ bands and GEQ
-  volume (curves: gain reads like 20·log10((e^(kx) − 1)/(e^k − 1)) with k
-  near 3.23, not pinned by one-decimal text), Twin Delay's times (near
-  2000·x², off at the low end) and Ring Mod's LFO rate (two decimals below 1,
-  one above: no form yet).
+- Read from the display code (2026-11-25). Each module parameter has a descriptor
+  in the reference (0x40 bytes from [ref], by internal id: default, name,
+  unit, formatter). The formatters these names call are encoded as
+  `kontra_law::FormulaId` in their f32 operation order:
+  - Bass Pro gain and master: Kontakt's exp table (`2^((i − 1200)/60)`,
+    interpolated) at `a·x + b`, less its value at 0, scaled to 1 at 1, as dB. A
+    level under 1e-5 prints `-inf`, and so does any readout law that returns −∞.
+  - Bass Pro mid, the GEQ bands and GEQ volume: cubics and a quadratic.
+  - Psyche Delay detune (`101x − 50`) and pitch (`25x − 12`): rounded half away
+    from zero below 0, truncated above, clamped. This is why the 0.005 grid fitted
+    two roundings and the off-grid run fitted neither.
+  - Raum decay and rate, Choral rate (`7.4x³ + 0.25`) and Twin Delay time
+    (`2002x² − 3x + 1`).
+  - Bite rate, Freak carrier and band-pass: the exp table at `a·x + b`. A pure exp
+    misses one display digit at about 5 of 201 points.
+  - Bite bits: `2 − trunc(−15x)`, clamped to 2..16.
+  - Flair rate: `440·2^(11.5x − 16.25)` through a quartic exp2.
+- Still pending:
+  - Freak frequency reads `5000·(2x − 1)³` at 201 points.
+  - Rotator mix reads `18·log2(x)` dB.
+  - Rotator speed shows "fast" only above 0.5.
+  - Phasis rate, center and notches, and Freak frequency use the shared
+    formatter [ref], which reads the module's own law; that is the next
+    read.
+  - Flair pitch ([ref], note names) reads C-2 at every value in a
+    fresh unit.
 - V5 and SF100 had no owner family, so their controls were not held and read
   nothing. They are now held by `$EFFECT_TYPE_VAN51` / `$EFFECT_TYPE_SUPERFAST100`.
 - The manual and `crates/script/ksp/data/vendor_constants.txt` spell
   `$ENGINE_PAR_SF100_OVEDRIVE`. Kontakt 8.13.1's binary has only `…_OVERDRIVE`
   (the only other manual name it lacks is `$ENGINE_PAR_HP_FREQ`). That is for the KSP
   language lane.
-- The other modules' parameters (Bite, Freak, Flair, Phasis, Bass Invader,
-  Super GT, the guitar pedals and others): the same sweep, one PR per batch.
-- DSP for the held-only controls (Jump, Replika held, Raum freeze/sparse) is not
-  part of this lane.
+- These laws drive text only. Whether a held module's DSP should use them is
+  for the module's own lane.
