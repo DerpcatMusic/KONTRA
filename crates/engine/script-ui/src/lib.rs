@@ -13,7 +13,7 @@
 mod controls;
 pub mod readout;
 
-pub use controls::Controls;
+pub use controls::{Controls, ParLaw, ParRead, ParWrite};
 
 use kontra_vm::{Action, HostCall, HostValue, Text};
 
@@ -118,6 +118,9 @@ pub struct LookPars {
     /// `move_control`'s grid cell.
     pub grid_x: i32,
     pub grid_y: i32,
+    /// The grid size, which a write sets back to one cell.
+    pub grid_width: i32,
+    pub grid_height: i32,
     pub steps_shown: i32,
     /// `attach_level_meter`'s channel (0 left, 1 right), group and generic
     /// (an instrument bus, or what else it reads).

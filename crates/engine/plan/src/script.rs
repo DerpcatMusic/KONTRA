@@ -197,7 +197,7 @@ pub struct KnobModPlan {
     pub scale: bool,
 }
 
-pub use kontra_script_ui::{Controls, LookPars};
+pub use kontra_script_ui::{Controls, LookPars, ParLaw, ParRead, ParWrite};
 
 /// Entry points; a missing callback lets events through unchanged.
 #[derive(Clone, Debug, Default)]

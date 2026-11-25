@@ -12,7 +12,7 @@ the open rows rank by how many libraries, then scripts, call them.
 A manual item is a command heading (`name()`), a callback (`on name`) or a
 `$`/`%` name that opens a line or a bullet. Status per item:
 
-  tested   KONTRA does it and a probe/case/test names it
+  tested   KONTRA does it and a probe/case/test names it (a .kspp probe once measured)
   done     KONTRA does it (the VM lowers it or the engine answers a probe)
   partial  the name compiles but nothing acts on it (an opaque constant no UI
            code names, an action the engine does not answer, a parameter KONTRA
@@ -116,6 +116,9 @@ text = subprocess.run(
      "crates/script/ksp/tests", "crates/app/host/tests", "tools/ksp-conformance", "tools/ui-probe", "tools/ksp-ui"],
     cwd=ROOT, capture_output=True, text=True).stdout.split()
 test_text = "\n".join((ROOT / f).read_text(errors="ignore") for f in text if (ROOT / f).is_file()).lower()
+# An oracle probe counts once Kontakt's answers are measured beside it: oracle_probes.rs replays them.
+test_text += "\n" + "\n".join(p.read_text().lower() for p in sorted((ROOT / "tools/kontakt-oracle/probes/ksp").glob("*.kspp"))
+                       if p.with_suffix(".measured").is_file())
 # Engine parameters whose get_engine_par_disp text a kontra-host test checks against Kontakt's,
 # row by row (docs/re/kontakt-bindings/engine-par-disp.tsv), less the ones it lists as pending.
 disp = (ROOT / "docs/re/kontakt-bindings/engine-par-disp.tsv").read_text().splitlines()

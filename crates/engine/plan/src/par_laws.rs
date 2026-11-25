@@ -56,11 +56,13 @@ pub fn text(pars: &EnginePars, id: i32, raw: i32, out: &mut Text) -> bool {
         return true;
     }
     let x = x as f32 / 1e6;
-    // A readout's line is shown as `lo + (hi − lo)·x` in f32, which rounds
-    // apart from the law's own form at ties (measured: 1..100 at 0.05 reads
-    // 6.0, 1..10 reads 1.5).
+    // A readout's line is shown as `lo + (hi − lo)·x` and its curve as
+    // `e^(ln lo + x·(ln hi − ln lo))`, both in f32, which round apart from the
+    // law's own forms at ties (measured: 1..100 at 0.05 reads 6.0, 1..10
+    // reads 1.5, 31.25..4000 Hz at 0 reads " 31.3", 31.250002).
     let v = f64::from(match r.law {
         ir::Law::Linear { lo, hi } => lo + (hi - lo) * x,
+        ir::Law::Exp { lo, hi } => (lo.ln() + x * (hi.ln() - lo.ln())).exp(),
         ref law => law.eval(x),
     });
     let readout = match r.form {

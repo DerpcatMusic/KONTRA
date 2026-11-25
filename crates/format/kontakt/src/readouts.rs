@@ -346,8 +346,7 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
             "$ENGINE_PAR_RINGMOD_FREQUENCY",
             exp(31.25, 4000.0),
             Padded,
-            // 31.25 Hz prints " 31.3" (a tie rounded up, as measured).
-            [Some(" 31.3"), None],
+            none,
         ),
     ]);
     // The Convolution's knobs read what they set: the measured knob laws

@@ -1,0 +1,33 @@
+# Kontakt 8.13, after control_pars_2 (a knob given 200 px then GRID_WIDTH 3 read 87): whether a pixel
+# size takes on a knob and a label, and what a grid size gives each with and without a pixel size first.
+# Run: ksp_probe.py "ANALOG STRINGS.nki" this-file > control_pars_4.measured
+# KONTRA replays it: crates/app/host/tests/oracle_probes.rs.
+S declare ui_knob $ka(0, 100, 1)
+S declare ui_knob $kb(0, 100, 1)
+S declare ui_label $la(1, 1)
+S declare ui_label $lb(1, 1)
+S declare ui_button $bt
+S set_control_par(get_ui_id($ka), $CONTROL_PAR_WIDTH, 200)
+S set_control_par(get_ui_id($ka), $CONTROL_PAR_HEIGHT, 42)
+R knob_w200 get_control_par(get_ui_id($ka), $CONTROL_PAR_WIDTH)
+R knob_h42 get_control_par(get_ui_id($ka), $CONTROL_PAR_HEIGHT)
+R knob_w200_grid get_control_par(get_ui_id($ka), $CONTROL_PAR_GRID_WIDTH)
+S set_control_par(get_ui_id($kb), $CONTROL_PAR_GRID_WIDTH, 3)
+S set_control_par(get_ui_id($kb), $CONTROL_PAR_GRID_HEIGHT, 2)
+R knob_gw3 get_control_par(get_ui_id($kb), $CONTROL_PAR_GRID_WIDTH)
+R knob_gw3_width get_control_par(get_ui_id($kb), $CONTROL_PAR_WIDTH)
+R knob_gh2_height get_control_par(get_ui_id($kb), $CONTROL_PAR_HEIGHT)
+S set_control_par(get_ui_id($la), $CONTROL_PAR_GRID_WIDTH, 3)
+S set_control_par(get_ui_id($la), $CONTROL_PAR_GRID_HEIGHT, 2)
+R label_gw3 get_control_par(get_ui_id($la), $CONTROL_PAR_GRID_WIDTH)
+R label_gh2 get_control_par(get_ui_id($la), $CONTROL_PAR_GRID_HEIGHT)
+R label_gw3_width get_control_par(get_ui_id($la), $CONTROL_PAR_WIDTH)
+R label_gh2_height get_control_par(get_ui_id($la), $CONTROL_PAR_HEIGHT)
+S set_control_par(get_ui_id($lb), $CONTROL_PAR_WIDTH, 200)
+R label_w200 get_control_par(get_ui_id($lb), $CONTROL_PAR_WIDTH)
+R label_w200_grid get_control_par(get_ui_id($lb), $CONTROL_PAR_GRID_WIDTH)
+S set_control_par(get_ui_id($lb), $CONTROL_PAR_GRID_WIDTH, 2)
+R label_w200_gw2_width get_control_par(get_ui_id($lb), $CONTROL_PAR_WIDTH)
+S set_control_par(get_ui_id($bt), $CONTROL_PAR_GRID_WIDTH, 2)
+R button_gw2_width get_control_par(get_ui_id($bt), $CONTROL_PAR_WIDTH)
+R button_gw2 get_control_par(get_ui_id($bt), $CONTROL_PAR_GRID_WIDTH)
