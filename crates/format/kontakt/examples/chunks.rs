@@ -63,6 +63,8 @@ struct Census {
     files: BTreeMap<String, Files>,
     why: BTreeMap<String, usize>,
     objects: BTreeMap<Key, Tally>,
+    /// Opaque nested bytes: (parent SerType, nested SerType, cause) -> (parents, bytes).
+    nested: BTreeMap<(u16, Option<u16>, &'static str), (usize, usize)>,
     /// Whether chunks of the current file may be dumped: never an encrypted one's.
     keep: bool,
 }
@@ -214,8 +216,16 @@ impl Census {
                 let mut miss = 0;
                 for block in blocks {
                     let (w, n) = match native_schema::decode(chunk.id, o.version, block) {
-                        Ok(d) if d.opaque == 0 => continue,
-                        Ok(d) => ("nested object of unknown class", d.opaque),
+                        Ok(d) if d.opaque.is_empty() => continue,
+                        Ok(d) => {
+                            for o in &d.opaque {
+                                let e =
+                                    self.nested.entry((chunk.id, o.sertype, o.why)).or_default();
+                                e.0 += 1;
+                                e.1 += o.bytes;
+                            }
+                            ("nested object not decoded", d.opaque_bytes())
+                        }
                         Err(Undecoded::Trailing(n)) => ("trailing bytes", n),
                         Err(Undecoded::NoReader) if hand_typed => ("hand reader only", block.len()),
                         Err(Undecoded::NoReader) => ("", block.len()),
@@ -298,6 +308,19 @@ impl Census {
         println!("| Partial because | Objects |\n| --- | ---: |");
         for (why, n) in &reasons {
             println!("| {why} | {n} |");
+        }
+        println!(
+            "\nNested objects not decoded, by parent, nested SerType and cause (bytes overlap \
+             when nested objects nest further).\n"
+        );
+        println!(
+            "| Parent | Nested | Cause | Parents | Bytes |\n| --- | --- | --- | ---: | ---: |"
+        );
+        let mut nested: Vec<_> = self.nested.iter().collect();
+        nested.sort_by_key(|(k, (_, b))| (std::cmp::Reverse(*b), **k));
+        for ((parent, sertype, why), (n, bytes)) in nested {
+            let sertype = sertype.map_or("unnamed".into(), |t| format!("{t:#06x}"));
+            println!("| {parent:#06x} | {sertype} | {why} | {n} | {bytes} |");
         }
         println!(
             "\nBy SerType, stored version and class, most unaccounted bytes first. Hand: KONTRA's \

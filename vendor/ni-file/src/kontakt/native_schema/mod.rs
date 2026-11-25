@@ -6,6 +6,7 @@
 //! either decodes with every byte accounted for exactly as Kontakt reads it, or the error says
 //! what stops it. Nothing here guesses a layout.
 
+mod curated;
 mod programs;
 mod vm;
 
@@ -17,6 +18,19 @@ pub use vm::{
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// curated.rs BParEnv (FUN_140d0d420): one u32 envelope type, 0, 1 or 2, at 0x90 only.
+    #[test]
+    fn curated_bparenv_reads_one_envelope_type() {
+        for t in 0u32..3 {
+            assert_eq!(decode(0x07, 0x90, &t.to_le_bytes()).unwrap().consumed, 4);
+        }
+        assert_eq!(
+            decode(0x07, 0x90, &3u32.to_le_bytes()).unwrap_err(),
+            Undecoded::Rejected
+        );
+        assert!(!accepts(0x07, 0x91));
+    }
 
     /// Every class Kontakt can read, at every stored version it accepts, round-trips:
     /// a stream its reader accepts decodes with all bytes consumed, and (for readers
