@@ -19,8 +19,16 @@ How a chunk is judged:
 
 - Every chunk of every chunk stream is walked: structured children and the
   slots a hand decoder holds (parameter arrays, snapshot groups).
+- Presets open through the plugin's own load path (`kontra_format_kontakt::decode`),
+  the code that plays installed libraries in KONTRA. Encrypted presets it opens
+  are counted ("of them encrypted"); only counts and class names leave the
+  run, and no chunk of an encrypted preset is dumped. What that path cannot
+  open is **protected**. The census adds no decryption of its own.
 - A chunk whose body starts with 1 or 0 is a serialized object (1: private,
-  public, children; 0: version and one block). Kontakt reads the public and
+  public, children; 0: version and one block) when its framing covers the
+  chunk exactly (1) or Kontakt has a reader for that version (0). Unframed
+  records (lists led by a u32 count) can start with either byte; they count
+  as `raw`. Kontakt reads the public and
   private blocks with separate readers ([NI_FILE_BINARY_RECORDS.md](NI_FILE_BINARY_RECORDS.md) §2).
   On the corpus every class keeps its fields in one block, and the catalog
   reader (`native_schema`, Kontakt 8.13.1) decodes that block exactly.
@@ -31,11 +39,15 @@ How a chunk is judged:
   trailing bytes, or only a hand reader with no byte accounting reads it
   (`hand reader only`; `raw` when the body is not object-framed).
 - **unrecognised**: no reader at all.
-- Encrypted presets are **protected**: not opened, nothing decrypted.
+- Objects nested in a block (`(rd O)` sites the reader tables in
+  `native_schema/vm.rs` name) decode with their own reader. Bytes of a nested
+  object whose class is not named, or that does not decode, are **opaque**:
+  the parent is partial with `nested object of unknown class` and only those
+  bytes are unaccounted.
 - A parent's bytes include those of the objects nested in it, which are also
   counted on their own rows, so byte totals overlap.
 
-## Baseline (2026-11-25, origin/main 2597cd0d2, `/data/main/Libraries/Kontakt`)
+## Baseline (2026-11-25, origin/main 2597cd0d2, encrypted presets not opened, `/data/main/Libraries/Kontakt`)
 
 ### Files
 
@@ -134,3 +146,42 @@ By SerType, stored version and class, most unaccounted bytes first. Hand: KONTRA
 | 0x0056 | 0x10 | BParFXDStortion | 2 | 2 |  | 0 | 50 | 0 | 2/0/0/0 |
 | 0x005c | 0x51 | BParFXFlair | 2 | 2 |  | 0 | 132 | 0 | 2/0/0/0 |
 | 0x0074 | 0x1 | BParFXReverseGrain | 2 | 2 |  | 0 | 38 | 0 | 2/0/0/0 |
+
+## Batch 2: load-path scope and snapshot nested objects
+
+The census opens presets through the plugin's load path (above), so 625 .nki
+and 53 .nkm that the baseline counted as protected are now read: 0 protected.
+Before is the census with that scope and the exact-framing rule on e4dbdc662;
+after adds the snapshot readers below.
+
+| | Objects | Full | Partial | Bytes | Unaccounted |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Before | 18466552 | 17036402 | 1430150 | 14543257982 | 11239467243 |
+| After | 18466552 | 17042634 | 1423918 | 14543257982 | 9398002934 |
+
+| Class | Before unaccounted | After unaccounted | After verdict |
+| --- | ---: | ---: | --- |
+| 0x4F BSnapshot v1 | 1808206084 | 109307562 | 801 nested object of unknown class |
+| 0x4F BSnapshot v3 | 178496971 | 38830120 | 101 nested object of unknown class, 237 full |
+| 0x3A BParameterArraySer<BParFX, 8> v0x12 | 2736021 | 0 | full |
+| 0x3A BParameterArraySer<BParFX, 8> v0x13 | 162915 | 0 | full |
+
+What closed them (evidence in the `BODIES`, `OBJECTS` and `VIRTUAL` tables of
+`vendor/ni-file/src/kontakt/native_schema/vm.rs`):
+
+- BSnapshot (FUN_140d04600) nested FX racks (0x3A) and buses (0x45), and the
+  group snapshots (FUN_140d1d860, 0x50 BGroupSnapshot) with their FX rack,
+  source (0x0E), internal (0x3B) and external (0x3C) modulator arrays
+  (FUN_140cff070), in the order objects/snapshot.rs and snapshot_group.rs read.
+- BParSrcMode's source reader FUN_140cfb900 starts with a virtual call on the
+  member at +0xC8. Its constructor (0x140cf395b) installs vtable 0x144e975e8
+  there; slot 0x10 is 0x140940010, which reads one u32 (0x142a78270).
+- A framed nested object decodes with its own host-state search, memoized
+  per outermost decode, so a parent's search does not replay it: the full
+  corpus runs in 9.6 min.
+
+Left: the snapshots' opaque bytes are nested objects with no catalog reader
+yet (0x45 BInsertBus is hand-only) or that Kontakt's reader rejects (scripts).
+SessionState (0x0F02) now names its stop: an unframed nested object of
+unknown class in FUN_1407cd340. Next: unframed lists (ZoneList, FNTableImpl,
+GroupList, SlotList), BParEnv 0x90, scripts (BParScript 0x60).
