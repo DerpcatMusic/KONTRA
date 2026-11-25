@@ -115,6 +115,7 @@ pub mod ids {
     pub const WOWFLUTTER: ModelId = ModelId(B + 15);
     pub const LEGACY_CHORUS: ModelId = ModelId(B + 16);
     pub const LEGACY_FLANGER: ModelId = ModelId(B + 17);
+    pub const REPLIKA: ModelId = ModelId(B + 18);
 }
 
 /// All modules defined in `kontra-kontakt-effects`.

@@ -5,7 +5,7 @@
 # tests/script.rs every_measured_engine_par_text_reads_as_kontakt_shows_it.
 # Not shown yet (docs/specs/engine-par-display.md: Freak frequency, Rotator mix and speed, Phasis
 # rate/center/notches, Flair pitch). The test fails once one reads right.
-# pending: $ENGINE_PAR_FLAIR_PITCH $ENGINE_PAR_PHASIS_NOTCHES $ENGINE_PAR_PHASIS_RATE $ENGINE_PAR_PHASIS_CENTER
+# pending: $ENGINE_PAR_FLAIR_PITCH $ENGINE_PAR_PHASIS_NOTCHES
 $ENGINE_PAR_RAUM_TYPE	0	
 $ENGINE_PAR_RAUM_TYPE	50000	
 $ENGINE_PAR_RAUM_TYPE	100000	

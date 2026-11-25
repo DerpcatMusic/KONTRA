@@ -109,7 +109,11 @@ const MODULES: &[Fx] = &[
     fx(0x57, "Plate Reverb", 38, true, Unread),
     fx(0x58, "Cry Wah", 37, false, Unread),
     fx(0x59, "Reverb", 39, true, Read(reverb)),
-    fx(0x5a, "Replika", 40, true, Read(replika)),
+    model(&crate::replika::MODULE, "Replika", true, |s| {
+        let r = crate::replika::saved(s.version, s.public)?;
+        crate::replika::lost(r).for_each(|feature| s.lost(feature));
+        Some(crate::replika::model(r))
+    }),
     model(&crate::phasis::MODULE, "Phasis", false, |s| crate::phasis::saved(s.version, s.public).map(crate::phasis::model_from)),
     model(&crate::flair::MODULE, "Flair", false, |s| crate::flair::saved(s.version, s.public).map(crate::flair::model_from)),
     model(&crate::choral::MODULE, "Choral", false, |s| crate::choral::saved(s.version, s.public).map(crate::choral::model_from)),
@@ -577,15 +581,6 @@ fn legacy_reverb(s: &mut Slot) -> Option<ir::EffectKind> {
         *s.knobs = crate::script_knobs::legacy_reverb_knobs(saved);
     }
     crate::legacy_reverb::effect(s.version, s.public)
-}
-
-fn replika(s: &mut Slot) -> Option<ir::EffectKind> {
-    let r = crate::replika::saved(s.version, s.public)?;
-    for lost in crate::replika::lost(r) {
-        s.lost(lost);
-    }
-    *s.knobs = crate::replika::knobs(r);
-    crate::replika::delay(r).map(ir::EffectKind::Delay)
 }
 
 /// Shape −1..=1 and the algorithm (0 Classic, 1 Enhanced, 2 Drums).

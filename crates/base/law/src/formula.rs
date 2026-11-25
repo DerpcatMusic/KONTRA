@@ -62,6 +62,12 @@ pub enum FormulaId {
     BiteBits,
     /// Flair's rate in Hz (`0x140adfbe0`): `440·2^(11.5·x − 16.25)` by a quartic exp2.
     FlairRateHz,
+    /// Phasis's rate in Hz (`0x140a75560`, Ultra off): `440·2^(11.6667·x − 15.75)`, note
+    /// `−120..20`, by a quartic exp2.
+    PhasisRateHz,
+    /// Phasis's centre in Hz (`0x140a752e0`, Ultra off): note `30 + 90·x`,
+    /// `440·2^((note − 69)/12)` by a quartic exp2.
+    PhasisCenterHz,
     /// Freak's frequency in Hz (`0x141965690`, mode 1, wide range): `f·5000·f·f`, `f = 2x − 1`.
     FreakFrequencyHz,
     /// Rotator's mix in dB (`0x1407ba280` on `0x1407b9fa0`'s `clamp(x³)`): `ln v · 6/ln 2`,
@@ -115,6 +121,12 @@ impl FormulaId {
                 T::of((2 - (x.to_f32().clamp(0.0, 1.0) * -15.0) as i32).clamp(2, 16) as f32)
             }
             Self::FlairRateHz => T::of(fast_exp2(x.to_f32() * 11.5 - 16.25) * 440.0),
+            Self::PhasisRateHz => {
+                T::of(fast_exp2((1.666_666_7 + 10.0) * x.to_f32() - 15.75) * 440.0)
+            }
+            Self::PhasisCenterHz => T::of(
+                fast_exp2(((120.0 - 30.0) * x.to_f32() + 30.0 - 69.0) * 0.083_333_336) * 440.0,
+            ),
             Self::FreakFrequencyHz => {
                 let f = x.to_f32() + x.to_f32() - 1.0;
                 T::of(f * 5000.0 * f * f)
@@ -161,6 +173,8 @@ impl FormulaId {
             | Self::BiteFrequencyHz
             | Self::BiteBits
             | Self::FlairRateHz
+            | Self::PhasisRateHz
+            | Self::PhasisCenterHz
             | Self::FreakFrequencyHz
             | Self::RotatorMixDb
             | Self::RotatorFast => None,
