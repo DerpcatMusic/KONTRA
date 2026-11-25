@@ -31,7 +31,7 @@ mod ui;
 /// The engine's sample rate for every subcommand.
 const RATE: u32 = 48_000;
 
-const USAGE: &str = "usage: kontra-inspect law [NAME] | programs <bank.ufs> | load <instrument> [--json FILE] | ui <instrument> [--json FILE] | play <instrument> [--scenario user|FILE] [--fresh-state] [--oracle] [--json FILE]";
+const USAGE: &str = "usage: kontra-inspect law [NAME] | programs <bank.ufs|multi.nkm> | load <instrument> [--json FILE] | ui <instrument> [--json FILE] | play <instrument> [--scenario user|FILE] [--fresh-state] [--oracle] [--json FILE]";
 
 fn main() -> ExitCode {
     match run() {
@@ -52,7 +52,18 @@ fn run() -> Result<()> {
     }
     if command == "programs" {
         let bank = args.next().context(USAGE)?;
-        for program in kontra_format_uvi::programs(std::path::Path::new(&bank))? {
+        let bank = std::path::Path::new(&bank);
+        // A multi's parts as `<slot>`, a UFS bank's programs by path.
+        if bank
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("nkm"))
+        {
+            for part in kontra_host::instrument::multi_parts(bank)? {
+                println!("{}", part.file_name().unwrap_or_default().to_string_lossy());
+            }
+            return Ok(());
+        }
+        for program in kontra_format_uvi::programs(bank)? {
             println!("{program}");
         }
         return Ok(());

@@ -44,6 +44,9 @@ pub struct Face {
     view: Option<View>,
     /// The Kontakt 8 `native_ui` page it loads, if any.
     native: Option<nui::Native>,
+    /// The script is a multi's folded MIDI player (`ir::Script::player`):
+    /// its page is not the instrument's view.
+    pub player: bool,
 }
 
 impl Face {
@@ -66,6 +69,7 @@ impl Face {
             symbols: script.symbols.clone(),
             view: crate::perf_view::find(data).map(|(_, view)| view),
             native: nui::Native::of(data),
+            player: false,
         }
     }
 

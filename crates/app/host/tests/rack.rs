@@ -928,6 +928,7 @@ fn a_lua_state_restored_after_a_wait_saves_as_restored() {
             data: Vec::new(),
             links: Vec::new(),
             container: None,
+            player: false,
         }],
         ..ir::Instrument::DEFAULT
     };
@@ -971,6 +972,7 @@ fn a_big_persistent_array_is_captured_over_blocks_and_saves_what_changed() {
             data: Vec::new(),
             links: Vec::new(),
             container: None,
+            player: false,
         }],
         ..ir::Instrument::DEFAULT
     };
@@ -1041,6 +1043,7 @@ fn snapshot_of(kind: u8, saved: &[&str]) -> kontra_engine::ir::Instrument {
             data: Vec::new(),
             links: Vec::new(),
             container: None,
+            player: false,
         }],
         ..ir::Instrument::DEFAULT
     }
@@ -1342,6 +1345,7 @@ fn an_array_saved_by_path_loads_back_and_a_file_of_another_array_does_not() {
             data: Vec::new(),
             links: Vec::new(),
             container: None,
+            player: false,
         }],
         ..ir::Instrument::DEFAULT
     };
@@ -1465,6 +1469,7 @@ fn scripted(
             data: Vec::new(),
             links: Vec::new(),
             container: None,
+            player: false,
         }],
         ..ir::Instrument::DEFAULT
     }
@@ -1610,6 +1615,7 @@ fn a_rack_without_a_save_folder_writes_nothing() {
             data: Vec::new(),
             links: Vec::new(),
             container: None,
+            player: false,
         }],
         ..ir::Instrument::DEFAULT
     };
@@ -1650,6 +1656,7 @@ fn an_array_loaded_in_init_saves_one_ended_line_per_value() {
             data: Vec::new(),
             links: Vec::new(),
             container: None,
+            player: false,
         }],
         ..ir::Instrument::DEFAULT
     };
@@ -2166,6 +2173,7 @@ fn unpurged_plays(when: Unpurged) {
         data: Vec::new(),
         links: Vec::new(),
         container: None,
+        player: false,
     }];
     let (mut rack, mut audio) = rack();
     rack.load_ir(0, instrument, Some(sfz)).unwrap();
@@ -2255,6 +2263,7 @@ fn batched_unpurges_load_multiple_groups_without_notice_spam() {
         data: Vec::new(),
         links: Vec::new(),
         container: None,
+        player: false,
     }];
     let (mut rack, mut audio) = rack();
     rack.load_ir(0, instrument, Some(sfz)).unwrap();
@@ -2361,6 +2370,7 @@ fn recall_keep_fades_out_active_audio_without_step_click() {
         data: Vec::new(),
         links: Vec::new(),
         container: None,
+        player: false,
     }];
 
     let (mut rack, mut audio) = rack();
@@ -2447,6 +2457,7 @@ fn an_install_during_a_recall_fade_carries_on_from_the_faded_level() {
         data: Vec::new(),
         links: Vec::new(),
         container: None,
+        player: false,
     }];
 
     let (mut rack, mut audio) = rack();

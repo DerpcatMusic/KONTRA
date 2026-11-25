@@ -1148,6 +1148,10 @@ pub struct Script {
     /// translator knows it: a multi's MIDI player keeps its own when folded
     /// into the synth.
     pub container: Option<std::path::PathBuf>,
+    /// Folded in from a multi's MIDI player part: it runs in front of the
+    /// instrument's own scripts, but its page belongs to that player's part,
+    /// not to this instrument's performance view.
+    pub player: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

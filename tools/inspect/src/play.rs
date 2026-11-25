@@ -77,6 +77,7 @@ fn run_events(
                     data: Vec::new(),
                     links: Vec::new(),
                     container: None,
+                    player: false,
                 }),
             }
         }
@@ -349,6 +350,7 @@ fn run_events(
     }
     let script_faults = faults(&engine.script_faults(), &sources);
     let ui = ui_build(path, &loaded.faces, &loaded.pages, &engine);
+    let shown = ui_shown(path, &loaded.faces, &loaded.pages, &engine);
     let loudest_remaining = engine
         .inspect_voices()
         .map(|v| v.last_peak)
@@ -514,10 +516,40 @@ fn run_events(
         .collect();
     if let Some(result) = out.get_mut("result").and_then(Value::as_object_mut) {
         result.insert("ui_build".into(), json!(ui));
+        result.insert("ui_shown".into(), shown);
         result.insert("playable_keys".into(), json!(playable));
         result.insert("note_rms".into(), json!(note_rms));
     }
     Ok((out, summary))
+}
+
+/// What the page the editor opens on draws: its script slot, whether it has
+/// a wallpaper, whether it uses any picture, and how many controls show
+/// (visible, not a panel). A page can build and still draw nothing (Airy
+/// Soul opened on its folded Chords player's lone menu); null when the
+/// instrument has no page.
+fn ui_shown(
+    path: &Path,
+    faces: &[Option<kontra_host::ui::Face>],
+    pages: &[Option<kontra_lua::Ui>],
+    engine: &Engine,
+) -> Value {
+    let shown = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        kontra_host::view::View::of(faces, pages, engine, Some(path))
+    }));
+    let Ok(Some(view)) = shown else {
+        return Value::Null;
+    };
+    let tree = view.tree();
+    let drawn = (tree.widgets.iter().enumerate())
+        .filter(|(_, w)| !matches!(w.kind, kontra_ui_model::Kind::Panel))
+        .filter(|&(n, _)| tree.visible(kontra_ui_model::WidgetRef(n)))
+        .count();
+    let wallpaper = tree
+        .pages
+        .first()
+        .is_some_and(|p| p.background.image.is_some());
+    json!({"slot": view.slot, "wallpaper": wallpaper, "pictures": !tree.assets.is_empty(), "drawn": drawn})
 }
 
 /// Each script slot's UI as the scenario left it: a build error (a panic too)

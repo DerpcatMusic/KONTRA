@@ -392,6 +392,7 @@ pub(crate) fn instrument(
                     .map(|&(_, l)| l)
                     .collect(),
                 container: None,
+                player: false,
             }),
             _ => {
                 if let Some(file) = script.textfile_name.filter(|n| !n.is_empty()) {
@@ -1605,6 +1606,7 @@ mod tests {
             data: Vec::new(),
             links: Vec::new(),
             container: None,
+            player: false,
         });
         let bits = ir::held_key("$ENGINE_PAR_BITE_BITS");
         let slots = crate::effects::Slots {

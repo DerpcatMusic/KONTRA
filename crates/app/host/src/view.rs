@@ -59,18 +59,36 @@ fn performs(
         .is_some_and(|page| page.performance)
 }
 
-/// The slots to try, in the order the editor chooses between them: every slot
-/// that asks for the performance view, in slot order, then every slot that does
-/// not.
+/// How strongly slot `slot` claims the editor: 0 for the instrument's own
+/// performance view, 1 for one a multi's folded MIDI player asks for (its
+/// page is that player's part's, as Conflux's Chords tool in front of the
+/// synth), 2 for a slot that asks for none.
+fn rank(
+    faces: &[Option<Face>],
+    pages: &[Option<kontra_lua::Ui>],
+    engine: &Engine,
+    slot: usize,
+) -> u8 {
+    let player = matches!(faces.get(slot), Some(Some(face)) if face.player);
+    match (performs(faces, pages, engine, slot), player) {
+        (true, false) => 0,
+        (true, true) => 1,
+        (false, _) => 2,
+    }
+}
+
+/// The slots to try, in the order the editor chooses between them: by
+/// [`rank`], slot order within a rank.
 ///
 /// Returning the order as data is what keeps the failure out of reach. A slot
 /// that asks for the view but whose page cannot be built is skipped by the
 /// caller like any other candidate, so it cannot end the search and hand the
 /// editor an earlier admin page -- which `find(..).and_then(..)` did, because
 /// the failed construction was the end of the only preferred candidate.
-fn candidates(count: usize, asks: impl Fn(usize) -> bool) -> Vec<usize> {
-    let (preferred, rest): (Vec<usize>, Vec<usize>) = (0..count).partition(|&slot| asks(slot));
-    preferred.into_iter().chain(rest).collect()
+fn candidates(count: usize, rank: impl Fn(usize) -> u8) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..count).collect();
+    order.sort_by_key(|&slot| rank(slot));
+    order
 }
 
 impl View {
@@ -81,7 +99,8 @@ impl View {
     /// (`make_perfview`, or a Creator Tools view it loaded), not whichever
     /// slot declares a control first: a multi whose first slot is a helper's
     /// admin page would otherwise open with that page instead of the
-    /// instrument. Only when no slot asks for it does the first slot with a
+    /// instrument; nor does a multi's folded MIDI player's view win over the
+    /// instrument's own. Only when no slot asks for it does the first slot with a
     /// face (KSP) or a page (Lua) win, in declaration order.
     #[must_use]
     pub fn of(
@@ -94,7 +113,7 @@ impl View {
         let meta = |p: &str| library.as_ref()?.borrow_mut().meta(p);
         let count = faces.len().max(pages.len());
         let view = {
-            let mut view = candidates(count, |slot| performs(faces, pages, engine, slot))
+            let mut view = candidates(count, |slot| rank(faces, pages, engine, slot))
                 .into_iter()
                 .find_map(|slot| Self::at_slot(slot, faces, pages, engine, &meta))?;
             view.library = library.map(RefCell::into_inner);
@@ -781,6 +800,14 @@ pub enum Interfaces {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Airy Soul (Conflux): the folded Chords player's `make_perfview` page
+    /// (slot 3) must not win over the synth's own Creator Tools view (slot 4).
+    #[test]
+    fn the_instruments_own_view_wins_over_a_folded_players() {
+        let ranks = [2, 2, 2, 1, 0, 2];
+        assert_eq!(candidates(6, |s| ranks[s]), [4, 3, 0, 1, 2, 5]);
+    }
 
     #[test]
     fn copied_table_cells_update_the_live_tree() {

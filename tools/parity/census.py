@@ -1,7 +1,9 @@
 # Plays one held C3 (key 60, CC1/CC11 full) of every Kontakt .nki/.nksn and UVI program under the library
 # roots through kontra-inspect (KONTRA_INSPECT_BIN, a corpus or release build) and appends one JSON row
 # per instrument to play.jsonl: diagnostics, unhandled script actions, unanswered engine pars, peak, RMS.
-# Rows also carry load_s (read to on init) and each UI's build error or unsupported features.
+# Rows also carry load_s (read to on init), each UI's build error or unsupported features, and what the
+# page the editor opens on draws (ui_shown): a UI is green only when that page draws (DRAWN_MIN controls,
+# and its wallpaper when it uses pictures). Multis (.nkm) are played part by part.
 # Resumable; 3 niced jobs. Then writes census-<date>.tsv next to it and prints failure classes ranked
 # by instrument count. `--summary` only rewrites the table from play.jsonl; `--snapshot` also writes
 # docs/parity/snapshots/corpus-census.tsv (pass counts per check, no library content) for the board.
@@ -17,6 +19,7 @@ sys.path.insert(0,os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from kontra_libraries import KONTAKT,UVI
 ROOTS=os.environ.get('KONTRA_CENSUS_ROOTS',f'{KONTAKT}:{UVI}').split(':')
 SILENT=1e-4  # RMS under -80 dBFS over the render
+DRAWN_MIN=4  # fewer visible controls on the page the editor opens is a blank panel (Airy Soul: one menu)
 
 def instruments():
     files=[]
@@ -25,7 +28,7 @@ def instruments():
             for f in fs:
                 p=os.path.join(d,f)
                 if f.lower().endswith(('.nki','.nksn')): files.append(p)
-                elif f.lower().endswith('.ufs'):
+                elif f.lower().endswith(('.ufs','.nkm')):
                     out=subprocess.run([BIN,'programs',p],capture_output=True,text=True).stdout.splitlines()
                     files+=[os.path.join(p,x) for x in out]
     return sorted(files)
@@ -65,6 +68,7 @@ def play(p,scenario):
         row['complete']=res.get('render_complete')
         row['load_s']=res['load_ms']/1e3 if res.get('load_ms') is not None else None
         row['ui']=res.get('ui_build',[])
+        row['ui_shown']=res.get('ui_shown')
         row['playable_keys']=res.get('playable_keys')
     except Exception as e:
         row['error']=str(e)[:200]
@@ -91,8 +95,16 @@ def checks(row):
         samples=not any(d.get('feature') in SAMPLE_DIAGS for d in row['diag']),
         script=not faulted(row)
             and not any(d.get('impact')=='Broken' and str(d.get('feature','')).startswith('script') for d in row['diag']),
-        ui=None if ui is None else all('error' not in u and not u.get('unsupported') for u in ui),
+        ui=None if ui is None else all('error' not in u and not u.get('unsupported') for u in ui)
+            and not blank(row),
         sound=level(row)>=SILENT)
+
+def blank(row):
+    """The page the editor opens on builds but draws next to nothing: too few visible controls, or
+    pictures without their wallpaper. False for a row without the field (it predates the check) or
+    an instrument with no page."""
+    s=row.get('ui_shown')
+    return bool(s) and (s['drawn']<DRAWN_MIN or (s['pictures'] and not s['wallpaper']))
 
 def level(row):
     """RMS while the note is held when the row has it (a quiet pad is not averaged away by the tail)."""
@@ -106,6 +118,7 @@ def classes(row):
     for u in row.get('ui') or []:
         if 'error' in u: c.append('ui-error:'+u['error'][:60])
         c+=['ui-unsupported:'+k for k in u.get('unsupported',{})]
+    if blank(row): c.append('ui-blank')
     if level(row)<SILENT: c.append('silent')
     for d in row['diag']:
         if d.get('impact')=='Audible': c.append('diag:'+str(d.get('feature')))

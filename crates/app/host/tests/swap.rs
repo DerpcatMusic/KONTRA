@@ -24,6 +24,7 @@ fn sharing(name: &str, source: &str) -> kontra_engine::ir::Instrument {
             data: Vec::new(),
             links: Vec::new(),
             container: None,
+            player: false,
         }],
         ..ir::Instrument::DEFAULT
     }

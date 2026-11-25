@@ -110,6 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 data: Vec::new(),
                 links: Vec::new(),
                 container: None,
+                player: false,
             });
         }
     }

@@ -288,7 +288,13 @@ fn fold_players(slots: &mut Vec<Slot>) {
     };
     let players: Vec<(u16, Vec<ir::Script>)> = (slots.iter())
         .filter(|s| heard(s, slots))
-        .map(|s| (s.channel, s.instrument.scripts.clone()))
+        .map(|s| {
+            let mut scripts = s.instrument.scripts.clone();
+            for script in &mut scripts {
+                script.player = true;
+            }
+            (s.channel, scripts)
+        })
         .collect();
     let folded: Vec<u16> = (slots.iter())
         .filter(|s| heard(s, slots))
@@ -354,6 +360,7 @@ fn scripts_from_bank(path: &Path, bank: &Bank) -> Result<Vec<ir::Script>, Error>
                 data: Vec::new(),
                 links: Vec::new(),
                 container: None,
+                player: false,
             }),
             _ => {}
         }
@@ -397,6 +404,7 @@ mod tests {
             data: Vec::new(),
             links: Vec::new(),
             container: None,
+            player: false,
         }
     }
 
@@ -438,6 +446,13 @@ mod tests {
         fold_players(&mut slots);
         assert_eq!(slots.len(), 1);
         assert_eq!(chain(&slots[0]), [("arp", 0), ("chords", 1), ("synth", 2)]);
+        let players: Vec<bool> = slots[0]
+            .instrument
+            .scripts
+            .iter()
+            .map(|s| s.player)
+            .collect();
+        assert_eq!(players, [true, true, false]);
     }
 
     /// Notes reach only slots that hear the player's channel: one on

@@ -248,6 +248,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 in_rack(&loaded.name, tree, pictures, &file)?;
             }
         }
+        // The slot the editor opens on: its choice between the pages above.
+        let shown = kontra_host::view::View::of(&loaded.faces, &loaded.pages, &engine, Some(&path));
+        if let Some(view) = shown {
+            println!(
+                "{{\"name\":{:?},\"editor_slot\":{}}}",
+                loaded.name, view.slot
+            );
+        }
     }
     Ok(())
 }

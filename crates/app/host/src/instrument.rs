@@ -187,6 +187,19 @@ pub fn multi_slot(path: &Path) -> Option<(&Path, u16)> {
     Some((multi, path.file_name()?.to_str()?.parse().ok()?))
 }
 
+/// The parts of the multi at `path` as [`multi_slot`] paths
+/// (`Multi.nkm/<slot>`), in slot order: a folded MIDI player is no part.
+///
+/// # Errors
+/// When the file is not a multi this can read.
+pub fn multi_parts(path: &Path) -> Result<Vec<PathBuf>, Error> {
+    let multi =
+        kontra_format_kontakt::multi_load(path, None, &kontra_library::kontakt::candidates())?;
+    Ok((multi.slots.iter())
+        .map(|s| path.join(s.index.to_string()))
+        .collect())
+}
+
 /// Whether `path` is a preset of an instrument in another file: the
 /// player's own, or a Kontakt snapshot.
 #[must_use]
@@ -431,7 +444,9 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
                 plan.scripts.push(planned);
                 symbols.push(compiled.symbols.clone().into_boxed_slice());
                 let start = std::time::Instant::now();
-                faces.push(Some(crate::ui::Face::of(&compiled, &script.data)));
+                let mut face = crate::ui::Face::of(&compiled, &script.data);
+                face.player = script.player;
+                faces.push(Some(face));
                 faces_time += start.elapsed();
                 pages.push(None);
                 persist.push(crate::persist::Vars::of(n, &compiled));
@@ -541,6 +556,7 @@ mod tests {
             data: Vec::new(),
             links: Vec::new(),
             container: None,
+            player: false,
         };
         let set = "on init\nSET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nSET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)\nend on";
         let reset = "on init\nRESET_CONDITION(NO_SYS_SCRIPT_PEDAL)\nend on";

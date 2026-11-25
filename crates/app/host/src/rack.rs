@@ -1370,6 +1370,7 @@ mod tests {
             data: Vec::new(),
             links: Vec::new(),
             container: None,
+            player: false,
         };
         rack.install_multi_scripts(Some(path), vec![script]);
         let notices = rack.take_notices();

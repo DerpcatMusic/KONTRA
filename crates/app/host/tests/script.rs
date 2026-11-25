@@ -3884,6 +3884,7 @@ fn get_folder_patch_returns_prepared_directory() {
             data: vec![],
             links: vec![],
             container: None,
+            player: false,
         }],
         ..ir::Instrument::DEFAULT
     };
