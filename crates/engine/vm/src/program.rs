@@ -95,8 +95,6 @@ pub enum Op {
     TFromReal,
     /// Pops two texts, pushes their concatenation.
     TConcat,
-    /// Pops two texts, pushes 1 if equal else 0.
-    TEq,
 
     IAdd,
     ISub,

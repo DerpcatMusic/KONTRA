@@ -46,9 +46,11 @@ impl Engine {
                 self.timer_at = self.now;
                 HostValue::Nothing
             }
-            // ponytail: with no editor, the first group is the one selected
-            // (unmeasured); only developer tools in the corpus read it.
-            Action::GroupsSelected => flag(int(0) == 0),
+            // With no edit view every group reads selected (Kontakt 8.13 in `on
+            // init`, conformance unit init_groups_selected).
+            Action::GroupsSelected => {
+                flag(usize::try_from(int(0)).is_ok_and(|g| g < self.plan.groups.len()))
+            }
             // Every live event id, then a 0 when they do not fill the array.
             Action::GetEventIds => {
                 let (base, len) = (usize::try_from(int(0)), usize::try_from(int(1)));

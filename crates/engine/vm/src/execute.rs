@@ -257,11 +257,6 @@ pub(crate) fn execute(
                 }
                 push_text!(a);
             }
-            Op::TEq => {
-                let b = pop_text!();
-                let a = pop_text!();
-                push!(i64::from(a == b));
-            }
             Op::IAdd
             | Op::ISub
             | Op::IMul

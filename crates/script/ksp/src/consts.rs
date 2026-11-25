@@ -29,11 +29,12 @@ pub fn real(name: &str) -> Option<f64> {
     match name {
         "~NI_MATH_PI" => Some(std::f64::consts::PI),
         "~NI_MATH_E" => Some(std::f64::consts::E),
-        // What a failed detection reads (unmeasured; the decibel ones sit far below any level).
-        "~NI_DETECT_PITCH_INVALID" | "~NI_DETECT_TEMPO_INVALID" => Some(-1.0),
-        "~NI_DETECT_LOUDNESS_INVALID" | "~NI_DETECT_PEAK_INVALID" | "~NI_DETECT_RMS_INVALID" => {
-            Some(-1000.0)
-        }
+        // What a failed detection reads (Kontakt 8.13, conformance units real_const_detect_*).
+        "~NI_DETECT_TEMPO_INVALID" => Some(-1.0),
+        "~NI_DETECT_PITCH_INVALID"
+        | "~NI_DETECT_LOUDNESS_INVALID"
+        | "~NI_DETECT_PEAK_INVALID"
+        | "~NI_DETECT_RMS_INVALID" => Some(1_000_000.0),
         _ => None,
     }
 }
@@ -73,5 +74,39 @@ mod tests {
         assert!(is_catalog("$ENGINE_PAR_VOLUME"));
         assert!(is_catalog("$CONTROL_PAR_VALUE"));
         assert!(!is_catalog("$MY_OWN_THING"));
+    }
+
+    /// KONTRA knows only names Kontakt 8.13.1 knows: every catalog and
+    /// constants.tsv name is in the binary's own name list (`#` any digits).
+    #[test]
+    fn every_known_name_is_kontakts() {
+        let names: HashSet<&str> = include_str!("../data/kontakt-8.13.1-names.txt")
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .collect();
+        let tsv = include_str!("../data/constants.tsv")
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.is_empty())
+            .filter_map(|l| l.split('\t').next());
+        let catalog = include_str!("../data/vendor_constants.txt").lines();
+        let unknown: Vec<&str> = tsv
+            .chain(catalog)
+            .filter(|n| !n.is_empty() && !n.starts_with('#'))
+            .filter(|n| {
+                let bare = n.trim_start_matches(['$', '%', '~', '@', '!']);
+                let (head, tail) = bare.split_once('#').unwrap_or((bare, ""));
+                !names.iter().any(|k| {
+                    k.strip_prefix(head)
+                        .is_some_and(|rest| match bare.contains('#') {
+                            false => rest.is_empty(),
+                            true => {
+                                let digits = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+                                digits.len() < rest.len() && digits == tail
+                            }
+                        })
+                })
+            })
+            .collect();
+        assert!(unknown.is_empty(), "not in Kontakt 8.13.1: {unknown:?}");
     }
 }

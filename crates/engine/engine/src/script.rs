@@ -244,6 +244,9 @@ impl Engine {
             event::PAN => n.script_pan,
             event::NOTE => i32::from(n.key),
             event::VELOCITY => i32::from(n.velocity_byte),
+            event::REL_VELOCITY => (n.release_velocity * 127.0).round() as i32,
+            // The channel it came in on, across ports A to D, as `$MIDI_CHANNEL`.
+            event::MIDI_CHANNEL => i32::from(n.host.port_channel()),
             event::ZONE_SLOT => n.zone_slot,
             event::START_OFFSET => i32::try_from(n.offset).unwrap_or(i32::MAX),
             event::SOURCE => match n.origin {
@@ -267,6 +270,9 @@ impl Engine {
             event::NOTE if !n.started => n.key = value.clamp(0, 127) as u8,
             event::ZONE_SLOT if !n.started => n.zone_slot = value,
             event::START_OFFSET if !n.started => n.offset = value.max(0).unsigned_abs(),
+            // KSP manual, on release: `set_event_par($EVENT_ID,
+            // $EVENT_PAR_REL_VELOCITY, 127)`.
+            event::REL_VELOCITY => n.release_velocity = value.clamp(0, 127) as f32 / 127.0,
             event::VELOCITY if !n.started => {
                 n.velocity_byte = value.clamp(1, 127) as u8;
                 n.velocity = f64::from(n.velocity_byte) / 127.0;
@@ -742,8 +748,13 @@ impl HostApi for Engine {
             }
             Action::ResetRlsTrigCounter => self.reset_rls_trig_counter(int(0)),
             Action::CallbackId => HostValue::Int(self.running.callback_id as i32),
+            // The KSP manual: `$EVENT_PAR_0..3`, then `$EVENT_PAR_CUSTOM` 4..15,
+            // of `$EVENT_ID` (one custom array holds both).
             Action::EventParAt => HostValue::Int(
-                running.map_or(0, |r| self.event_par(r.event_id(), int(0).clamp(0, 3))),
+                running
+                    .and_then(|r| self.notes.get(r))
+                    .and_then(|n| n.custom.get(usize::try_from(int(0)).ok()?).copied())
+                    .unwrap_or(0),
             ),
             // `%NOTE_DURATION[key]`: microseconds since the newest live note on
             // that key started (the KSP manual's time-and-transport array).

@@ -42,6 +42,8 @@ pub mod event {
     /// Read only: -1 for a note from outside, else the script slot that played it.
     pub const SOURCE: i32 = 8;
     pub const VELOCITY: i32 = 9;
+    /// A note event's release velocity, 0..=127 (constants.tsv).
+    pub const REL_VELOCITY: i32 = 27;
     pub const ALLOW_GROUP: i32 = 10;
     /// With `*_arr`: the value for a "from script" modulator, ±1 000 000.
     pub const MOD_VALUE: i32 = 30;
@@ -98,8 +100,6 @@ impl Action {
         matches!(
             self,
             Self::Abs
-                | Self::Min
-                | Self::Max
                 | Self::InRange
                 | Self::Sgn
                 | Self::Signbit
@@ -132,8 +132,6 @@ impl Action {
 actions! {
     // Arithmetic (pure).
     Abs,
-    Min,
-    Max,
     InRange,
     Sgn,
     Signbit,
@@ -339,7 +337,6 @@ actions! {
     GetMenuItemStr,
     GetMenuItemValue,
     GetMenuItemVisibility,
-    GetNumMenuItems,
     SetTableStepsShown,
     AttachZone,
     SetSkinOffset,

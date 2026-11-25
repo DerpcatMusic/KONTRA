@@ -49,7 +49,7 @@ pub fn detect_sample(sample: &ir::Sample, what: u8) -> Option<f64> {
     match kind {
         Kind::Key => detect::key(&audio).map(|k| f64::from(detect::key_tag(k))),
         Kind::Pitch => detect::pitch(&audio),
-        Kind::Loudness => detect::loudness(&audio),
+        Kind::Loudness => detect::loudness(&audio, sample.channels),
         Kind::Peak => detect::peak(&audio),
         Kind::Rms => detect::rms(&audio),
         Kind::Tempo => detect::tempo(&audio),
@@ -62,8 +62,9 @@ fn invalid(what: u8) -> f64 {
     match kind_of(what) {
         Kind::Key => f64::from(detect::KEY_INVALID),
         Kind::Class => -1.0,
-        Kind::Pitch | Kind::Tempo => -1.0,
-        Kind::Loudness | Kind::Peak | Kind::Rms => -1000.0,
+        // Kontakt 8.13 (conformance units real_const_detect_*).
+        Kind::Tempo => -1.0,
+        Kind::Pitch | Kind::Loudness | Kind::Peak | Kind::Rms => 1_000_000.0,
     }
 }
 
@@ -230,9 +231,11 @@ impl Engine {
                     .and_then(|id| self.plan.zone_sample(id))
                     .cloned();
                 if self.building {
-                    // Under construction (off the audio thread): measured at once.
-                    let value = sample.and_then(|s| detect_sample(&s, what));
-                    if let Some(c) = call.cells.get_mut(cell as usize) {
+                    // Under construction (off the audio thread): measured at
+                    // once. A zone with no sample leaves the variable as it
+                    // was (Kontakt 8.13, probes/ksp/detect_tone.kspp).
+                    let value = sample.map(|s| detect_sample(&s, what));
+                    if let (Some(c), Some(value)) = (call.cells.get_mut(cell as usize), value) {
                         *c = cell_value(what, value);
                     }
                     return Some(HostValue::Int(-1));

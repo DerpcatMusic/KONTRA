@@ -1,0 +1,216 @@
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare $r0 := 0
+  declare $r1 := 0
+  if ($NI_DETECT_INSTRUMENT_TYPE_ORGAN = 7)
+  $r0 := $r0 .or. sh_left(1, 0)
+  end if
+  if ($NI_DETECT_INSTRUMENT_TYPE_PLUCKED_STRING = 8)
+  $r0 := $r0 .or. sh_left(1, 1)
+  end if
+  if ($NI_DETECT_INSTRUMENT_TYPE_REED = 9)
+  $r0 := $r0 .or. sh_left(1, 2)
+  end if
+  if ($NI_DETECT_INSTRUMENT_TYPE_SYNTH = 10)
+  $r0 := $r0 .or. sh_left(1, 3)
+  end if
+  if ($NI_DETECT_INSTRUMENT_TYPE_VOCAL = 11)
+  $r0 := $r0 .or. sh_left(1, 4)
+  end if
+  if ($NI_DETECT_KEY_ASHARP_MAJOR = 10)
+  $r0 := $r0 .or. sh_left(1, 5)
+  end if
+  if ($NI_DETECT_KEY_ASHARP_MINOR = 22)
+  $r0 := $r0 .or. sh_left(1, 6)
+  end if
+  if ($NI_DETECT_KEY_A_MAJOR = 9)
+  $r0 := $r0 .or. sh_left(1, 7)
+  end if
+  if ($NI_DETECT_KEY_A_MINOR = 21)
+  $r0 := $r0 .or. sh_left(1, 8)
+  end if
+  if ($NI_DETECT_KEY_B_MAJOR = 11)
+  $r0 := $r0 .or. sh_left(1, 9)
+  end if
+  if ($NI_DETECT_KEY_B_MINOR = 23)
+  $r0 := $r0 .or. sh_left(1, 10)
+  end if
+  if ($NI_DETECT_KEY_CSHARP_MAJOR = 1)
+  $r0 := $r0 .or. sh_left(1, 11)
+  end if
+  if ($NI_DETECT_KEY_CSHARP_MINOR = 13)
+  $r0 := $r0 .or. sh_left(1, 12)
+  end if
+  if ($NI_DETECT_KEY_C_MAJOR = 1)
+  $r0 := $r0 .or. sh_left(1, 13)
+  end if
+  if ($NI_DETECT_KEY_C_MINOR = 12)
+  $r0 := $r0 .or. sh_left(1, 14)
+  end if
+  if ($NI_DETECT_KEY_DSHARP_MAJOR = 3)
+  $r0 := $r0 .or. sh_left(1, 15)
+  end if
+  if ($NI_DETECT_KEY_DSHARP_MINOR = 15)
+  $r0 := $r0 .or. sh_left(1, 16)
+  end if
+  if ($NI_DETECT_KEY_D_MAJOR = 2)
+  $r0 := $r0 .or. sh_left(1, 17)
+  end if
+  if ($NI_DETECT_KEY_D_MINOR = 14)
+  $r0 := $r0 .or. sh_left(1, 18)
+  end if
+  if ($NI_DETECT_KEY_E_MAJOR = 4)
+  $r0 := $r0 .or. sh_left(1, 19)
+  end if
+  if ($NI_DETECT_KEY_E_MINOR = 16)
+  $r0 := $r0 .or. sh_left(1, 20)
+  end if
+  if ($NI_DETECT_KEY_FSHARP_MAJOR = 6)
+  $r0 := $r0 .or. sh_left(1, 21)
+  end if
+  if ($NI_DETECT_KEY_FSHARP_MINOR = 18)
+  $r0 := $r0 .or. sh_left(1, 22)
+  end if
+  if ($NI_DETECT_KEY_F_MAJOR = 5)
+  $r0 := $r0 .or. sh_left(1, 23)
+  end if
+  if ($NI_DETECT_KEY_F_MINOR = 17)
+  $r0 := $r0 .or. sh_left(1, 24)
+  end if
+  if ($NI_DETECT_KEY_GSHARP_MAJOR = 8)
+  $r0 := $r0 .or. sh_left(1, 25)
+  end if
+  if ($NI_DETECT_KEY_GSHARP_MINOR = 20)
+  $r0 := $r0 .or. sh_left(1, 26)
+  end if
+  if ($NI_DETECT_KEY_G_MAJOR = 7)
+  $r0 := $r0 .or. sh_left(1, 27)
+  end if
+  if ($NI_DETECT_KEY_G_MINOR = 19)
+  $r0 := $r0 .or. sh_left(1, 28)
+  end if
+  if ($NI_DETECT_KEY_INVALID = 6)
+  $r0 := $r0 .or. sh_left(1, 29)
+  end if
+  if ($NI_DETECT_SAMPLE_TYPE_DRUM = 1)
+  $r0 := $r0 .or. sh_left(1, 30)
+  end if
+  if ($NI_DETECT_SAMPLE_TYPE_INSTRUMENT = 0)
+  $r0 := $r0 .or. sh_left(1, 31)
+  end if
+  if ($NI_DETECT_SAMPLE_TYPE_INVALID = -1)
+  $r1 := $r1 .or. sh_left(1, 0)
+  end if
+  if ($NI_VL_TMPRO_HQ = 1)
+  $r1 := $r1 .or. sh_left(1, 1)
+  end if
+  if ($NI_ZONE_STATUS_EMPTY = 0)
+  $r1 := $r1 .or. sh_left(1, 2)
+  end if
+  if ($NI_ZONE_STATUS_IGNORED = 3)
+  $r1 := $r1 .or. sh_left(1, 3)
+  end if
+  if ($NI_ZONE_STATUS_LOADED = 1)
+  $r1 := $r1 .or. sh_left(1, 4)
+  end if
+  if ($NI_ZONE_STATUS_PURGED = 2)
+  $r1 := $r1 .or. sh_left(1, 5)
+  end if
+  if ($VNC_PITCH_BEND = 512)
+  $r1 := $r1 .or. sh_left(1, 6)
+  end if
+  if ($LOOP_PAR_MODE = 520)
+  $r1 := $r1 .or. sh_left(1, 7)
+  end if
+  if ($LOOP_PAR_START = 521)
+  $r1 := $r1 .or. sh_left(1, 8)
+  end if
+  if ($LOOP_PAR_LENGTH = 522)
+  $r1 := $r1 .or. sh_left(1, 9)
+  end if
+  if ($LOOP_PAR_XFADE = 523)
+  $r1 := $r1 .or. sh_left(1, 10)
+  end if
+  if ($LOOP_PAR_COUNT = 524)
+  $r1 := $r1 .or. sh_left(1, 11)
+  end if
+  if ($LOOP_PAR_TUNING = 525)
+  $r1 := $r1 .or. sh_left(1, 12)
+  end if
+  if ($OUTPUT_TYPE_DEFAULT = 0)
+  $r1 := $r1 .or. sh_left(1, 13)
+  end if
+  if ($OUTPUT_TYPE_MASTER_OUT = 1)
+  $r1 := $r1 .or. sh_left(1, 14)
+  end if
+  if ($OUTPUT_TYPE_AUX_OUT = 2)
+  $r1 := $r1 .or. sh_left(1, 15)
+  end if
+  if ($OUTPUT_TYPE_BUS_OUT = 3)
+  $r1 := $r1 .or. sh_left(1, 16)
+  end if
+  if ($OUTPUT_TYPE_NOT_SPECIFIED = 4)
+  $r1 := $r1 .or. sh_left(1, 17)
+  end if
+  if ($ENV_TYPE_AHDSR = 0)
+  $r1 := $r1 .or. sh_left(1, 18)
+  end if
+  if ($ENV_TYPE_DBD = 2)
+  $r1 := $r1 .or. sh_left(1, 19)
+  end if
+  if ($ENV_TYPE_FLEX = 1)
+  $r1 := $r1 .or. sh_left(1, 20)
+  end if
+  if ($INTMOD_TYPE_ENVELOPE = 2)
+  $r1 := $r1 .or. sh_left(1, 21)
+  end if
+  if ($INTMOD_TYPE_ENV_FOLLOW = 4)
+  $r1 := $r1 .or. sh_left(1, 22)
+  end if
+  if ($INTMOD_TYPE_GLIDE = 5)
+  $r1 := $r1 .or. sh_left(1, 23)
+  end if
+  if ($INTMOD_TYPE_LFO = 1)
+  $r1 := $r1 .or. sh_left(1, 24)
+  end if
+  if ($INTMOD_TYPE_NONE = 0)
+  $r1 := $r1 .or. sh_left(1, 25)
+  end if
+  if ($INTMOD_TYPE_STEPMOD = 3)
+  $r1 := $r1 .or. sh_left(1, 26)
+  end if
+  if ($LFO_TYPE_MULTI = 5)
+  $r1 := $r1 .or. sh_left(1, 27)
+  end if
+  if ($LFO_TYPE_RANDOM = 4)
+  $r1 := $r1 .or. sh_left(1, 28)
+  end if
+  if ($LFO_TYPE_RECTANGLE = 1)
+  $r1 := $r1 .or. sh_left(1, 29)
+  end if
+  if ($LFO_TYPE_SAWTOOTH = 3)
+  $r1 := $r1 .or. sh_left(1, 30)
+  end if
+  if ($LFO_TYPE_SINE = 0)
+  $r1 := $r1 .or. sh_left(1, 31)
+  end if
+  $cv := $r0
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  $cv := $r1
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 32, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on

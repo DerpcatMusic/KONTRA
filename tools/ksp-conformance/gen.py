@@ -29,14 +29,15 @@ MARK = "  set_engine_par($ENGINE_PAR_VOLUME, 1000, {g}, -1, -1)\n"
 
 
 def source_of(case):
-    _, _, setup, results, top = case
+    _, _, setup, results, top, tail = case
     body = C.DECLS + MARK.format(g=START)
     body += "".join(f"  {line.strip()}\n" for line in setup.split("\n") if line.strip())
     for k, expr in enumerate(results):
         body += C.ENCODER.format(expr=expr, base=32 * k)
     body += MARK.format(g=END)
     head = top + "\n" if top else ""
-    return f"{head}on init\n{body}end on\n"
+    rest = "\n" + tail + "\n" if tail else ""
+    return f"{head}on init\n{body}end on\n{rest}"
 
 
 def units():
@@ -45,10 +46,11 @@ def units():
     for case in C.CASES:
         cid, cat, setup, results = case[:4]
         top = case[4] if len(case) > 4 else ""
+        tail = case[5] if len(case) > 5 else ""
         chunks = [results[i:i + MAX_RESULTS] for i in range(0, len(results), MAX_RESULTS)]
         for n, chunk in enumerate(chunks):
             uid = cid if len(chunks) == 1 else f"{cid}__{n}"
-            out.append((uid, cat, setup, chunk, top))
+            out.append((uid, cat, setup, chunk, top, tail))
     if len({u[0] for u in out}) != len(out):
         raise SystemExit("duplicate case id")
     return out

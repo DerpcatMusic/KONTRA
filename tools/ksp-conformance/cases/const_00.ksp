@@ -1,0 +1,216 @@
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare $r0 := 0
+  declare $r1 := 0
+  if ($NI_WT_QUALITY_LOFI = 0)
+  $r0 := $r0 .or. sh_left(1, 0)
+  end if
+  if ($NI_WT_QUALITY_MEDIUM = 1)
+  $r0 := $r0 .or. sh_left(1, 1)
+  end if
+  if ($NI_WT_QUALITY_HIGH = 2)
+  $r0 := $r0 .or. sh_left(1, 2)
+  end if
+  if ($NI_WT_QUALITY_BEST = 3)
+  $r0 := $r0 .or. sh_left(1, 3)
+  end if
+  if ($NI_WT_FORM_LINEAR = 0)
+  $r0 := $r0 .or. sh_left(1, 4)
+  end if
+  if ($NI_WT_FORM_SYNC1 = 1)
+  $r0 := $r0 .or. sh_left(1, 5)
+  end if
+  if ($NI_WT_FORM_SYNC2 = 2)
+  $r0 := $r0 .or. sh_left(1, 6)
+  end if
+  if ($NI_WT_FORM_SYNC3 = 3)
+  $r0 := $r0 .or. sh_left(1, 7)
+  end if
+  if ($NI_WT_FORM_SYNC4 = 24)
+  $r0 := $r0 .or. sh_left(1, 8)
+  end if
+  if ($NI_WT_FORM_SYNC5 = 25)
+  $r0 := $r0 .or. sh_left(1, 9)
+  end if
+  if ($NI_WT_FORM_SYNC6 = 26)
+  $r0 := $r0 .or. sh_left(1, 10)
+  end if
+  if ($NI_WT_FORM_BENDP = 4)
+  $r0 := $r0 .or. sh_left(1, 11)
+  end if
+  if ($NI_WT_FORM_BENDM = 5)
+  $r0 := $r0 .or. sh_left(1, 12)
+  end if
+  if ($NI_WT_FORM_BENDMP = 6)
+  $r0 := $r0 .or. sh_left(1, 13)
+  end if
+  if ($NI_WT_FORM_BEND2P = 31)
+  $r0 := $r0 .or. sh_left(1, 14)
+  end if
+  if ($NI_WT_FORM_BEND2M = 32)
+  $r0 := $r0 .or. sh_left(1, 15)
+  end if
+  if ($NI_WT_FORM_BEND2MP = 33)
+  $r0 := $r0 .or. sh_left(1, 16)
+  end if
+  if ($NI_WT_FORM_EXP = 28)
+  $r0 := $r0 .or. sh_left(1, 17)
+  end if
+  if ($NI_WT_FORM_LOG = 29)
+  $r0 := $r0 .or. sh_left(1, 18)
+  end if
+  if ($NI_WT_FORM_LOGEXP = 30)
+  $r0 := $r0 .or. sh_left(1, 19)
+  end if
+  if ($NI_WT_FORM_PWM = 7)
+  $r0 := $r0 .or. sh_left(1, 20)
+  end if
+  if ($NI_WT_FORM_ASYMP = 8)
+  $r0 := $r0 .or. sh_left(1, 21)
+  end if
+  if ($NI_WT_FORM_ASYMM = 9)
+  $r0 := $r0 .or. sh_left(1, 22)
+  end if
+  if ($NI_WT_FORM_ASYMMP = 10)
+  $r0 := $r0 .or. sh_left(1, 23)
+  end if
+  if ($NI_WT_FORM_ASYM2P = 14)
+  $r0 := $r0 .or. sh_left(1, 24)
+  end if
+  if ($NI_WT_FORM_ASYM2M = 15)
+  $r0 := $r0 .or. sh_left(1, 25)
+  end if
+  if ($NI_WT_FORM_ASYM2MP = 16)
+  $r0 := $r0 .or. sh_left(1, 26)
+  end if
+  if ($NI_WT_FORM_2BLINDS = 20)
+  $r0 := $r0 .or. sh_left(1, 27)
+  end if
+  if ($NI_WT_FORM_4BLINDS = 21)
+  $r0 := $r0 .or. sh_left(1, 28)
+  end if
+  if ($NI_WT_FORM_6BLINDS = 22)
+  $r0 := $r0 .or. sh_left(1, 29)
+  end if
+  if ($NI_WT_FORM_8BLINDS = 23)
+  $r0 := $r0 .or. sh_left(1, 30)
+  end if
+  if ($NI_WT_FORM_FLIP = 11)
+  $r0 := $r0 .or. sh_left(1, 31)
+  end if
+  if ($NI_WT_FORM_FOLD = 19)
+  $r1 := $r1 .or. sh_left(1, 0)
+  end if
+  if ($NI_WT_FORM_MIRROR = 12)
+  $r1 := $r1 .or. sh_left(1, 1)
+  end if
+  if ($NI_WT_FORM_SATURATE = 18)
+  $r1 := $r1 .or. sh_left(1, 2)
+  end if
+  if ($NI_WT_FORM_SEESAW = 17)
+  $r1 := $r1 .or. sh_left(1, 3)
+  end if
+  if ($NI_WT_FORM_QUANTIZE = 13)
+  $r1 := $r1 .or. sh_left(1, 4)
+  end if
+  if ($NI_WT_FORM_WRAP = 27)
+  $r1 := $r1 .or. sh_left(1, 5)
+  end if
+  if ($NI_WT_MOD_TYPE_OFF = 0)
+  $r1 := $r1 .or. sh_left(1, 6)
+  end if
+  if ($NI_WT_MOD_TYPE_FM1 = 1)
+  $r1 := $r1 .or. sh_left(1, 7)
+  end if
+  if ($NI_WT_MOD_TYPE_FM2 = 2)
+  $r1 := $r1 .or. sh_left(1, 8)
+  end if
+  if ($NI_WT_MOD_TYPE_FM3 = 3)
+  $r1 := $r1 .or. sh_left(1, 9)
+  end if
+  if ($NI_WT_MOD_TYPE_PM1 = 6)
+  $r1 := $r1 .or. sh_left(1, 10)
+  end if
+  if ($NI_WT_MOD_TYPE_PM2 = 7)
+  $r1 := $r1 .or. sh_left(1, 11)
+  end if
+  if ($NI_WT_MOD_TYPE_PM3 = 8)
+  $r1 := $r1 .or. sh_left(1, 12)
+  end if
+  if ($NI_WT_MOD_TYPE_RM = 4)
+  $r1 := $r1 .or. sh_left(1, 13)
+  end if
+  if ($NI_WT_MOD_TYPE_MIX = 5)
+  $r1 := $r1 .or. sh_left(1, 14)
+  end if
+  if ($NI_WT_MOD_TYPE_BLEND = 9)
+  $r1 := $r1 .or. sh_left(1, 15)
+  end if
+  if ($NI_WT_MOD_TUNE_UNIT_SEMITONES = 0)
+  $r1 := $r1 .or. sh_left(1, 16)
+  end if
+  if ($NI_WT_MOD_TUNE_UNIT_RATIO = 1)
+  $r1 := $r1 .or. sh_left(1, 17)
+  end if
+  if ($NI_WT_MOD_TUNE_UNIT_HZ = 2)
+  $r1 := $r1 .or. sh_left(1, 18)
+  end if
+  if ($NI_FILE_TYPE_MIDI = 2)
+  $r1 := $r1 .or. sh_left(1, 19)
+  end if
+  if ($NI_FILE_TYPE_AUDIO = 4)
+  $r1 := $r1 .or. sh_left(1, 20)
+  end if
+  if ($NI_FILE_TYPE_ARRAY = 3)
+  $r1 := $r1 .or. sh_left(1, 21)
+  end if
+  if ($KNOB_UNIT_NONE = 0)
+  $r1 := $r1 .or. sh_left(1, 22)
+  end if
+  if ($KNOB_UNIT_DB = 1)
+  $r1 := $r1 .or. sh_left(1, 23)
+  end if
+  if ($KNOB_UNIT_HZ = 2)
+  $r1 := $r1 .or. sh_left(1, 24)
+  end if
+  if ($KNOB_UNIT_PERCENT = 3)
+  $r1 := $r1 .or. sh_left(1, 25)
+  end if
+  if ($KNOB_UNIT_MS = 4)
+  $r1 := $r1 .or. sh_left(1, 26)
+  end if
+  if ($KNOB_UNIT_OCT = 5)
+  $r1 := $r1 .or. sh_left(1, 27)
+  end if
+  if ($KNOB_UNIT_ST = 6)
+  $r1 := $r1 .or. sh_left(1, 28)
+  end if
+  if ($KEY_COLOR_RED = 4)
+  $r1 := $r1 .or. sh_left(1, 29)
+  end if
+  if ($KEY_COLOR_ORANGE = 8)
+  $r1 := $r1 .or. sh_left(1, 30)
+  end if
+  if ($KEY_COLOR_LIGHT_ORANGE = 9)
+  $r1 := $r1 .or. sh_left(1, 31)
+  end if
+  $cv := $r0
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  $cv := $r1
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 32, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on

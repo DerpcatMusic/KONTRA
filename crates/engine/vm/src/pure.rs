@@ -14,10 +14,6 @@ pub(crate) fn eval(action: Action, ints: &[i64], cells: &mut [i64]) -> Option<Ho
     Some(match action {
         Action::Abs if is_real => HostValue::Real(real(0).abs()),
         Action::Abs => HostValue::Int(int(0).wrapping_abs()),
-        Action::Min if is_real => HostValue::Real(real(0).min(real(1))),
-        Action::Min => HostValue::Int(int(0).min(int(1))),
-        Action::Max if is_real => HostValue::Real(real(0).max(real(1))),
-        Action::Max => HostValue::Int(int(0).max(int(1))),
         Action::InRange if is_real => flag(real(1) <= real(0) && real(0) <= real(2)),
         Action::InRange => flag(int(1) <= int(0) && int(0) <= int(2)),
         Action::Sgn if is_real => HostValue::Int(match real(0) {

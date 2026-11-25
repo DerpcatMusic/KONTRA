@@ -2,6 +2,8 @@
 # sample (ANALOG STRINGS) and /data/dev/workspace/BuildScratch/oracle-mf/tone.wav (1 s, 44.1 kHz, mono,
 # 440 Hz; tools/kontakt-oracle/probes/ksp/user_zones.py in the PR makes it). set_* are synchronous in
 # on init and answer -1, so every law can be read in one go.
+# Measured 2026-11-25 (tone.wav): rate 44100, start mod range 0, bpm 240000, root 36, length 1000000 us;
+# start 30000 past end 20000 -> 19996; loop length clamps to 43100; loops past 8 read -1.
 S declare $z
 S declare $y
 S declare $r

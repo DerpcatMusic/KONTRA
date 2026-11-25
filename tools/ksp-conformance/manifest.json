@@ -663,5 +663,540 @@
   "id": "manual_detect_constants__1",
   "category": "manual",
   "results": 2
+ },
+ {
+  "id": "fn_empty_uncalled",
+  "category": "function",
+  "results": 1
+ },
+ {
+  "id": "fn_before_init_later_var",
+  "category": "function",
+  "results": 1
+ },
+ {
+  "id": "call_init_nonempty",
+  "category": "function",
+  "results": 1
+ },
+ {
+  "id": "call_init_before_body",
+  "category": "function",
+  "results": 1
+ },
+ {
+  "id": "call_init_before_paren",
+  "category": "function",
+  "results": 1
+ },
+ {
+  "id": "call_note_after",
+  "category": "function",
+  "results": 1
+ },
+ {
+  "id": "ctl_get_two_args",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "ctl_menu_count_note",
+  "category": "control",
+  "results": 1
+ },
+ {
+  "id": "str_assign_cond",
+  "category": "string",
+  "results": 1
+ },
+ {
+  "id": "str_cond_note",
+  "category": "string",
+  "results": 1
+ },
+ {
+  "id": "minmax_note",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "cmd_array_equal",
+  "category": "manual",
+  "results": 2
+ },
+ {
+  "id": "cmd_purge_state",
+  "category": "manual",
+  "results": 2
+ },
+ {
+  "id": "cmd_key_type",
+  "category": "manual",
+  "results": 2
+ },
+ {
+  "id": "cmd_key_triggerstate",
+  "category": "manual",
+  "results": 2
+ },
+ {
+  "id": "cmd_group_idx",
+  "category": "manual",
+  "results": 1
+ },
+ {
+  "id": "cmd_watch_init",
+  "category": "manual",
+  "results": 1
+ },
+ {
+  "id": "cmd_watch_note",
+  "category": "manual",
+  "results": 1
+ },
+ {
+  "id": "cmd_wait_ticks_note",
+  "category": "manual",
+  "results": 1
+ },
+ {
+  "id": "cmd_map_color_init",
+  "category": "manual",
+  "results": 1
+ },
+ {
+  "id": "cmd_map_color_note",
+  "category": "manual",
+  "results": 1
+ },
+ {
+  "id": "cmd_ui_height",
+  "category": "manual",
+  "results": 1
+ },
+ {
+  "id": "cmd_mf_nav",
+  "category": "manual",
+  "results": 2
+ },
+ {
+  "id": "cmd_mf_mark",
+  "category": "manual",
+  "results": 2
+ },
+ {
+  "id": "cmd_mf_export",
+  "category": "manual",
+  "results": 1
+ },
+ {
+  "id": "cmd_mf_reset",
+  "category": "manual",
+  "results": 2
+ },
+ {
+  "id": "place_read_persistent_var_init",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_read_persistent_var_note",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_watch_array_idx_init",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_watch_array_idx_note",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_disable_logging_init",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_disable_logging_note",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_set_listener_init",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_set_listener_note",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_expose_controls_init",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_expose_controls_note",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_get_font_id_init",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_get_font_id_note",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_load_performance_view_init",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_load_performance_view_note",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_make_perfview_init",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_make_perfview_note",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_set_ui_height_px_init",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_set_ui_height_px_note",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_set_ui_width_px_init",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_set_ui_width_px_note",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_load_komplete_ui_init",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_load_komplete_ui_note",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_find_zone_init",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_find_zone_note",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_add_menu_item_init",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_add_menu_item_note",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_set_controller_init",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_set_controller_note",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_set_poly_at_init",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_set_poly_at_note",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_set_note_controller_init",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_set_note_controller_note",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_read_persistent_var_pc",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_watch_var_pc",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_add_menu_item_pc",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_find_zone_pc",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_set_listener_pc",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_set_ui_height_px_pc",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_set_ui_height_note",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "place_read_persistent_var_ui",
+  "category": "place",
+  "results": 1
+ },
+ {
+  "id": "order_note_before_init",
+  "category": "order",
+  "results": 1
+ },
+ {
+  "id": "order_fn_calls_later_fn",
+  "category": "order",
+  "results": 1
+ },
+ {
+  "id": "order_bare_name_call",
+  "category": "order",
+  "results": 1
+ },
+ {
+  "id": "order_assign_before_declare",
+  "category": "order",
+  "results": 1
+ },
+ {
+  "id": "order_read_before_declare",
+  "category": "order",
+  "results": 1
+ },
+ {
+  "id": "real_const_math",
+  "category": "real",
+  "results": 2
+ },
+ {
+  "id": "real_const_detect_pitch_tempo",
+  "category": "real",
+  "results": 2
+ },
+ {
+  "id": "real_const_detect_levels",
+  "category": "real",
+  "results": 2
+ },
+ {
+  "id": "real_const_detect_rms",
+  "category": "real",
+  "results": 1
+ },
+ {
+  "id": "init_num_zones",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "init_groups_selected",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "init_groups_affected",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "init_played_voices",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "init_duration_quarter",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "init_duration_sixteenth",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "init_duration_triplets",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "init_distance_bar",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "init_rpn",
+  "category": "builtin",
+  "results": 2
+ },
+ {
+  "id": "init_groups_affected_only",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "init_ref_group_only",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "init_distance_bar_only",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "init_key_down_oct_only",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "init_rpn_address_only",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "init_rpn_value_only",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "note_groups_affected",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "note_distance_bar",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "rpn_reads_rpn",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "const_cb_type_async_out",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "init_callback_type",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "init_saves_array_str",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "note_reads_rpn",
+  "category": "builtin",
+  "results": 1
+ },
+ {
+  "id": "const_00",
+  "category": "constant",
+  "results": 2
+ },
+ {
+  "id": "const_01",
+  "category": "constant",
+  "results": 2
+ },
+ {
+  "id": "const_02",
+  "category": "constant",
+  "results": 2
+ },
+ {
+  "id": "const_03",
+  "category": "constant",
+  "results": 2
+ },
+ {
+  "id": "const_04",
+  "category": "constant",
+  "results": 2
+ },
+ {
+  "id": "const_05",
+  "category": "constant",
+  "results": 2
+ },
+ {
+  "id": "const_06",
+  "category": "constant",
+  "results": 2
+ },
+ {
+  "id": "const_07",
+  "category": "constant",
+  "results": 2
+ },
+ {
+  "id": "const_08",
+  "category": "constant",
+  "results": 2
+ },
+ {
+  "id": "const_09",
+  "category": "constant",
+  "results": 2
  }
 ]

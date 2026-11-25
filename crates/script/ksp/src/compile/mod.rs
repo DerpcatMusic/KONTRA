@@ -72,6 +72,10 @@ fn ui_id(v: usize) -> i32 {
 
 struct Var {
     name: Box<str>,
+    /// Where it is declared: Kontakt compiles in one pass, so a use earlier in
+    /// the text is an error (conformance `fn_before_init_later_var`,
+    /// `order_note_before_init`).
+    at: u32,
     /// Element type.
     ty: Ty,
     home: Home,
@@ -160,12 +164,12 @@ pub fn compile<'a>(
                 // Kontakt compiles a callback defined twice (ANALOG STRINGS ships
                 // several ui_control pairs). ponytail: the later one replaces the
                 // earlier, as a table keyed by control would; unverified in Kontakt.
-                c.in_init = kind == CallbackKind::Init;
-                if c.in_init {
+                c.callback = Some(kind);
+                if kind == CallbackKind::Init {
                     c.declared_ranges();
                 }
                 c.block(body)?;
-                c.in_init = false;
+                c.callback = None;
                 c.emit(Op::Exit);
                 let callback = Callback {
                     kind,
@@ -335,8 +339,8 @@ struct Compiler<'a> {
     /// `Call` instructions waiting for their function's entry.
     fixups: Vec<(usize, usize)>,
     current: Option<usize>,
-    /// True while `on init`'s own body compiles.
-    in_init: bool,
+    /// The callback whose own body compiles (None in a function).
+    callback: Option<CallbackKind>,
     called: Vec<usize>,
     /// `continue` targets of the enclosing loops.
     loops: Vec<u32>,
@@ -373,7 +377,6 @@ impl<'a> Compiler<'a> {
             Op::TStore(_) | Op::TConcat => (0, -1),
             Op::TLoadAt { .. } | Op::TFromInt | Op::TFromReal => (-1, 1),
             Op::TStoreAt { .. } => (-1, -1),
-            Op::TEq => (1, -2),
             Op::IAdd
             | Op::ISub
             | Op::IMul
@@ -458,10 +461,18 @@ impl<'a> Compiler<'a> {
     // ---- Names ----
 
     fn lookup(&self, name: &str, span: Span) -> Result<usize, Error> {
-        self.names
+        let v = self
+            .names
             .get(&name.to_ascii_lowercase())
             .copied()
-            .ok_or_else(|| Error::new(span, format!("{name} is not declared")))
+            .ok_or_else(|| Error::new(span, format!("{name} is not declared")))?;
+        if self.vars.get(v).is_some_and(|var| var.at > span.start) {
+            return Err(Error::new(
+                span,
+                format!("{name} is used before it is declared"),
+            ));
+        }
+        Ok(v)
     }
 
     /// `(picture, control)` when `args` set one of `pars` of a literal
@@ -520,15 +531,16 @@ impl<'a> Compiler<'a> {
         match &s.kind {
             StmtKind::Declare(d) => self.declaration(d),
             StmtKind::Assign(target, value) => self.assign(target, value),
+            // Kontakt rejects `call` in on init however the function is written
+            // or placed, and takes it in on note (conformance `call_init_*`,
+            // `call_note_after`).
+            StmtKind::Call(_) if self.callback == Some(CallbackKind::Init) => {
+                Err(Error::new(s.span, "call is not allowed in on init"))
+            }
             StmtKind::Call(name) => self.call(name, s.span),
             StmtKind::Command(name, args) => {
-                let key = name.to_ascii_lowercase();
-                if self.function_names.contains_key(&key) {
-                    if !args.is_empty() {
-                        return Err(Error::new(s.span, "functions take no arguments"));
-                    }
-                    return self.call(name, s.span);
-                }
+                // A function is called with `call`: Kontakt rejects a bare
+                // `name` (conformance `order_bare_name_call`).
                 let b = Builtin::from_name(name)
                     .ok_or_else(|| Error::new(s.span, format!("unknown command {name}")))?;
                 const MOVES: &[&str] = &[
@@ -615,6 +627,18 @@ impl<'a> Compiler<'a> {
             .get(&name.to_ascii_lowercase())
             .copied()
             .ok_or_else(|| Error::new(span, format!("unknown function {name}")))?;
+        // "The function has to be declared before it is called" (KSP manual;
+        // conformance `order_fn_calls_later_fn`).
+        if self
+            .functions
+            .get(f)
+            .is_some_and(|f| f.span.start > span.start)
+        {
+            return Err(Error::new(
+                span,
+                format!("{name} is called before it is defined"),
+            ));
+        }
         self.fixups.push((self.code.len(), f));
         if !self.called.contains(&f) {
             self.called.push(f);
@@ -724,7 +748,7 @@ impl<'a> Compiler<'a> {
                 let got = self.expr(i)?;
                 self.convert(got, Ty::Int, i.span)?;
                 let got = self.expr(value)?;
-                self.convert(got, ty, value.span)?;
+                self.stored(got, ty, value.span)?;
                 self.emit(if ty == Ty::Text {
                     Op::TStoreAt { base, len }
                 } else {
@@ -738,11 +762,23 @@ impl<'a> Compiler<'a> {
             (_, Some(i)) => Err(Error::new(i.span, format!("{name} is not an array"))),
             (_, None) => {
                 let got = self.expr(value)?;
-                self.convert(got, ty, value.span)?;
+                self.stored(got, ty, value.span)?;
                 self.store_scalar(home);
                 Ok(())
             }
         }
+    }
+
+    /// [`Self::convert`] for an assignment: Kontakt rejects `$x := ($t = 1)`
+    /// (conformance `typing_bool_assign`).
+    fn stored(&mut self, got: Ty, ty: Ty, span: Span) -> Result<(), Error> {
+        if (got, ty) == (Ty::Bool, Ty::Int) {
+            return Err(Error::new(
+                span,
+                "a boolean cannot be assigned to an integer",
+            ));
+        }
+        self.convert(got, ty, span)
     }
 
     fn store_scalar(&mut self, home: Home) {

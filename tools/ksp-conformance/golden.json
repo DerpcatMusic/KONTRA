@@ -359,6 +359,20 @@
    2000
   ]
  },
+ "call_init_before_body": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "call_init_before_paren": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
  "call_init_empty": {
   "compiled": false,
   "completed": false,
@@ -367,6 +381,132 @@
   ]
  },
  "call_init_global": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "call_init_nonempty": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "call_note_after": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   1
+  ]
+ },
+ "cmd_array_equal": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   1,
+   0
+  ]
+ },
+ "cmd_group_idx": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -100
+  ]
+ },
+ "cmd_key_triggerstate": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   1,
+   0
+  ]
+ },
+ "cmd_key_type": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   2,
+   0
+  ]
+ },
+ "cmd_map_color_init": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "cmd_map_color_note": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "cmd_mf_export": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "cmd_mf_mark": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0,
+   0
+  ]
+ },
+ "cmd_mf_nav": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0,
+   0
+  ]
+ },
+ "cmd_mf_reset": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0,
+   0
+  ]
+ },
+ "cmd_purge_state": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   1,
+   1
+  ]
+ },
+ "cmd_ui_height": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "cmd_wait_ticks_note": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "cmd_watch_init": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "cmd_watch_note": {
   "compiled": false,
   "completed": false,
   "results": [
@@ -403,6 +543,100 @@
    0
   ]
  },
+ "const_00": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -1,
+   -1
+  ]
+ },
+ "const_01": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -1,
+   -1
+  ]
+ },
+ "const_02": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -1,
+   -1
+  ]
+ },
+ "const_03": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -1,
+   -1
+  ]
+ },
+ "const_04": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -1,
+   -1
+  ]
+ },
+ "const_05": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -1,
+   -1
+  ]
+ },
+ "const_06": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -1,
+   -1
+  ]
+ },
+ "const_07": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -1,
+   -1
+  ]
+ },
+ "const_08": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -1,
+   -1
+  ]
+ },
+ "const_09": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -1,
+   8388607
+  ]
+ },
+ "const_cb_type_async_out": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "ctl_get_two_args": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   9
+  ]
+ },
  "ctl_hide_set": {
   "compiled": false,
   "completed": false,
@@ -426,6 +660,13 @@
   ]
  },
  "ctl_knob_set_neg": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "ctl_menu_count_note": {
   "compiled": false,
   "completed": false,
   "results": [
@@ -510,6 +751,20 @@
    0
   ]
  },
+ "fn_before_init_later_var": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "fn_empty_uncalled": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
  "function_nested_call": {
   "compiled": false,
   "completed": false,
@@ -536,6 +791,134 @@
   "completed": true,
   "results": [
    -2147483648
+  ]
+ },
+ "init_callback_type": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   5
+  ]
+ },
+ "init_distance_bar": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0,
+   0
+  ]
+ },
+ "init_distance_bar_only": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "init_duration_quarter": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   500000,
+   250000
+  ]
+ },
+ "init_duration_sixteenth": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   125000,
+   333333
+  ]
+ },
+ "init_duration_triplets": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   166667,
+   83333
+  ]
+ },
+ "init_groups_affected": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0,
+   0
+  ]
+ },
+ "init_groups_affected_only": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "init_groups_selected": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   1,
+   1
+  ]
+ },
+ "init_key_down_oct_only": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "init_num_zones": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0,
+   0
+  ]
+ },
+ "init_played_voices": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0,
+   0
+  ]
+ },
+ "init_ref_group_only": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "init_rpn": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0,
+   0
+  ]
+ },
+ "init_rpn_address_only": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "init_rpn_value_only": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "init_saves_array_str": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
   ]
  },
  "int_bitnot_dot": {
@@ -708,11 +1091,440 @@
    12
   ]
  },
+ "manual_detect_constants__0": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   6,
+   1
+  ]
+ },
+ "manual_detect_constants__1": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0,
+   0
+  ]
+ },
+ "manual_keyrange_inside": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   36,
+   72
+  ]
+ },
+ "manual_keyrange_outside": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -1,
+   -1
+  ]
+ },
+ "manual_keyrange_removed": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   -1,
+   -1
+  ]
+ },
+ "manual_voice_limit_default": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   8,
+   4
+  ]
+ },
+ "manual_voice_limit_set": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   11
+  ]
+ },
+ "minmax_note": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "note_distance_bar": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "note_groups_affected": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "note_reads_rpn": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "order_assign_before_declare": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "order_bare_name_call": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "order_fn_calls_later_fn": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "order_note_before_init": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "order_read_before_declare": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_add_menu_item_init": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "place_add_menu_item_note": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_add_menu_item_pc": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_disable_logging_init": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "place_disable_logging_note": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_expose_controls_init": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "place_expose_controls_note": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "place_find_zone_init": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "place_find_zone_note": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_find_zone_pc": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_get_font_id_init": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "place_get_font_id_note": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_load_komplete_ui_init": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_load_komplete_ui_note": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_load_performance_view_init": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_load_performance_view_note": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_make_perfview_init": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "place_make_perfview_note": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "place_read_persistent_var_init": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "place_read_persistent_var_note": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_read_persistent_var_pc": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_read_persistent_var_ui": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_set_controller_init": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "place_set_controller_note": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "place_set_listener_init": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "place_set_listener_note": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_set_listener_pc": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_set_note_controller_init": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "place_set_note_controller_note": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "place_set_poly_at_init": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "place_set_poly_at_note": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "place_set_ui_height_note": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_set_ui_height_px_init": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "place_set_ui_height_px_note": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_set_ui_height_px_pc": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_set_ui_width_px_init": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "place_set_ui_width_px_note": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_watch_array_idx_init": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "place_watch_array_idx_note": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
+ "place_watch_var_pc": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
  "real_add_exact": {
   "compiled": true,
   "completed": true,
   "results": [
    5
+  ]
+ },
+ "real_const_detect_levels": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   1000000,
+   1000000
+  ]
+ },
+ "real_const_detect_pitch_tempo": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   1000000000,
+   -1000
+  ]
+ },
+ "real_const_detect_rms": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   1000000
+  ]
+ },
+ "real_const_math": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   3141592,
+   2718281
   ]
  },
  "real_div_mixed": {
@@ -758,6 +1570,13 @@
   "results": [
    3,
    -3
+  ]
+ },
+ "rpn_reads_rpn": {
+  "compiled": true,
+  "completed": true,
+  "results": [
+   0
   ]
  },
  "shift_left_31": {
@@ -808,9 +1627,23 @@
    1
   ]
  },
+ "str_assign_cond": {
+  "compiled": false,
+  "completed": false,
+  "results": [
+   0
+  ]
+ },
  "str_assign_decl": {
   "compiled": true,
   "completed": true,
+  "results": [
+   0
+  ]
+ },
+ "str_cond_note": {
+  "compiled": false,
+  "completed": false,
   "results": [
    0
   ]

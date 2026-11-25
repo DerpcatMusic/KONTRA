@@ -151,6 +151,7 @@ impl<'a> Compiler<'a> {
         self.names.insert(key, self.vars.len());
         self.vars.push(Var {
             name: d.name.into(),
+            at: span.start,
             ty,
             home,
             control,
@@ -201,6 +202,7 @@ impl<'a> Compiler<'a> {
         self.names.insert(key, self.vars.len());
         self.vars.push(Var {
             name: name.into(),
+            at: 0,
             ty,
             home,
             control: Some(index),
@@ -240,6 +242,14 @@ impl<'a> Compiler<'a> {
                     return Err(Error::new(d.span, "a scalar takes one value"));
                 }
                 if let Some(init) = d.init.first() {
+                    // Kontakt rejects `declare @s := "abc"`; `declare @s` then
+                    // `@s := "abc"` compiles (conformance `str_decl_init`, `str_assign_decl`).
+                    if ty == Ty::Text {
+                        return Err(Error::new(
+                            init.span,
+                            "a string is declared without a value",
+                        ));
+                    }
                     let got = self.expr(init)?;
                     self.convert(got, ty, init.span)?;
                     self.store_scalar(home);
@@ -474,9 +484,8 @@ impl<'a> Compiler<'a> {
         if let Some(len) = Builtin::from_name(name).and_then(Builtin::array_len) {
             return Some(len);
         }
-        self.lookup(name, Span::default())
-            .ok()
-            .and_then(|v| self.var(v).ok()?.array().map(|(_, len)| len))
+        let v = *self.names.get(&name.to_ascii_lowercase())?;
+        self.var(v).ok()?.array().map(|(_, len)| len)
     }
 
     /// Whether the script itself declares `name` — the name is the script's,
@@ -537,10 +546,6 @@ fn fold_call(name: &str, args: &[Value]) -> Option<Value> {
         (Builtin::ShRight, [Int(a), Int(n)]) => Int(a.wrapping_shr(*n as u32)),
         (Builtin::Abs, [Int(a)]) => Int(a.wrapping_abs()),
         (Builtin::Abs, [Real(a)]) => Real(a.abs()),
-        (Builtin::Min, [Int(a), Int(b)]) => Int(*a.min(b)),
-        (Builtin::Max, [Int(a), Int(b)]) => Int(*a.max(b)),
-        (Builtin::Min, [Real(a), Real(b)]) => Real(a.min(*b)),
-        (Builtin::Max, [Real(a), Real(b)]) => Real(a.max(*b)),
         (Builtin::IntToReal | Builtin::Real, [Int(a)]) => Real(f64::from(*a)),
         (Builtin::RealToInt | Builtin::Int, [Real(a)]) => Int(if a.is_nan() {
             crate::builtins::NAN_INT

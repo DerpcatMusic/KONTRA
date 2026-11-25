@@ -176,27 +176,37 @@ fn a_runaway_loop_stops_even_around_an_inner_loop() {
 
 #[test]
 fn functions_called_before_definition_and_by_name() {
-    let r = Run::new(
-        "function double
-            $x := $x * 2
-            call bump
-        end function
-        on init
+    // Kontakt compiles in one pass: `call` is rejected in on init, a function
+    // must be defined before it is called and is called with `call` only
+    // (conformance `call_init_*`, `order_fn_calls_later_fn`, `order_bare_name_call`).
+    let mut r = Run::new(
+        "on init
             declare $x := 3
-            double
-            call double
         end on
         function bump
             inc($x)
-        end function",
+        end function
+        function double
+            $x := $x * 2
+            call bump
+        end function
+        on note
+            call double
+            call double
+        end on",
     );
+    assert_eq!(r.callback(CallbackKind::Note, None), Step::Done);
     assert_eq!(r.int("$x"), 15);
+    for rejected in [
+        "function f\n message(\"\")\nend function\non init\n call f\nend on",
+        "on init\n declare $x\nend on\nfunction a\n call b\nend function\nfunction b\n inc($x)\nend function",
+        "on init\n declare $x\nend on\nfunction b\n inc($x)\nend function\non note\n b\nend on",
+        "function f\n inc($x)\nend function\non init\n declare $x\nend on",
+    ] {
+        assert!(compile(rejected, &[]).is_err(), "{rejected}");
+    }
     assert_eq!(r.script.program.max_depth, 3);
-    let err = compile(
-        "function a\n call b\nend function\nfunction b\n call a\nend function",
-        &[],
-    )
-    .unwrap_err();
+    let err = compile("function a\n call a\nend function", &[]).unwrap_err();
     assert_eq!(err.message, "recursive function call");
 }
 
@@ -394,8 +404,11 @@ fn areia_init_runs() {
 fn escaped_quotes_compile_and_reach_the_shared_vm() {
     let r = Run::new(
         r#"on init
-            declare @help := "talk about \"manuals\" here"
-            declare @path := "C:\new\thing\q.wav"
+            { Kontakt rejects a string declared with a value (conformance str_decl_init). }
+            declare @help
+            declare @path
+            @help := "talk about \"manuals\" here"
+            @path := "C:\new\thing\q.wav"
             message(@help)
             message(@path)
             message("π \"音\" " & "end")
