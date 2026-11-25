@@ -440,6 +440,52 @@ def data():
     return p
 
 
+def layers():
+    """Who hears a click where two controls overlap, and whether a hidden one does: declaration
+    order, Z_LAYER, widget type, a label on top, hidden controls and panels. Each case is two
+    controls, the second 20, 10 further in, clicked where they overlap. Shoot at 100 % (DPI=96)."""
+    p = Page("layers")
+    # (first, second, setup for (first var, second var)) per case; each is (kind, name, args)
+    btn = lambda n: ("ui_button", n, "")
+    cases = [
+        (btn("da"), btn("db"), []),                                   # declaration order
+        (btn("fa"), btn("fb"), [("a", "Z_LAYER", 1)]),                # front layer, declared first
+        (btn("ga"), btn("gb"), [("b", "Z_LAYER", -1)]),               # back layer, declared last
+        (btn("ta"), ("ui_knob", "tb", "(0, 100, 1)"), []),            # a button under a later knob
+        (("ui_switch", "la", ""), ("ui_label", "lb", "(1, 1)"), [("b", "Z_LAYER", 1)]),
+        (btn("ha"), btn("hb"), [("b", "HIDE", 16 * 8)]),              # the top one hidden whole
+        (btn("pa"), btn("pb"), [("b", "HIDE", 2 ** 3)]),              # the top one without its BG
+        (("ui_mouse_area", "ma", ""), btn("mb"), []),                 # a mouse area under a button
+    ]
+    for c, (first, second, pars) in enumerate(cases):
+        x, y = 10 + 110 * c, 20
+        a = p.control(*first)
+        b = p.control(*second)
+        p.at(a, x, y, 80, 30)
+        p.at(b, x + 20, y + 10, 80, 30)
+        for which, par, value in pars:
+            p.par(a if which == "a" else b, par, value)
+        p.act("click", x + 50, y + 25)
+    # A button in a hidden panel, and one in a back-layer panel under a default button.
+    hp = p.control("ui_panel", "hp")
+    p.at(hp, 10, 120)
+    p.par(hp, "HIDE", 16 * 8)
+    hpin = p.control("ui_button", "hpin")
+    p.at(hpin, 0, 0, 80, 30)
+    p.par(hpin, "PARENT_PANEL", "__ID_hp")
+    p.act("click", 50, 135)
+    pzo = p.control("ui_button", "pzo")
+    p.at(pzo, 140, 130, 80, 30)
+    pz = p.control("ui_panel", "pz")
+    p.at(pz, 120, 120)
+    p.par(pz, "Z_LAYER", -1)
+    pzin = p.control("ui_button", "pzin")
+    p.at(pzin, 0, 0, 80, 30)
+    p.par(pzin, "PARENT_PANEL", "__ID_pz")
+    p.act("click", 170, 145)
+    return p
+
+
 def resolve_panels(text):
     """`__ID_x` in a PARENT_PANEL value means get_ui_id($x) (a number, not a string)."""
     import re
@@ -500,7 +546,7 @@ def behaviour():
     return p
 
 
-PAGES = [widgets, geometry, pictures_page, text, data, behaviour]
+PAGES = [widgets, geometry, pictures_page, text, data, behaviour, layers]
 
 
 def main():

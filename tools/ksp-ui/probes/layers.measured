@@ -1,0 +1,23 @@
+# Kontakt 8.13 at 100 % (shoot.sh, DPI=96), oracle run 2026-11-25: the callbacks the layers
+# page's ten clicks ran, in order (one click per case, on the overlap; see gen.py layers()).
+# Cases with no uc line (the hidden panel's button) heard nothing. KONTRA checks them:
+# crates/app/host/tests/ui.rs (a_click_on_overlapping_controls_reaches_the_one_kontakt_picked).
+pc
+ucs,32771
+uc,db,1,0,0,0
+ucs,32772
+uc,fa,1,0,0,0
+ucs,32774
+uc,ga,1,0,0,0
+ucs,32776
+uc,ta,1,0,0,0
+ucs,32778
+uc,la,1,0,0,0
+ucs,32780
+uc,ha,1,0,0,0
+ucs,32783
+uc,pb,1,0,0,0
+ucs,32785
+uc,mb,1,0,0,0
+ucs,32788
+uc,pzo,1,0,0,0
