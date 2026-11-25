@@ -6326,6 +6326,43 @@ fn a_picked_file_runs_the_selector_callback_with_its_names() {
     assert_eq!(e.last_message(), "a|a.mid|/lib/midi/a.mid");
 }
 
+/// `fs_navigate` in the selector's callback (script manual: the file
+/// before or after the selected one, then its callback) asks the control
+/// side to step from the file it picked, with the files it lists; the
+/// stepping itself is `kontra_library::selector::step`.
+#[test]
+fn fs_navigate_asks_to_step_from_the_picked_file() {
+    let source = "on init
+            declare ui_file_selector $f
+            set_control_par(get_ui_id($f), $CONTROL_PAR_FILE_TYPE, $NI_FILE_TYPE_AUDIO)
+            message(get_ui_id($f))
+        end on
+        on ui_control($f)
+            fs_navigate(get_ui_id($f), 1)
+        end on";
+    let script = kontra_ksp::compile(source, &[]).unwrap();
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut plan = Plan::new(Vec::new(), 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[]);
+    let id: i32 = e.last_message().parse().unwrap();
+    e.set_picked(0, id, kontra_engine::Text::from_str_cut("/lib/a.wav").0);
+    e.set_click(0, id, [false; 3], 0);
+    e.set_control(0, id, 0);
+    let mut asked = Vec::new();
+    e.drain_files(|r| {
+        asked.push((r.path.as_str().to_owned(), r.navigate));
+        true
+    });
+    let go = kontra_engine::files::Navigate {
+        control: id,
+        next: true,
+        files: 4,
+    };
+    assert_eq!(asked, [("/lib/a.wav".to_owned(), Some(go))]);
+}
+
 /// A chord held in Poly, then a script switches the layer to mono: the next
 /// note leaves only itself sounding, not one of the chord's notes besides.
 #[test]

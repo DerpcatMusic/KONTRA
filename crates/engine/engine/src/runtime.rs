@@ -63,8 +63,8 @@ impl Engine {
                 HostValue::Nothing
             }
             // What only a host, NI hardware or Kontakt's own editor shows:
-            // NKS navigation, exposed controls, a native UI, waveform looks, a
-            // file browser's place, automation names and the release-trigger
+            // NKS navigation, exposed controls, a native UI, waveform looks,
+            // automation names and the release-trigger
             // system script's never-ending events, the instrument header's icon
             // and a zone's machine mode. KONTRA has none of them.
             Action::SetNksNavName
@@ -74,7 +74,6 @@ impl Engine {
             | Action::LoadNativeUi
             | Action::SetUiWfProperty
             | Action::AttachZone
-            | Action::FsNavigate
             | Action::WillNeverTerminate
             | Action::HideInstIcon
             | Action::SetMapEditorEventColor
@@ -136,6 +135,10 @@ impl Engine {
                     .copied()
                     .unwrap_or(0),
             ),
+            Action::FsNavigate => {
+                self.navigate(self.running.slot, int(0), int(1));
+                HostValue::Nothing
+            }
             // No file is picked in a browser KONTRA does not show.
             Action::FsGetFilename => {
                 *call.text_out = Text::EMPTY;

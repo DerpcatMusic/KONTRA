@@ -23,6 +23,40 @@ impl Engine {
         }
     }
 
+    /// `fs_navigate(id, direction)` in script `slot`: asks the control side to
+    /// pick the file before (0) or after (1) the one selector `id` picked,
+    /// which runs its callback (script manual: always, so also at either end
+    /// of the list, where the pick stays; that end is not measured). A full
+    /// queue drops it.
+    pub(crate) fn navigate(&mut self, slot: u8, id: i32, direction: i32) {
+        let Some(script) = self.plan.scripts.get(usize::from(slot)) else {
+            return;
+        };
+        let Some(n) = script.controls.index(id) else {
+            return;
+        };
+        let (path, files) = self.ui.selector(slot, n, &script.controls.look);
+        if self.files.len() < crate::script_files::FILES {
+            self.files.push(kontra_plan::files::FileRequest {
+                slot,
+                id: 0,
+                base: 0,
+                len: 0,
+                kind: kontra_plan::files::ArrayKind::Int,
+                path,
+                name: kontra_vm::Text::EMPTY,
+                save: false,
+                midi: None,
+                detect: None,
+                navigate: Some(kontra_plan::files::Navigate {
+                    control: id,
+                    next: direction == 1,
+                    files,
+                }),
+            });
+        }
+    }
+
     /// Index of the control with UI id `id` in script `slot`.
     pub(crate) fn control_index_in(&self, slot: u8, id: i32) -> Option<usize> {
         self.plan.scripts.get(usize::from(slot))?.controls.index(id)

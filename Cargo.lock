@@ -2234,6 +2234,7 @@ dependencies = [
 name = "kontra-ui-view"
 version = "0.0.0"
 dependencies = [
+ "kontra-library",
  "kontra-ui-model",
  "kontra-ui-pictures",
  "mui",

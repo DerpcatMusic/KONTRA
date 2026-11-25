@@ -1182,6 +1182,30 @@ pub enum Files {
     Data,
 }
 
+impl Files {
+    /// What file type `kind` lists: MIDI (2), arrays (3), audio (4), else
+    /// [`Files::Any`] (the script manual's file type constants).
+    #[must_use]
+    pub fn of_type(kind: i32) -> Self {
+        match kind {
+            2 => Self::Midi,
+            3 => Self::Data,
+            4 => Self::Audio,
+            _ => Self::Any,
+        }
+    }
+
+    /// The file extensions it lists.
+    #[must_use]
+    pub fn extensions(self) -> &'static [&'static str] {
+        match self {
+            Self::Any | Self::Midi => &["mid", "midi"],
+            Self::Audio => &["wav", "aif", "aiff", "ncw", "flac", "ogg"],
+            Self::Data => &["nka"],
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Orientation {
     #[default]

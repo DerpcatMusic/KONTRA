@@ -96,7 +96,7 @@ fn tape_engine() -> (Engine, Store) {
         restore: Vec::new(),
         restore_texts: Vec::new(),
         controls: kontra_plan::Controls::default(),
-        engine_pars: EnginePars {
+        module_pars: EnginePars {
             first: 0,
             by_id: vec![
                 Some(EnginePar::Knob(0)),

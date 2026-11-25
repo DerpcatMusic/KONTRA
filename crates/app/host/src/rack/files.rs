@@ -138,6 +138,22 @@ impl Rack {
             let Some(p) = live.filter(|p| p.script.generation == generation) else {
                 continue;
             };
+            // fs_navigate: the file listed before or after the selector's,
+            // picked as the player picks one, which runs its callback; at
+            // either end the pick stays.
+            if let Some(go) = request.navigate {
+                let ext = kontra_ui_model::Files::of_type(go.files).extensions();
+                let to = kontra_library::selector::step(request.path.as_str(), ext, go.next);
+                let text = to.map_or(request.path, |p| Text::from_str_cut(&p.to_string_lossy()).0);
+                self.send(Command::ControlText {
+                    part,
+                    slot: request.slot,
+                    id: go.control,
+                    cell: None,
+                    text: Box::new(text),
+                });
+                continue;
+            }
             // A detection reads the zone's own sample, not a named file.
             if let Some(job) = request.detect {
                 let sample = (p.plan.as_ref())

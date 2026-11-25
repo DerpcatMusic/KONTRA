@@ -450,6 +450,7 @@ impl Engine {
             save,
             midi: Some(args),
             detect: None,
+            navigate: None,
         };
         self.request_file(request)
     }

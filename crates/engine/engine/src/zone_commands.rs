@@ -262,6 +262,7 @@ impl Engine {
                         what,
                         cell,
                     }),
+                    navigate: None,
                 };
                 HostValue::Int(self.request_file(request))
             }

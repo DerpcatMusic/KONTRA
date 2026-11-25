@@ -16,7 +16,7 @@ pub struct EnginePars {
     /// The effect type id `first + n` belongs to, for a parameter only one
     /// effect type has. On a slot holding another type it names nothing.
     pub owners: Box<[Option<i32>]>,
-    /// The values `set_engine_par` takes for id `first + n`, when it takes
+    /// The values the module-parameter setter takes for id `first + n`, when it takes
     /// only some; any other set is refused.
     pub accepts: Box<[Option<(i32, i32)>]>,
 }
@@ -36,7 +36,7 @@ impl EnginePars {
         self.owners.get(n).copied().flatten()
     }
 
-    /// Whether `set_engine_par` takes `value` for id `id`.
+    /// Whether the module-parameter setter takes `value` for id `id`.
     #[must_use]
     pub fn takes(&self, id: i32, value: i32) -> bool {
         let n = id
