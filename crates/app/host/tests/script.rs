@@ -2576,7 +2576,7 @@ fn an_effect_type_change_outside_init_completes_asynchronously() {
 /// install.
 #[test]
 fn a_script_loads_an_effect_type_into_a_slot() {
-    use kontra_engine::{Prepared, ir};
+    use kontra_engine::{ir, Prepared};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
     plan.groups[0].mods.clear();
@@ -2647,7 +2647,7 @@ fn a_script_loads_an_effect_type_into_a_slot() {
 /// menu: subtype, wait, cutoff).
 #[test]
 fn wait_async_holds_until_the_effect_type_is_installed() {
-    use kontra_engine::{Prepared, ir};
+    use kontra_engine::{ir, Prepared};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
     plan.groups[0].mods.clear();
@@ -2692,7 +2692,7 @@ fn wait_async_holds_until_the_effect_type_is_installed() {
 /// it saves no effect type, and the network it already plays asks nothing.
 #[test]
 fn a_reverb_type_change_rebuilds_the_reverb_with_its_network() {
-    use kontra_engine::{Prepared, ir};
+    use kontra_engine::{ir, Prepared};
     let [room, hall] = kontra_format_kontakt::reverb_networks();
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
@@ -2881,7 +2881,7 @@ fn output_channels_and_disable_logging_are_answered() {
 /// once, later through the host and an async id.
 #[test]
 fn a_script_loads_a_library_response_into_a_convolution() {
-    use kontra_engine::{Prepared, Response, ir};
+    use kontra_engine::{ir, Prepared, Response};
     // One frame at half scale, 16-bit stereo at 48 kHz.
     let half = 16_384i16.to_le_bytes();
     let mut wav = b"RIFF".to_vec();
@@ -3033,7 +3033,7 @@ fn a_script_loads_a_library_response_into_a_convolution() {
 /// not on the one still playing, and keeps the new file.
 #[test]
 fn a_time_after_a_load_in_one_callback_keeps_the_new_response() {
-    use kontra_engine::{Response, ir};
+    use kontra_engine::{ir, Response};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
     plan.inserts = vec![Some(ir::Effect {
@@ -3105,7 +3105,7 @@ fn a_time_after_a_load_in_one_callback_keeps_the_new_response() {
 /// back what it was set to.
 #[test]
 fn a_scripts_convolution_predelay_prepares_its_response_again() {
-    use kontra_engine::{Response, ir};
+    use kontra_engine::{ir, Response};
     let half = 16_384i16.to_le_bytes();
     let mut wav = b"RIFF".to_vec();
     wav.extend(40u32.to_le_bytes());
@@ -3338,7 +3338,7 @@ fn volume_and_pan_controllers_set_the_output_unless_a_script_ignores_them() {
 /// the high pass it becomes blocks it.
 #[test]
 fn a_loaded_filter_follows_its_subtype() {
-    use kontra_engine::{Prepared, ir};
+    use kontra_engine::{ir, Prepared};
     let filter = |pass| ir::Filter {
         pass,
         hz: 2000.0,
@@ -3495,25 +3495,29 @@ fn every_measured_engine_par_text_reads_as_kontakt_shows_it() {
     let mut wrong = Vec::new();
     let mut now_right = Vec::new();
     for (name, xs, want) in &by_name {
-        let shown: String = (xs.iter())
-            .map(|x| {
-                format!(" @t := @t & get_engine_par_disp_ext({name}, {x}, -1, -1, -1) & \"|\"\n")
+        // Twenty points a script: a KSP string holds only so many texts.
+        let shown: String = (xs.chunks(20))
+            .map(|xs| {
+                let reads: String = (xs.iter())
+                    .map(|x| {
+                        format!(" @t := @t & get_engine_par_disp_ext({name}, {x}, -1, -1, -1) & \"|\"\n")
+                    })
+                    .collect();
+                let source =
+                    format!("on init\n declare @t\n{reads}end on\non note\n message(@t)\nend on");
+                let mut e = engine(&store, Vec::new(), &source);
+                level(&mut e, &[on(60)]);
+                e.last_message().to_owned()
             })
             .collect();
-        let source = format!("on init\n declare @t\n{shown}end on\non note\n message(@t)\nend on");
-        let mut e = engine(&store, Vec::new(), &source);
-        level(&mut e, &[on(60)]);
         let want = want.iter().map(|t| format!("{t}|")).collect::<String>();
-        let right = e.last_message() == want;
+        let right = shown == want;
         if pending.contains(name) {
             if right {
                 now_right.push(*name);
             }
         } else if !right {
-            wrong.push(format!(
-                "{name}\n  kontakt {want}\n  kontra  {}",
-                e.last_message()
-            ));
+            wrong.push(format!("{name}\n  kontakt {want}\n  kontra  {shown}"));
         }
     }
     assert!(
@@ -3995,7 +3999,7 @@ fn pgs_callback_timing() {
 /// slot without relying on rendered audio to identify a field.
 #[test]
 fn reverb_controls_write_read_and_keep_missing_target_semantics() {
-    use kontra_engine::{Prepared, ir};
+    use kontra_engine::{ir, Prepared};
     let cases = [
         ("TIME", ir::ReverbPar::Seconds),
         ("SIZE", ir::ReverbPar::Size),
@@ -4232,7 +4236,7 @@ fn a_route_not_carried_keeps_its_depth_for_the_script() {
 /// -1; ANALOG's Jump slot reads 31 and an empty one 0).
 #[test]
 fn a_script_finds_zones_and_reads_their_slots_types() {
-    use kontra_engine::{SavedZoneDesc, ir};
+    use kontra_engine::{ir, SavedZoneDesc};
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
     plan.push_saved_zone(
@@ -5388,7 +5392,7 @@ fn kontakt_sets_pitch_bend_and_pressure_and_transforms_a_controller() {
 /// events in time order across tracks.
 #[test]
 fn a_midi_file_loads_in_init_and_the_marker_walks_its_events() {
-    use kontra_engine::midi_file::{Area, Event, Smf, write};
+    use kontra_engine::midi_file::{write, Area, Event, Smf};
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
     let note = |pos, key, length| Event {
         track: 0,
@@ -5446,7 +5450,7 @@ fn a_midi_file_loads_in_init_and_the_marker_walks_its_events() {
 /// once, not seconds later at a few loop turns a block.
 #[test]
 fn a_load_time_wait_chain_is_done_before_the_first_note() {
-    use kontra_engine::midi_file::{Area, Event, Smf, write};
+    use kontra_engine::midi_file::{write, Area, Event, Smf};
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
     let smf = Smf {
         events: vec![Event {
@@ -5572,7 +5576,7 @@ fn the_midi_object_inserts_into_its_buffer() {
 /// A zone whose facts carry a one-second 440 Hz mono WAV, for the zone and
 /// detection commands.
 fn engine_with_tone_zone(store: &mut Store, source: &str) -> Engine {
-    use kontra_engine::{SavedZoneDesc, ir};
+    use kontra_engine::{ir, SavedZoneDesc};
     let (rate, frames) = (44_100u32, 44_100u32);
     let mut wav = b"RIFF".to_vec();
     wav.extend((36 + frames * 2).to_le_bytes());

@@ -15,7 +15,9 @@ use crate::script_knobs::{
 // ponytail: the cutoff law is the one filter measured (ANALOG's); measure
 // each filter kind when a library shows another.
 pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
-    use ir::Form::{Blank, Decimal, Hundredths, Padded, Pan, Ratio, Whole, Wide, WideWhole};
+    use ir::Form::{
+        Blank, Decimal, Hundredths, Menu, Padded, Pan, Rate, Ratio, Times, Whole, Wide, WideWhole,
+    };
     let lin = |lo, hi| ir::Law::Linear { lo, hi };
     let exp = |lo, hi| ir::Law::Exp { lo, hi };
     let curve = |points: [(f32, f32, f32); 2]| ir::Law::Breakpoints(points.into());
@@ -342,6 +344,25 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
         ("$ENGINE_PAR_TDL_PREDELAY_L", lin(0.0, 2000.0), Padded, none),
         ("$ENGINE_PAR_TDL_PREDELAY_R", lin(0.0, 2000.0), Padded, none),
         ("$ENGINE_PAR_TDL_WIDTH", lin(-100.0, 100.0), Decimal, none),
+        (
+            "$ENGINE_PAR_RINGMOD_LFO_RATE",
+            exp(0.031_25, 32.0),
+            Rate,
+            none,
+        ),
+        ("$ENGINE_PAR_CHORAL_DELAY", lin(0.1, 5.1), Times, none),
+        (
+            "$ENGINE_PAR_RDL_QUALITY",
+            lin(0.0, 1.0),
+            Menu(&["Crunch", "Low", "Medium", "High"]),
+            none,
+        ),
+        (
+            "$ENGINE_PAR_RDL_BBDTYPE",
+            lin(0.0, 1.0),
+            Menu(&["Grunge", "Dark", "Warm", "Clean"]),
+            none,
+        ),
         (
             "$ENGINE_PAR_RINGMOD_FREQUENCY",
             exp(31.25, 4000.0),

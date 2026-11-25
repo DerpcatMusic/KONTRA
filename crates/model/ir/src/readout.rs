@@ -33,4 +33,10 @@ pub enum Form {
     WideWhole,
     /// No text: a switch shows none.
     Blank,
+    /// `x ` and one decimal: a multiple.
+    Times,
+    /// Two decimals under 1, else one, unpadded: a rate in Hz.
+    Rate,
+    /// One of these texts: entry `floor(n·x)`, the last at 1.
+    Menu(&'static [&'static str]),
 }
