@@ -830,6 +830,7 @@ pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &m
 /// A library's interface for the editor, laid out, its pictures read from
 /// the library at `path` off the UI thread.
 fn face(tree: &Interface, path: Option<PathBuf>) -> Face {
+    FACES.fetch_add(1, Ordering::Relaxed);
     let tree = resolved(tree);
     let library = Mutex::new(None);
     let pictures = Pictures::new(Box::new(move |p: &str| {
@@ -845,8 +846,13 @@ fn face(tree: &Interface, path: Option<PathBuf>) -> Face {
     }
 }
 
+/// Library faces built and trees laid out in this process, for probes.
+static FACES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static RESOLVES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// `tree` laid out.
 fn resolved(tree: &Interface) -> Interface {
+    RESOLVES.fetch_add(1, Ordering::Relaxed);
     let mut tree = tree.clone();
     let all = 0..tree.widgets.len();
     layout::resolve(&mut tree, all);
@@ -973,6 +979,53 @@ fn part_of(action: &Action) -> Option<usize> {
     }
 }
 
+/// The editor's state between frames. It outlives the window: closing
+/// the editor hands it back to the plugin ([`crate::Shared::editor`]) and
+/// the next opening takes it, so reopening finds every face laid out and
+/// every picture decoded.
+pub(crate) struct Kept {
+    app: App,
+    shown: Shown,
+    mine: Mine,
+    /// Where it goes back to when the editor closes.
+    home: Option<Arc<KontraParams>>,
+}
+
+impl Kept {
+    /// What the last editor of `params` left, or a fresh state.
+    fn take(params: &Arc<KontraParams>) -> Self {
+        let kept = lock(&params.shared.editor).take();
+        let mut kept = kept.unwrap_or_else(|| Self {
+            app: App {
+                build: crate::BUILD,
+                ..App::default()
+            },
+            shown: Shown::default(),
+            mine: Mine::default(),
+            home: None,
+        });
+        // A press the last window saw never ends in this one.
+        for face in kept.app.parts.iter_mut().filter_map(|p| p.face.as_mut()) {
+            face.gesture.cancel();
+        }
+        kept.home = Some(Arc::clone(params));
+        kept
+    }
+}
+
+impl Drop for Kept {
+    fn drop(&mut self) {
+        let Some(home) = self.home.take() else { return };
+        let kept = Self {
+            app: std::mem::take(&mut self.app),
+            shown: std::mem::take(&mut self.shown),
+            mine: std::mem::take(&mut self.mine),
+            home: None,
+        };
+        *lock(&home.shared.editor) = Some(kept);
+    }
+}
+
 /// The size the editor is designed at, in logical points.
 const SIZE: (u32, u32) = (1180, 780);
 
@@ -1004,11 +1057,8 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let closing = Arc::clone(&params);
     let log_params = Arc::clone(&params);
     let cancel_params = Arc::clone(&params);
-    let mut app = App {
-        build: crate::BUILD,
-        ..App::default()
-    };
-    let mut shown = Shown::default();
+    // Faces, pictures and view state the last window left.
+    let mut kept = Kept::take(&params);
     let mut look = SavedView::default();
     let mut waiting = Vec::new();
     // The host macro of the panel control being dragged, and its value: its
@@ -1019,8 +1069,6 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     // Where the last load the editor asked for lands.
     let mut target = app::Loading::New;
     let mut buttons = None;
-    // What the editor sent the rack ([`Snapshot::fill`]).
-    let mut mine = Mine::default();
     // Between builds: the frame before's paint and submit, and any idle wait.
     let mut last: Option<std::time::Instant> = None;
     // Escape reaches the host when no field is focused; noted here, it
@@ -1041,6 +1089,9 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         }
     };
     let editor = MuiEditor::new(params, kontra_ui::ui(), initial_size, move |ui, bridge| {
+        let Kept {
+            app, shown, mine, ..
+        } = &mut kept;
         let start = std::time::Instant::now();
         if escape.swap(false, Ordering::AcqRel) {
             app.view.dismiss();
@@ -1074,7 +1125,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         if restored != Some(now) {
             restored = Some(now);
             look = SavedView::read(&p.look.read().unwrap_or_else(PoisonError::into_inner));
-            crate::look::apply(&mut app, &look);
+            crate::look::apply(app, &look);
             waiting.clone_from(&look.parts);
         }
         let (slots, slot_gens): (Vec<usize>, Vec<(usize, u64)>) = {
@@ -1093,20 +1144,20 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             }
             let now = Instant::now();
             mine.prune(&view.parts, view.applied, now);
-            view.fill(&mut app, &mut shown, &mine);
+            view.fill(app, shown, mine);
             (
                 view.parts.iter().map(|v| v.slot).collect(),
                 view.parts.iter().map(|v| (v.slot, v.generation)).collect(),
             )
         };
-        crate::look::parts(&mut app, &slots, &mut waiting);
+        crate::look::parts(app, &slots, &mut waiting);
         app.master = f64::from(p.volume.value());
         app.loading = p.shared.loading().then_some(target);
         app.load_progress = p.shared.progress.snapshot();
         crate::frames::note("fill", start.elapsed());
         app.view.files = lock(&dragged).take();
         app.view.pointer = bridge.pointer().pos;
-        let response = crate::frames::time("view", || kontra_ui::app::view(ui, &mut app));
+        let response = crate::frames::time("view", || kontra_ui::app::view(ui, app));
         app.view.files = None;
         app.view.pointer = None;
         // A frame reads its input as it builds, so what a press or release
@@ -1139,9 +1190,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 p.shared.dirty.store(true, Ordering::Release);
             }
             if let Action::Scale(percent) = action {
-                request_scale(&mut app, look.scale, percent, |w, h| {
-                    bridge.request_resize(w, h)
-                });
+                request_scale(app, look.scale, percent, |w, h| bridge.request_resize(w, h));
                 continue;
             }
             if let Action::Master(db) = action {
@@ -1175,11 +1224,11 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 continue;
             }
             if action == Action::CopyDiagnostics {
-                ui.set_clipboard(format_diagnostics_report(&app));
+                ui.set_clipboard(format_diagnostics_report(app));
                 continue;
             }
             if action == Action::ExportReport {
-                let contents = format_diagnostics_report(&app);
+                let contents = format_diagnostics_report(app);
                 p.shared.folder.ask_save_report(contents, log_dir());
                 if p.shared.folder.has_result() {
                     p.shared.wake_tick();
@@ -1294,7 +1343,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             _ => dragging = None,
         }
         // Parts not loaded yet keep how they were saved.
-        let mut now = crate::look::saved(&app, &slots);
+        let mut now = crate::look::saved(app, &slots);
         now.parts.extend_from_slice(&waiting);
         if now != look {
             *p.look.write().unwrap_or_else(PoisonError::into_inner) = now.write();
@@ -1603,10 +1652,37 @@ fn is_instrument(path: &std::path::Path) -> bool {
 
 #[cfg(test)]
 mod drag_probe;
+#[cfg(test)]
+mod memo_probe;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Closing the editor hands its state to the plugin and reopening takes
+    /// it back: the face stays laid out, its pictures stay decoded, and no
+    /// face is made again.
+    #[test]
+    fn the_editor_reopens_on_the_faces_it_closed_with() {
+        let params = Arc::new(KontraParams::new());
+        let tree = Interface::default();
+        let faces = FACES.load(Ordering::Relaxed);
+        {
+            let mut kept = Kept::take(&params);
+            kept.app.parts.push(Part {
+                face: Some(face(&tree, None)),
+                ..Part::default()
+            });
+            kept.shown.parts.push((7, 3, None));
+        }
+        assert!(lock(&params.shared.editor).is_some(), "closing keeps it");
+        let kept = Kept::take(&params);
+        assert!(lock(&params.shared.editor).is_none());
+        assert!(kept.app.parts.first().is_some_and(|p| p.face.is_some()));
+        assert_eq!(kept.shown.parts, [(7, 3, None)]);
+        assert_eq!(FACES.load(Ordering::Relaxed), faces + 1, "made once");
+        assert_eq!(kept.app.build.version, crate::BUILD.version);
+    }
 
     #[test]
     fn resize_uses_design_points_and_rolls_back_when_rejected() {

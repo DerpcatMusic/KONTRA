@@ -1944,3 +1944,66 @@ fn stock_words_drop_by_textpos_y_never_above_their_place() {
         [(0., 0.), (0., 0.), (0., 0.), (3., 2.), (6., 3.), (10., 5.)]
     );
 }
+
+/// A snapshot swap within the instrument hands the face a new copy of its
+/// tree: nothing decodes again, and only the widgets whose script values
+/// changed build. A second face of the same library (another preset, the
+/// editor reopened) decodes nothing either, and a page hidden for a while
+/// (another tab) comes back without building, input meanwhile or not.
+#[test]
+fn a_snapshot_swap_decodes_nothing_and_builds_only_what_changed() {
+    let (tree, wall, knob) = tree();
+    let mut ui = crate::ui();
+    let mut store = pictures(wall.clone(), knob.clone());
+    settle(&mut ui, &tree, &mut store, 1.);
+    let decodes = kontra_ui_pictures::decodes();
+
+    // The same snapshot again: a fresh copy, nothing changed.
+    let same = tree.clone();
+    assert_eq!(settle(&mut ui, &same, &mut store, 1.), 0);
+    assert_eq!(kontra_ui_pictures::decodes(), decodes);
+
+    // A face made anew over the same files decodes nothing; its first
+    // frame, before the worker answers, builds the widgets without art.
+    let mut again = pictures(wall, knob);
+    settle(&mut ui, &same, &mut again, 1.);
+    assert_eq!(
+        kontra_ui_pictures::decodes(),
+        decodes,
+        "decoded once per process"
+    );
+
+    // The page leaves the frame (another tab) while input arrives, and
+    // comes back.
+    for buttons in [
+        mui::prelude::Buttons::PRIMARY,
+        mui::prelude::Buttons::default(),
+    ] {
+        let input = Input {
+            pointer: mui::prelude::PointerInput {
+                pos: Some(mui::prelude::Point::new(1., 1.)),
+                buttons,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let other = block(40., 20.);
+        assert!(
+            ui.frame(other, Some(ViewSize::new(40., 20.)), input, 1. / 60.)
+                .is_ok()
+        );
+    }
+    assert_eq!(
+        settle(&mut ui, &same, &mut again, 1.),
+        0,
+        "kept while hidden"
+    );
+
+    // A snapshot whose script set the knob elsewhere builds the knob only.
+    let mut moved = same.clone();
+    if let Some(w) = moved.widgets.first_mut() {
+        w.value = Some(model::Value::Integer(0));
+    }
+    // Its old frame stands in until the new one decodes; then it builds.
+    assert_eq!(settle(&mut ui, &moved, &mut again, 1.), 1);
+}

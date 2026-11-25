@@ -153,6 +153,9 @@ pub struct Shared {
     scanning: AtomicBool,
     /// The editor is open: the tick keeps its copy of the rack current.
     shown: AtomicBool,
+    /// What the last editor window left (its faces, pictures and view
+    /// state), for the next one to take.
+    editor: Mutex<Option<editor::Kept>>,
     /// A load holds the rack; `saved` is the state from just before it.
     holding: AtomicBool,
     /// The audio thread caught a panic in the rack's render: the block went

@@ -98,6 +98,15 @@ const TEXT_FLOOR: f64 = 8.;
 /// Text size where the source sets none, in source pixels.
 const TEXT: f64 = 11.;
 
+/// Library widgets built (not kept) in this process, for probes and tests.
+static BUILT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many library widgets [`page`] built rather than kept, process-wide.
+#[must_use]
+pub fn widgets_built() -> usize {
+    BUILT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// `page` of `tree` at `scale` view points per source pixel, and how many
 /// widgets this frame built rather than kept. `face` scopes its ids: each
 /// face drawn in one frame (a rack part) needs its own. `level` (what
@@ -548,6 +557,7 @@ pub fn page_as(
         );
         let el = ui.memo(format!("kontra-ui-{face}-{}", n.0), deps, |ui| {
             built += 1;
+            BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let (w, h) = (r.width, r.height);
             let mut parts = Vec::new();
             if let (Some((img, meta)), Some(a)) = (&picture, art) {

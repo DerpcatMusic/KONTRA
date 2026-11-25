@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 
 use kontra_ui_model::{AssetRef, ImageMeta, Orientation};
@@ -76,6 +76,104 @@ pub fn arrived() -> bool {
     ARRIVED.swap(false, Ordering::AcqRel)
 }
 
+/// Pictures decoded in this process so far (frames, fonts, outlines and
+/// vectors), for tests and probes that check nothing decodes twice.
+static DECODES: AtomicUsize = AtomicUsize::new(0);
+
+/// How many decodes ran in this process.
+#[must_use]
+pub fn decodes() -> usize {
+    DECODES.load(Ordering::Relaxed)
+}
+
+/// What every store in the process decoded, by content, so a face made
+/// again (another preset of the library, the editor reopened, a second
+/// rack slot) finds its pictures decoded and draws the same pixels, which
+/// the renderer keeps as the same textures.
+mod shared {
+    use std::collections::HashMap;
+    use std::hash::{Hash, Hasher};
+    use std::sync::{Arc, LazyLock, Mutex, PoisonError};
+
+    use super::{DECODES, Font, Image, Ordering, Vector, Whole};
+
+    /// Decoded pixels kept for no one past this are let go.
+    // ponytail: frees what no store holds once over budget, all at once;
+    // an LRU if faces start churning through more than this.
+    const BUDGET: usize = 256 << 20;
+
+    #[derive(Clone)]
+    pub(super) enum Parsed {
+        Outline(Option<Font>),
+        Vector(Option<Arc<Vector>>),
+    }
+
+    impl Parsed {
+        pub(super) fn outline(self) -> Option<Font> {
+            match self {
+                Self::Outline(f) => f,
+                Self::Vector(_) => None,
+            }
+        }
+        pub(super) fn vector(self) -> Option<Arc<Vector>> {
+            match self {
+                Self::Vector(v) => v,
+                Self::Outline(_) => None,
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct Store {
+        images: HashMap<u64, Option<Arc<Image>>>,
+        bytes: usize,
+        // ponytail: outlines and vectors are few and small; never let go.
+        parsed: HashMap<u64, Parsed>,
+    }
+
+    static STORE: LazyLock<Mutex<Store>> = LazyLock::new(Mutex::default);
+
+    fn store() -> std::sync::MutexGuard<'static, Store> {
+        STORE.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The image keyed `key`, decoded by `decode` the first time.
+    pub(super) fn image(
+        key: u64,
+        decode: impl FnOnce() -> Option<Arc<Image>>,
+    ) -> Option<Arc<Image>> {
+        if let Some(hit) = store().images.get(&key) {
+            return hit.clone();
+        }
+        // Decoded unlocked: two stores racing for one picture decode it
+        // twice, once each, and the first kept wins.
+        DECODES.fetch_add(1, Ordering::Relaxed);
+        let image = decode();
+        let mut s = store();
+        let kept = s.images.entry(key).or_insert(image).clone();
+        s.bytes += kept.as_ref().map_or(0, |i| i.rgba.len());
+        if s.bytes > BUDGET {
+            s.images
+                .retain(|_, i| i.as_ref().is_some_and(|i| Arc::strong_count(i) > 1));
+            s.bytes = (s.images.values().flatten()).map(|i| i.rgba.len()).sum();
+        }
+        kept
+    }
+
+    /// `bytes` read whole as `whole`, parsed by `parse` the first time.
+    pub(super) fn parsed(bytes: &[u8], whole: Whole, parse: impl FnOnce() -> Parsed) -> Parsed {
+        let mut h = std::hash::DefaultHasher::new();
+        (bytes, whole as u8).hash(&mut h);
+        let key = h.finish();
+        if let Some(hit) = store().parsed.get(&key) {
+            return hit.clone();
+        }
+        DECODES.fetch_add(1, Ordering::Relaxed);
+        let parsed = parse();
+        store().parsed.entry(key).or_insert(parsed).clone()
+    }
+}
+
 /// The decoded frames of one tree's pictures, by asset and frame.
 pub struct Pictures {
     jobs: mpsc::Sender<Job>,
@@ -104,10 +202,6 @@ impl Pictures {
         let (jobs, inbox) = mpsc::channel::<Job>();
         let (outbox, done) = mpsc::channel::<Done>();
         std::thread::spawn(move || {
-            // The same frame of the same bytes decodes once, whatever path
-            // or asset asks for it.
-            let mut decoded = HashMap::<u64, Option<Arc<Image>>>::new();
-            let mut scale = 1.;
             for job in inbox {
                 if let Some(whole) = job.whole {
                     let bytes = match job.path.as_str() {
@@ -115,12 +209,23 @@ impl Pictures {
                         _ => read(&job.path),
                     };
                     let done = match whole {
-                        Whole::Outline => {
-                            Done::Outline(job.asset, bytes.and_then(|b| Font::new(b).ok()))
-                        }
+                        Whole::Outline => Done::Outline(
+                            job.asset,
+                            bytes.and_then(|b| {
+                                shared::parsed(&b, whole, || {
+                                    shared::Parsed::Outline(Font::new(b.clone()).ok())
+                                })
+                                .outline()
+                            }),
+                        ),
                         Whole::Vector => Done::Vector(
                             job.asset,
-                            bytes.and_then(|b| vector::vector(&b)).map(Arc::new),
+                            bytes.and_then(|b| {
+                                shared::parsed(&b, whole, || {
+                                    shared::Parsed::Vector(vector::vector(&b).map(Arc::new))
+                                })
+                                .vector()
+                            }),
                         ),
                     };
                     if outbox.send(done).is_err() {
@@ -128,10 +233,6 @@ impl Pictures {
                     }
                     ARRIVED.store(true, Ordering::Release);
                     continue;
-                }
-                if !job.font && job.scale != scale {
-                    decoded.clear();
-                    scale = job.scale;
                 }
                 // Decoded at its own pixels, `got` of them a picture pixel,
                 // then resampled to the device unless it is a picture font.
@@ -151,22 +252,25 @@ impl Pictures {
                         .then(|| doubled(&job.path).and_then(|p| read(&p)))
                         .flatten();
                     let (bytes, density) = match double {
-                        Some(bytes) => (Some(bytes), 2.),
+                        Some(bytes) => (Some(bytes), 2_f32),
                         None => (read(&job.path), 1.),
                     };
                     bytes.and_then(|bytes| {
+                        // The same frame of the same bytes, drawn the same
+                        // way, decodes once in the process, whatever store,
+                        // path or asset asks for it.
                         let mut h = std::hash::DefaultHasher::new();
                         bytes.hash(&mut h);
                         let axis = job.meta.axis == Orientation::Vertical;
                         (job.frame, job.meta.frames, axis, job.font).hash(&mut h);
-                        decoded
-                            .entry(h.finish())
-                            .or_insert_with(|| {
-                                let want = if job.font { 1. } else { job.scale / density };
-                                let (image, got) = decode(&bytes, job.meta, job.frame, want)?;
-                                finish((image, got * density))
-                            })
-                            .clone()
+                        if !job.font {
+                            (job.scale.to_bits(), density.to_bits(), look as usize).hash(&mut h);
+                        }
+                        shared::image(h.finish(), || {
+                            let want = if job.font { 1. } else { job.scale / density };
+                            let (image, got) = decode(&bytes, job.meta, job.frame, want)?;
+                            finish((image, got * density))
+                        })
                     })
                 };
                 if outbox
