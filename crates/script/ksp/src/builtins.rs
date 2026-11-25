@@ -127,8 +127,6 @@ builtins! {
     actions {
         // Arithmetic ([`crate::pure`]).
         Abs "abs" [N] 0 Num;
-        Min "min" [N N] 0 Num;
-        Max "max" [N N] 0 Num;
         InRange "in_range" [N N N] 0 Bool;
         Sgn "sgn" [N] 0 Int;
         Signbit "signbit" [N] 0 Int;
@@ -312,7 +310,6 @@ builtins! {
         GetMenuItemStr "get_menu_item_str" [I I] 0 Text;
         GetMenuItemValue "get_menu_item_value" [I I] 0 Int;
         GetMenuItemVisibility "get_menu_item_visibility" [I I] 0 Int;
-        GetNumMenuItems "get_num_menu_items" [I] 0 Int;
         SetTableStepsShown "set_table_steps_shown" [V I] 0 Void;
         AttachZone "attach_zone" [V I I] 0 Void;
         SetSkinOffset "set_skin_offset" [I] 0 Void;
@@ -484,7 +481,7 @@ impl Builtin {
             Self::GroupsSelected | Self::GroupsAffected => 4096,
             // Most user zones an instrument may have (the manual).
             Self::UserZoneIds => 1024,
-            Self::EventParAt => 4,
+            Self::EventParAt => 16,
             Self::NoteDuration => 128,
             // As many as one drop hands over (the engine's list).
             Self::DndItemsAudio | Self::DndItemsMidi | Self::DndItemsArray => 32,

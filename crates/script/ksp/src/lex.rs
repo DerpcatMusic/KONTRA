@@ -173,8 +173,11 @@ pub fn lex(source: &str) -> Result<Vec<Token<'_>>, Error> {
                         Err(_) => return Err(Error::new(Span::new(start, i), "invalid hex")),
                     }
                 } else {
+                    // Kontakt clamps a decimal literal to 2147483647, so `-2147483648`
+                    // reads -2147483647 (conformance `lit_int_overflow`, `lit_3e9`,
+                    // `lit_u32_over`, `lit_neg_min`); hex literals are 32-bit (`lit_hex_top`).
                     match digits.parse::<u64>() {
-                        Ok(n) => Tok::Int(n),
+                        Ok(n) => Tok::Int(n.min(i32::MAX as u64)),
                         Err(_) => return Err(Error::new(Span::new(start, i), "invalid integer")),
                     }
                 }

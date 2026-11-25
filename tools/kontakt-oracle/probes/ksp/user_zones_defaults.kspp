@@ -2,6 +2,7 @@
 # sample (ANALOG STRINGS) and /data/dev/workspace/BuildScratch/oracle-mf/tone.wav (1 s, 44.1 kHz, mono,
 # 440 Hz; tools/kontakt-oracle/probes/ksp/user_zones.py in the PR makes it). set_* are synchronous in
 # on init and answer -1, so every law can be read in one go.
+# Measured 2026-11-25: every default reads 0 except the root key (36).
 S declare $z
 S declare $y
 S set_num_user_zones(2)

@@ -2386,6 +2386,88 @@ fn moving_a_control_runs_ui_controls_then_its_ui_control() {
     assert_eq!(e.last_message(), format!("all {id} k 42 6all {s} 1"));
 }
 
+/// KSP manual (`on ui_update`): runs with every GUI change, after the
+/// control's own callbacks.
+#[test]
+fn a_control_change_runs_ui_update_last() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare ui_knob $k (0, 100, 1)
+            declare @log
+            message(get_ui_id($k))
+        end on
+        on ui_control ($k)
+            @log := @log & \"k \"
+        end on
+        on ui_update
+            @log := @log & \"update \" & $k
+            message(@log)
+        end on",
+    );
+    let id: i32 = e.last_message().parse().unwrap();
+    e.set_control(0, id, 7);
+    assert_eq!(e.last_message(), "k update 7");
+}
+
+/// KSP manual: `group_name` returns a group's name (zero-based index, empty
+/// past the last group); `get_sel_zones_idx` ends its list with -1, and with
+/// no Mapping Editor nothing is selected; `%EVENT_PAR[$EVENT_PAR_n]` reads
+/// `$EVENT_PAR_0..3` and then the custom parameters 4..15.
+#[test]
+fn group_names_selected_zones_and_the_event_par_array() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0), zone(&mut store, 0.5, 1)];
+    let script = kontra_ksp::compile(
+        "on init
+            declare %sel[4] := (5, 5, 5, 5)
+            get_sel_zones_idx(%sel)
+            message(group_name(0) & \"|\" & group_name(1) & \"|\" & group_name(99) & \"|\" & %sel[0] & \" \" & %sel[1])
+        end on
+        on note
+            set_event_par($EVENT_ID, $EVENT_PAR_2, 42)
+            set_event_par_arr($EVENT_ID, $EVENT_PAR_CUSTOM, 7, 9)
+            message(%EVENT_PAR[$EVENT_PAR_2] & \" \" & %EVENT_PAR[9] & \" \" & %EVENT_PAR[15])
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(zones, 16);
+    plan.groups[0].name = "Sustain".into();
+    plan.groups[1].name = "Release".into();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "Sustain|Release||-1 5");
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "42 7 0");
+}
+
+/// KSP manual (`reset_ksp_timer`, `$KSP_TIMER`): microseconds since the
+/// reset; a waiting callback sees the time it waited.
+#[test]
+fn the_ksp_timer_counts_microseconds_since_its_reset() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on note
+            reset_ksp_timer
+            wait(10000)
+            message($KSP_TIMER)
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    for _ in 0..8 {
+        level(&mut e, &[]);
+    }
+    assert_eq!(e.last_message(), "10000");
+}
+
 #[test]
 fn a_purge_reports_its_id_in_async_complete() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
@@ -3808,13 +3890,21 @@ fn pgs_init_is_sized_for_every_key_and_shared_between_slots() {
     for i in 0..420 {
         let len = i % 7 + 1;
         writeln!(first, "pgs_create_key(K{i}, {len})\npgs_set_key_val(K{i}, {}, {})\npgs_create_str_key(S{i})\npgs_set_str_key_val(S{i}, \"value{i}\")", len - 1, i + 1).unwrap();
-        writeln!(second, "if (pgs_get_key_val(K{i}, {}) # {})\n inc($errors)\nend if\nif (pgs_get_str_key_val(S{i}) # \"value{i}\")\n inc($errors)\nend if", len - 1, i + 1).unwrap();
+        // Kontakt has no string comparison (conformance `str_cond_note`): the
+        // string keys are read back by the message on note.
+        writeln!(
+            second,
+            "if (pgs_get_key_val(K{i}, {}) # {})\n inc($errors)\nend if",
+            len - 1,
+            i + 1
+        )
+        .unwrap();
     }
     first.push_str(
         "pgs_create_key(K0, 256)\npgs_set_key_val(K0, 1, 123)\npgs_create_str_key(S0)\nend on\n",
     );
     second.push_str("if (pgs_get_key_val(K0, 1) # 0)\n inc($errors)\nend if\n");
-    second.push_str("message($errors)\nend on\non note\n message(pgs_get_key_val(K419, 6) & \" \" & pgs_get_str_key_val(S419))\nend on\n");
+    second.push_str("message($errors)\nend on\non note\n message(pgs_get_key_val(K419, 6) & \" \" & pgs_get_str_key_val(S419) & \" \" & pgs_get_str_key_val(S1))\nend on\n");
     let slot = |source: &str| {
         kontra_host::script::plan(&kontra_ksp::compile(source, &[]).unwrap(), &[], &[])
     };
@@ -3828,7 +3918,7 @@ fn pgs_init_is_sized_for_every_key_and_shared_between_slots() {
     e.reset();
     assert_eq!(e.pgs_budget().integer_keys, 484);
     level(&mut e, &[on(60)]);
-    assert_eq!(e.last_message(), "420 value419");
+    assert_eq!(e.last_message(), "420 value419 value1");
 }
 
 #[test]
@@ -5589,6 +5679,40 @@ fn detections_measure_a_zones_sample_in_init() {
     assert_eq!(e.last_message(), "690 -6 -1");
 }
 
+/// Measured (Kontakt 8.13, probes/ksp/detect_tone.kspp, the same 1 s 440 Hz
+/// tone): in `on init` RMS -9.237 dB, BS.1770 loudness -9.961 LUFS (a mono
+/// sample counts once), peak -6.227 dB, pitch 69; a zone with no sample
+/// leaves the variable as it was. Not matched yet: Kontakt reads key 14
+/// and tempo 120 of this tone (KONTRA: 9, and too short to detect).
+#[test]
+fn detections_read_what_kontakt_reads_of_a_tone() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine_with_tone_zone(
+        &mut store,
+        "on init
+            declare ~v := 5.0
+            declare @out
+            detect_rms(-1, ~v)
+            @out := real_to_int(~v * 1000.0)
+            detect_rms(0, ~v)
+            @out := @out & \" \" & real_to_int(~v * 1000.0)
+            detect_peak(0, ~v)
+            @out := @out & \" \" & real_to_int(~v * 1000.0)
+            detect_pitch(0, ~v)
+            @out := @out & \" \" & real_to_int(~v * 1000.0)
+            detect_loudness(0, ~v)
+            message(@out & \" \" & real_to_int(~v * 1000.0))
+        end on",
+    );
+    level(&mut e, &[]);
+    let got = e.last_message();
+    let (head, loudness) = got.rsplit_once(' ').unwrap();
+    assert_eq!(head, "5000 -9237 -6227 69000");
+    // ponytail: within 0.1 LU; Kontakt's K-weighting at 44.1 kHz is one point off ours (-9.916).
+    let loudness: i32 = loudness.parse().unwrap();
+    assert!((loudness + 9961).abs() < 100, "{loudness}");
+}
+
 /// The path of the tone `engine_with_tone_zone` writes, for a script to load.
 fn tone_path() -> String {
     std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
@@ -5653,6 +5777,60 @@ fn a_user_zone_takes_parameters_a_sample_and_a_loop_in_init() {
     // The host builds the zone that plays the sample.
     attach_user_zones(&mut e, &mut store, &[]);
     assert!(e.plan().zones.iter().any(|z| z.id == 1));
+}
+
+/// Measured (Kontakt 8.13, probes/ksp/user_zones_sample.kspp, a 1 s 44.1 kHz
+/// tone): a user zone's sample reads its rate, start mod range 0 and tempo
+/// 240 (four beats in a second); the start moves, and a start past the end
+/// stops 4 frames short of it.
+#[test]
+fn a_user_zones_sample_reads_rate_tempo_and_bounded_start() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine_with_tone_zone(
+        &mut store,
+        &format!(
+            "on init
+                declare $z
+                declare @out
+                set_num_user_zones(1)
+                $z := %NI_USER_ZONE_IDS[0]
+                set_sample($z, \"{path}\")
+                @out := get_zone_par($z, $ZONE_PAR_SAMPLE_RATE) & \" \" & get_zone_par($z, $ZONE_PAR_SAMPLE_MOD_RANGE) & \" \" & get_zone_par($z, $ZONE_PAR_BPM)
+                set_zone_par($z, $ZONE_PAR_SAMPLE_START, 1000)
+                @out := @out & \" \" & get_zone_par($z, $ZONE_PAR_SAMPLE_START)
+                set_zone_par($z, $ZONE_PAR_SAMPLE_END, 20000)
+                set_zone_par($z, $ZONE_PAR_SAMPLE_START, 30000)
+                message(@out & \" \" & get_zone_par($z, $ZONE_PAR_SAMPLE_START) & \" \" & get_zone_par($z, $ZONE_PAR_SAMPLE_END))
+            end on",
+            path = tone_path()
+        ),
+    );
+    assert_eq!(e.last_message(), "44100 0 240000 1000 19996 20000");
+}
+
+/// Measured (Kontakt 8.13, probes/ksp/user_zones_pars.kspp): a key edge set
+/// past the other moves both to it, and a fade clamps to the zone's width
+/// (a one-key, one-velocity zone fades at most 1).
+#[test]
+fn a_user_zones_edges_meet_and_fades_clamp_to_its_width() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine_with_tone_zone(
+        &mut store,
+        "on init
+            declare $y
+            set_num_user_zones(2)
+            $y := %NI_USER_ZONE_IDS[1]
+            set_zone_par($y, $ZONE_PAR_HIGH_KEY, 127)
+            set_zone_par($y, $ZONE_PAR_LOW_KEY, 100)
+            set_zone_par($y, $ZONE_PAR_HIGH_KEY, 50)
+            set_zone_par($y, $ZONE_PAR_LOW_VELO, 100)
+            set_zone_par($y, $ZONE_PAR_HIGH_VELO, 50)
+            set_zone_par($y, $ZONE_PAR_FADE_LOW_KEY, 5000)
+            set_zone_par($y, $ZONE_PAR_FADE_HIGH_VELO, 7)
+            message(get_zone_par($y, $ZONE_PAR_LOW_KEY) & \" \" & get_zone_par($y, $ZONE_PAR_HIGH_KEY) & \" \" & get_zone_par($y, $ZONE_PAR_LOW_VELO) & \" \" & get_zone_par($y, $ZONE_PAR_HIGH_VELO) & \" \" & get_zone_par($y, $ZONE_PAR_FADE_LOW_KEY) & \" \" & get_zone_par($y, $ZONE_PAR_FADE_HIGH_VELO))
+        end on",
+    );
+    assert_eq!(e.last_message(), "50 50 50 50 1 1");
 }
 
 /// KSP manual (`set_sample`): outside `on init` it returns an async id; the
@@ -6240,4 +6418,232 @@ fn play_note_offset_clamps_to_start_mod_only_when_offset_limited() {
         (run(false) - 1200.0).abs() < 1.0,
         "Sampler allows offset past start_mod up to region span"
     );
+}
+
+/// KSP manual, `get_event_par()`: a note event carries its note number,
+/// velocity and MIDI channel ("the same functionality as
+/// message($EVENT_NOTE)"), and four freely assignable parameters
+/// `$EVENT_PAR_0` … `$EVENT_PAR_3` that `set_event_par()` writes.
+#[test]
+fn a_note_event_carries_its_built_in_and_free_parameters() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on note
+            set_event_par($EVENT_ID, $EVENT_PAR_0, 10)
+            set_event_par($EVENT_ID, $EVENT_PAR_1, 11)
+            set_event_par($EVENT_ID, $EVENT_PAR_2, 22)
+            set_event_par($EVENT_ID, $EVENT_PAR_3, 33)
+            message(get_event_par($EVENT_ID, $EVENT_PAR_NOTE) & \",\" & get_event_par($EVENT_ID, $EVENT_PAR_VELOCITY) & \",\" & get_event_par($EVENT_ID, $EVENT_PAR_MIDI_CHANNEL) & \",\" & $MIDI_CHANNEL & \",\" & get_event_par($EVENT_ID, $EVENT_PAR_0) & \",\" & get_event_par($EVENT_ID, $EVENT_PAR_1) & \",\" & get_event_par($EVENT_ID, $EVENT_PAR_2) & \",\" & get_event_par($EVENT_ID, $EVENT_PAR_3))
+        end on",
+    );
+    let mut note = on(62);
+    if let Event::NoteOn { note, .. } = &mut note.body {
+        note.channel = 3;
+    }
+    level(&mut e, &[note]);
+    assert_eq!(e.last_message(), "62,127,3,3,10,11,22,33");
+}
+
+/// KSP manual, `set_event_par()` example: `set_event_par($EVENT_ID,
+/// $EVENT_PAR_NOTE, 60)` moves the event, and on release
+/// `set_event_par($EVENT_ID, $EVENT_PAR_REL_VELOCITY, 127)` is read back by
+/// `get_event_par($EVENT_ID, $EVENT_PAR_REL_VELOCITY)`.
+#[test]
+fn set_event_par_moves_the_note_and_the_release_velocity() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $n
+        end on
+        on note
+            set_event_par($EVENT_ID, $EVENT_PAR_NOTE, 60)
+            $n := get_event_par($EVENT_ID, $EVENT_PAR_NOTE)
+        end on
+        on release
+            set_event_par($EVENT_ID, $EVENT_PAR_REL_VELOCITY, 127)
+            message($n & \",\" & get_event_par($EVENT_ID, $EVENT_PAR_REL_VELOCITY))
+        end on",
+    );
+    level(&mut e, &[on(64)]);
+    level(&mut e, &[off(64)]);
+    assert_eq!(e.last_message(), "60,127");
+}
+
+/// KSP manual, `set_event_par_arr()` examples: `$EVENT_PAR_ALLOW_GROUP` is
+/// the event's allow state per group (1 allowed, 0 not), `$EVENT_PAR_CUSTOM`
+/// sixteen more parameters (index 0 … 15) read back on release, and the
+/// "from script" modulation values: `$EVENT_PAR_MOD_VALUE_ID` "clamped
+/// internally between -1000000 and 1000000", `$EVENT_PAR_MOD_VALUE_EX_ID`
+/// "unbounded".
+#[test]
+fn event_parameter_arrays_hold_group_custom_and_modulation_values() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.25, 0), zone(&mut store, 0.5, 1)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare const $CUSTOM_EVENT_PAR_4 := 4
+            declare $before
+        end on
+        on note
+            disallow_group($ALL_GROUPS)
+            $before := get_event_par_arr($EVENT_ID, $EVENT_PAR_ALLOW_GROUP, 0)
+            if (get_event_par_arr($EVENT_ID, $EVENT_PAR_ALLOW_GROUP, 0) = 0)
+                set_event_par_arr($EVENT_ID, $EVENT_PAR_ALLOW_GROUP, 1, 0)
+            end if
+            set_event_par_arr($EVENT_ID, $EVENT_PAR_CUSTOM, 4321, $CUSTOM_EVENT_PAR_4)
+            set_event_par_arr($EVENT_ID, $EVENT_PAR_MOD_VALUE_EX_ID, 2500000, 1)
+        end on
+        on release
+            message($before & \",\" & get_event_par_arr($EVENT_ID, $EVENT_PAR_ALLOW_GROUP, 0) & \",\" & get_event_par_arr($EVENT_ID, $EVENT_PAR_ALLOW_GROUP, 1) & \",\" & get_event_par_arr($EVENT_ID, $EVENT_PAR_CUSTOM, $CUSTOM_EVENT_PAR_4) & \",\" & get_event_par_arr($EVENT_ID, $EVENT_PAR_MOD_VALUE_EX_ID, 1))
+        end on",
+    );
+    // Only group 0 (level 0.25) plays: the script allowed it back.
+    assert!((level(&mut e, &[on(60)]) - 0.25).abs() < 1e-3);
+    level(&mut e, &[off(60)]);
+    assert_eq!(e.last_message(), "0,1,0,4321,2500000");
+}
+
+/// KSP manual, `$EVENT_PAR_PLAY_POS`: the play position of a held note,
+/// read in a `while ($NOTE_HELD = 1)` loop; it moves on while the note plays.
+#[test]
+fn the_play_position_moves_on_while_the_note_plays() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $a
+            declare $b
+        end on
+        on note
+            wait(10000)
+            $a := get_event_par($EVENT_ID, $EVENT_PAR_PLAY_POS)
+            wait(20000)
+            $b := get_event_par($EVENT_ID, $EVENT_PAR_PLAY_POS)
+            if ($b > $a and $a > 0)
+                message(\"moved\")
+            else
+                message($a & \",\" & $b)
+            end if
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "moved");
+}
+
+/// KSP manual, `mf_get_event_par()`: an event of the MIDI object carries its
+/// command, bytes, id and track (`$EVENT_PAR_MIDI_COMMAND`,
+/// `$EVENT_PAR_MIDI_BYTE_2`, `$EVENT_PAR_ID`, `$EVENT_PAR_TRACK_NR`), as
+/// `mf_insert_event(<track>, <pos>, <command>, <byte1>, <byte2>)` set them.
+#[test]
+fn a_midi_object_event_carries_what_it_was_inserted_with() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $a
+            mf_set_buffer_size(4)
+            $a := mf_insert_event(0, 120, $MIDI_COMMAND_NOTE_ON, 64, 90)
+            message((mf_get_event_par($a, $EVENT_PAR_MIDI_COMMAND) = $MIDI_COMMAND_NOTE_ON) & \",\" & mf_get_event_par($a, $EVENT_PAR_MIDI_BYTE_1) & \",\" & mf_get_event_par($a, $EVENT_PAR_MIDI_BYTE_2) & \",\" & (mf_get_event_par($a, $EVENT_PAR_ID) = $a) & \",\" & mf_get_event_par($a, $EVENT_PAR_TRACK_NR) & \",\" & mf_get_event_par($a, $EVENT_PAR_POS))
+        end on",
+    );
+    level(&mut e, &[]);
+    assert_eq!(e.last_message(), "1,64,90,1,0,120");
+}
+
+/// KSP manual, `change_note()`: "Once the note number of a particular note
+/// event is changed, it becomes the new $EVENT_NOTE" (the white-key example).
+#[test]
+fn change_note_becomes_the_new_event_note() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare %black_keys[5] := (1, 3, 6, 8, 10)
+        end on
+        on note
+            if (search(%black_keys, $EVENT_NOTE mod 12) # -1)
+                change_note($EVENT_ID, $EVENT_NOTE - 1)
+            end if
+            message($EVENT_NOTE & \",\" & get_event_par($EVENT_ID, $EVENT_PAR_NOTE))
+        end on",
+    );
+    level(&mut e, &[on(61)]);
+    assert_eq!(e.last_message(), "60,60");
+}
+
+/// KSP manual, `set_event_mark()` / `get_event_mark()` /
+/// `delete_event_mark()`: marks group events, more than one by summing them;
+/// `get_event_mark` is 1 when the event has a mark of those given; a deleted
+/// mark no longer reads.
+#[test]
+fn event_marks_group_events_until_deleted() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare $new_id
+            declare $before
+        end on
+        on note
+            set_event_mark($EVENT_ID, $MARK_1)
+            $new_id := play_note($EVENT_NOTE + 12, 120, 0, -1)
+            set_event_mark($new_id, $MARK_1 + $MARK_2)
+            $before := get_event_mark($new_id, $MARK_2)
+            delete_event_mark($new_id, $MARK_2)
+            message(get_event_mark($EVENT_ID, $MARK_1) & \",\" & get_event_mark($EVENT_ID, $MARK_2) & \",\" & $before & \",\" & get_event_mark($EVENT_ID, $MARK_1 .or. $MARK_2) & \",\" & get_event_mark($new_id, $MARK_2) & \",\" & get_event_mark($new_id, $MARK_1))
+        end on",
+    );
+    level(&mut e, &[on(48)]);
+    assert_eq!(e.last_message(), "1,0,1,1,0,1");
+}
+
+/// KSP manual, `event_status()`: a live note event is
+/// `$EVENT_STATUS_NOTE_QUEUE`, any other id `$EVENT_STATUS_INACTIVE`; and
+/// `get_event_ids()` fills the array with the active ids "followed by one
+/// array index with its value set to 0".
+#[test]
+fn event_status_and_get_event_ids_see_the_live_notes() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare %ids[8] := (7, 7, 7, 7, 7, 7, 7, 7)
+            declare $a
+            declare $note_count
+        end on
+        on note
+            if ($EVENT_NOTE = 62)
+                get_event_ids(%ids)
+                $note_count := 0
+                $a := 0
+                while ($a < 8 and %ids[$a] # 0)
+                    inc($note_count)
+                    inc($a)
+                end while
+                message($note_count & \",\" & %ids[2] & \",\" & (event_status($EVENT_ID) = $EVENT_STATUS_NOTE_QUEUE) & \",\" & (event_status($EVENT_ID + 1) = $EVENT_STATUS_INACTIVE))
+            end if
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    level(&mut e, &[on(62)]);
+    assert_eq!(e.last_message(), "2,0,1,1");
 }

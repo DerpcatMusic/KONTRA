@@ -565,7 +565,7 @@ $OUTPUT_TYPE_DEFAULT	0
 $OUTPUT_TYPE_MASTER_OUT	1
 $OUTPUT_TYPE_AUX_OUT	2
 $OUTPUT_TYPE_BUS_OUT	3
-$OUTPUT_TYPE_NOT_SPECIFIED	-1
+$OUTPUT_TYPE_NOT_SPECIFIED	4
 # Measured in real Kontakt 8.13.1 (2026-11-14, tools/kontakt-oracle/ksp_constants.py names.txt).
 $ENV_TYPE_AHDSR	0
 $ENV_TYPE_DBD	2
@@ -635,3 +635,6 @@ $START_CRITERIA_SLICE_TRIGGER	5
 $UI_WF_PROP_FLAGS	2
 $UI_WF_PROP_PLAY_CURSOR	1
 $UI_WF_PROP_TABLE_VAL	3
+# KONTRA has no edit view, so the viewed group is the first: Kontakt 8.13 reads 0 in on init
+# (conformance unit init_ref_group_only).
+$REF_GROUP_IDX	0

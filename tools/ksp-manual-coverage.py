@@ -42,13 +42,19 @@ if len(sys.argv) > 3 and not sys.argv[3].startswith("--"):
         if not line.startswith("| `"):
             continue
         if len(cells) == 6 and cells[1] in ("vm", "answered", "partial", "missing"):  # actions
+            # No call reached: the report fell back to a zero-argument probe; ksp_status probes better.
+            st = cells[1] if int(cells[4]) > 0 else None
             for n in cells[0].split(", "):
-                used[n.lower()] = (int(cells[2]), int(cells[3]), cells[1])
+                used[n.lower()] = (int(cells[2]), int(cells[3]), st)
         elif len(cells) == 4 and cells[1] in ("yes", "no"):  # catalog names
             used[cells[0].lower()] = (int(cells[2]), int(cells[3]), cells[1])
 
-# Names the manual misspells in its own examples (real ones are listed beside them).
-TYPOS = {"$EVENT_PAR_MIDI_CHANNNEL", "$CUSTOM_EVENT_PAR_4", "$NI_VL_TMRPO_HQ"}
+# The manual's misspelling of a binary name: counted as the name it means.
+SPELLED = {"$ENGINE_PAR_SF100_OVEDRIVE": "$ENGINE_PAR_SF100_OVERDRIVE"}
+# What Kontakt 8.13.1 knows by name (its binary's strings): a manual `$`-name that is not one is
+# no Kontakt name (a typo, a PDF line-wrap fragment, an example's own variable,
+# $NI_CB_TYPE_ASYNC_OUT: conformance const_cb_type_async_out).
+KONTAKT = set((ROOT / "crates/script/ksp/data/kontakt-8.13.1-names.txt").read_text().split())
 SECTIONS = ["General Commands", "Array Commands", "Engine Parameter Commands", "Event Commands",
             "Group Commands", "Keyboard Commands", "Load/Save Commands", "MIDI Object Commands",
             "Music Information Retrieval", "Time-Related Commands", "User Interface Commands",
@@ -85,7 +91,14 @@ for i, line in enumerate(manual):
         items.setdefault(("fn", m[1]), sec)
     elif m := var.match(line):
         name = m[1]
-        if name.endswith(("_", "#")) or name in TYPOS:  # a family prefix, or a typo in the manual
+        # A long name the PDF wrapped in a table cell: "$UI_WF_PROP_TABLE_IDX_HIGHL" then "IGHT".
+        if (tail := re.match(r"^([A-Z_0-9]+)(?:\s|$)", manual[i + 1] if i + 1 < len(manual) else "")) \
+                and name.isupper() and name + tail[1] in "\n".join(manual):
+            name += tail[1]
+        name = SPELLED.get(name, name)
+        bare = name.lstrip("$%~@!")
+        # A family prefix, or not Kontakt's (the list holds names of 4 characters or more).
+        if name.endswith(("_", "#")) or (len(bare) >= 4 and bare not in KONTAKT):
             continue
         up = name.upper()
         if "ENGINE_PAR" in up:
@@ -110,6 +123,8 @@ for i, line in enumerate(manual):
 names = set()
 tsv = (ROOT / "crates/script/ksp/data/constants.tsv").read_text()
 valued = {l.split("\t")[0].lstrip("$").upper() for l in tsv.splitlines() if l and l[0] != "#"}
+# Real constants live in consts.rs (the TSV holds integers only).
+valued |= {n.lstrip("~").upper() for n in re.findall(r'"(~NI_[A-Z_]+)"', (ROOT / "crates/script/ksp/src/consts.rs").read_text())}
 vendor = {l.strip().lstrip("$%~@!").upper() for l in (ROOT / "crates/script/ksp/data/vendor_constants.txt").read_text().splitlines() if l.strip() and l[0] != "#"}
 text = subprocess.run(
     ["grep", "-rIl", "-E", "ksp|KSP", "--include=*.rs", "--include=*.ksp", "--include=*.lua", "--include=*.py",
@@ -139,13 +154,22 @@ ui_text = "\n".join(f.read_text(errors="ignore") for d in
 ui_actions = set(re.findall(r"Action::(\w+)", ui_text))
 ui_names = set(re.findall(r'"\$((?:CONTROL_PAR|UI_WF_PROP|UI_WAVEFORM|NI_MOUSE)[A-Z0-9_]*)"', ui_text))
 
+# Variables the manual's own examples declare ("decalre" is the manual's typo, page 104).
+declared = {m[1].lower() for m in re.finditer(
+    r"(?:declare|decalre)\s+(?:(?:const|polyphonic|global|local|read|pers|instpers|ui_\w+)\s+)*[$%~@!?]?([A-Za-z_]\w*)",
+    "\n".join(manual))}
+
+# The callbacks the engine runs: the fields of its plan's `Callbacks`.
+plan = (ROOT / "crates/engine/plan/src/script.rs").read_text()
+ran = set(re.findall(r"pub (\w+):", plan[plan.index("pub struct Callbacks"):].split("\n}", 1)[0]))
+
 rows = []
 for (kind, name), sec in items.items():
     key = name.lower()
     if kind == "fn":
         # Real library calls decide; the bare probe speaks only for a command no script calls.
         seen = used.get(key)
-        st = seen[2] if seen else status.get(("fn", key))
+        st = seen[2] if seen and seen[2] else status.get(("fn", key))
         got = {"vm": "done", "answered": "done", "partial": "partial", "missing": "partial"}.get(st, "missing")
         # A UI command the script UI store carries out is done though the engine does not answer it.
         if got == "partial" and "".join(w.capitalize() for w in key.split("_")) in ui_actions:
@@ -154,6 +178,8 @@ for (kind, name), sec in items.items():
         got = "done" if ("cb", CB.get(name, "")) in {(k, v.lower()) for (k, v) in status if k == "cb"} or name in CB else "missing"
         if name not in CB:
             got = "missing"
+        elif name not in ran:  # compiles, but the engine's plan has no slot for it: never runs
+            got = "partial"
     elif kind == "par" or name.upper().startswith("$ZONE_PAR"):
         # $ZONE_PAR_* are engine parameters of the zone commands: ksp_status lists the carried ones.
         got = "done" if ("par", name.lstrip("$").upper()) in status else "missing" if kind == "par" else "partial"
@@ -167,6 +193,8 @@ for (kind, name), sec in items.items():
             else "done" if bare in valued else "partial" if bare in vendor else "missing"
         if used.get(key, (0, 0, ""))[2] == "yes":
             got = "done"
+    if got in ("missing", "partial") and kind in ("sym", "var") and key.lstrip("$%~@!") in declared:
+        continue  # an example's own variable, not a Kontakt name
     if got == "done" and re.search(r"\b" + re.escape(key.lstrip("$%~@!")) + r"\b", test_text):
         got = "tested"
     rows.append((kind, name, sec, got))

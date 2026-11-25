@@ -1,0 +1,7 @@
+# The one constants.tsv value Kontakt 8.13 disagreed with in conformance const_08 (2026-11-25):
+# `$OUTPUT_TYPE_NOT_SPECIFIED = -1` was false. Measured 2026-11-25: not_specified 4, default 0, bus_out 3, minus_one -1;
+# constants.tsv now says 4.
+R not_specified $OUTPUT_TYPE_NOT_SPECIFIED
+R default $OUTPUT_TYPE_DEFAULT
+R bus_out $OUTPUT_TYPE_BUS_OUT
+R minus_one -1

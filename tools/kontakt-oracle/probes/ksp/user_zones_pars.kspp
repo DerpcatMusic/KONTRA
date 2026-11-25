@@ -2,6 +2,8 @@
 # sample (ANALOG STRINGS) and /data/dev/workspace/BuildScratch/oracle-mf/tone.wav (1 s, 44.1 kHz, mono,
 # 440 Hz; tools/kontakt-oracle/probes/ksp/user_zones.py in the PR makes it). set_* are synchronous in
 # on init and answer -1, so every law can be read in one go.
+# Measured 2026-11-25: volume clamps to +-3600, pan +-1000, tune 2e6 -> 6204 and -2e6 -> -2147483648,
+# root 0..127; an edge set past the other moves both to it (all 50); fades clamp to the width (1).
 S declare $z
 S declare $y
 S declare $r

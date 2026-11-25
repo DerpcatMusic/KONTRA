@@ -1,0 +1,216 @@
+on init
+  declare $cv
+  declare $cb
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 64, -1, -1)
+  declare $r0 := 0
+  declare $r1 := 0
+  if ($NI_FADE_S_CURVE = 2)
+  $r0 := $r0 .or. sh_left(1, 0)
+  end if
+  if ($NI_FADE_EXPONENTIAL = 3)
+  $r0 := $r0 .or. sh_left(1, 1)
+  end if
+  if ($NI_FADE_LOGARITHMIC = 4)
+  $r0 := $r0 .or. sh_left(1, 2)
+  end if
+  if ($NI_BAR_START_POSITION = 0)
+  $r0 := $r0 .or. sh_left(1, 3)
+  end if
+  if ($NI_BEATMASHER_LENGTH_BAR = 0)
+  $r0 := $r0 .or. sh_left(1, 4)
+  end if
+  if ($NI_BEATMASHER_LENGTH_HALF = 2)
+  $r0 := $r0 .or. sh_left(1, 5)
+  end if
+  if ($NI_BEATMASHER_LENGTH_HALF_DOTTED = 1)
+  $r0 := $r0 .or. sh_left(1, 6)
+  end if
+  if ($NI_BEATMASHER_LENGTH_QUARTER = 4)
+  $r0 := $r0 .or. sh_left(1, 7)
+  end if
+  if ($NI_BEATMASHER_LENGTH_QUARTER_DOTTED = 3)
+  $r0 := $r0 .or. sh_left(1, 8)
+  end if
+  if ($NI_CB_TYPE_MIDI_IN = 9)
+  $r0 := $r0 .or. sh_left(1, 9)
+  end if
+  if ($NI_CB_TYPE_NOTE_CONTROLLER = 16)
+  $r0 := $r0 .or. sh_left(1, 10)
+  end if
+  if ($NI_COMP_TYPE_CLASSIC = 0)
+  $r0 := $r0 .or. sh_left(1, 11)
+  end if
+  if ($NI_COMP_TYPE_ENHANCED = 1)
+  $r0 := $r0 .or. sh_left(1, 12)
+  end if
+  if ($NI_COMP_TYPE_PRO = 2)
+  $r0 := $r0 .or. sh_left(1, 13)
+  end if
+  if ($NI_DIRT_MODE_I = 0)
+  $r0 := $r0 .or. sh_left(1, 14)
+  end if
+  if ($NI_DIRT_MODE_II = 1)
+  $r0 := $r0 .or. sh_left(1, 15)
+  end if
+  if ($NI_DIRT_MODE_III = 2)
+  $r0 := $r0 .or. sh_left(1, 16)
+  end if
+  if ($NI_DIRT_ROUTING_ATOB = 0)
+  $r0 := $r0 .or. sh_left(1, 17)
+  end if
+  if ($NI_DIRT_ROUTING_BTOA = 1)
+  $r0 := $r0 .or. sh_left(1, 18)
+  end if
+  if ($NI_DIRT_ROUTING_PARALLEL = 2)
+  $r0 := $r0 .or. sh_left(1, 19)
+  end if
+  if ($NI_DISTORTION_TYPE_TRANS = 1)
+  $r0 := $r0 .or. sh_left(1, 20)
+  end if
+  if ($NI_DISTORTION_TYPE_TUBE = 0)
+  $r0 := $r0 .or. sh_left(1, 21)
+  end if
+  if ($NI_EPP_DRIVE_MODE_BYPASS = 0)
+  $r0 := $r0 .or. sh_left(1, 22)
+  end if
+  if ($NI_EPP_DRIVE_MODE_DE_TUBE = 1)
+  $r0 := $r0 .or. sh_left(1, 23)
+  end if
+  if ($NI_EPP_DRIVE_MODE_TAPE = 4)
+  $r0 := $r0 .or. sh_left(1, 24)
+  end if
+  if ($NI_EPP_DRIVE_MODE_TRANSISTOR = 3)
+  $r0 := $r0 .or. sh_left(1, 25)
+  end if
+  if ($NI_EPP_DRIVE_MODE_US_TUBE = 2)
+  $r0 := $r0 .or. sh_left(1, 26)
+  end if
+  if ($NI_EPP_EQ_MODE_BYPASS = 0)
+  $r0 := $r0 .or. sh_left(1, 27)
+  end if
+  if ($NI_EPP_EQ_MODE_E_GRAND = 4)
+  $r0 := $r0 .or. sh_left(1, 28)
+  end if
+  if ($NI_EPP_EQ_MODE_PASSIVE = 1)
+  $r0 := $r0 .or. sh_left(1, 29)
+  end if
+  if ($NI_EPP_TREMOLO_MODE_BYPASS = 0)
+  $r0 := $r0 .or. sh_left(1, 30)
+  end if
+  if ($NI_EPP_TREMOLO_MODE_E_GRAND = 5)
+  $r0 := $r0 .or. sh_left(1, 31)
+  end if
+  if ($NI_EPP_TREMOLO_MODE_GUITAR = 4)
+  $r1 := $r1 .or. sh_left(1, 0)
+  end if
+  if ($NI_EPP_TREMOLO_MODE_SYNTH = 3)
+  $r1 := $r1 .or. sh_left(1, 1)
+  end if
+  if ($NI_EPP_TREMOLO_WAVE_SAW_DOWN = 3)
+  $r1 := $r1 .or. sh_left(1, 2)
+  end if
+  if ($NI_EPP_TREMOLO_WAVE_SAW_UP = 4)
+  $r1 := $r1 .or. sh_left(1, 3)
+  end if
+  if ($NI_EPP_TREMOLO_WAVE_SINE = 0)
+  $r1 := $r1 .or. sh_left(1, 4)
+  end if
+  if ($NI_EPP_TREMOLO_WAVE_SQUARE = 2)
+  $r1 := $r1 .or. sh_left(1, 5)
+  end if
+  if ($NI_EPP_TREMOLO_WAVE_TRIANGLE = 1)
+  $r1 := $r1 .or. sh_left(1, 6)
+  end if
+  if ($NI_FILE_EXTENSION = 3)
+  $r1 := $r1 .or. sh_left(1, 7)
+  end if
+  if ($NI_FILE_FULL_PATH = 1)
+  $r1 := $r1 .or. sh_left(1, 8)
+  end if
+  if ($NI_FILE_FULL_PATH_OS = 2)
+  $r1 := $r1 .or. sh_left(1, 9)
+  end if
+  if ($NI_FILE_NAME = 0)
+  $r1 := $r1 .or. sh_left(1, 10)
+  end if
+  if ($NI_FREAK_MODE_OSCILLATOR = 1)
+  $r1 := $r1 .or. sh_left(1, 11)
+  end if
+  if ($NI_FREAK_MODE_RADIO = 0)
+  $r1 := $r1 .or. sh_left(1, 12)
+  end if
+  if ($NI_FREAK_MODE_SIDECHAIN = 2)
+  $r1 := $r1 .or. sh_left(1, 13)
+  end if
+  if ($NI_HQI_MODE_HIGH = 1)
+  $r1 := $r1 .or. sh_left(1, 14)
+  end if
+  if ($NI_HQI_MODE_PERFECT = 2)
+  $r1 := $r1 .or. sh_left(1, 15)
+  end if
+  if ($NI_HQI_MODE_STANDARD = 0)
+  $r1 := $r1 .or. sh_left(1, 16)
+  end if
+  if ($NI_KOLOR_ANALOG_AURA = 1)
+  $r1 := $r1 .or. sh_left(1, 17)
+  end if
+  if ($NI_KOLOR_CRUNCH = 7)
+  $r1 := $r1 .or. sh_left(1, 18)
+  end if
+  if ($NI_KOLOR_DIODE = 9)
+  $r1 := $r1 .or. sh_left(1, 19)
+  end if
+  if ($NI_KOLOR_FULL_ON = 3)
+  $r1 := $r1 .or. sh_left(1, 20)
+  end if
+  if ($NI_KOLOR_HARMONIC_CTRL = 2)
+  $r1 := $r1 .or. sh_left(1, 21)
+  end if
+  if ($NI_KOLOR_SATURAVER = 8)
+  $r1 := $r1 .or. sh_left(1, 22)
+  end if
+  if ($NI_KOLOR_SMOOTH_FUZZ = 5)
+  $r1 := $r1 .or. sh_left(1, 23)
+  end if
+  if ($NI_KOLOR_SOLID_CONSOLE = 0)
+  $r1 := $r1 .or. sh_left(1, 24)
+  end if
+  if ($NI_KOLOR_SUPER_AMP = 4)
+  $r1 := $r1 .or. sh_left(1, 25)
+  end if
+  if ($NI_KOLOR_TAPE = 6)
+  $r1 := $r1 .or. sh_left(1, 26)
+  end if
+  if ($NI_LOG_MESSAGE = 1)
+  $r1 := $r1 .or. sh_left(1, 27)
+  end if
+  if ($NI_LOG_WARNING = 2)
+  $r1 := $r1 .or. sh_left(1, 28)
+  end if
+  if ($NI_LOG_WATCHING = 0)
+  $r1 := $r1 .or. sh_left(1, 29)
+  end if
+  if ($NI_MOUSE_EVENT_TYPE_DRAG = 3)
+  $r1 := $r1 .or. sh_left(1, 30)
+  end if
+  if ($NI_MOUSE_EVENT_TYPE_DROP = 4)
+  $r1 := $r1 .or. sh_left(1, 31)
+  end if
+  $cv := $r0
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 0, -1, -1)
+    end if
+    inc($cb)
+  end while
+  $cv := $r1
+  $cb := 0
+  while ($cb < 32)
+    if ((sh_right($cv, $cb) mod 2) # 0)
+      set_engine_par($ENGINE_PAR_VOLUME, 1000, $cb + 32, -1, -1)
+    end if
+    inc($cb)
+  end while
+  set_engine_par($ENGINE_PAR_VOLUME, 1000, 65, -1, -1)
+end on

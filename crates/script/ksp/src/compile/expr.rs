@@ -188,10 +188,14 @@ impl<'a> Compiler<'a> {
             (Bin::Or, Ty::Bool, Ty::Bool) => (Op::IOr, Ty::Bool),
             (Bin::And, Ty::Bool, Ty::Bool) => (Op::IAnd, Ty::Bool),
             (Bin::Xor, Ty::Bool, Ty::Bool) => (Op::IXor, Ty::Bool),
-            (Bin::Eq, Ty::Text, Ty::Text) => (Op::TEq, Ty::Bool),
-            (Bin::Ne, Ty::Text, Ty::Text) => {
-                self.emit(Op::TEq);
-                (Op::Not, Ty::Bool)
+            // Kontakt has no string comparison: `if (@s = "abc")` is rejected in
+            // on init and on note (conformance `str_lit_cond`, `str_assign_cond`,
+            // `str_cond_note`), so text operands fall through to the mismatch.
+            // A boolean is not a number: Kontakt rejects `(3 > 2) + 0` and
+            // `in_range(5, 1, 5) + 0` (conformance `typing_bool_arith`,
+            // `bool_inrange_arith`, `bool_pgs_arith`).
+            (_, l, r) if int(l) && int(r) && cmp(op).is_none() && (l, r) != (Ty::Int, Ty::Int) => {
+                return Err(mismatch());
             }
             (_, l, r) if int(l) && int(r) => match op {
                 Bin::Add => (Op::IAdd, Ty::Int),
@@ -280,6 +284,24 @@ impl<'a> Compiler<'a> {
     }
 
     /// Emits a builtin call; returns the type it leaves on the stack, if any.
+    /// Built-in variables Kontakt rejects in on init (conformance
+    /// `init_*_only`), and the RPN ones outside on rpn/nrpn (`note_reads_rpn`,
+    /// `rpn_reads_rpn`). ponytail: function bodies are not judged.
+    fn placed(&self, b: Builtin, span: Span) -> Result<(), Error> {
+        let rpn = matches!(b, Builtin::RpnAddress | Builtin::RpnValue);
+        let not_init = rpn || matches!(b, Builtin::GroupsAffected | Builtin::KeyDownOct);
+        let in_rpn = matches!(self.callback, Some(CallbackKind::Rpn | CallbackKind::Nrpn));
+        if (not_init && self.callback == Some(CallbackKind::Init))
+            || (rpn && !in_rpn && self.callback.is_some())
+        {
+            return Err(Error::new(
+                span,
+                format!("{} is not allowed here", b.name()),
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn builtin(
         &mut self,
         b: Builtin,
@@ -288,7 +310,38 @@ impl<'a> Compiler<'a> {
     ) -> Result<Option<Ty>, Error> {
         let sig = b.sig();
         let required = sig.args.len() - usize::from(sig.optional);
-        if args.len() < required || args.len() > sig.args.len() {
+        // Commands the manual keeps to on init that Kontakt rejects in on note,
+        // on persistence_changed and on ui_control (conformance `place_*_note`,
+        // `place_*_pc`, `place_read_persistent_var_ui`, `cmd_watch_note`,
+        // `cmd_map_color_note`).
+        // ponytail: function bodies are not judged; unmeasured in Kontakt.
+        let init_only = matches!(
+            b,
+            Builtin::AddMenuItem
+                | Builtin::DisableLogging
+                | Builtin::FindZone
+                | Builtin::GetFontId
+                | Builtin::ReadPersistentVar
+                | Builtin::SetListener
+                | Builtin::SetMapEditorEventColor
+                | Builtin::SetUiHeight
+                | Builtin::SetUiHeightPx
+                | Builtin::SetUiWidthPx
+                | Builtin::WatchArrayIdx
+                | Builtin::WatchVar
+        );
+        let init = self.callback == Some(CallbackKind::Init);
+        if init_only && !init && self.current.is_none() {
+            return Err(Error::new(
+                span,
+                format!("{} is only allowed in on init", b.name()),
+            ));
+        }
+        self.placed(b, span)?;
+        // The manual gives `sort` and `search` a whole <from>, <to> range or none;
+        // Kontakt rejects `sort(%a, 0, 3)` (conformance `array_sort_asc`).
+        let half_range = matches!(b, Builtin::Sort | Builtin::Search) && args.len() == 3;
+        if args.len() < required || args.len() > sig.args.len() || half_range {
             return Err(Error::new(
                 span,
                 format!("{} takes {} arguments", b.name(), sig.args.len()),
@@ -302,7 +355,7 @@ impl<'a> Compiler<'a> {
         // load_array): its saved values land at the end of init, unless
         // read_persistent_var reloaded it first.
         // ponytail: a load in a function init calls is not seen.
-        if self.in_init && matches!(b, Builtin::LoadArray | Builtin::LoadArrayStr) {
+        if init && matches!(b, Builtin::LoadArray | Builtin::LoadArrayStr) {
             let (v, _) = self.named(arg(0)?)?;
             if let Some(var) = self
                 .vars
@@ -425,7 +478,13 @@ impl<'a> Compiler<'a> {
                 }
                 let len = match self.lookup(name, e.span) {
                     Ok(v) => self.var(v)?.array().map(|(_, len)| len),
-                    Err(_) => Builtin::from_name(name).and_then(Builtin::array_len),
+                    Err(_) => match Builtin::from_name(name) {
+                        Some(b) => {
+                            self.placed(b, e.span)?;
+                            b.array_len()
+                        }
+                        None => None,
+                    },
                 };
                 let len = len.ok_or_else(|| Error::new(e.span, "expected an array"))?;
                 self.emit(Op::Int(len as i32));

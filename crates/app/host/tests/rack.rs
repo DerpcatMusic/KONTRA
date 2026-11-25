@@ -944,7 +944,9 @@ fn a_big_persistent_array_is_captured_over_blocks_and_saves_what_changed() {
 
 /// An instrument read from "a.nki" whose one script keeps `$knob` and
 /// counts, in `$marker`, init (5) and each persistence-changed (+1); its
-/// snapshot type is `kind`, its saved values `saved`.
+/// snapshot type is `kind`, its saved values `saved`. It does not call
+/// `read_persistent_var` there: Kontakt rejects it outside on init
+/// (conformance `place_read_persistent_var_pc`); the recalled value has landed.
 fn snapshot_of(kind: u8, saved: &[&str]) -> kontra_engine::ir::Instrument {
     use kontra_engine::ir;
     let source = format!(
@@ -958,8 +960,6 @@ fn snapshot_of(kind: u8, saved: &[&str]) -> kontra_engine::ir::Instrument {
         end on
         on persistence_changed
             $marker := $marker + 1
-            $knob := 0
-            read_persistent_var($knob)
         end on"
     );
     ir::Instrument {
@@ -1294,6 +1294,81 @@ fn an_array_saved_by_path_loads_back_and_a_file_of_another_array_does_not() {
     );
     // Saved 1; loaded back 123; wrong name 0; unwritable 0; huge 0; dir 0.
     assert!(saved.contains(&"$result 11230000".to_owned()), "{saved:?}");
+}
+
+/// KSP manual (`save_midi_file`, `load_midi_file`, `on async_complete`):
+/// outside `on init` both run asynchronously and report through
+/// `$NI_ASYNC_EXIT_STATUS`. A save writes the MIDI object into the rack's
+/// save folder (never the library); `load_midi_file` replaces the object
+/// with the file's events.
+#[test]
+fn a_midi_object_saves_and_a_midi_file_loads_after_init() {
+    use kontra_engine::midi_file::{Area, Event, Smf, write};
+    let scratch = Scratch::new("midi-files");
+    let dir = scratch.0.clone();
+    std::fs::create_dir_all(&dir).unwrap();
+    let smf = Smf {
+        events: vec![Event {
+            command: 0x90,
+            byte1: 64,
+            byte2: 100,
+            length: 240,
+            ..Event::default()
+        }],
+        division: 480,
+        tracks: 1,
+        area: Area::WHOLE,
+    };
+    std::fs::write(dir.join("in.mid"), write(&smf).unwrap()).unwrap();
+    let saves = dir.join("saves");
+    let mine = saves.join(dir.strip_prefix("/").unwrap_or(&dir));
+    std::fs::create_dir_all(&mine).unwrap();
+    let source = format!(
+        "on init
+            declare $step
+            declare $id
+            declare $result
+            make_persistent($result)
+            mf_set_buffer_size(4)
+        end on
+        on note
+            $id := mf_insert_event(0, 0, $MIDI_COMMAND_NOTE_ON, 60, 100)
+            $id := save_midi_file(\"{0}/out.mid\")
+        end on
+        on async_complete
+            select $step
+                case 0
+                    $result := $NI_ASYNC_EXIT_STATUS
+                    $id := load_midi_file(\"{0}/in.mid\")
+                case 1
+                    mf_get_first(-1)
+                    $result := $result * 10 + $NI_ASYNC_EXIT_STATUS
+                    $result := $result * 1000 + mf_get_byte_one()
+            end select
+            inc($step)
+        end on",
+        dir.display()
+    );
+    let (mut rack, mut audio) = rack();
+    rack.set_saves(saves.clone());
+    let instrument = scripted(&dir.join("i.nki"), kontra_engine::ir::Dialect::Ksp, &source);
+    rack.load_ir(0, instrument, None).unwrap();
+    audio.process(BLOCK, &[(0, note(0))]);
+    run(&mut rack, &mut audio, 16);
+    let saved = saved_now(&mut rack, &mut audio);
+    let written = std::fs::read(mine.join("out.mid")).expect("the save lands in the save folder");
+    let back = kontra_engine::midi_file::read(&written).expect("a MIDI file");
+    assert!(
+        back.events
+            .iter()
+            .any(|e| e.command == 0x90 && e.byte1 == 60)
+    );
+    assert!(
+        !dir.join("out.mid").exists(),
+        "a save never writes the library"
+    );
+    // Saved 1, loaded 1, the loaded file's note 64.
+    assert!(saved.contains(&"$result 11064".to_owned()), "{saved:?}");
 }
 
 /// Some blocks and ticks, for a script's waits and the control side.

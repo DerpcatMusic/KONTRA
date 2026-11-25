@@ -1,0 +1,32 @@
+# Music Information Retrieval in Kontakt 8.13 on init (run: ksp_probe.py <nki> this-file): every
+# detection of a user zone holding the tone.wav of user_zones_sample.kspp (1 s, 44.1 kHz, mono,
+# 440 Hz, amplitude 16000 of 32767), the same tone kontra-host's tests build. Reals read times 1000.
+# Measured 2026-11-25: rms -9237, loudness -9961, peak -6227, pitch 69000, tempo 120000, key 14,
+# sample_type 0; a zone id of -1 leaves the variable as it was (the *_no_zone rows read the prior 120000).
+S declare $z
+S declare $r
+S declare ~v
+S declare $k
+S set_num_user_zones(1)
+S $z := %NI_USER_ZONE_IDS[0]
+S $r := set_sample($z, "Z:/data/dev/workspace/BuildScratch/oracle-mf/tone.wav")
+S detect_rms($z, ~v)
+R rms real_to_int(~v * 1000.0)
+S detect_loudness($z, ~v)
+R loudness real_to_int(~v * 1000.0)
+S detect_peak($z, ~v)
+R peak real_to_int(~v * 1000.0)
+S detect_pitch($z, ~v)
+R pitch real_to_int(~v * 1000.0)
+S detect_tempo($z, ~v)
+R tempo real_to_int(~v * 1000.0)
+S detect_key($z, $k)
+R key $k
+S detect_sample_type($z, $k)
+R sample_type $k
+S detect_rms(-1, ~v)
+R rms_no_zone real_to_int(~v * 1000.0)
+S detect_loudness(-1, ~v)
+R loudness_no_zone real_to_int(~v * 1000.0)
+S detect_tempo(-1, ~v)
+R tempo_no_zone real_to_int(~v * 1000.0)
