@@ -206,18 +206,22 @@ impl Look {
                     ink(0xfe_fefe)
                 };
                 let offset = if *shift { scale } else { 0. };
-                // TEXT_ALIGNMENT places a button's words too (the reference
-                // 8.13, tools/ksp-ui fields page).
-                let align = style.map_or(model::Align::Center, |s| s.align);
-                let label = if *on
-                    && button.is_some()
-                    && style.is_none_or(|s| matches!(s.font, model::Font::Stock(0 | 12)))
-                {
+                // TEXT_ALIGNMENT places a button's words too, from the left
+                // when unset (the reference 8.13, tools/ksp-ui fields page).
+                let align = style.map_or(model::Align::Left, |s| s.align);
+                // An installed pixel font draws the words when there is one
+                // for this font (lib.rs picks it).
+                let label = if glyphs.is_some() {
                     // The measured stock font advances four pixels for a space.
                     let metrics = if style.is_some_and(|s| s.font == model::Font::Stock(12)) {
                         StockMetrics::Button12
                     } else {
                         StockMetrics::Field
+                    };
+                    let color = match (*on, stock) {
+                        (true, true) => model::Rgba::rgb(DARK),
+                        (true, false) => style.map_or(model::Rgba::rgb(DARK), |s| s.color),
+                        (false, _) => style.map_or(model::Rgba::rgb(0xfefefe), |s| s.color),
                     };
                     field_words(
                         caption,
@@ -225,14 +229,15 @@ impl Look {
                         align,
                         (w, h, scale, device),
                         glyphs,
-                        if stock {
-                            model::Rgba::rgb(DARK)
-                        } else {
-                            style.map_or(model::Rgba::rgb(DARK), |s| s.color)
-                        },
+                        color,
                         metrics,
-                        wd.text_y,
+                        // TEXTPOS_Y moves the words down from their centred
+                        // place, lit or not (fields page: 6 sets them 6 px lower).
+                        None,
+                        [7., 7., 1. - f64::from(wd.text_y.unwrap_or(0))],
                     )
+                } else if let Some(el) = label_words(caption, style, wd, (w, h, scale, device)) {
+                    el
                 } else {
                     words_at(
                         caption,
@@ -267,9 +272,8 @@ impl Look {
                     }
                 }
                 let ink = ink(0xfe_fefe);
-                // The installed font-13 atlas is 699×13.
-                let font =
-                    glyphs.filter(|_| style.is_some_and(|s| s.font == model::Font::Stock(13)));
+                // The installed font-13 atlas, or the 9 px pixel font's.
+                let font = glyphs;
                 let color = style.map_or(model::Rgba::rgb(0xfefefe), |s| s.color);
                 // The plain-text value clears the arrows' 14 px (the stock
                 // font's already sits 11 px in, as measured).
@@ -288,6 +292,7 @@ impl Look {
                     color,
                     StockMetrics::Field,
                     wd.text_y,
+                    [7., 11., 0.],
                 ));
                 if !wd.hide.value {
                     parts.push(field_words(
@@ -299,6 +304,7 @@ impl Look {
                         color,
                         StockMetrics::Field,
                         wd.value_y.or(wd.text_y),
+                        [7., 11., 0.],
                     ));
                 }
                 parts
@@ -320,14 +326,24 @@ impl Look {
                 let ink = ink(0xfe_fefe);
                 // A menu's words take its TEXT_ALIGNMENT and run under the
                 // arrow (the reference 8.13, tools/ksp-ui fields page).
-                parts.push(words_at(
-                    caption,
-                    ink,
-                    style.map_or(model::Align::Left, |s| s.align),
-                    (w, h, scale),
-                    wd.text_y,
-                    None,
-                ));
+                let align = style.map_or(model::Align::Left, |s| s.align);
+                parts.push(if glyphs.is_some() {
+                    field_words(
+                        caption,
+                        ink,
+                        align,
+                        (w, h, scale, device),
+                        glyphs,
+                        style.map_or(model::Rgba::rgb(0xfefefe), |s| s.color),
+                        StockMetrics::Field,
+                        wd.text_y,
+                        [7., 1., 1.],
+                    )
+                } else if let Some(el) = label_words(caption, style, wd, (w, h, scale, device)) {
+                    el
+                } else {
+                    words_at(caption, ink, align, (w, h, scale), wd.text_y, None)
+                });
                 if wd.menu_arrow {
                     parts.extend(arrow(ink, w, h, scale));
                 }
@@ -488,6 +504,7 @@ fn field_words(
     color: model::Rgba,
     metrics: StockMetrics,
     y_override: Option<i32>,
+    [left, right, lift]: [f64; 3],
 ) -> El {
     let Some(glyphs) = glyphs else {
         return words_at(text, ink, align, (w, h, s), y_override, None);
@@ -516,11 +533,17 @@ fn field_words(
                 .map(|glyph| advance(c, glyph))
         })
         .sum();
+    // `left` and `right` points of room each side, as the control kind
+    // keeps them (value edit 7 and 11; the fields page: button 7 and 7,
+    // menu 7 and 1, its words running under the arrow).
     let mut x = match align {
-        model::Align::Left => 7. * s,
-        model::Align::Center => (w - width) / 2.,
-        model::Align::Right => w - 11. * s - width,
+        model::Align::Left => left * s,
+        model::Align::Center => (left * s + w - right * s - width) / 2.,
+        model::Align::Right => w - right * s - width,
     };
+    // Whole device pixels, as the atlas is drawn: a half-pixel start blurs
+    // every glyph (a centred line's often does).
+    x = (x * device / s).floor() * s / device;
     let mut layers = Vec::new();
     for c in text.chars() {
         if let Some(glyph) = glyphs.get(kontra_ui_pictures::glyph(c)) {
@@ -551,11 +574,12 @@ fn field_words(
             {
                 let y = y_override.map_or_else(
                     || match metrics {
-                        StockMetrics::Field => (h - height) / 2. - s,
-                        StockMetrics::Button12 => (h - height) / 2.,
+                        StockMetrics::Field => (h - height) / 2. - s - lift * s,
+                        StockMetrics::Button12 => (h - height) / 2. - lift * s,
                     },
                     |y| f64::from(y) * s,
                 );
+                let y = (y * device / s).floor() * s / device;
                 layers.push(super::image(&Arc::new(image), width, height).at(x, y));
             }
             x += advance(c, glyph);
@@ -779,6 +803,39 @@ fn boxed(w: f64, h: f64, s: f64, fill: Fill, edge: u32) -> El {
         .at(0., 0.)
 }
 
+/// A field's words in a chosen font with no pixel atlas (1, 13, ...): Kontakt
+/// draws them as it draws a label's, in the same size, weight and place
+/// (the reference 8.13, tools/ksp-ui fields page: a 72x20 button, menu and
+/// label in fonts 1 and 13 show the same line).
+fn label_words(
+    caption: &str,
+    style: Option<&TextStyle>,
+    wd: &Widget,
+    (w, h, scale, device): (f64, f64, f64, f64),
+) -> Option<El> {
+    let style = style.filter(|s| match s.font {
+        model::Font::Stock(id) => super::stock_atlas(id).is_none(),
+        _ => false,
+    })?;
+    let mut label = Widget::new(wd.name.clone(), wd.page, wd.rect, Kind::Label);
+    label.text_y = wd.text_y;
+    // A menu's words run under its arrow, to 1 px from its edge.
+    let menu = matches!(wd.kind, Kind::Menu { .. }) && style.inset.is_none();
+    let style = TextStyle {
+        inset: menu.then_some([7., 1.]).or(style.inset),
+        ..style.clone()
+    };
+    Some(super::words_el(
+        caption,
+        Some(&style),
+        &label,
+        (w, h),
+        (scale, device),
+        None,
+        &model::TextPolicy::KONTAKT,
+    ))
+}
+
 /// One line of `text` across the box, padded from its sides, vertically
 /// positioned at `y_override` (in source points) when set or centered otherwise.
 fn words_at(
@@ -868,7 +925,10 @@ pub(super) fn label_face(
         || {
             block((width - 2. * s).max(0.), (height - 2. * s).max(0.))
                 .radius(0.)
-                .fill(rgb(0x77_7671))
+                // Black at half alpha over what lies under it: #777671 on
+                // the default page, a dark red on a red one (the reference
+                // 8.13, tools/ksp-ui text page under set_ui_color).
+                .fill(Color::srgba(0., 0., 0., 129. / 255.))
                 .at(s, s)
         },
     )

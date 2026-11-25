@@ -299,16 +299,14 @@ pub fn page_as(
             {
                 pictures.font(model::AssetRef(usize::MAX - 4), "@stock/font13")
             }
+            // A lit button keeps font 12's own atlas; in the stock font it
+            // draws the 9 px pixel font as an unlit one does, in dark ink
+            // (the reference 8.13, tools/ksp-ui fields page, lit switches).
             stock::Look::Button { on: true, .. }
                 if button_art.is_some()
-                    && style.is_none_or(|s| matches!(s.font, model::Font::Stock(0 | 12))) =>
+                    && style.is_some_and(|s| s.font == model::Font::Stock(12)) =>
             {
-                let (id, path) = if style.is_some_and(|s| s.font == model::Font::Stock(12)) {
-                    (usize::MAX - 6, "@stock/font12")
-                } else {
-                    (usize::MAX - 4, "@stock/font13")
-                };
-                pictures.font(model::AssetRef(id), path)
+                pictures.font(model::AssetRef(usize::MAX - 6), "@stock/font12")
             }
             stock::Look::Knob { .. } if stock_art.is_some() => {
                 pictures.font(model::AssetRef(usize::MAX - 3), "@stock/font")
@@ -316,12 +314,24 @@ pub fn page_as(
             _ => None,
         });
         let stock_glyphs = stock_glyphs.or_else(|| {
-            let atlas = style.and_then(|s| match s.font {
-                model::Font::Stock(id) => stock_atlas(id),
+            // A field with no font set draws in font 0 too (the reference
+            // 8.13, tools/ksp-ui fields page); a label without one keeps
+            // its own default face.
+            let field = matches!(
+                look,
+                Some(
+                    stock::Look::Button { .. }
+                        | stock::Look::Menu { .. }
+                        | stock::Look::Field { .. }
+                )
+            );
+            let atlas = match style.map(|s| &s.font) {
+                Some(model::Font::Stock(id)) => stock_atlas(*id),
+                None if field => stock_atlas(0),
                 _ => None,
-            });
+            };
             match atlas {
-                Some((id, path)) if matches!(wd.kind, Kind::Label | Kind::TextEdit) => {
+                Some((id, path)) if field || matches!(wd.kind, Kind::Label | Kind::TextEdit) => {
                     pictures.font(model::AssetRef(id), path)
                 }
                 _ => None,

@@ -1,21 +1,31 @@
 # Kontakt 8.13 at 100 % (shoot.sh, DPI=96), oracle run 2026-11-25: where each field's words sit
 # (gen.py fields(); 72x20 controls, the line "Lowpass 4"). `first` is the first column of ink
-# from the control's left edge; `width` the line's ink width. Font 0 draws as the stock font.
-# TEXT_ALIGNMENT 0 = left, 1 = centre, 2 = right; a menu's words run under its arrow.
-# KONTRA checks the order: crates/app/ui-view/src/tests.rs
-# (stock_button_and_menu_words_follow_their_text_alignment); KONTRA's line is 47 px wide in the
-# stock font (first 5/11/16 for a button, 5/13/20 for a menu).
-kind    font   align  first  width
-menu    stock  0      6      44
-menu    stock  1      15     44
-menu    stock  2      25     44
-button  stock  0      6      44
-button  stock  1      12     44
-button  stock  2      19     44
-switch  stock  0      6      44
-switch  stock  1      12     44
-switch  stock  2      19     44
-button  1      0      7      54
-button  1      1      8      54
-button  1      2      9      54
-# Font 1 on a button or switch: the line nearly fills the field (KONTRA's is 59 px, first 5).
+# from the control's left edge; `width` the line's ink width; `rows` the first and last ink rows.
+# Font 0 and an unset font draw as the stock 9 px pixel font. TEXT_ALIGNMENT 0 = left,
+# 1 = centre, 2 = right; unset is left for menus, buttons and switches. A menu's words run under
+# its arrow (right inset 1), a button's and a switch's stop 7 px from the edge.
+# Fonts 1 and 13 on a field draw as a label in that font does.
+# A lit button or switch in the stock font draws the same pixel font in ink 0x181818.
+# $CONTROL_PAR_TEXTPOS_Y on a button or switch moves the words down from their centred place
+# (0 = unset; 6 moves them 6 px lower), lit or not.
+# KONTRA checks: crates/app/ui-view/src/tests.rs, crates/app/host/tests/ui.rs.
+kind    font   align  first  width  rows
+menu    stock  0      7      44     9-17
+menu    stock  1      16     35     9-17
+menu    stock  2      26     44     9-17
+button  stock  0      7      44     9-17
+button  stock  1      13     44     9-17
+button  stock  2      20     44     9-17
+switch  stock  0      7      44     9-17
+switch  stock  1      13     44     9-17
+switch  stock  2      20     44     9-17
+button  1      0      8      54     8-16
+button  1      1      9      54     8-16
+button  1      2      10     54     8-16
+button  13     0      8      48     8-15
+button  13     1      12     48     8-15
+button  13     2      17     37     8-15
+menu    1      0      8      44     8-16
+menu    13     0      8      48     8-15
+# The centred stock menu line measures 35 px: its right end runs under the arrow.
+# Open in KONTRA: font 1 on a field is 57 px against 54 and font 13 sits one row lower at the end.

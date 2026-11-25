@@ -317,8 +317,9 @@ fn a_picture_font_id_is_a_bitmap_font() {
     assert_eq!(font("$b"), ui::Font::Stock(4));
 }
 
-/// A label with a font but no alignment sets its words from the left;
-/// a button centres them (KSP manual; Pacific's "Mic Mixer" in Kontakt).
+/// A label or a button with a font but no alignment sets its words from the
+/// left (the reference 8.13, tools/ksp-ui fields page: unaligned buttons and
+/// switches, lit or not); TEXT_ALIGNMENT 1 centres them.
 #[test]
 fn a_label_aligns_left_unless_told() {
     let ui = tree(
@@ -335,7 +336,7 @@ fn a_label_aligns_left_unless_told() {
     let align = |name| ui.styles[widget(&ui, name).style.unwrap().0].align;
     assert_eq!(align("$l"), ui::Align::Left);
     assert_eq!(align("$c"), ui::Align::Center);
-    assert_eq!(align("$b"), ui::Align::Center);
+    assert_eq!(align("$b"), ui::Align::Left);
 }
 
 /// `attach_level_meter` puts the channel it shows into the tree; an
