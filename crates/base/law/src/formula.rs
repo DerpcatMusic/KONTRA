@@ -65,6 +65,22 @@ pub enum FormulaId {
     /// Phasis's rate in Hz (`0x140a75560`, Ultra off): `440·2^(11.6667·x − 15.75)`, note
     /// `−120..20`, by a quartic exp2.
     PhasisRateHz,
+    /// Bus Compressor's threshold in dB (`0x141a98370` on the object `0x1404d0830` fills):
+    /// `−20 + 40·x` in f64 on an f32 `x`, then f32.
+    BusCompThresholdDb,
+    /// Bus Compressor's makeup in dB, as [`FormulaId::BusCompThresholdDb`]: `−5 + 25·x`.
+    BusCompMakeupDb,
+    /// Solid G-EQ's HF frequency in Hz (`0x141a88270` object 1, as `0x1404d0830` fills
+    /// it): `10^(log10 lo + (log10 hi − log10 lo)·x)` in f64, `1500..22000`.
+    SolidEqHfHz,
+    /// Solid G-EQ's HMF frequency (object 4), as [`FormulaId::SolidEqHfHz`]: `600..7000`.
+    SolidEqHmfHz,
+    /// Solid G-EQ's LMF frequency (object 7), as [`FormulaId::SolidEqHfHz`]: `199.96..2500`.
+    SolidEqLmfHz,
+    /// Solid G-EQ's LF frequency (object 10), as [`FormulaId::SolidEqHfHz`]: `40.02..600`.
+    SolidEqLfHz,
+    /// Solid G-EQ's HMF and LMF Q (objects 5 and 8): `0.7 + 1.8·x` in f64.
+    SolidEqQ,
     /// Phasis's centre in Hz (`0x140a752e0`, Ultra off): note `30 + 90·x`,
     /// `440·2^((note − 69)/12)` by a quartic exp2.
     PhasisCenterHz,
@@ -121,6 +137,13 @@ impl FormulaId {
                 T::of((2 - (x.to_f32().clamp(0.0, 1.0) * -15.0) as i32).clamp(2, 16) as f32)
             }
             Self::FlairRateHz => T::of(fast_exp2(x.to_f32() * 11.5 - 16.25) * 440.0),
+            Self::BusCompThresholdDb => T::of(object(-20.0, 20.0, false, x.to_f32())),
+            Self::BusCompMakeupDb => T::of(object(-5.0, 20.0, false, x.to_f32())),
+            Self::SolidEqHfHz => T::of(object(1_500.0, 22_000.0, true, x.to_f32())),
+            Self::SolidEqHmfHz => T::of(object(600.0, 7_000.0, true, x.to_f32())),
+            Self::SolidEqLmfHz => T::of(object(f64::from(199.96_f32), 2_500.0, true, x.to_f32())),
+            Self::SolidEqLfHz => T::of(object(f64::from(40.02_f32), 600.0, true, x.to_f32())),
+            Self::SolidEqQ => T::of(object(f64::from(0.7_f32), 2.5, false, x.to_f32())),
             Self::PhasisRateHz => {
                 T::of(fast_exp2((1.666_666_7 + 10.0) * x.to_f32() - 15.75) * 440.0)
             }
@@ -174,6 +197,13 @@ impl FormulaId {
             | Self::BiteBits
             | Self::FlairRateHz
             | Self::PhasisRateHz
+            | Self::BusCompThresholdDb
+            | Self::BusCompMakeupDb
+            | Self::SolidEqHfHz
+            | Self::SolidEqHmfHz
+            | Self::SolidEqLmfHz
+            | Self::SolidEqLfHz
+            | Self::SolidEqQ
             | Self::PhasisCenterHz
             | Self::FreakFrequencyHz
             | Self::RotatorMixDb
@@ -322,6 +352,17 @@ fn flex_ratio(c: f32) -> f32 {
         (4.0 - 2.0 * c) * c - 1.0
     };
     (1.0 / f - 1.0).powi(2)
+}
+
+/// A shared module parameter object's value (`0x141a98370`): `lo + (hi − lo)·x` in f64,
+/// or the same between `log10` ends and raised back, then f32.
+fn object(lo: f64, hi: f64, log: bool, x: f32) -> f32 {
+    let x = f64::from(x);
+    if log {
+        10f64.powf(lo.log10() + (hi.log10() - lo.log10()) * x) as f32
+    } else {
+        (lo + (hi - lo) * x) as f32
+    }
 }
 
 #[cfg(test)]

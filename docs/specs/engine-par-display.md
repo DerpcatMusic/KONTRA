@@ -122,13 +122,23 @@ None — all verification tiers execute on the current host.
   note `30 + 90·x` (Ultra −30..190), `·1/12 − 69/12`. These are the ranges
   phasis.rs already plays. A fresh unit is Ultra off, so only that form is
   encoded; the 201-point sweep reads it to the printed digit.
-- Bus Compressor (2026-11-25, 101 points): threshold −20..20 dB; ratio, attack and
-  release six-entry menus picked by `floor(6x)` (1.5 2 3 4 5 10; 0.1 0.3 1 3 10 30;
-  100 200 400 800 1600 Auto). Its converter `0x141a88230` writes x into a parameter
-  object (`0x14a1b5430 + i·0x240`) and calls `0x141a98370`, not read yet.
+- Bus Compressor (2026-11-25, 101 points): ratio, attack and release are six-entry
+  menus picked by `floor(6x)` (1.5 2 3 4 5 10; 0.1 0.3 1 3 10 30; 100 200 400 800
+  1600 Auto). Threshold and makeup go through a parameter object (`0x141a88230`
+  writes x, `0x141a98370` returns `lo + (hi − lo)·x` in f64, or log10 between them
+  when its flag is set); `0x1404d0830` fills threshold −20..20 and makeup −5..20,
+  both linear. The f64 step on an f32 x is why makeup prints "1.00" at .24.
+- Solid G-EQ (2026-11-25, from code): frequencies and Qs go through the same object
+  kind (`0x141a88270`, base `0x14a1b6cf0`), which `0x1404d0830` fills: HF 1500..22000,
+  HMF 600..7000, LMF 199.96..2500 and LF 40.02..600, all log; HMF and LMF Q
+  0.7..2.5, linear (ends as f32 widened to f64). Printed by the `k` formatter
+  `0x1407baa90` (`%5.1fk` at 1000 and up, `%5.1f` at 1 and up, else `%5.2f`).
+- Filter (from code): Gain `60·x − 30` (`0x1407b8240`), Shift `80·x`
+  (`0x1407b81e0`) and Type `x` (`0x1407b9ea0`), all `%3.1f`. EQ bandwidth
+  `0.33333334 + 2.6666667·clamp(x)` (`0x1407b7440`) is printed through `0x1407baa90`.
+  Bypass, resonance and Formant talk/sharp/size are percents. GAIN and BANDWIDTH on
+  a one-band EQ read empty, so the reference has no such control there.
 - Still pending:
-  - Bus Compressor makeup: −5..20 dB fits but for three texts on a rounding edge
-    (x .24, .33, .35 print "1.00", "3.3", "3.7"); the object's arithmetic decides.
   - Convolution (IRC) controls: the setter always applies them asynchronously, so the
     sweep reads the old value; they need a read after `on async_complete`.
   - Phasis notches (`0x1407baee0`: `2 − trunc(−11·clamp(x))`, 2..12) and Flair
@@ -158,5 +168,8 @@ None — all verification tiers execute on the current host.
   `$ENGINE_PAR_SF100_OVEDRIVE`. Kontakt 8.13.1's binary has only `…_OVERDRIVE`
   (the only other manual name it lacks is `$ENGINE_PAR_HP_FREQ`). That is for the KSP
   language lane.
+- DSP gap (after scripting and UI): Reverb2's modulation (`$ENGINE_PAR_RV2_MOD`) has
+  its text, so a script's set is held and shown, but the reverb plays the saved
+  modulation only; a set does not move it.
 - These laws drive text only. Whether a held module's DSP should use them is
   for the module's own lane.
