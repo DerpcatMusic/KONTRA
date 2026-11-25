@@ -38,6 +38,11 @@ pub(super) enum Look {
         turn: u16,
         frame: u8,
     },
+    /// A slider its library draws as a knob ([`rotary`]): KONTRA's dial,
+    /// filling its control.
+    Dial {
+        turn: u16,
+    },
 }
 
 impl Look {
@@ -124,6 +129,9 @@ impl Look {
                 },
                 turn: (t * 1000.) as u16,
                 frame: (t * 127.).round() as u8,
+            },
+            Kind::Slider { .. } if bare && rotary(tree, w) => Self::Dial {
+                turn: (t * 1000.) as u16,
             },
             _ => return None,
         })
@@ -326,6 +334,12 @@ impl Look {
                 } else {
                     knob(wd, title, value, *turn, scale, bare)
                 }
+            }
+            Self::Dial { turn } => {
+                // The stock knob's 40 px dial, scaled to fill and centred.
+                let side = w.min(h);
+                let (x, y) = ((w - side) / 2., (h - side) / 2.);
+                vec![stack(dial(*turn, side / 40., bare)).at(x, y)]
             }
         }
     }
@@ -600,8 +614,9 @@ fn stock_words(text: &str, scale: f64, glyphs: Option<&kontra_ui_pictures::Glyph
     stack(layers).w(45. * scale).h(13. * scale).clip()
 }
 
-fn knob(wd: &Widget, title: &str, value: &str, turn: u16, s: f64, bare: bool) -> Vec<El> {
-    let light = rgb(0xfe_fefe);
+/// The stock knob's 40 px dial at `s`: ring, cap and pointer at `turn`
+/// (0..1000).
+fn dial(turn: u16, s: f64, bare: bool) -> Vec<El> {
     // Pacific's unpictured knobs have a lit upper ring and a dark lower edge.
     // KONTRA keeps the flat stock skin; both use the existing measured palette.
     let ring: Fill = if bare {
@@ -641,6 +656,26 @@ fn knob(wd: &Widget, title: &str, value: &str, turn: u16, s: f64, bare: bool) ->
             .fill(rgb(0x2a_2a2a))
             .at((x - 1.5) * s, (y - 1.5) * s),
     );
+    parts
+}
+
+/// Whether slider `w` turns: its picture is a filmstrip of square frames,
+/// as a library draws a knob it built from a Kontakt slider (Areia); a
+/// linear strip's frames are long and thin.
+// ponytail: frame aspect, not pixels; a square linear strip would turn.
+pub(super) fn rotary(tree: &Interface, w: &Widget) -> bool {
+    let strip = w.images.iter().find(|u| u.role == model::Role::Strip);
+    strip.is_some_and(|u| match tree.assets.get(u.asset.0).map(|a| &a.kind) {
+        Some(model::AssetKind::Image(m)) if m.frames > 1 => m
+            .size
+            .is_some_and(|f| f.height > 0. && (0.75..=4. / 3.).contains(&(f.width / f.height))),
+        _ => false,
+    })
+}
+
+fn knob(wd: &Widget, title: &str, value: &str, turn: u16, s: f64, bare: bool) -> Vec<El> {
+    let light = rgb(0xfe_fefe);
+    let mut parts = dial(turn, s, bare);
     let side = (KNOB.0 - 36.) * s;
     let title_y = wd.text_y.map_or(1., f64::from) * s;
     let value_y = wd.value_y.map_or(21., f64::from) * s;

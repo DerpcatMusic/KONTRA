@@ -244,6 +244,7 @@ pub fn compile<'a>(
         variables,
         symbols: c.symbols,
         conditions,
+        shows: c.shows,
     })
 }
 
@@ -349,6 +350,8 @@ struct Compiler<'a> {
     controls: Vec<Control>,
     symbols: Vec<Box<str>>,
     symbol_ids: HashMap<&'a str, i32>,
+    /// Script::shows.
+    shows: Vec<(u32, u32)>,
 }
 
 impl<'a> Compiler<'a> {
@@ -458,6 +461,57 @@ impl<'a> Compiler<'a> {
             .ok_or_else(|| Error::new(span, format!("{name} is not declared")))
     }
 
+    /// Records a picture whose frame or position one control's value sets
+    /// (Script::shows): a literal `get_ui_id` target and a value reading
+    /// exactly one control, unindexed.
+    fn note_shows(&mut self, args: &[Expr<'a>]) {
+        let [id, par, value] = args else { return };
+        let ExprKind::Call(f, of) = &id.kind else {
+            return;
+        };
+        let [
+            Expr {
+                kind: ExprKind::Var(picture, None),
+                ..
+            },
+        ] = of.as_slice()
+        else {
+            return;
+        };
+        let ExprKind::Var(par, None) = &par.kind else {
+            return;
+        };
+        let par = par.trim_start_matches('$');
+        let moves = [
+            "CONTROL_PAR_PICTURE_STATE",
+            "CONTROL_PAR_POS_X",
+            "CONTROL_PAR_POS_Y",
+        ];
+        if !f.eq_ignore_ascii_case("get_ui_id")
+            || !moves.iter().any(|m| m.eq_ignore_ascii_case(par))
+        {
+            return;
+        }
+        let mut read = Vec::new();
+        reads(value, &mut read);
+        let mut controls = read.iter().filter_map(|n| {
+            let v = *self.names.get(&n.to_ascii_lowercase())?;
+            self.vars.get(v)?.control.map(|_| v)
+        });
+        let (Some(control), Some(picture)) = (
+            controls.next(),
+            self.names.get(&picture.to_ascii_lowercase()),
+        ) else {
+            return;
+        };
+        if controls.all(|c| c == control) && control != *picture {
+            let pair = (*picture as u32, control as u32);
+            if !self.shows.contains(&pair) {
+                self.shows.push(pair);
+            }
+        }
+    }
+
     fn var(&self, v: usize) -> Result<&Var, Error> {
         self.vars
             .get(v)
@@ -488,6 +542,9 @@ impl<'a> Compiler<'a> {
                 }
                 let b = Builtin::from_name(name)
                     .ok_or_else(|| Error::new(s.span, format!("unknown command {name}")))?;
+                if b == Builtin::SetControlPar {
+                    self.note_shows(args);
+                }
                 match self.builtin(b, args, s.span)? {
                     None => {}
                     Some(Ty::Text) => {
@@ -694,4 +751,20 @@ fn int_literal(n: u64, span: Span) -> Result<i32, Error> {
     u32::try_from(n)
         .map(|n| n as i32)
         .map_err(|_| Error::new(span, "integer out of range"))
+}
+
+/// The unindexed variables `e` reads; an indexed array element is not a
+/// control's value.
+fn reads<'a>(e: &Expr<'a>, out: &mut Vec<&'a str>) {
+    match &e.kind {
+        ExprKind::Var(name, None) => out.push(name),
+        ExprKind::Var(_, Some(i)) => reads(i, out),
+        ExprKind::Call(_, args) => args.iter().for_each(|a| reads(a, out)),
+        ExprKind::Unary(_, a) => reads(a, out),
+        ExprKind::Binary(_, a, b) => {
+            reads(a, out);
+            reads(b, out);
+        }
+        ExprKind::Int(_) | ExprKind::Real(_) | ExprKind::Str(_) | ExprKind::Word(_) => {}
+    }
 }

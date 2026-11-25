@@ -1505,3 +1505,56 @@ fn style_font_and_value_y_invalidate_memo_and_table_columns_align_to_steps_shown
     let after = paint(&mut ui, el, 80, 40);
     assert_ne!(before, after, "value_y changes painted pixels");
 }
+
+/// A slider drawn with a filmstrip of square frames is a knob to its user
+/// (Areia): KONTRA draws a dial. A long, thin strip stays a fader.
+#[test]
+fn kontra_draws_a_slider_with_a_rotary_strip_as_a_dial() {
+    let (mut tree, ..) = tree();
+    tree.widgets[0].kind = Kind::Slider {
+        range: Range::default(),
+        orientation: model::Orientation::Vertical,
+    };
+    let look = |tree: &Interface, bare| {
+        let w = &tree.widgets[0];
+        stock::Look::of(tree, w, 0.5, String::new(), String::new(), bare, false)
+    };
+    assert!(stock::rotary(&tree, &tree.widgets[0]), "4 by 4 frames");
+    assert!(matches!(
+        look(&tree, true),
+        Some(stock::Look::Dial { turn: 500 })
+    ));
+    assert!(look(&tree, false).is_none(), "Original draws its strip");
+    if let model::AssetKind::Image(m) = &mut tree.assets[1].kind {
+        m.size = Some(Size {
+            width: 4.,
+            height: 40.,
+        });
+    }
+    assert!(!stock::rotary(&tree, &tree.widgets[0]), "a fader's strip");
+    assert!(look(&tree, true).is_none());
+}
+
+/// A picture the script turns with a control's value (Widget::shows) is
+/// that control's own graphic: KONTRA leaves it out, Original draws it.
+#[test]
+fn kontra_leaves_out_a_picture_that_shows_a_controls_value() {
+    let (mut tree, ..) = tree();
+    let mut cylinder = tree.widgets[0].clone();
+    cylinder.kind = Kind::Label;
+    cylinder.images[0].role = Role::Background;
+    cylinder.shows = Some(model::WidgetRef(0));
+    tree.widgets.push(cylinder);
+    let drawn = |tree: &Interface, bare| {
+        let page = plan::page(tree, PageRef(0), bare, 1., (&[], &[])).unwrap();
+        page.widgets.iter().map(|w| w.index.0).collect::<Vec<_>>()
+    };
+    assert_eq!(drawn(&tree, false), [0, 1]);
+    assert_eq!(drawn(&tree, true), [0]);
+    tree.widgets[0].hidden = true;
+    assert_eq!(
+        drawn(&tree, true),
+        [1],
+        "with its control hidden, it shows the value"
+    );
+}

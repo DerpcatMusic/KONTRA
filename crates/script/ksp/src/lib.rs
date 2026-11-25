@@ -78,6 +78,10 @@ pub struct Script {
     pub symbols: Vec<Box<str>>,
     /// Conditions set when the source ends.
     pub conditions: Vec<String>,
+    /// `(picture, control)` variables where the script sets the picture's
+    /// frame or position from the control's value alone:
+    /// `set_control_par(get_ui_id($picture), $CONTROL_PAR_PICTURE_STATE, 179 * $control / 1000000)`.
+    pub shows: Vec<(u32, u32)>,
 }
 
 impl Script {

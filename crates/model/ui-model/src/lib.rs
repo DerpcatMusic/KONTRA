@@ -534,6 +534,11 @@ pub struct Widget {
     pub page: PageRef,
     /// Containing panel; geometry is relative to it.
     pub parent: Option<WidgetRef>,
+    /// The knob or slider whose value this picture shows: the source sets
+    /// its frame or position from that value. [`Presentation::Kontra`]
+    /// leaves it out while that control is shown; the control shows its
+    /// value itself.
+    pub shows: Option<WidgetRef>,
     /// Position and size in pixels. Position is ignored for
     /// [`Placement::Grid`]; size is ignored when [`Widget::auto_size`].
     pub rect: Rect,
@@ -630,6 +635,7 @@ impl Widget {
             source_id: None,
             page,
             parent: None,
+            shows: None,
             rect,
             placement: Placement::Pixels,
             auto_size: false,
