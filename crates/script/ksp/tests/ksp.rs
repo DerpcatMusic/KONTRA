@@ -152,6 +152,31 @@ fn arithmetic_loops_select_and_text() {
     assert_eq!(r.host.messages, ["sum 25 r 3.000000"]);
 }
 
+/// Division and `mod` by zero, as Kontakt 8.13 does (oracle probes,
+/// 2026-11-12/14): an int `/` or `mod` gives 0, a real `/` gives inf, the
+/// fault is only counted and the callback runs on.
+#[test]
+fn division_by_zero_answers_zero_and_runs_on() {
+    let r = Run::new(
+        "on init
+            declare $z := 0
+            declare $q := 5
+            declare $m := 5
+            declare $inf
+            declare $after
+            $q := 7 / $z
+            $m := 7 mod $z
+            $inf := real_to_int(1.0 / int_to_real($z))
+            $after := 22
+        end on",
+    );
+    assert_eq!(
+        (r.int("$q"), r.int("$m"), r.int("$inf"), r.int("$after")),
+        (0, 0, i32::MAX, 22)
+    );
+    assert_eq!(r.vm.faults().divide_by_zero, 2);
+}
+
 #[test]
 fn a_runaway_loop_stops_even_around_an_inner_loop() {
     // Each outer turn exits an inner loop and moves $k, so only the turn

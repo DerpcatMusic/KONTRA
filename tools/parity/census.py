@@ -60,8 +60,11 @@ def classes(row):
         if d.get('impact')=='Audible': c.append('diag:'+str(d.get('feature')))
     c+=['unhandled:'+a for a,_ in row['unhandled']]
     c+=['par:'+str(p[0]) for p,_ in row['pars']]
+    # A division by zero is the library's own: Kontakt 8.13 answers 0 (int / and mod) or inf (real /)
+    # and runs on, as KONTRA's VM does (oracle probes 2026-11-12/14), so it is no failure here.
+    shared={'slot','divide_by_zero','first_divide_by_zero'}
     for f in row['faults']:
-        c+=['fault:'+k for k,v in f.items() if isinstance(v,int) and k!='slot' and v>0]
+        c+=['fault:'+k for k,v in f.items() if isinstance(v,int) and k not in shared and v>0]
     return sorted(set(c))
 
 def summary():
