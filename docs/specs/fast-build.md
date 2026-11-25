@@ -48,7 +48,7 @@ vary. Raw logs and timings are kept outside the repo.
   moose repo but not under `frameworks/moose` here. Cargo reruns a build script whose
   watched file is missing, so every build recompiled moose-loader, moose, kontra-host,
   kontra-plugin and the three tools.
-- **`-p <crate>` rebuilt shared dependencies.** Per-package feature resolution gave
+- **`-p` on one crate rebuilt shared dependencies.** Per-package feature resolution gave
   syn, serde, toml, thiserror and kontra-macros different feature sets than
   `--workspace`: one sfz edit plus `nextest run -p kontra-format-sfz` compiled 15 units.
 - **A test wrote into the source tree.** `library_root_requires_one_unambiguous_nicnt`
@@ -105,6 +105,20 @@ dropped from load 155 to 120 between arms. Line tables stay for test backtraces.
 Not tried: Cranelift. Kontra's tests need `opt-level = 1` (143 s → 28 s of CPU for the
 five slowest, 2026-11-25-blaze-ci.md), and with the fixes above the incremental critical
 path is kontra-plugin's own lib and lib test (8-9 s), which also runs the slowest tests.
+
+## Verification Matrix
+
+| Check | Tier | Target / OS | Exact Command | Pass Criterion | Status / Observed Evidence |
+|---|---|---|---|---|---|
+| Spec proof gate | Doc | any | `python3 tools/check-spec-proof.py plugins/kontra/docs/specs/fast-build.md` | Exit 0, zero proof errors | PASS (2026-11-25, derpcat-linux) |
+| Incremental sfz test build | Compile/ABI | linux-x86_64 | `nextest run -p kontra-format-sfz` after a one-line sfz edit | 1 unit rebuilt, under 20 s | PASS (2026-11-25, derpcat-linux) |
+| Warm CI test job | Validator/Runtime | linux-x86_64 | `matari check origin/main --project kontra --stage test` | at most 2 min warm | PASS (2026-11-25, derpcat-linux) |
+| rt-paranoid pass 2 without a second build | Validator/Runtime | linux-x86_64 | `matari check origin/main --project kontra --stage test` | pass 2 compiles no crate twice | BLOCKED (needs a run-time RT checker in moose) |
+
+## Unverified Boundaries & Promotion Gate
+
+- The CI job time is measured on the local self-hosted runner under load, not on every runner.
+- See "What is left above target" for the open items; the spec stays `in-progress` until they close.
 
 ## What is left above target
 

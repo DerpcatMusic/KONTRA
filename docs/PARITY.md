@@ -1824,7 +1824,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | done | `kontakt.ui.ui_button.CONTROL_PAR_POS_Y` | ui_button × $CONTROL_PAR_POS_Y | [fields.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/fields.ksp) | #234 | 2026-11-25 |  |
 | tested | `kontakt.ui.ui_button.CONTROL_PAR_TEXT` | ui_button × $CONTROL_PAR_TEXT | [control_pars_11.kspp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/kontakt-oracle/probes/ksp/control_pars_11.kspp) | #228 | 2026-11-25 |  |
 | tested | `kontakt.ui.ui_button.CONTROL_PAR_TEXTLINE` | ui_button × $CONTROL_PAR_TEXTLINE | [control_pars_11.kspp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/kontakt-oracle/probes/ksp/control_pars_11.kspp) | #228 | 2026-11-25 |  |
-| done | `kontakt.ui.ui_button.CONTROL_PAR_TEXTPOS_Y` | ui_button × $CONTROL_PAR_TEXTPOS_Y | [textpos.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/textpos.ksp) | #294 |  |  |
+| done | `kontakt.ui.ui_button.CONTROL_PAR_TEXTPOS_Y` | ui_button × $CONTROL_PAR_TEXTPOS_Y | [textpos.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/textpos.ksp) | #294, #297 |  |  |
 | done | `kontakt.ui.ui_button.CONTROL_PAR_TEXT_ALIGNMENT` | ui_button × $CONTROL_PAR_TEXT_ALIGNMENT | [fields.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/fields.ksp) | #234 | 2026-11-25 |  |
 | partial | `kontakt.ui.ui_button.CONTROL_PAR_TYPE` | ui_button × $CONTROL_PAR_TYPE | [widgets.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/widgets.ksp) |  |  |  |
 | partial | `kontakt.ui.ui_button.CONTROL_PAR_VALUE` | ui_button × $CONTROL_PAR_VALUE | [pictures.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/pictures.ksp) |  |  |  |
@@ -1941,7 +1941,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | done | `kontakt.ui.ui_menu.CONTROL_PAR_POS_Y` | ui_menu × $CONTROL_PAR_POS_Y | [fields.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/fields.ksp) | #234 | 2026-11-25 |  |
 | missing | `kontakt.ui.ui_menu.CONTROL_PAR_RANGE_MAX` | ui_menu × $CONTROL_PAR_RANGE_MAX |  |  |  |  |
 | partial | `kontakt.ui.ui_menu.CONTROL_PAR_SELECTED_ITEM_IDX` | ui_menu × $CONTROL_PAR_SELECTED_ITEM_IDX | [data.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/data.ksp) |  |  |  |
-| done | `kontakt.ui.ui_menu.CONTROL_PAR_TEXTPOS_Y` | ui_menu × $CONTROL_PAR_TEXTPOS_Y | [textpos.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/textpos.ksp) | #294 |  |  |
+| done | `kontakt.ui.ui_menu.CONTROL_PAR_TEXTPOS_Y` | ui_menu × $CONTROL_PAR_TEXTPOS_Y | [textpos.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/textpos.ksp) | #294, #297 |  |  |
 | done | `kontakt.ui.ui_menu.CONTROL_PAR_TEXT_ALIGNMENT` | ui_menu × $CONTROL_PAR_TEXT_ALIGNMENT | [fields.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/fields.ksp) | #234 | 2026-11-25 |  |
 | partial | `kontakt.ui.ui_menu.CONTROL_PAR_TYPE` | ui_menu × $CONTROL_PAR_TYPE | [widgets.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/widgets.ksp) |  |  |  |
 | partial | `kontakt.ui.ui_menu.CONTROL_PAR_VALUE` | ui_menu × $CONTROL_PAR_VALUE | [pictures.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/pictures.ksp) |  |  |  |
@@ -2084,7 +2084,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | done | `kontakt.ui.ui_value_edit.CONTROL_PAR_POS_Y` | ui_value_edit × $CONTROL_PAR_POS_Y | [behaviour.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/behaviour.ksp) | #228 | 2026-11-25 |  |
 | partial | `kontakt.ui.ui_value_edit.CONTROL_PAR_SHOW_ARROWS` | ui_value_edit × $CONTROL_PAR_SHOW_ARROWS | [text.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/text.ksp) |  |  |  |
 | tested | `kontakt.ui.ui_value_edit.CONTROL_PAR_TEXT` | ui_value_edit × $CONTROL_PAR_TEXT | [control_pars_7.kspp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/kontakt-oracle/probes/ksp/control_pars_7.kspp) | #217 | 2026-11-25 |  |
-| done | `kontakt.ui.ui_value_edit.CONTROL_PAR_TEXTPOS_Y` | ui_value_edit × $CONTROL_PAR_TEXTPOS_Y | [textpos.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/textpos.ksp) | #294 |  |  |
+| done | `kontakt.ui.ui_value_edit.CONTROL_PAR_TEXTPOS_Y` | ui_value_edit × $CONTROL_PAR_TEXTPOS_Y | [textpos.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/textpos.ksp) | #294, #297 |  |  |
 | partial | `kontakt.ui.ui_value_edit.CONTROL_PAR_TYPE` | ui_value_edit × $CONTROL_PAR_TYPE | [widgets.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/widgets.ksp) |  |  |  |
 | partial | `kontakt.ui.ui_value_edit.CONTROL_PAR_VALUE` | ui_value_edit × $CONTROL_PAR_VALUE | [pictures.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/pictures.ksp) |  |  |  |
 | tested | `kontakt.ui.ui_value_edit.CONTROL_PAR_VALUEPOS_Y` | ui_value_edit × $CONTROL_PAR_VALUEPOS_Y | [control_pars_1.kspp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/kontakt-oracle/probes/ksp/control_pars_1.kspp) | #211 | 2026-11-25 |  |

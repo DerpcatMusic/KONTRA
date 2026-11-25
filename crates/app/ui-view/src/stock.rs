@@ -31,6 +31,8 @@ pub(super) enum Look {
     },
     Menu {
         caption: String,
+        /// Its picture draws the body and no arrow; the words stay stock.
+        pictured: bool,
     },
     Knob {
         title: String,
@@ -98,7 +100,10 @@ impl Look {
         bare: bool,
         shift: bool,
     ) -> Option<Self> {
-        if !bare && !unpictured(tree, w) {
+        let pictured = !bare && !unpictured(tree, w);
+        // A pictured menu still writes its words as a stock one (the
+        // reference 8.13, tools/ksp-ui textpos page).
+        if pictured && !matches!(w.kind, Kind::Menu { .. }) {
             return None;
         }
         Some(match &w.kind {
@@ -116,6 +121,7 @@ impl Look {
             },
             Kind::Menu { .. } => Self::Menu {
                 caption: super::caption(w),
+                pictured,
             },
             Kind::ValueEdit { .. } => Self::Field {
                 title: if w.hide.title {
@@ -319,9 +325,9 @@ impl Look {
                 }
                 parts
             }
-            Self::Menu { caption } => {
+            Self::Menu { caption, pictured } => {
                 let mut parts = Vec::new();
-                if bg {
+                if bg && !pictured {
                     parts.push(
                         boxed(
                             (w - 2. * scale).max(0.),
@@ -354,7 +360,7 @@ impl Look {
                 } else {
                     words_at(caption, ink, align, (w, h, scale), wd.text_y, None)
                 });
-                if wd.menu_arrow {
+                if wd.menu_arrow && !pictured {
                     parts.extend(arrow(ink, w, h, scale));
                 }
                 parts

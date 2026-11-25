@@ -11,6 +11,7 @@ pictured menu, 13 R  7      7   7   10  13  17  hidden
 # 20-px cell at 16, 20 and 30 px, clipped by the control. A menu's or a button's words drop by
 # TEXTPOS_Y; a value edit's by half of it, rounded up. 500 puts them out of sight.
 # A pictured menu draws its words in the stock pixel font at the stock menu's 7-px inset; in font 13
-# right-aligned they end at the picture's last column. KONTRA matches the stock rows; the pictured
-# rows still draw in the outline face, 21 px in (open).
+# right-aligned they run under the picture's right edge and are clipped there. KONTRA matches the
+# stock rows and the default-font pictured row. In font 13, right-aligned, its words sit 1 px lower
+# and about 4 px further left (open: this page cannot measure the clipped inset).
 # Not matched: a 30-px value edit at TEXTPOS_Y 10 clips its words a row higher than KONTRA does.
