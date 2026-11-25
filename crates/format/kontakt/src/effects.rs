@@ -65,8 +65,8 @@ const fn model(
     )
 }
 
-use kontra_kontakt_effects::module::Module;
 use Map::{Read, Unread};
+use kontra_kontakt_effects::module::Module;
 
 #[rustfmt::skip]
 const MODULES: &[Fx] = &[
@@ -325,7 +325,9 @@ impl Slot<'_, '_> {
     }
 
     fn i32_at(&self, n: usize) -> Option<i32> {
-        Some(i32::from_le_bytes(self.public.get(n..n + 4)?.try_into().ok()?))
+        Some(i32::from_le_bytes(
+            self.public.get(n..n + 4)?.try_into().ok()?,
+        ))
     }
 
     fn byte(&self, n: usize) -> Option<bool> {
@@ -405,7 +407,9 @@ fn slot_effect(
         .then(|| crate::wowflutter::saved(object.version, &public).map(|(_, m)| m.clamp(0.0, 1.0)))
         .flatten();
     let raum_mix = (effect.id == 0x65)
-        .then(|| crate::raum::saved(object.version, &public).map(|(_, m, _)| crate::raum::mix_gains(m)))
+        .then(|| {
+            crate::raum::saved(object.version, &public).map(|(_, m, _)| crate::raum::mix_gains(m))
+        })
         .flatten();
     let effect_out = ir::Effect {
         kind: kind.unwrap_or(if parallel {

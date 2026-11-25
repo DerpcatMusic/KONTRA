@@ -3385,6 +3385,68 @@ fn parameter_texts_read_as_kontakt_shows_them() {
     }
 }
 
+/// Every `get_engine_par_disp` text Kontakt 8.13.1 printed for a module's
+/// knobs (`tools/kontakt-oracle/disp_sweep.py`, rows: name, value, text),
+/// shown again by KONTRA at the same values.
+#[test]
+fn every_measured_engine_par_text_reads_as_kontakt_shows_it() {
+    let table = include_str!("../../../../docs/re/kontakt-bindings/engine-par-disp.tsv");
+    let mut by_name: Vec<(&str, Vec<&str>, Vec<&str>)> = Vec::new();
+    for line in table.lines().filter(|l| !l.starts_with('#')) {
+        let mut cells = line.splitn(3, '\t');
+        let (Some(name), Some(x), Some(text)) = (cells.next(), cells.next(), cells.next()) else {
+            panic!("bad row {line:?}");
+        };
+        match by_name.last_mut() {
+            Some((n, xs, texts)) if *n == name => {
+                xs.push(x);
+                texts.push(text);
+            }
+            _ => by_name.push((name, vec![x], vec![text])),
+        }
+    }
+    // Names measured but not shown yet: the table's `# pending` line.
+    let pending: Vec<&str> = (table.lines())
+        .find_map(|l| l.strip_prefix("# pending:"))
+        .map_or(Vec::new(), |l| l.split_whitespace().collect());
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut wrong = Vec::new();
+    let mut now_right = Vec::new();
+    for (name, xs, want) in &by_name {
+        let shown: String = (xs.iter())
+            .map(|x| {
+                format!(" @t := @t & get_engine_par_disp_ext({name}, {x}, -1, -1, -1) & \"|\"\n")
+            })
+            .collect();
+        let source = format!("on init\n declare @t\n{shown}end on\non note\n message(@t)\nend on");
+        let mut e = engine(&store, Vec::new(), &source);
+        level(&mut e, &[on(60)]);
+        let want = want.iter().map(|t| format!("{t}|")).collect::<String>();
+        let right = e.last_message() == want;
+        if pending.contains(name) {
+            if right {
+                now_right.push(*name);
+            }
+        } else if !right {
+            wrong.push(format!(
+                "{name}\n  kontakt {want}\n  kontra  {}",
+                e.last_message()
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} of {}:\n{}",
+        wrong.len(),
+        by_name.len(),
+        wrong.join("\n")
+    );
+    assert!(
+        now_right.is_empty(),
+        "shown right now, drop from `# pending`: {now_right:?}"
+    );
+}
+
 /// A fresh knob, slider or value edit holds its minimum, as Kontakt 8.13.1
 /// read it back in on init (oracle 2026-10-29, scratch/laneB/vedit). CHORUS's
 /// legato velocity split divided by its (2, 4) value edit, 0 before.

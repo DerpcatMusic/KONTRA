@@ -55,7 +55,14 @@ pub fn text(pars: &EnginePars, id: i32, raw: i32, out: &mut Text) -> bool {
         out.push(end);
         return true;
     }
-    let v = f64::from(r.law.eval(x as f32 / 1e6));
+    let x = x as f32 / 1e6;
+    // A readout's line is shown as `lo + (hi − lo)·x` in f32, which rounds
+    // apart from the law's own form at ties (measured: 1..100 at 0.05 reads
+    // 6.0, 1..10 reads 1.5).
+    let v = f64::from(match r.law {
+        ir::Law::Linear { lo, hi } => lo + (hi - lo) * x,
+        ref law => law.eval(x),
+    });
     let readout = match r.form {
         ir::Form::Padded => Readout::Padded(v),
         ir::Form::Decimal => Readout::Signed(v),

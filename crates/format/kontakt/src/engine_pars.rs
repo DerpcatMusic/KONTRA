@@ -24,14 +24,27 @@ pub fn engine_pars() -> Vec<ir::ScriptPar> {
     let knobs = script_knobs()
         .into_iter()
         .map(|(name, target, law)| (name, ir::Drives::Knob(target, law)));
-    fixed
+    let mut pars: Vec<_> = fixed
         .chain(knobs)
         .map(|(name, drives)| ir::ScriptPar {
             name,
             drives,
             readout: readout(name),
         })
-        .collect()
+        .collect();
+    // A module control KONTRA has no processor for still shows Kontakt's
+    // text: its slot holds the value.
+    pars.extend(
+        texts
+            .into_iter()
+            .filter(|(n, _)| held(n))
+            .map(|(name, r)| ir::ScriptPar {
+                name,
+                drives: ir::Drives::Engine(ir::EnginePar::Opaque(ir::held_key(name))),
+                readout: Some(r),
+            }),
+    );
+    pars
 }
 
 /// The effect type (its `$EFFECT_TYPE_*` name) parameter `name` belongs
@@ -186,27 +199,6 @@ const FIXED: &[(&str, ir::EnginePar)] = {
         (
             "$ENGINE_PAR_WT_PHASE_RAND",
             P::Wavetable(ir::TableValue::PhaseRandom),
-        ),
-        // Controls KONTRA has no processor for, with a text law.
-        (
-            "$ENGINE_PAR_CH_DEPTH",
-            P::Opaque(ir::held_key("$ENGINE_PAR_CH_DEPTH")),
-        ),
-        (
-            "$ENGINE_PAR_JMP_PREAMP",
-            P::Opaque(ir::held_key("$ENGINE_PAR_JMP_PREAMP")),
-        ),
-        (
-            "$ENGINE_PAR_JMP_BASS",
-            P::Opaque(ir::held_key("$ENGINE_PAR_JMP_BASS")),
-        ),
-        (
-            "$ENGINE_PAR_JMP_MID",
-            P::Opaque(ir::held_key("$ENGINE_PAR_JMP_MID")),
-        ),
-        (
-            "$ENGINE_PAR_JMP_TREBLE",
-            P::Opaque(ir::held_key("$ENGINE_PAR_JMP_TREBLE")),
         ),
         (
             "$ENGINE_PAR_WT_INHARMONIC",

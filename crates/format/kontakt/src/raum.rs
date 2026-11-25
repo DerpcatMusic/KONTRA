@@ -18,30 +18,14 @@ const INIT_MIX: f32 = 0.5;
 /// Each type's base size: Grounded, Airy, Cosmic.
 const BASE: [f32; 3] = [0.7, 1.2, 2.0];
 
-/// Raum predelay law (`Kontakt8.exe` `0x141982050`), in milliseconds:
-/// `x <= 0.5` → `80·(2x)²` ms (0..80 ms);
-/// `x > 0.5` → `1920·(2x − 1)² + 80` ms (80..2000 ms).
+/// Raum predelay law in ms ([`kontra_law::kontakt::RAUM_PREDELAY_MS`]).
 pub(crate) fn predelay_ms(x: f32) -> f32 {
-    let x = x.clamp(0.0, 1.0);
-    if x <= 0.5 {
-        let t = 2.0 * x;
-        80.0 * t * t
-    } else {
-        let t = 2.0 * x - 1.0;
-        1920.0 * t * t + 80.0
-    }
+    kontra_law::kontakt::RAUM_PREDELAY_MS.eval(x)
 }
 
-/// Raum post-loop high-cut law (`Kontakt8.exe` `0x141981200`), in Hz:
-/// `x <= 0.95` → `1000 + 23324.1·x²` Hz (1000..22050 Hz);
-/// `x > 0.95` → `22050 + 1764000·(x − 0.95)` Hz.
+/// Raum post-loop high-cut law in Hz ([`kontra_law::kontakt::RAUM_HIGH_CUT_HZ`]).
 pub(crate) fn high_cut_hz(x: f32) -> f32 {
-    let x = x.clamp(0.0, 1.0);
-    if x <= 0.95 {
-        1000.0 + 23_324.1 * x * x
-    } else {
-        22_050.0 + 1_764_000.0 * (x - 0.95)
-    }
+    kontra_law::kontakt::RAUM_HIGH_CUT_HZ.eval(x)
 }
 
 /// Raum post-loop low-shelf moving corner frequency (`Kontakt8.exe` `0x141981200`):

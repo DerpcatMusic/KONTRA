@@ -162,7 +162,10 @@ mod tests {
     fn a_skreamers_saved_record_builds_its_overdrive() {
         let public: Vec<u8> = [0.5f32; 5].iter().flat_map(|v| v.to_le_bytes()).collect();
         let m = crate::skreamer::model(&public).expect("model");
-        assert!(matches!(m.build(&m.saved), Some(ir::EffectKind::Overdrive(_))));
+        assert!(matches!(
+            m.build(&m.saved),
+            Some(ir::EffectKind::Overdrive(_))
+        ));
     }
 
     #[test]

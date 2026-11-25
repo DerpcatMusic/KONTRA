@@ -20,6 +20,12 @@ pub enum FormulaId {
     /// A bipolar curve knob `c` to `2·ln((1 + c)/(1 − c))` with `c` clamped to ±0.9998,
     /// computed in f64 (UVI envelope setup 0x1410f1220).
     LogRatio,
+    /// Raum's predelay knob to ms (`Kontakt8.exe` `0x141982050`): `80·(2x)²` up to
+    /// 0.5, then `1920·(2x − 1)² + 80` (0..80..2000 ms).
+    RaumPredelayMs,
+    /// Raum's high-cut knob to Hz (`Kontakt8.exe` `0x141981200`): `1000 + 23324.1·x²`
+    /// up to 0.95, then `22050 + 1764000·(x − 0.95)`.
+    RaumHighCutHz,
 }
 
 impl FormulaId {
@@ -35,6 +41,8 @@ impl FormulaId {
             Self::FlexShape => T::of(flex_ratio(x.to_f32()).ln()),
             Self::FeedbackKnee => T::of(feedback_knee(x.to_f32())),
             Self::LogRatio => T::of(log_ratio(x.to_f64())),
+            Self::RaumPredelayMs => T::of(raum_predelay_ms(x.to_f32())),
+            Self::RaumHighCutHz => T::of(raum_high_cut_hz(x.to_f32())),
         }
     }
 
@@ -42,7 +50,11 @@ impl FormulaId {
     pub(crate) fn inverse(self, y: f64) -> Option<f64> {
         match self {
             Self::AttackShape => Some(attack_curve(y)),
-            Self::FlexShape | Self::FeedbackKnee | Self::LogRatio => None,
+            Self::FlexShape
+            | Self::FeedbackKnee
+            | Self::LogRatio
+            | Self::RaumPredelayMs
+            | Self::RaumHighCutHz => None,
         }
     }
 }
@@ -72,6 +84,26 @@ fn attack_curve(shape: f64) -> f64 {
     let b = 1.0 / shape.abs().exp_m1();
     let c = (1.0 - (b.ln() + ATTACK_FLOOR.ln()) / ATTACK_SPAN.ln()).clamp(0.0, 1.0);
     -shape.signum() * c
+}
+
+fn raum_predelay_ms(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    if x <= 0.5 {
+        let t = 2.0 * x;
+        80.0 * t * t
+    } else {
+        let t = 2.0 * x - 1.0;
+        1920.0 * t * t + 80.0
+    }
+}
+
+fn raum_high_cut_hz(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    if x <= 0.95 {
+        1000.0 + 23_324.1 * x * x
+    } else {
+        22_050.0 + 1_764_000.0 * (x - 0.95)
+    }
 }
 
 fn log_ratio(c: f64) -> f32 {
