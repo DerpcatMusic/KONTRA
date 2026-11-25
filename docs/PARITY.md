@@ -28,7 +28,7 @@ PR: the squash merge that last changed each row's evidence line (`Parity: <row-i
 |   Kontakt DSP: time-stretch / slicing | 15 | 0 | 0 | 0 | 15 | 0.0 | 0.0 |
 |   Kontakt DSP: utility | 12 | 0 | 4 | 2 | 6 | 0.0 | 33.3 |
 | File loading: every saved object type | 118 | 44 | 61 | 1 | 12 | 37.3 | 89.0 |
-| Scripting (Lua API) | 123 | 7 | 49 | 0 | 67 | 5.7 | 45.5 |
+| Scripting (Lua API) | 123 | 7 | 51 | 0 | 65 | 5.7 | 47.2 |
 | Instrument panels: widgets | 158 | 154 | 0 | 0 | 4 | 97.5 | 97.5 |
 | Effects and elements | 546 | 34 | 19 | 19 | 474 | 6.2 | 9.7 |
 |   UVI DSP: EQ | 15 | 2 | 2 | 0 | 11 | 13.3 | 26.7 |
@@ -48,8 +48,8 @@ PR: the squash merge that last changed each row's evidence line (`Parity: <row-i
 |   UVI DSP: utility | 51 | 5 | 3 | 2 | 41 | 9.8 | 15.7 |
 | Parameters | 3065 | 10 | 94 | 928 | 2033 | 0.3 | 3.4 |
 | **Kontakt overall** | 2295 | 1026 | 523 | 560 | 186 | 44.7 | 67.5 |
-| **UVI overall** | 3892 | 205 | 162 | 947 | 2578 | 5.3 | 9.4 |
-| **All** | 6187 | 1231 | 685 | 1507 | 2764 | 19.9 | 31.0 |
+| **UVI overall** | 3892 | 205 | 164 | 947 | 2576 | 5.3 | 9.5 |
+| **All** | 6187 | 1231 | 687 | 1507 | 2762 | 19.9 | 31.0 |
 | **Kontakt corpus** (instruments fully green) | 1821 | 1567 | 0 | 254 | 0 | 86.1 | 86.1 |
 | **UVI corpus** (instruments fully green) | 660 | 648 | 0 | 12 | 0 | 98.2 | 98.2 |
 
@@ -2602,7 +2602,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
 | missing | `uvi.api.AsyncTask.cancel` | AsyncTask.cancel |  |  |  | https://lua.uvi.net/class_async_task.html |
-### Context (0 tested, 6 done, 0 partial, 7 missing)
+### Context (0 tested, 7 done, 0 partial, 6 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
@@ -2617,7 +2617,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | done | `uvi.api.getTime` | getTime | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#849](https://github.com/DerpcatMusic/KONTRA/pull/849) | 2026-10-28 | https://lua.uvi.net/group___context.html |
 | missing | `uvi.api.getTimeSignature` | getTimeSignature |  |  |  | https://lua.uvi.net/group___context.html |
 | done | `uvi.api.isKeyDown` | isKeyDown | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#849](https://github.com/DerpcatMusic/KONTRA/pull/849) | 2026-10-28 | https://lua.uvi.net/group___context.html |
-| missing | `uvi.api.isNoteHeld` | isNoteHeld |  |  |  | https://lua.uvi.net/group___context.html |
+| done | `uvi.api.isNoteHeld` | isNoteHeld | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | #342 | 2026-11-25 | https://lua.uvi.net/group___context.html |
 | missing | `uvi.api.isOctaveKeyDown` | isOctaveKeyDown |  |  |  | https://lua.uvi.net/group___context.html |
 ### Conversions (0 tested, 2 done, 0 partial, 2 missing)
 
@@ -2665,9 +2665,9 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| done | `uvi.api.playNote` | playNote | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#1569](https://github.com/DerpcatMusic/KONTRA/pull/1569) | 2026-11-15 | https://lua.uvi.net/group___events.html |
+| done | `uvi.api.playNote` | playNote | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | #342 | 2026-11-25 | https://lua.uvi.net/group___events.html |
 | done | `uvi.api.postEvent` | postEvent | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#1536](https://github.com/DerpcatMusic/KONTRA/pull/1536) | 2026-11-14 | https://lua.uvi.net/group___events.html |
-| done | `uvi.api.releaseVoice` | releaseVoice | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#1569](https://github.com/DerpcatMusic/KONTRA/pull/1569) | 2026-11-15 | https://lua.uvi.net/group___events.html |
+| done | `uvi.api.releaseVoice` | releaseVoice | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | #342 | 2026-11-25 | https://lua.uvi.net/group___events.html |
 ### Keygroup (0 tested, 0 done, 0 partial, 1 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
@@ -2744,7 +2744,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
 | done | `uvi.api.SampledReverb.loadImpulse` | SampledReverb.loadImpulse | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#1566](https://github.com/DerpcatMusic/KONTRA/pull/1566) | 2026-11-15 | https://lua.uvi.net/class_sampled_reverb.html |
-### Time (2 tested, 2 done, 0 partial, 1 missing)
+### Time (2 tested, 3 done, 0 partial, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
@@ -2752,7 +2752,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | tested | `uvi.api.spawn` | spawn | [realtime.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/realtime.rs) | [KONTRA#1318](https://github.com/DerpcatMusic/KONTRA/pull/1318) | 2026-11-12 | https://lua.uvi.net/group___time.html |
 | done | `uvi.api.wait` | wait | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#849](https://github.com/DerpcatMusic/KONTRA/pull/849) | 2026-10-28 | https://lua.uvi.net/group___time.html |
 | done | `uvi.api.waitBeat` | waitBeat | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#849](https://github.com/DerpcatMusic/KONTRA/pull/849) | 2026-10-28 | https://lua.uvi.net/group___time.html |
-| missing | `uvi.api.waitForRelease` | waitForRelease |  |  |  | https://lua.uvi.net/group___time.html |
+| done | `uvi.api.waitForRelease` | waitForRelease | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | #342 | 2026-11-25 | https://lua.uvi.net/group___time.html |
 ### Voice (0 tested, 11 done, 0 partial, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
@@ -2761,7 +2761,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | done | `uvi.api.changeTune` | changeTune | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#849](https://github.com/DerpcatMusic/KONTRA/pull/849) | 2026-10-28 | https://lua.uvi.net/group___voice.html |
 | done | `uvi.api.changeVolume` | changeVolume | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#849](https://github.com/DerpcatMusic/KONTRA/pull/849) | 2026-10-28 | https://lua.uvi.net/group___voice.html |
 | done | `uvi.api.changeVolumedB` | changeVolumedB | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#849](https://github.com/DerpcatMusic/KONTRA/pull/849) | 2026-10-28 | https://lua.uvi.net/group___voice.html |
-| done | `uvi.api.fade` | fade | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#1334](https://github.com/DerpcatMusic/KONTRA/pull/1334) | 2026-11-12 | https://lua.uvi.net/group___voice.html |
+| done | `uvi.api.fade` | fade | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#877](https://github.com/DerpcatMusic/KONTRA/pull/877) | 2026-10-28 | https://lua.uvi.net/group___voice.html |
 | done | `uvi.api.fade2` | fade2 | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#1569](https://github.com/DerpcatMusic/KONTRA/pull/1569) | 2026-11-15 | https://lua.uvi.net/group___voice.html |
 | done | `uvi.api.fadein` | fadein | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#849](https://github.com/DerpcatMusic/KONTRA/pull/849) | 2026-10-28 | https://lua.uvi.net/group___voice.html |
 | done | `uvi.api.fadeout` | fadeout | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#849](https://github.com/DerpcatMusic/KONTRA/pull/849) | 2026-10-28 | https://lua.uvi.net/group___voice.html |

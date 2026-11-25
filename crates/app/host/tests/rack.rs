@@ -2720,7 +2720,7 @@ fn a_load_blocked_on_the_disk_returns_at_once_and_the_latest_wins() {
     let made = std::process::Command::new("mkfifo").arg(&slow).status();
     assert!(made.unwrap().success());
     let (mut rack, _audio) = rack();
-    rack.load_in_background();
+    rack.load_in_background(|| {});
     let asked = Instant::now();
     rack.load(0, &slow).unwrap();
     assert!(
@@ -2770,7 +2770,7 @@ fn a_restore_blocked_on_the_disk_returns_at_once_and_its_settings_land_after() {
     let mut part = SavedPart::new(0, slow.clone(), Mix::DEFAULT);
     (part.channel, part.gain, part.mute) = (3, 0.5, true);
     let (mut rack, _audio) = rack();
-    rack.load_in_background();
+    rack.load_in_background(|| {});
     let asked = Instant::now();
     assert!(rack.restore(&Saved::new(vec![part.clone()])).is_empty());
     assert!(

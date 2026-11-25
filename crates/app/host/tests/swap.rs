@@ -192,7 +192,7 @@ fn a_snapshot_load_reads_on_the_loader_thread() {
     }
     let store = Store::new(StoreConfig::DEFAULT).unwrap();
     let (mut rack, _audio) = Rack::new(48_000, store, 512);
-    rack.load_in_background();
+    rack.load_in_background(|| {});
     let asked = Instant::now();
     rack.load(0, Path::new(&first)).unwrap();
     rack.load(0, Path::new(&latest)).unwrap();

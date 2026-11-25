@@ -7062,3 +7062,34 @@ fn event_status_and_get_event_ids_see_the_live_notes() {
     level(&mut e, &[on(62)]);
     assert_eq!(e.last_message(), "2,0,1,1");
 }
+
+/// A UVI note its script delays (`wait` then `postEvent`, as humanize and
+/// strum scripts do) ends at its key-up: the engine keeps the host note
+/// while its Lua callback waits, so the note-off still finds it.
+#[test]
+fn a_uvi_note_posted_after_a_wait_ends_at_its_key_up() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    // 100 ms is 4800 frames: the note starts in the second block.
+    let mut e = lua_engine(&mut store, "function onNote(e) wait(100) postEvent(e) end");
+    level(&mut e, &[on(60)]);
+    assert!(
+        (level(&mut e, &[]) - 0.5).abs() < 1e-3,
+        "the delayed note plays"
+    );
+    level(&mut e, &[off(60)]);
+    assert_eq!(level(&mut e, &[]), 0.0, "the key-up ends it");
+    // UVI's own idiom for a held note: `waitForRelease` returns at the key-up.
+    let latch = "function onNote(e)
+            local id = playNote(e.note, e.velocity, 0)
+            waitForRelease()
+            releaseVoice(id)
+        end";
+    let mut e = lua_engine(&mut store, latch);
+    level(&mut e, &[on(60)]);
+    assert!(
+        (level(&mut e, &[]) - 0.5).abs() < 1e-3,
+        "held while the key is down"
+    );
+    level(&mut e, &[off(60)]);
+    assert_eq!(level(&mut e, &[]), 0.0, "released at the key-up");
+}

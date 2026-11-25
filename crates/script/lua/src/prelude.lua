@@ -1361,6 +1361,21 @@ function isKeyDown(note)
 	return host_call("KeyDown", note) ~= 0
 end
 
+-- UVI's: whether the note that started the callback is still down.
+function isNoteHeld()
+	return host_call("NoteHeld") ~= 0
+end
+
+-- UVI's: returns once the note that started the callback is released
+-- (`playNote(.., 0)` then `waitForRelease()` then `releaseVoice`).
+-- ponytail: polls every millisecond of engine time; a release wake-up would
+-- save the resumes if many notes wait at once.
+function waitForRelease()
+	while isNoteHeld() do
+		wait(1)
+	end
+end
+
 -- UVI's signature (its embedded api): `slice` comes before `oscIndex`, and
 -- a duration > 0 releases after that many ms, 0 waits for releaseVoice,
 -- -1 (the default) releases with the note that started the callback.

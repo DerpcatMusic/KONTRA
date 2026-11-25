@@ -1653,6 +1653,9 @@ impl kontra_vm::Machine for KnobMachine {
     fn context(&self, _: kontra_vm::CoId) -> Option<u64> {
         None
     }
+    fn is_running(&self, _: &dyn Fn(u64) -> bool) -> bool {
+        false
+    }
     fn spawned(&mut self) -> Option<(kontra_vm::CoId, Option<u64>)> {
         None
     }

@@ -107,7 +107,7 @@ impl Vm {
     pub fn is_running(&self, matches: impl Fn(u64) -> bool) -> bool {
         match self {
             Self::Code(vm) => vm.find(matches).is_some(),
-            Self::Foreign(_) => false,
+            Self::Foreign(m) => m.is_running(&matches),
         }
     }
 

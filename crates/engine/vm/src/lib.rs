@@ -48,6 +48,9 @@ pub trait Machine: Send {
     fn run(&mut self, co: CoId, host: &mut dyn HostApi) -> Step;
     fn cancel(&mut self, co: CoId);
     fn context(&self, co: CoId) -> Option<u64>;
+    /// Whether a callback whose context `matches` has started and not ended
+    /// (running or waiting), as [`Instance::find`] tells for KSP.
+    fn is_running(&self, matches: &dyn Fn(u64) -> bool) -> bool;
     /// A task the last run started beside itself, in the order started:
     /// `None` not run yet (a front end's `spawn`), to start at the run's
     /// time after it; else run already and now waiting this many

@@ -856,6 +856,10 @@ impl Machine for LuaMachine {
             .map(|s| s.context)
     }
 
+    fn is_running(&self, matches: &dyn Fn(u64) -> bool) -> bool {
+        (self.slots.iter()).any(|s| !matches!(s.running, Running::Idle) && matches(s.context))
+    }
+
     fn spawned(&mut self) -> Option<(CoId, Option<u64>)> {
         self.spawned.pop_front()
     }

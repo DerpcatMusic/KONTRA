@@ -2778,7 +2778,7 @@ fn about_shows_the_release_version_and_build() {
 #[test]
 fn the_tick_returns_while_a_load_waits_on_the_disk() {
     let (params, _dsp) = activate("");
-    (crate::lock(&params.shared.rack).as_mut().unwrap()).load_in_background();
+    (crate::lock(&params.shared.rack).as_mut().unwrap()).load_in_background(|| {});
     let dir = std::env::temp_dir().join(format!("kontra-slow-tick-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -2815,4 +2815,54 @@ fn the_tick_returns_while_a_load_waits_on_the_disk() {
         "the part is in: {:?}",
         crate::lock(&params.shared.view).reports()
     );
+}
+
+/// A load lands with no input event and no audio block: the loader thread
+/// wakes the tick that installs it (the editor sat at "Reading instrument
+/// 0 %" until a click ran one).
+#[test]
+fn a_background_load_wakes_the_tick_that_installs_it() {
+    moose::core::tasks::warm_pool();
+    let (params, _dsp) = activate("");
+    let (tx, woke) = std::sync::mpsc::channel::<()>();
+    params
+        .shared
+        .set_tasks(Some(moose::prelude::TaskSpawner::<Tick>::new(move |_| {
+            let _ = tx.send(());
+        })));
+    crate::load_in_background(
+        &params.shared,
+        crate::lock(&params.shared.rack).as_mut().unwrap(),
+    );
+    // The read waits on a FIFO, so every wake before it answers is drained.
+    let dir = std::env::temp_dir().join(format!("kontra-load-wake-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let slow = dir.join("slow.sfz");
+    let made = std::process::Command::new("mkfifo").arg(&slow).status();
+    assert!(made.unwrap().success());
+    let path = slow.clone();
+    params
+        .shared
+        .request(crate::Request::Load { part: None, path });
+    // This tick hands the read to the loader.
+    Tick.run(&params);
+    assert!(params.shared.loading(), "the read runs on the loader");
+    while woke.try_recv().is_ok() {}
+    std::thread::spawn(move || {
+        for _ in 0..8 {
+            let _ = std::fs::write(&slow, "<region> sample=*sine key=60\n");
+        }
+    });
+    // Only the ticks something woke run, as in a host with no input.
+    let until = std::time::Instant::now() + Duration::from_secs(20);
+    while params.shared.loading() {
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            woke.recv_timeout(left).is_ok(),
+            "the finished load woke no tick"
+        );
+        Tick.run(&params);
+    }
+    assert!(crate::lock(&params.shared.rack).as_ref().unwrap().parts()[0].is_some());
 }

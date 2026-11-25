@@ -117,8 +117,10 @@ fn read(job: &mut Job, rate: u32, store: &mut super::Store) -> Result<Built, cra
 impl Rack {
     /// Loads from now on run on a thread of the rack's own: the control
     /// thread never waits on a disk. It ends with the rack, after the load
-    /// it is in. Without this, loads run where they are asked.
-    pub fn load_in_background(&mut self) {
+    /// it is in. Without this, loads run where they are asked. `ready` runs
+    /// on that thread after each load, for the caller to come and
+    /// [`Rack::finish_loads`].
+    pub fn load_in_background(&mut self, ready: impl Fn() + Send + 'static) {
         let (jobs, take) = mpsc::channel::<Job>();
         let (give, done) = mpsc::channel();
         let (rate, mut store) = (self.rate, self.store.loader());
@@ -130,6 +132,7 @@ impl Rack {
                     if give.send((job, built)).is_err() {
                         return;
                     }
+                    ready();
                 }
             });
         if spawned.is_ok() {

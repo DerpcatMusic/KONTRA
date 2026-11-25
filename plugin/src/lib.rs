@@ -148,7 +148,9 @@ pub struct Shared {
     /// Task spawner captured from the editor context so UI actions still run
     /// [`Tick`] when the host suspends audio processing (e.g. Bitwig track sleep
     /// or stopped audio engine).
-    tasks: Mutex<Option<moose::prelude::TaskSpawner<Tick>>>,
+    /// Shared with the rack's loader thread, which wakes the tick when a
+    /// load is ready.
+    tasks: Arc<Mutex<Option<moose::prelude::TaskSpawner<Tick>>>>,
     /// Whether the library browser has a background scan running.
     scanning: AtomicBool,
     /// The editor is open: the tick keeps its copy of the rack current.
@@ -200,9 +202,7 @@ impl Shared {
     }
 
     pub fn wake_tick(&self) {
-        if let Some(tasks) = lock(&self.tasks).as_ref() {
-            tasks.spawn_coalescing(Tick);
-        }
+        wake(&self.tasks);
     }
 
     pub fn has_pending_work(&self) -> bool {
@@ -242,6 +242,21 @@ impl Shared {
         self.asked.load(Ordering::Acquire) > self.done.load(Ordering::Acquire)
             || self.restoring.load(Ordering::Acquire)
             || self.in_flight.load(Ordering::Acquire) > 0
+    }
+}
+
+/// Loads on the rack's own thread from now on. A finished load wakes the
+/// tick that installs it: nothing else need run (an input event, an audio
+/// block) for it to land.
+fn load_in_background(shared: &Shared, rack: &mut Rack) {
+    let tasks = Arc::clone(&shared.tasks);
+    rack.load_in_background(move || wake(&tasks));
+}
+
+/// Runs a [`Tick`] soon, if a spawner is known.
+fn wake(tasks: &Mutex<Option<moose::prelude::TaskSpawner<Tick>>>) {
+    if let Some(tasks) = lock(tasks).as_ref() {
+        tasks.spawn_coalescing(Tick);
     }
 }
 
@@ -617,8 +632,10 @@ impl Plugin for Kontra {
     fn activate(
         p: &KontraParams,
         c: &AudioConfig,
-        _cx: &InitContext,
+        cx: &InitContext,
     ) -> Result<Dsp, PreparationError> {
+        // The tick runs without an editor or an audio block (a load landing).
+        p.shared.set_tasks(cx.tasks::<Tick>());
         let parked = lock(&p.shared.parked).take();
         let mut audio = match parked {
             Some((rate, mut audio)) if rate == c.sample_rate => {
@@ -837,7 +854,7 @@ fn build_rack(p: &KontraParams, c: &AudioConfig) -> Option<RackAudio> {
     // Reads and sample loads run on the rack's own thread, never on the
     // shared task pool or under the rack lock. Tests load where they ask.
     if !cfg!(test) {
-        rack.load_in_background();
+        load_in_background(&p.shared, &mut rack);
     }
     if let Some(saves) = kontra_host::rack::user_saves() {
         rack.set_saves(saves);
