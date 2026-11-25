@@ -13,7 +13,6 @@ use kontra_ir as ir;
 use roxmltree::Node;
 
 mod blend;
-mod delay;
 mod digital_eq;
 mod fade;
 pub(crate) mod files;
@@ -28,7 +27,6 @@ mod modulation;
 mod multi_peak;
 mod provenance;
 mod report;
-mod reverb;
 mod routing;
 mod tree;
 mod values;

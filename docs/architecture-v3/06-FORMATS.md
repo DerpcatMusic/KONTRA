@@ -60,7 +60,7 @@ loop modes).
 | Crate | Today (production) | Target |
 |---|---|---|
 | `format/kontakt` | 10.8k `format/kontakt` + 3.5k `kontakt-effects` production lines (2026-11-24; stream and DSP moved out); effects map through one `MODULES` table (specs/kontakt-mapping-tables.md) | file readers (unchanged, mostly vendor/) + ~8k mapping |
-| `format/uvi` | 25.6k (incl. 5.3k script, 1.8k thread, stream) | readers + ~6k mapping |
+| `format/uvi` | `src/` minus tests, measured 2026-11-25: 8,114 lines, 6,613 code (not blank or comment), was 8,456 / 6,966 on b19c21ca3. Readers (`bank`, `keys`, `lib`) 1,311 / 1,107; mapping 6,803 / 5,506. Script, thread and stream already moved out. Effects map through one `UviModule` table each ([spec](../specs/uvi-mapping-tables.md)); modulators and zone fields are still hand-mapped | readers + ~6k mapping |
 | `format/sfz` | (inside root) | ~1.5k, both directions (export for debugging) |
 | `format/native` | `sampler-native` 3.2k | ~1.5k, serde of IR + sample pack |
 

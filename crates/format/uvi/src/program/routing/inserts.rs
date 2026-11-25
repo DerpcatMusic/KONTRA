@@ -1,10 +1,10 @@
-//! Inserts the program's buses and chains run that are not a parallel path:
-//! an `XpanderFilter` on the explicit ladder (the keygroup's filter), a
-//! `Drive`, a `CombFilter`, and the wet share of a `FeedbackMachine`
-//! (its chain is laid like an effect rack's; see `Translator::lay`).
+//! Inserts the program's buses and chains run that are not a parallel path
+//! and no [`super::super::models::UviModule`] loads: an `XpanderFilter` on
+//! the explicit ladder (the keygroup's filter), a `CombFilter`, and the wet
+//! share of a `FeedbackMachine` (its chain is laid like an effect rack's;
+//! see `Translator::lay`).
 //!
-//! ponytail, unverified (no UVI render oracle): `Drive` takes the WaveShaper's
-//! drive law and `tanh`, normalised to unity at full scale; `CombFilter` is
+//! ponytail, unverified (no UVI render oracle): `CombFilter` is
 //! one feedback comb at `Freq` Hz with `Q` as its loop gain (a one-voice
 //! [`ir::CombBank`]); a `FeedbackMachine`'s own delay (milliseconds in every
 //! corpus program) is dropped, and its loop is reported when `Feedback` is
@@ -12,7 +12,6 @@
 
 use kontra_format::Notes;
 use kontra_ir as ir;
-use kontra_law::uvi::WAVESHAPER_DRIVE;
 use roxmltree::Node;
 
 use super::super::{Library, Translator, filters, num};
@@ -27,31 +26,11 @@ const COMB_FEEDBACK_MAX: f32 = 0.999;
 pub(super) fn bus_effect(node: Node, notes: &mut Notes) -> Result<Option<ir::Effect>, String> {
     Ok(if filters::on_bus(node) {
         Some(filters::effect(node, 0))
-    } else if node.has_tag_name("Drive") {
-        drive(node, notes)?
     } else if node.has_tag_name("CombFilter") {
         Some(comb(node, notes)?)
     } else {
         None
     })
-}
-
-fn drive(node: Node, notes: &mut Notes) -> Result<Option<ir::Effect>, String> {
-    if num(node, "Mode", 0.0)? != 0.0 {
-        notes.add(ir::Impact::Audible, "Drive mode", "");
-        return Ok(None);
-    }
-    let d = WAVESHAPER_DRIVE.eval(num(node, "DriveAmount", 0.0)?.clamp(0.0, 1.0) as f32);
-    let shaper = ir::Shaper {
-        pre_lowpass_hz: None,
-        curve: ir::DriveCurve::Tanh(d),
-        lowpass_hz: None,
-        highpass_hz: None,
-        sections: ir::Sections::NONE,
-    };
-    // Unity at full scale, so a hard drive adds colour, not level.
-    let scale = 1.0 / d.tanh().max(f32::EPSILON);
-    Ok(Some(effect(ir::EffectKind::Shaper(shaper), scale, 0.0)))
 }
 
 fn comb(node: Node, notes: &mut Notes) -> Result<ir::Effect, String> {
