@@ -1133,43 +1133,67 @@ impl Voice {
                     self.silent_tail = 0;
                 }
             } else {
-                for (frame, &[l, r]) in out.iter_mut().skip(done).zip(raw.iter()) {
-                    let level = self.env.tick() * self.fade.next() * self.tick_lags();
-                    for (g, target) in self
-                        .gain
-                        .as_flattened_mut()
-                        .iter_mut()
-                        .zip(self.target.as_flattened())
-                    {
-                        *g += (target - *g) * self.gain_smooth;
+                // In passes: every frame's level (the voice ends on the frame
+                // its envelope or fade ends), the gains and matrix in place,
+                // the release tail's silence count, then what is left is added.
+                let mut levels = [0f32; SCRATCH];
+                let mut m = 0;
+                for level in levels.iter_mut().take(raw.len()) {
+                    *level = self.env.tick() * self.fade.next() * self.tick_lags();
+                    m += 1;
+                    if self.env.is_off() || self.fade.ended() {
+                        alive = false;
+                        break;
                     }
-                    let (l, r) = (l * level, r * level);
+                }
+                let raw = raw.get_mut(..m).unwrap_or_default();
+                if self.gain == self.target {
+                    // Settled gains step to themselves: one matrix throughout.
                     let [[ll, lr], [rl, rr]] = self.gain;
-                    let left = ll * l + lr * r;
-                    let right = rl * l + rr * r;
+                    for (s, &level) in raw.iter_mut().zip(&levels) {
+                        let (l, r) = (s[0] * level, s[1] * level);
+                        *s = [ll * l + lr * r, rl * l + rr * r];
+                    }
+                } else {
+                    for (s, &level) in raw.iter_mut().zip(&levels) {
+                        for (g, target) in self
+                            .gain
+                            .as_flattened_mut()
+                            .iter_mut()
+                            .zip(self.target.as_flattened())
+                        {
+                            *g += (target - *g) * self.gain_smooth;
+                        }
+                        let (l, r) = (s[0] * level, s[1] * level);
+                        let [[ll, lr], [rl, rr]] = self.gain;
+                        *s = [ll * l + lr * r, rl * l + rr * r];
+                    }
+                }
+                let mut keep = raw.len();
+                if releasing && !chunk_missing {
+                    for (k, s) in raw.iter().enumerate() {
+                        if s[0].abs().max(s[1].abs()) < TAIL_SILENCE {
+                            self.silent_tail += 1;
+                            if self.silent_tail >= TAIL_FRAMES {
+                                alive = false;
+                                keep = k + 1;
+                                break;
+                            }
+                        } else {
+                            self.silent_tail = 0;
+                        }
+                    }
+                } else if !raw.is_empty() {
+                    self.silent_tail = 0;
+                }
+                for (frame, &[left, right]) in out.iter_mut().skip(done).zip(raw.iter().take(keep))
+                {
                     #[cfg(feature = "trace")]
                     {
                         self.last_peak = self.last_peak.max(left.abs()).max(right.abs());
                     }
                     frame[0] += left;
                     frame[1] += right;
-                    if self.env.is_off() || self.fade.ended() {
-                        alive = false;
-                        break;
-                    }
-                    if releasing && !chunk_missing {
-                        if left.abs().max(right.abs()) < TAIL_SILENCE {
-                            self.silent_tail += 1;
-                            if self.silent_tail >= TAIL_FRAMES {
-                                alive = false;
-                                break;
-                            }
-                        } else {
-                            self.silent_tail = 0;
-                        }
-                    } else {
-                        self.silent_tail = 0;
-                    }
                 }
             }
             self.elapsed += n as u64;
