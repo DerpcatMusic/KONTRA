@@ -67,6 +67,7 @@ oracle (`tools/kontakt-oracle/disp_sweep.py`), plus the KSP manual's parameter n
 | after the amp/delay/ring batch (main 2597cd0d20) | 196 | 263 | 208 |
 | after the menu, multiple and rate forms (main fa56d6b5b2) | 197 → 200 | 263 → 260 | 207 |
 | after the display-code laws and the module batch (main 63fcf6ef62, fresh `ksp_status`) | 364 | 140 | 163 |
+| after Freak frequency and the Rotator mix and speed readouts (fresh `ksp_status`) | 367 | 137 | 163 |
 
 ## Verification Matrix
 
@@ -102,15 +103,30 @@ None — all verification tiers execute on the current host.
     misses one display digit at about 5 of 201 points.
   - Bite bits: `2 − trunc(−15x)`, clamped to 2..16.
   - Flair rate: `440·2^(11.5x − 16.25)` through a quartic exp2.
+  - Freak frequency ([ref], mode 1): `f·range·f·f` with `f = 2x − 1`. The
+    range is 5000 when wide range is on (the fresh unit) and 200 otherwise; only the
+    5000 form is encoded, since only that one is measured.
+  - Rotator mix: [ref] stores `clamp(x³)`, and [ref] prints `-inf`
+    under 1e-9, else `ln v · 6/ln 2` as `%3.1f`.
+  - Rotator speed: "fast" iff `x > 0.5`. A menu now picks
+    `floor(n·v)` on the law's value, so this is a formula under `Menu`; the line
+    menus read the same.
+  - The shared formatter [ref] (Freak frequency, Phasis rate and center)
+    prints its argument as Padded with no law of its own, and its k form tests
+    `|v| ≥ 1000`. KONTRA's Padded now masks the sign too.
 - Still pending:
-  - Freak frequency reads `5000·(2x − 1)³` at 201 points.
-  - Rotator mix reads `18·log2(x)` dB.
-  - Rotator speed shows "fast" only above 0.5.
-  - Phasis rate, center and notches, and Freak frequency use the shared
-    formatter [ref], which reads the module's own law; that is the next
-    read.
-  - Flair pitch ([ref], note names) reads C-2 at every value in a
-    fresh unit.
+  - Phasis rate and center: the formatter gets the module's stored field through
+    identity w2/w3, and the Phasis setter that fills it is not yet read. Center
+    tracks the exp table near `450x + 1532`, but no code ties those constants to
+    Phasis, so it is not encoded.
+  - Phasis notches ([ref]: `2 − trunc(−11·clamp(x))`, 2..12) and Flair
+    pitch ([ref]: `i = trunc(97x)`, 0..96, note `i % 12`, octave
+    `i/12 − 2`) read their floor (2, C-2) at every set value. Both descriptors are
+    identity and their defaults are 1.0, so the value handed to the formatter is 0,
+    not the set or default value. It is not a read-before-set artefact: read one
+    200 ms audio tick after each set (the same 10 points), both still show 2 and
+    C-2, while Phasis rate in the same run reads as in the direct sweep. The
+    getter that supplies the value is the next read.
 - V5 and SF100 had no owner family, so their controls were not held and read
   nothing. They are now held by `$EFFECT_TYPE_VAN51` / `$EFFECT_TYPE_SUPERFAST100`.
 - The manual and `crates/script/ksp/data/vendor_constants.txt` spell

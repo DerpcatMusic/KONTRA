@@ -62,6 +62,13 @@ pub enum FormulaId {
     BiteBits,
     /// Flair's rate in Hz: `440·2^(11.5·x − 16.25)` by a quartic exp2.
     FlairRateHz,
+    /// Freak's frequency in Hz ([ref], mode 1, wide range): `f·5000·f·f`, `f = 2x − 1`.
+    FreakFrequencyHz,
+    /// Rotator's mix in dB ([ref] on [ref]'s `clamp(x³)`): `ln v · 6/ln 2`,
+    /// −∞ below 10⁻⁹.
+    RotatorMixDb,
+    /// Rotator's speed: 1 ("fast") above 0.5, else 0 ("slow").
+    RotatorFast,
 }
 
 impl FormulaId {
@@ -108,6 +115,20 @@ impl FormulaId {
                 T::of((2 - (x.to_f32().clamp(0.0, 1.0) * -15.0) as i32).clamp(2, 16) as f32)
             }
             Self::FlairRateHz => T::of(fast_exp2(x.to_f32() * 11.5 - 16.25) * 440.0),
+            Self::FreakFrequencyHz => {
+                let f = x.to_f32() + x.to_f32() - 1.0;
+                T::of(f * 5000.0 * f * f)
+            }
+            Self::RotatorMixDb => {
+                let x = x.to_f32();
+                let v = (x * x * x).clamp(0.0, 1.0);
+                T::of(if v < 1e-9 {
+                    f32::NEG_INFINITY
+                } else {
+                    v.ln() * 8.656_17
+                })
+            }
+            Self::RotatorFast => T::of(f32::from(u8::from(x.to_f32() > 0.5))),
             Self::TwinDelayTimeMs => {
                 let x = x.to_f32();
                 T::of(x * 2002.0 * x - x * 3.0 + 1.0)
@@ -139,7 +160,10 @@ impl FormulaId {
             | Self::FreakBandPassHz
             | Self::BiteFrequencyHz
             | Self::BiteBits
-            | Self::FlairRateHz => None,
+            | Self::FlairRateHz
+            | Self::FreakFrequencyHz
+            | Self::RotatorMixDb
+            | Self::RotatorFast => None,
         }
     }
 }
@@ -292,7 +316,9 @@ mod tests {
 
     #[test]
     fn display_laws_round_and_clamp_as_the_reference_prints_them() {
-        use FormulaId::{BassProGainDb, BassProMasterDb, BiteBits, PsycheDetuneCents};
+        use FormulaId::{
+            BassProGainDb, BassProMasterDb, BiteBits, PsycheDetuneCents, RotatorFast, RotatorMixDb,
+        };
         // Below 0 the detune rounds half away from zero; above it truncates (0.505 → 1.005).
         assert_eq!(PsycheDetuneCents.eval(0.005), -49.0);
         assert_eq!(PsycheDetuneCents.eval(0.505), 1.0);
@@ -303,6 +329,10 @@ mod tests {
         assert_eq!(BiteBits.eval(0.065), 2.0);
         assert_eq!(BiteBits.eval(0.07), 3.0);
         assert_eq!(BiteBits.eval(1.0), 16.0);
+        assert_eq!(RotatorMixDb.eval(0.0), f32::NEG_INFINITY);
+        assert!((RotatorMixDb.eval(0.5) + 18.0).abs() < 1e-3);
+        assert_eq!(RotatorFast.eval(0.5), 0.0);
+        assert_eq!(RotatorFast.eval(0.505), 1.0);
     }
 
     #[test]

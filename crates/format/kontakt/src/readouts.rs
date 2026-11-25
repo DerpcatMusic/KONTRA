@@ -10,8 +10,7 @@ use crate::script_knobs::{
 };
 
 /// The readouts of `$ENGINE_PAR_*` names, by name.
-// A control of a module KONTRA has no processor for (the chorus depth, the
-// JMP amp knobs) is held by its slot and shows this text (engine_pars).
+// A control of a module KONTRA has no processor for (the JMP amp knobs) is held by its slot and shows this text (engine_pars).
 // ponytail: the cutoff law is the one filter measured (ANALOG's); measure
 // each filter kind when a library shows another.
 pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
@@ -21,7 +20,8 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
     use kontra_law::FormulaId::{
         BassProGainDb, BassProGeqDb, BassProGeqVolumeDb, BassProMasterDb, BassProMidDb, BiteBits,
         BiteFrequencyHz, ChoralRateHz, FlairRateHz, FreakBandPassHz, FreakCarrierHz,
-        PsycheDetuneCents, PsychePitchSemitones, RaumDecayMs, RaumRateHz, TwinDelayTimeMs,
+        FreakFrequencyHz, PsycheDetuneCents, PsychePitchSemitones, RaumDecayMs, RaumRateHz,
+        RotatorFast, RotatorMixDb, TwinDelayTimeMs,
     };
     let lin = |lo, hi| ir::Law::Linear { lo, hi };
     let exp = |lo, hi| ir::Law::Exp { lo, hi };
@@ -624,6 +624,19 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
         ),
         ("$ENGINE_PAR_BITE_BITS", formula(BiteBits), Whole, none),
         ("$ENGINE_PAR_FLAIR_RATE", formula(FlairRateHz), Padded, none),
+        (
+            "$ENGINE_PAR_FREAK_FREQUENCY",
+            formula(FreakFrequencyHz),
+            Padded,
+            none,
+        ),
+        ("$ENGINE_PAR_RT_MIX", formula(RotatorMixDb), Decimal, none),
+        (
+            "$ENGINE_PAR_RT_SPEED",
+            formula(RotatorFast),
+            Menu(&["slow", "fast"]),
+            none,
+        ),
         ("$ENGINE_PAR_RAUM_RATE", formula(RaumRateHz), Padded, none),
         (
             "$ENGINE_PAR_CHORAL_RATE",

@@ -56,15 +56,6 @@ pub fn text(pars: &EnginePars, id: i32, raw: i32, out: &mut Text) -> bool {
         return true;
     }
     let x = x as f32 / 1e6;
-    if let ir::Form::Menu(items) = r.form {
-        let i = (x * items.len() as f32) as usize;
-        out.push(
-            items
-                .get(i.min(items.len().saturating_sub(1)))
-                .unwrap_or(&""),
-        );
-        return true;
-    }
     // A readout's line is shown as `lo + (hi − lo)·x` and its curve as
     // `e^(ln lo + x·(ln hi − ln lo))`, the line in f32 and the curve in f64 on
     // f32 logs, which round apart from the laws' own forms at ties (measured:
@@ -78,6 +69,17 @@ pub fn text(pars: &EnginePars, id: i32, raw: i32, out: &mut Text) -> bool {
         }
         ref law => f64::from(law.eval(x)),
     };
+    // A menu picks entry `floor(n·v)` of the law's value (the reference 8.13's Replika
+    // quality on a line, Rotator's speed on its `x > 0.5` test).
+    if let ir::Form::Menu(items) = r.form {
+        let i = (v as f32 * items.len() as f32) as usize;
+        out.push(
+            items
+                .get(i.min(items.len().saturating_sub(1)))
+                .unwrap_or(&""),
+        );
+        return true;
+    }
     // A level below the floor prints the bare text (the reference 8.13's Bass Pro gain).
     if v == f64::NEG_INFINITY {
         out.push("-inf");

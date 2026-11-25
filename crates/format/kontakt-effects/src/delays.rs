@@ -39,19 +39,20 @@ pub fn legacy(module: u16, version: u16, public: &[u8]) -> Option<ir::EffectKind
             let [time, feedback, pan, damping, unit] = saved(version, public)?;
             ir::EffectKind::Delay(delay(time, feedback, pan, damping, unit))
         }
-        0x11 => ir::EffectKind::Delay(chorus(f(0)?, f(1)?, f(2)?, f(3)?)),
-        0x12 => ir::EffectKind::Delay(flanger(f(0)?, f(1)?, f(2)?, f(3)?, f(4)?, f(5)?)),
+        0x11 => (CHORUS.build)(&saved::<4>(version, public)?)?,
+        0x12 => (FLANGER.build)(&saved::<6>(version, public)?)?,
         0x14 => ir::EffectKind::Phaser(phaser(f(0)?, f(1)?, f(2)?, f(3)?, f(4)?)),
         _ => return None,
     })
 }
 
-/// The legacy Delay's saved time, feedback, pan, damping and unit.
-pub fn saved(version: u16, public: &[u8]) -> Option<[f32; 5]> {
+/// The first `N` saved floats: the legacy Delay's time, feedback, pan, damping and unit;
+/// the Chorus's and Flanger's knobs in [`CHORUS`] and [`FLANGER`] order.
+pub fn saved<const N: usize>(version: u16, public: &[u8]) -> Option<[f32; N]> {
     if !matches!(version, 0x50 | 0x51) {
         return None;
     }
-    let mut out = [0.0; 5];
+    let mut out = [0.0; N];
     for (n, v) in out.iter_mut().enumerate() {
         let bytes = public.get(4 * n..4 * n + 4)?.try_into().ok()?;
         *v = Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())?;
@@ -110,6 +111,65 @@ pub fn delay(time: f32, feedback: f32, pan: f32, damping: f32, unit: f32) -> ir:
         rate: ir::Rate::Hz(0.0),
         phase: 0.0,
     }
+}
+
+/// The legacy Chorus (`$EFFECT_TYPE_CHORUS`): depth, speed, phase and unit,
+/// every live move rebuilt from all four.
+pub static CHORUS: crate::module::Module = crate::module::Module {
+    id: crate::module::ids::LEGACY_CHORUS,
+    module_id: 0x11,
+    versions: (0x50, 0x51),
+    name: "Chorus (legacy)",
+    script_type: 16,
+    mix: crate::module::MixMode::WetDry,
+    knobs: crate::module::KNOBS.split_at(4).0,
+    build: |p| {
+        let [depth, speed, phase, unit] = p.try_into().ok()?;
+        Some(ir::EffectKind::Delay(chorus(depth, speed, phase, unit)))
+    },
+};
+
+/// The legacy Flanger (`$EFFECT_TYPE_FLANGER`): depth, feedback, speed, phase,
+/// colour and unit.
+pub static FLANGER: crate::module::Module = crate::module::Module {
+    id: crate::module::ids::LEGACY_FLANGER,
+    module_id: 0x12,
+    versions: (0x50, 0x51),
+    name: "Flanger (legacy)",
+    script_type: 15,
+    mix: crate::module::MixMode::WetDry,
+    knobs: crate::module::KNOBS.split_at(6).0,
+    build: |p| {
+        let [depth, feedback, speed, phase, colour, unit] = p.try_into().ok()?;
+        Some(ir::EffectKind::Delay(flanger(
+            depth, feedback, speed, phase, colour, unit,
+        )))
+    },
+};
+
+/// The KSP names of [`CHORUS`]'s and [`FLANGER`]'s knobs, each as its descriptor in the
+/// reference 8.13 stores it: depth, feedback and phase as set (identity: descriptors 0x21c,
+/// 0x21e, 0x221, 0x223, 0x224), speed in Hz, colour `5·clamp(x)` ms. The
+/// units are not bound.
+pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 8] {
+    use ir::KnobTarget::Slot;
+    use ir::SlotKnob::Knob;
+    let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
+    let hz = || ir::Law::Exp { lo: 0.05, hi: 8.0 };
+    [
+        ("$ENGINE_PAR_CH_DEPTH", Slot(Knob(0)), unit()),
+        ("$ENGINE_PAR_CH_SPEED", Slot(Knob(1)), hz()),
+        ("$ENGINE_PAR_CH_PHASE", Slot(Knob(2)), unit()),
+        ("$ENGINE_PAR_FL_DEPTH", Slot(Knob(0)), unit()),
+        ("$ENGINE_PAR_FL_FEEDBACK", Slot(Knob(1)), unit()),
+        ("$ENGINE_PAR_FL_SPEED", Slot(Knob(2)), hz()),
+        ("$ENGINE_PAR_FL_PHASE", Slot(Knob(3)), unit()),
+        (
+            "$ENGINE_PAR_FL_COLOR",
+            Slot(Knob(4)),
+            ir::Law::Linear { lo: 0.0, hi: 5.0 },
+        ),
+    ]
 }
 
 /// Legacy Chorus: depth, speed, phase, unit. Setter [ref] and audio
@@ -197,6 +257,37 @@ mod tests {
 
     fn record(fields: &[f32]) -> Vec<u8> {
         fields.iter().flat_map(|f| f.to_le_bytes()).collect()
+    }
+
+    /// A script's depth, feedback and colour reach the delay (audit KT-07): each row's law
+    /// gives the knob, and the module rebuilds from every knob as a live move does.
+    #[test]
+    fn script_rows_move_the_legacy_chorus_and_flanger() {
+        let rows = rows();
+        let law = |name| {
+            rows.iter()
+                .find(|r| r.0 == name)
+                .map(|r| r.2.clone())
+                .unwrap()
+        };
+        let delay = |m: &crate::module::Module, p: &[f32]| match (m.build)(p) {
+            Some(ir::EffectKind::Delay(d)) => d,
+            _ => panic!("{}", m.name),
+        };
+        let depth = law("$ENGINE_PAR_CH_DEPTH").eval(1.0);
+        assert_eq!(delay(&CHORUS, &[depth, 1.0, 0.0, 0.0]).depth_ms, 1.5625);
+        let colour = law("$ENGINE_PAR_FL_COLOR").eval(0.5);
+        let feedback = law("$ENGINE_PAR_FL_FEEDBACK").eval(1.0);
+        let d = delay(&FLANGER, &[1.0, feedback, 1.0, 0.0, colour, 0.0]);
+        assert_eq!(d.time, ir::DelayTime::Ms(2.5));
+        assert_eq!(d.feedback[0][0], -FLANGER_LOOP);
+        // The swing (50 frames at full depth) stays under the 2.5 ms base.
+        assert!(
+            (d.depth_ms - 50.0 / RATE * 1000.0).abs() < 1e-6,
+            "{}",
+            d.depth_ms
+        );
+        assert_eq!(law("$ENGINE_PAR_FL_COLOR").eval(1.0), 5.0);
     }
 
     #[test]

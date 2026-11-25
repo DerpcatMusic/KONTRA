@@ -78,14 +78,16 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
         ("$ENGINE_PAR_DAMPING", Effect(E::ShaperLowpassHz), damping()),
         ("$ENGINE_PAR_BITS", Effect(E::CrushBits), lin(0.0, 16.0)),
         ("$ENGINE_PAR_FREQUENCY", Effect(E::CrushRate), lin(0.0, 1.0)),
-        ("$ENGINE_PAR_THRESHOLD", Effect(E::CompressorThreshold), lin(-68.0, -3.0)),
+        // The setter stores `65·x − 68` dB, in Kontakt dB as a saved one.
+        (
+            "$ENGINE_PAR_THRESHOLD",
+            Effect(E::CompressorThreshold),
+            lin(-68.0 * crate::laws::KONTAKT_DB, -3.0 * crate::laws::KONTAKT_DB),
+        ),
+        // The setter stores the slope `25^(−x)`, shown as `1:(1/r)`; load's `1/r`.
         ("$ENGINE_PAR_RATIO", Effect(E::CompressorRatio), exp(1.0, 25.0)),
         ("$ENGINE_PAR_PH_SPEED", Effect(E::ModRate), exp(0.05, 8.0)),
-        ("$ENGINE_PAR_CH_SPEED", Effect(E::ModRate), exp(0.05, 8.0)),
-        ("$ENGINE_PAR_FL_SPEED", Effect(E::ModRate), exp(0.05, 8.0)),
         ("$ENGINE_PAR_PH_PHASE", Effect(E::ModPhase), lin(0.0, 0.25)),
-        ("$ENGINE_PAR_CH_PHASE", Effect(E::ModPhase), lin(0.0, 0.25)),
-        ("$ENGINE_PAR_FL_PHASE", Effect(E::ModPhase), lin(0.0, 0.25)),
         ("$ENGINE_PAR_PH_DEPTH", Effect(E::PhaserExponent), lin(0.0, 3.0)),
         ("$ENGINE_PAR_PH_FEEDBACK", Effect(E::PhaserFeedback), lin(0.0, 0.85)),
         ("$ENGINE_PAR_TR_ATTACK", Effect(E::TransientAttack), lin(-120.0, 120.0)),
@@ -128,6 +130,7 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
     rows.extend(crate::freak::rows());
     rows.extend(crate::psyche::rows());
     rows.extend(crate::vibrato::rows());
+    rows.extend(crate::delays::rows());
     rows
 }
 
@@ -608,6 +611,22 @@ fn moving(
 
 #[cfg(test)]
 mod tests {
+    /// A script's threshold lands where the same dB saved would (audit KT-06): both are
+    /// Kontakt dB, `2^(dB/6)`.
+    #[test]
+    fn a_scripted_threshold_is_the_saved_one_in_true_db() {
+        let rows = script_knobs();
+        let law = &rows
+            .iter()
+            .find(|r| r.0 == "$ENGINE_PAR_THRESHOLD")
+            .unwrap()
+            .2;
+        for x in [0.0, 0.25, 0.5, 1.0] {
+            let saved = crate::laws::compressor(2, 65.0 * x - 68.0, 0.5, 1.0, 100.0, false);
+            assert!((law.eval(x) - saved.threshold_db).abs() < 1e-4, "{x}");
+        }
+    }
+
     use super::*;
 
     #[test]
