@@ -415,7 +415,7 @@ fn script_controller_callback_links_indirect_route_evaluations() {
         restore: vec![],
         restore_texts: vec![],
         controls: Controls::default(),
-        engine_pars: EnginePars::default(),
+        module_pars: EnginePars::default(),
         view: None,
         links: vec![],
         reverb_laws: ir::ReverbControls::from_fn(|_| ir::Law::Linear { lo: 0.0, hi: 1.0 }),

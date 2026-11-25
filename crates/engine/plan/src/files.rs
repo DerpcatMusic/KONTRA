@@ -108,6 +108,21 @@ pub struct FileRequest {
     pub midi: Option<[i32; 3]>,
     /// A `detect_*` of a zone's sample, not a file.
     pub detect: Option<DetectJob>,
+    /// `fs_navigate`: step file selector `path` picked from to its
+    /// neighbour, not a file to read.
+    pub navigate: Option<Navigate>,
+}
+
+/// `fs_navigate(<ui-id>, <direction>)` of a file selector: the control side
+/// picks the file listed before or after `path` (the one it picked), as the
+/// player would, which runs the selector's callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Navigate {
+    /// The selector's UI id.
+    pub control: i32,
+    pub next: bool,
+    /// Its `$CONTROL_PAR_FILE_TYPE`: which files it lists.
+    pub files: i32,
 }
 
 /// A music-information measurement the control side runs on a zone's sample.
@@ -165,6 +180,7 @@ impl crate::ScriptPlan {
             save,
             midi: None,
             detect: None,
+            navigate: None,
         }
     }
 

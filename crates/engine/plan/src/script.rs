@@ -30,7 +30,8 @@ pub struct ScriptPlan {
     pub restore: Vec<(u32, i64)>,
     pub restore_texts: Vec<(u32, Text)>,
     pub controls: Controls,
-    pub engine_pars: EnginePars,
+    /// The module parameters its script names, and what each takes.
+    pub module_pars: EnginePars,
     /// The performance view the host prepared for it, by file stem: the
     /// one name `load_performance_view` loads.
     pub view: Option<Box<str>>,

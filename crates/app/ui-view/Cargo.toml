@@ -9,6 +9,7 @@ publish = false
 workspace = true
 
 [dependencies]
+kontra-library = { path = "../library" }
 kontra-ui-model = { path = "../../model/ui-model" }
 kontra-ui-pictures = { path = "../ui-pictures" }
 mui = { workspace = true }

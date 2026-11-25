@@ -17,7 +17,7 @@ pub(crate) use kontra_plan::par_values::{BUS_OFFSET, LevelPar, RackScheme, effec
 impl Engine {
     /// What the running script's parameter id `id` changes.
     pub(crate) fn engine_par(&self, id: i32) -> Option<EnginePar> {
-        self.script()?.engine_pars.get(id)
+        self.script()?.module_pars.get(id)
     }
 
     /// A send level addressed to the send chain (generic 0) on the instrument
@@ -44,7 +44,7 @@ impl Engine {
     pub(crate) fn absent(&mut self, par: i32, group: i32, slot: i32, generic: i32) -> bool {
         use Holder as H;
         // A parameter of one effect type, on a slot holding another type.
-        let owner = self.script().and_then(|s| s.engine_pars.owner(par));
+        let owner = self.script().and_then(|s| s.module_pars.owner(par));
         if let Some(owner) = owner
             && self
                 .effect_type(group, slot, generic)
@@ -562,7 +562,7 @@ impl Engine {
         // what it held (the reference 8.13's setter, [ref]).
         if !self
             .script()
-            .is_none_or(|s| s.engine_pars.takes(par, value))
+            .is_none_or(|s| s.module_pars.takes(par, value))
         {
             return false;
         }

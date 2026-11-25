@@ -16,10 +16,11 @@
 //! on a file picks it, which runs the callback; Up and Down move the
 //! selection. The wheel does not scroll the list in Kontakt; here it does.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::sync::Arc;
+
+pub use kontra_library::selector::Entry;
+use kontra_library::selector::list;
 
 use kontra_ui_model as model;
 use mui::prelude::*;
@@ -32,13 +33,6 @@ pub const BAR: f64 = 12.;
 pub const HBAR: f64 = 15.;
 /// A column's width when the script sets none.
 const COLUMN: f64 = 150.;
-
-/// One folder or file a column lists.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Entry {
-    pub name: String,
-    pub folder: bool,
-}
 
 /// One open column: its folder, what it lists, and the row it selects.
 #[derive(Clone, Debug)]
@@ -60,7 +54,7 @@ pub fn columns(base: &str, path: &str, files: model::Files) -> Vec<Column> {
     let mut parts = rest.iter().flat_map(|r| r.components()).peekable();
     let mut out = Vec::new();
     loop {
-        let entries = list(&dir, files);
+        let entries = list(&dir, files.extensions());
         let next = parts
             .next()
             .map(|c| c.as_os_str().to_string_lossy().into_owned());
@@ -77,55 +71,6 @@ pub fn columns(base: &str, path: &str, files: model::Files) -> Vec<Column> {
             _ => return out,
         }
     }
-}
-
-/// The extensions `files` lists.
-fn shown(files: model::Files) -> &'static [&'static str] {
-    match files {
-        model::Files::Any | model::Files::Midi => &["mid", "midi"],
-        model::Files::Audio => &["wav", "aif", "aiff", "ncw", "flac", "ogg"],
-        model::Files::Data => &["nka"],
-    }
-}
-
-/// `dir`'s folders then its `files`, each by name, case aside; read once
-/// per change of the folder.
-fn list(dir: &Path, files: model::Files) -> Arc<[Entry]> {
-    type Cache = HashMap<(PathBuf, u8), (Option<SystemTime>, Arc<[Entry]>)>;
-    static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
-    let stamp = std::fs::metadata(dir).and_then(|m| m.modified()).ok();
-    let key = (dir.to_path_buf(), files as u8);
-    if let Ok(cache) = CACHE.lock()
-        && let Some((at, entries)) = cache.as_ref().and_then(|c| c.get(&key))
-        && *at == stamp
-    {
-        return entries.clone();
-    }
-    let ext = shown(files);
-    let mut entries: Vec<Entry> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            let folder = e.file_type().ok()?.is_dir();
-            let wanted = folder
-                || Path::new(&name)
-                    .extension()
-                    .is_some_and(|x| ext.iter().any(|w| x.eq_ignore_ascii_case(w)));
-            (wanted && !name.starts_with('.')).then_some(Entry { name, folder })
-        })
-        .collect();
-    entries.sort_by_cached_key(|e| (!e.folder, e.name.to_lowercase()));
-    let entries: Arc<[Entry]> = entries.into();
-    if let Ok(mut cache) = CACHE.lock() {
-        // ponytail: never evicts; a selector browsing thousands of folders
-        // keeps their listings until the plugin closes.
-        cache
-            .get_or_insert_with(HashMap::new)
-            .insert(key, (stamp, entries.clone()));
-    }
-    entries
 }
 
 /// Where the columns sit in a control `size` points big.

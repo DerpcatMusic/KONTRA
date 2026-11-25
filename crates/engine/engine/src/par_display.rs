@@ -10,7 +10,7 @@ impl Engine {
     /// `get_engine_par_disp(par, group, slot, generic)`, or with `ext` its `_ext`
     /// form, which shows its second argument. False for an unknown parameter.
     pub(crate) fn par_text(&mut self, ext: bool, n: impl Fn(usize) -> i32, out: &mut Text) -> bool {
-        let par = self.script().and_then(|s| s.engine_pars.get(n(0)));
+        let par = self.script().and_then(|s| s.module_pars.get(n(0)));
         *out = Text::EMPTY;
         // A known parameter on a missing target shows "" (Engine::absent).
         if !ext && self.absent(n(0), n(1), n(2), self.send_generic(n(0), n(1), n(3))) {
@@ -76,6 +76,6 @@ impl Engine {
         }
         self.script()
             .zip(raw)
-            .is_some_and(|(s, raw)| text(&s.engine_pars, n(0), raw, out))
+            .is_some_and(|(s, raw)| text(&s.module_pars, n(0), raw, out))
     }
 }

@@ -151,6 +151,8 @@ pub struct LookPars {
     /// `$CONTROL_PAR_BASEPATH`, the folder it may pick under.
     pub filepath: i32,
     pub basepath: i32,
+    /// `$CONTROL_PAR_FILE_TYPE`: which files a file selector lists.
+    pub file_type: i32,
     /// The UI ids that address the instrument's wallpaper and icon.
     pub wallpaper: i32,
     pub icon: i32,
@@ -461,6 +463,15 @@ impl Store {
     /// `$CONTROL_PAR_FILEPATH` and `fs_get_filename` read.
     pub fn pick_file(&mut self, slot: u8, n: Option<usize>, par: i32, path: Text) {
         self.set_text_par(slot, n, par, path, false);
+    }
+
+    /// File selector `n` of script `slot` as `fs_navigate` steps it: the
+    /// file it picked (empty before one) and its `$CONTROL_PAR_FILE_TYPE`.
+    #[must_use]
+    pub fn selector(&self, slot: u8, n: usize, look: &LookPars) -> (Text, i32) {
+        let path = self.texts(slot, n).iter().find(|t| t.0 == look.filepath);
+        let kind = self.pars(slot, n).iter().find(|p| p.0 == look.file_type);
+        (path.map_or(Text::EMPTY, |t| t.1), kind.map_or(0, |p| p.1))
     }
 
     /// Sets text parameter `par` of control `n`; `line` appends a line.

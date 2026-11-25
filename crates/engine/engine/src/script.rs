@@ -1120,6 +1120,7 @@ impl HostApi for Engine {
                     save: int(0) == 1,
                     midi: None,
                     detect: None,
+                    navigate: None,
                 };
                 HostValue::Int(self.request_file(request))
             }

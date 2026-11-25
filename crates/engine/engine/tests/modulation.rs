@@ -1692,7 +1692,7 @@ fn routes_onto_one_script_knob_move_it_once_with_their_sums() {
         restore: vec![],
         restore_texts: vec![],
         controls: Controls::default(),
-        engine_pars: EnginePars::default(),
+        module_pars: EnginePars::default(),
         view: None,
         links: vec![],
         reverb_laws: ir::ReverbControls::from_fn(|_| ir::Law::Linear { lo: 0.0, hi: 1.0 }),

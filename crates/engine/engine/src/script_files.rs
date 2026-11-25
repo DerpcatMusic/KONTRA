@@ -25,6 +25,10 @@ impl Engine {
 
     /// `r` failed: `on async_complete` says so, and a pick reads cancelled.
     fn refused(&mut self, r: &FileRequest) {
+        // A navigation has no async id: dropped, nothing follows.
+        if r.navigate.is_some() {
+            return;
+        }
         if r.len == 0 && self.picked.len() < FILES {
             self.picked.push((r.slot, r.id, None));
         }

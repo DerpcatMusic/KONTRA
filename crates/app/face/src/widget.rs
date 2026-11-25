@@ -190,13 +190,7 @@ pub(super) fn widget(
         },
         ControlKind::FileSelector => ui::Kind::FileSelector {
             base_path: p.text("$CONTROL_PAR_BASEPATH").map(Into::into),
-            // $NI_FILE_TYPE_MIDI (2), _ARRAY (3), _AUDIO (4).
-            files: match p.int("$CONTROL_PAR_FILE_TYPE") {
-                Some(2) => ui::Files::Midi,
-                Some(3) => ui::Files::Data,
-                Some(4) => ui::Files::Audio,
-                _ => ui::Files::Any,
-            },
+            files: ui::Files::of_type(p.int("$CONTROL_PAR_FILE_TYPE").unwrap_or(0)),
             column_width: p
                 .int("$CONTROL_PAR_COLUMN_WIDTH")
                 .and_then(|n| u32::try_from(n).ok()),

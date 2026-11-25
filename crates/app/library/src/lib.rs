@@ -22,6 +22,7 @@ pub mod discover;
 pub mod index;
 pub mod kontakt;
 pub mod presets;
+pub mod selector;
 
 mod cache;
 mod folder;

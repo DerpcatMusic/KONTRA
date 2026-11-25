@@ -125,7 +125,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
         held_release_ends_children: true,
         links: Vec::new(),
         controls: controls(script),
-        engine_pars: EnginePars {
+        module_pars: EnginePars {
             first: SYMBOL_BASE,
             by_id: found.iter().map(|f| f.map(|(par, _)| par)).collect(),
             readouts: found
@@ -593,6 +593,7 @@ fn look(script: &Script) -> LookPars {
         wf_prop_highlight: par("$UI_WF_PROP_TABLE_IDX_HIGHLIGHT"),
         wf_prop_drag_note: par("$UI_WF_PROP_MIDI_DRAG_START_NOTE"),
         filepath: par("$CONTROL_PAR_FILEPATH"),
+        file_type: par("$CONTROL_PAR_FILE_TYPE"),
         basepath: par("$CONTROL_PAR_BASEPATH"),
         wallpaper: id("$INST_WALLPAPER_ID"),
         icon: id("$INST_ICON_ID"),
@@ -643,7 +644,7 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         },
         coroutines: COROUTINES,
         controls: Controls::default(),
-        engine_pars: EnginePars::default(),
+        module_pars: EnginePars::default(),
         view: None,
         // No reverb parameter ids are bound, so these are never read.
         reverb_laws: ir::ReverbControls::from_fn(|_| kontra_engine::ir::Law::Linear {
