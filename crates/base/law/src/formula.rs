@@ -101,9 +101,9 @@ impl FormulaId {
                 let x = x.to_f32();
                 T::of(x * x * x * 7.4 + 0.25)
             }
-            Self::FreakCarrierHz => T::of(exp_table(x.to_f32() * 200.0 + 1881.881_6)),
-            Self::FreakBandPassHz => T::of(exp_table(x.to_f32() * 455.0 + 1551.881_6)),
-            Self::BiteFrequencyHz => T::of(exp_table(x.to_f32() * 527.078_1 + 1598.631_3)),
+            Self::FreakCarrierHz => T::of(exp_table(x.to_f32() * 200.0 + 1_881.881_6)),
+            Self::FreakBandPassHz => T::of(exp_table(x.to_f32() * 455.0 + 1_551.881_6)),
+            Self::BiteFrequencyHz => T::of(exp_table(x.to_f32() * 527.078_1 + 1_598.631_3)),
             Self::BiteBits => {
                 T::of((2 - (x.to_f32().clamp(0.0, 1.0) * -15.0) as i32).clamp(2, 16) as f32)
             }
