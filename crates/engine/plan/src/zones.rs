@@ -727,9 +727,16 @@ pub(crate) fn share<T: Copy + Into<i32> + TryFrom<i32>>(
 ) {
     let v = value.clamp(0, width);
     let other = i ^ 1;
-    let rest = (width - v).min(fades[other].into());
-    if let (Ok(v), Ok(rest)) = (T::try_from(v), T::try_from(rest)) {
-        fades[i] = v;
-        fades[other] = rest;
+    let Some(&held) = fades.get(other) else {
+        return;
+    };
+    let rest = (width - v).min(held.into());
+    if let (Ok(v), Ok(rest)) = (T::try_from(v), T::try_from(rest))
+        && let Some(slot) = fades.get_mut(i)
+    {
+        *slot = v;
+        if let Some(slot) = fades.get_mut(other) {
+            *slot = rest;
+        }
     }
 }
