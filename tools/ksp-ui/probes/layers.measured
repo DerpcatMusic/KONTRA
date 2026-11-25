@@ -1,4 +1,6 @@
-# Kontakt 8.13 at 100 % (shoot.sh, DPI=96), oracle run 2026-11-25: the callbacks the layers
+# Kontakt 8.13 at 100 % (shoot.sh, DPI=96), oracle run 2026-11-25, re-measured the same day with
+# $HIDE_WHOLE_CONTROL = 16 and $HIDE_PART_BG = 1 (the first run set 128 and 8; the trace did not
+# change): the callbacks the layers
 # page's clicks and drags ran, in order (one click per case, on the overlap; see gen.py layers()).
 # Cases with no uc line (the hidden panel's button, the lone mouse area's click and drags) heard
 # nothing. KONTRA checks them:

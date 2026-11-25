@@ -61,7 +61,7 @@ on init
   set_text($s3, "s3")
   hide_part($s1, $HIDE_PART_BG)
   hide_part($s2, $HIDE_PART_TITLE)
-  set_control_par(get_ui_id($s3), $CONTROL_PAR_HIDE, 128)
+  set_control_par(get_ui_id($s3), $CONTROL_PAR_HIDE, 16)
   set_control_par(get_ui_id($sl0), $CONTROL_PAR_POS_X, 500)
   set_control_par(get_ui_id($sl0), $CONTROL_PAR_POS_Y, 200)
   set_control_par(get_ui_id($sl0), $CONTROL_PAR_WIDTH, 80)

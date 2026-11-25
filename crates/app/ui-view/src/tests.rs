@@ -1235,7 +1235,8 @@ fn pictureless_switch_caption_uses_the_selected_state_size() {
         tree.styles.push(model::TextStyle {
             font: model::Font::Default,
             size,
-            color: Rgba::rgb(0xff_ffff),
+            // Red words, told apart from the body $HIDE_PART_BG keeps.
+            color: Rgba::rgb(0xff_0000),
             align: model::Align::Center,
             ..model::TextStyle::default()
         });
@@ -1265,7 +1266,7 @@ fn pictureless_switch_caption_uses_the_selected_state_size() {
             .as_chunks::<80>()
             .0
             .iter()
-            .filter(|row| row.iter().any(|p| p[0] > 128))
+            .filter(|row| row.iter().any(|p| p[0] > 128 && p[1] < 64))
             .count()
     };
     let off = ink_rows(&mut tree, 0, 1);
@@ -1876,12 +1877,55 @@ fn a_chosen_font_draws_a_buttons_words_as_a_labels() {
         let mut ui = crate::ui();
         let mut pictures = Pictures::new(Box::new(|_| None));
         let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
-        paint(&mut ui, el, 72, 20)
-            .iter()
-            .map(|p| p[0] > 128)
-            .collect::<Vec<_>>()
+        // Where the white words sit: a button's grey body (kept under
+        // $HIDE_PART_BG) only changes how their edges blend.
+        let lit: Vec<(usize, usize)> = (paint(&mut ui, el, 72, 20).iter().enumerate())
+            .filter(|(_, p)| p[0] > 240)
+            .map(|(i, _)| (i % 72, i / 72))
+            .collect();
+        let xs = lit.iter().map(|p| p.0);
+        let ys = lit.iter().map(|p| p.1);
+        (xs.clone().min(), xs.max(), ys.clone().min(), ys.max())
     };
     let label = ink(Kind::Label);
-    assert!(label.iter().any(|&on| on));
+    assert!(label.0.is_some());
     assert_eq!(ink(Kind::Button { momentary: false }), label);
+}
+
+/// A stock button keeps its body under $HIDE_PART_BG and its words under
+/// $HIDE_PART_TITLE (the reference 8.13, tools/ksp-ui layers page button pb
+/// and geometry page switches s1 and s2).
+#[test]
+fn a_stock_button_keeps_its_body_and_words_under_hide_parts() {
+    let mut tree = Interface {
+        stock_skin: model::StockSkin::Kontakt,
+        ..Interface::default()
+    };
+    tree.pages.push(Page {
+        size: Size {
+            width: 60.,
+            height: 20.,
+        },
+        background: model::Background {
+            color: Some(Rgba::rgb(0)),
+            ..Default::default()
+        },
+        ..Page::default()
+    });
+    let mut b = Widget::new(
+        "$b",
+        PageRef(0),
+        Rect::new(0, 0, 60, 20),
+        Kind::Button { momentary: false },
+    );
+    b.text = "pb".into();
+    b.hide.background = true;
+    b.hide.title = true;
+    tree.widgets.push(b);
+    let mut ui = crate::ui();
+    let mut pictures = Pictures::new(Box::new(|_| None));
+    let (el, _) = page(&mut ui, 0, &tree, PageRef(0), &mut pictures, (1., &[]));
+    let px = paint(&mut ui, el, 60, 20);
+    assert_eq!(px.get(10 * 60 + 50).map(|p| p[0]), Some(0x5f), "the body");
+    assert!(px.iter().any(|p| p[0] > 200), "the words");
 }

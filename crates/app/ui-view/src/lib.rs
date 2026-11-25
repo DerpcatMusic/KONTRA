@@ -273,7 +273,7 @@ pub fn page_as(
             .as_ref()
             .and_then(|look| look.pictures(pictures, device));
         let button_art = look.as_ref().and_then(|look| match look {
-            stock::Look::Button { on: true, .. } if bare || !wd.hide.background => pictures.frame(
+            stock::Look::Button { on: true, .. } => pictures.frame(
                 model::AssetRef(usize::MAX - 5),
                 "@stock/button",
                 model::ImageMeta {
