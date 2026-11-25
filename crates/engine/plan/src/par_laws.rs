@@ -96,6 +96,7 @@ pub fn text(pars: &EnginePars, id: i32, raw: i32, out: &mut Text) -> bool {
         ir::Form::WideWhole => Readout::WideWhole(v),
         ir::Form::Blank | ir::Form::Menu(_) => return true,
         ir::Form::Times => return out.push_fmt(format_args!("x {v:.1}")),
+        ir::Form::Bpm => return out.push_fmt(format_args!("{v:3.0} BPM")),
         ir::Form::Rate if v.abs() < 1.0 => return out.push_fmt(format_args!("{v:.2}")),
         ir::Form::Rate => return out.push_fmt(format_args!("{v:.1}")),
     };

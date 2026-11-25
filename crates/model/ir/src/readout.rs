@@ -35,6 +35,8 @@ pub enum Form {
     Blank,
     /// `x ` and one decimal: a multiple.
     Times,
+    /// A whole number in three places and ` BPM`: a tempo.
+    Bpm,
     /// Two decimals under 1, else one, unpadded: a rate in Hz.
     Rate,
     /// One of these texts: entry `floor(n·x)`, the last at 1.
