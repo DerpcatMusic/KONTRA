@@ -11,6 +11,54 @@ use std::sync::OnceLock;
 
 use super::programs::{ProgramSrc, ReaderSrc, PROGRAMS, READERS};
 
+/// Embedded bodies a reader reads through a host object's virtual reader, so the stream
+/// does not name their class: (program, SerType of the body).
+///
+/// - `FUN_140d1d860`, BSnapshot's group list: for each group of the instrument it checks the
+///   stored flag and version against that group's snapshot object and reads its body. Those
+///   bodies are BGroupSnapshot (0x50, v1–v4): the hand reader (objects/snapshot.rs) reads them
+///   as compact group snapshots, and every snapshot in the corpus decodes exactly with it
+///   (docs/re/NI_FILE_PARITY.md).
+const BODIES: &[(&str, u16)] = &[("FUN_140d1d860", 0x50)];
+
+/// Nested objects whose class the stream does not name, by reader call site: (program,
+/// `(rd O)` sites in IR order, SerType).
+///
+/// - `FUN_140d04600`, BSnapshot v1 / v2 / v3: the instrument inserts and sends (0x3A
+///   BParameterArraySer<BParFX, 8>), the 16 buses read in a loop (0x45 BInsertBus), then
+///   one more FX rack (v2 after the five script slots, v3 after the buses). The hand reader
+///   (objects/snapshot.rs) reads exactly this order, and the corpus snapshots decode with it.
+/// - `FUN_140cff070`, BGroupSnapshot v1 / v2–v3 / v4 (one branch each): the group's FX rack
+///   (0x3A), its source (0x0E BParSrcMode), its internal (0x3B) and external (0x3C)
+///   modulator arrays, the order objects/snapshot_group.rs reads.
+const OBJECTS: &[(&str, &[u16], u16)] = &[
+    ("FUN_140d04600", &[0, 1, 3, 4, 6, 7, 8, 10], 0x3a),
+    ("FUN_140d04600", &[2, 5, 9], 0x45),
+    ("FUN_140cff070", &[0, 4, 8], 0x3a),
+    ("FUN_140cff070", &[1, 5, 9], 0x0e),
+    ("FUN_140cff070", &[2, 6, 10], 0x3b),
+    ("FUN_140cff070", &[3, 7, 11], 0x3c),
+];
+
+/// Whether the reader of `sertype` reads nested objects these tables name (beyond what the
+/// reference interpreter tools/re/ir_sim.py models).
+pub(super) fn names_nested(sertype: u16) -> bool {
+    READERS.iter().any(|r| {
+        r.sertype == sertype
+            && (OBJECTS.iter().any(|(at, _, _)| *at == r.program)
+                || BODIES.iter().any(|(at, _)| *at == r.program))
+    })
+}
+
+/// Virtual reads the IR leaves as `(callx ..)`, proven from the vtable the constructor
+/// installs: (program, read kind).
+///
+/// - `FUN_140cfb900` (BParSrcMode's source reader, called on BParSrcMode+0xC8) calls slot
+///   0x10 of the member's vtable. The constructor at 0x140cf395b stores vtable 0x144e975e8
+///   at +0xC8; its slot 0x10 is 0x140940010, which reads one u32 (0x142a78270, read_u32)
+///   into the member's +0x18.
+const VIRTUAL: &[(&str, char)] = &[("FUN_140cfb900", 'I')];
+
 /// Why a stream is not (fully) decoded. Never a guess: every variant names a fact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Undecoded {
@@ -75,6 +123,9 @@ pub struct Decoded {
     pub class: &'static str,
     pub fields: Vec<Field>,
     pub consumed: usize,
+    /// Bytes of nested framed objects whose class neither the stream nor the reader names:
+    /// their framing is consumed but their areas are not decoded.
+    pub opaque: usize,
 }
 
 type Val = Option<(i64, u32)>;
@@ -140,6 +191,8 @@ enum Ex {
     Reg(usize),
     Glob(usize),
     Rd(char),
+    /// A nested object read; the class when the reader's call site names it ([`OBJECTS`]).
+    RdObj(Option<u16>),
     Ld(u8, bool, Box<Ex>),
     Wrap(u8, bool, Box<Ex>),
     Un(Un, Box<Ex>),
@@ -250,9 +303,32 @@ struct Builder<'a> {
     regs: HashMap<String, usize>,
     labels: HashMap<String, usize>,
     progs: &'a HashMap<&'static str, usize>,
+    /// The program being built and how many `(rd O)` sites it has so far.
+    name: &'static str,
+    objects: u16,
 }
 
 impl Builder<'_> {
+    /// The next `(rd O)` site of this program, with its class when [`OBJECTS`] names it.
+    fn rd_obj(&mut self) -> Ex {
+        let site = self.objects;
+        self.objects += 1;
+        Ex::RdObj(
+            OBJECTS
+                .iter()
+                .find(|(at, sites, _)| *at == self.name && sites.contains(&site))
+                .map(|&(_, _, sertype)| sertype),
+        )
+    }
+
+    /// A `(callx ..)` of this program: the read [`VIRTUAL`] proves, else a stop.
+    fn callx(&mut self, why: String) -> Op {
+        match VIRTUAL.iter().find(|(at, _)| *at == self.name) {
+            Some(&(_, kind)) => Op::Set(self.reg("virtual read"), Ex::Rd(kind)),
+            None => Op::CallX(why),
+        }
+    }
+
     fn reg(&mut self, name: &str) -> usize {
         let n = self.regs.len();
         *self.regs.entry(name.to_string()).or_insert(n)
@@ -281,7 +357,7 @@ impl Builder<'_> {
                             "Q" => 'Q',
                             "S" => 'S',
                             "W" => 'W',
-                            "O" => 'O',
+                            "O" => return Ok(self.rd_obj()),
                             other => return Err(IrError(format!("unknown IR read kind {other}"))),
                         };
                         Ex::Rd(kind)
@@ -373,6 +449,8 @@ fn build(src: &ProgramSrc, progs: &HashMap<&'static str, usize>) -> Result<Progr
         regs: HashMap::new(),
         labels: HashMap::new(),
         progs,
+        name: src.name,
+        objects: 0,
     };
     let params: Vec<usize> = src.params.iter().map(|p| b.reg(p)).collect();
     let sp = b.reg("sp");
@@ -439,7 +517,7 @@ fn build(src: &ProgramSrc, progs: &HashMap<&'static str, usize>) -> Result<Progr
                 why.atom()?;
                 Op::Throw
             }
-            ("callx", [why]) => Op::CallX(why.atom()?.to_owned()),
+            ("callx", [why]) => b.callx(why.atom()?.to_owned()),
             _ => {
                 return Err(IrError(format!(
                     "invalid IR instruction {h} with {} arguments",
@@ -553,6 +631,7 @@ struct Machine<'a> {
     next_sp: i64,
     nobj: i64,
     globals: [Val; 2],
+    opaque: usize,
 }
 
 fn wrap(v: i64, bits: u8, signed: bool) -> i64 {
@@ -586,6 +665,7 @@ impl<'a> Machine<'a> {
             next_sp: STACK,
             nobj: 0,
             globals: [class.map(|c| (i64::from(c), 0)), None],
+            opaque: 0,
         };
         m.store(STREAM + 0x10, 4, Some((1, 0))); // byte-order flag Kontakt tests: 1 = no swap
         m.store(STREAM + 8, 8, Some((STREAM + 0x100, 0)));
@@ -710,20 +790,24 @@ impl<'a> Machine<'a> {
                 self.record(kind, start, self.stream.pos - start, Some(n as u64));
                 Ok(None)
             }
-            'O' => self.read_object(start).map(|_| None),
+            'O' => self.read_object(start, None).map(|_| None),
             _ => Err(Stop::Unresolved(format!("read kind {kind}"))),
         }
     }
 
     fn class_reader(&self) -> Option<(usize, u16, u16)> {
         let (cls, _) = self.globals[0]?;
+        self.reader_of(u16::try_from(cls).ok()?)
+    }
+
+    fn reader_of(&self, sertype: u16) -> Option<(usize, u16, u16)> {
         let r = READERS
             .iter()
-            .find(|r| i64::from(r.sertype) == cls && !r.program.is_empty())?;
+            .find(|r| r.sertype == sertype && !r.program.is_empty())?;
         Some((*self.lib.index.get(r.program)?, r.sertype, r.current))
     }
 
-    fn read_object(&mut self, start: usize) -> Result<(), Stop> {
+    fn read_object(&mut self, start: usize, named: Option<u16>) -> Result<(), Stop> {
         let flag = self.take(1, true)?[0];
         if flag > 1 {
             return Err(Stop::Throw);
@@ -734,7 +818,10 @@ impl<'a> Machine<'a> {
             .and_then(|s| s.try_into().ok())
             .ok_or(Stop::Throw)?;
         let ver = u16::from_le_bytes(ver_bytes);
-        let reader = self.class_reader();
+        let reader = match named {
+            Some(sertype) => self.reader_of(sertype),
+            None => self.class_reader(),
+        };
         if let Some((_, _, current)) = reader {
             if ver > current {
                 return Err(Stop::Throw);
@@ -745,7 +832,7 @@ impl<'a> Machine<'a> {
                 Stop::Unresolved("unframed nested object of unknown class".into())
             })?;
             self.record('O', start, 3, Some(u64::from(ver)));
-            return self.run_nested(prog, ver);
+            return self.run_named(prog, ver, named);
         }
         let id = self.record('O', start, 0, Some(u64::from(ver)));
         if let Some(data) = self.stream.data {
@@ -761,22 +848,20 @@ impl<'a> Machine<'a> {
                 self.take(n, false)?;
                 areas.push((begin, n));
             }
-            if let Some((prog, _, _)) = reader {
-                let (begin, n) = areas[1];
-                let slice = data
-                    .get(begin..begin.saturating_add(n))
-                    .ok_or(Stop::Throw)?;
-                let sub = Stream::decode(slice, self.stream.base + begin);
-                let mut sub = sub;
-                std::mem::swap(&mut self.stream, &mut sub);
-                self.depth += 1;
-                let r = self.run_nested(prog, ver);
-                self.depth -= 1;
-                let finished = self.stream.pos == n;
-                std::mem::swap(&mut self.stream, &mut sub);
-                r?;
-                if !finished {
-                    return Err(Stop::Unresolved("nested object left bytes unread".into()));
+            match reader {
+                None => self.opaque += areas.iter().map(|&(_, n)| n).sum::<usize>(),
+                Some((_, sertype, _)) => {
+                    let area = |(begin, n): (usize, usize)| {
+                        data.get(begin..begin.saturating_add(n)).ok_or(Stop::Throw)
+                    };
+                    let (private, public, children) = (areas[0], areas[1], areas[2]);
+                    self.framed(
+                        sertype,
+                        ver,
+                        (area(private)?, private.0),
+                        (area(public)?, public.0),
+                    )?;
+                    self.children(area(children)?, children.0)?;
                 }
             }
         } else {
@@ -787,7 +872,7 @@ impl<'a> Machine<'a> {
             if let Some((prog, _, _)) = reader {
                 std::mem::swap(&mut self.stream, &mut body);
                 self.depth += 1;
-                let r = self.run_nested(prog, ver);
+                let r = self.run_named(prog, ver, named);
                 self.depth -= 1;
                 std::mem::swap(&mut self.stream, &mut body);
                 r?;
@@ -801,6 +886,113 @@ impl<'a> Machine<'a> {
         }
         self.fields[id as usize - 1].len = self.stream.pos - start;
         Ok(())
+    }
+
+    /// A length-framed object of class `sertype`: its own search, as a top-level object, so
+    /// host-state choices of sibling objects do not multiply; what it does not decode is
+    /// opaque. Kontakt reads the private and
+    /// public areas with separate readers (docs/re/NI_FILE_BINARY_RECORDS.md §2) and a class
+    /// keeps its fields in one of them: the catalog reader is that one's.
+    fn framed(
+        &mut self,
+        sertype: u16,
+        ver: u16,
+        private: (&[u8], usize),
+        public: (&[u8], usize),
+    ) -> Result<(), Stop> {
+        let (body, at) = if public.0.is_empty() && !private.0.is_empty() {
+            private
+        } else {
+            self.opaque += private.0.len();
+            public
+        };
+        // Its framing bounds it, so an object its reader does not decode is opaque bytes
+        // for the census, not a stop for the parent's search (which would replay it).
+        let Ok(d) = nested_decode(sertype, ver, body) else {
+            self.opaque += body.len();
+            return Ok(());
+        };
+        let (base, depth) = (self.stream.base + at, self.depth + 1);
+        self.opaque += d.opaque;
+        self.fields.extend(d.fields.into_iter().map(|f| Field {
+            offset: f.offset + base,
+            depth: f.depth + depth,
+            ..f
+        }));
+        Ok(())
+    }
+
+    /// A framed object's child chunks (u16 SerType, u32 length, body): each decodes as its
+    /// SerType names it, or counts as opaque.
+    fn children(&mut self, mut bytes: &[u8], mut at: usize) -> Result<(), Stop> {
+        while !bytes.is_empty() {
+            let head = bytes.get(..6).ok_or(Stop::Throw)?;
+            let id = u16::from_le_bytes([head[0], head[1]]);
+            let n = u32::from_le_bytes([head[2], head[3], head[4], head[5]]) as usize;
+            let body = bytes.get(6..6usize.saturating_add(n)).ok_or(Stop::Throw)?;
+            self.chunk(id, body, at + 6);
+            bytes = &bytes[6 + n..];
+            at += 6 + n;
+        }
+        Ok(())
+    }
+
+    /// One child chunk: a failure to decode it is opaque bytes, not a stop for its parent
+    /// (the parent's reader does not read it).
+    fn chunk(&mut self, id: u16, body: &[u8], at: usize) {
+        let opaque = body.len();
+        let parsed = (|| {
+            let (&flag, rest) = body.split_first()?;
+            let ver = u16::from_le_bytes([*rest.first()?, *rest.get(1)?]);
+            if flag > 1 || !accepts(id, ver) {
+                return None;
+            }
+            let rest = &rest[2..];
+            if flag == 0 {
+                return Some((
+                    ver,
+                    (&[][..], at + 3),
+                    (rest, at + 3),
+                    (&[][..], at + 3 + rest.len()),
+                ));
+            }
+            let mut areas = Vec::with_capacity(3);
+            let mut off = 0;
+            for _ in 0..3 {
+                let n = u32::from_le_bytes(rest.get(off..off + 4)?.try_into().ok()?) as usize;
+                let area = rest.get(off + 4..(off + 4).checked_add(n)?)?;
+                areas.push((area, at + 3 + off + 4));
+                off += 4 + n;
+            }
+            (off == rest.len()).then(|| (ver, areas[0], areas[1], areas[2]))
+        })();
+        let Some((ver, private, public, children)) = parsed else {
+            self.opaque += opaque;
+            return;
+        };
+        let (fields, extra) = (self.fields.len(), self.opaque);
+        if self.framed(id, ver, private, public).is_err()
+            || self.children(children.0, children.1).is_err()
+        {
+            self.fields.truncate(fields);
+            self.opaque = extra + opaque;
+        }
+    }
+
+    /// [`Self::run_nested`]; a reader named by its call site reads its own elements.
+    fn run_named(&mut self, prog: usize, ver: u16, named: Option<u16>) -> Result<(), Stop> {
+        let Some(sertype) = named else {
+            return self.run_nested(prog, ver);
+        };
+        let element = READERS
+            .iter()
+            .find(|r| r.sertype == sertype)
+            .and_then(element_of)
+            .map(|c| (i64::from(c), 0));
+        let outer = std::mem::replace(&mut self.globals[0], element);
+        let r = self.run_nested(prog, ver);
+        self.globals[0] = outer;
+        r
     }
 
     fn run_nested(&mut self, prog: usize, ver: u16) -> Result<(), Stop> {
@@ -826,6 +1018,11 @@ impl<'a> Machine<'a> {
             Ex::Reg(r) => regs[*r],
             Ex::Glob(g) => self.globals[*g],
             Ex::Rd(k) => self.read(*k)?,
+            Ex::RdObj(class) => {
+                let start = self.stream.pos;
+                self.read_object(start, *class)?;
+                None
+            }
             Ex::Ld(w, s, a) => match self.ev(a, regs)? {
                 Some((addr, _)) => self.load(addr, *w, *s),
                 None => None,
@@ -924,7 +1121,18 @@ impl<'a> Machine<'a> {
         })
     }
 
+    /// Runs `prog`; an unresolved read names the innermost program it stops in.
     fn call(&mut self, prog: usize, args: &[Val], depth: u32) -> Result<Val, Stop> {
+        self.call_body(prog, args, depth).map_err(|e| match e {
+            Stop::Unresolved(w) if !w.contains(" in FUN_") => {
+                let at = PROGRAMS.get(prog).map_or("?", |p| p.name);
+                Stop::Unresolved(format!("{w} in {at}"))
+            }
+            e => e,
+        })
+    }
+
+    fn call_body(&mut self, prog: usize, args: &[Val], depth: u32) -> Result<Val, Stop> {
         if depth > 24 {
             return Err(Stop::Unresolved("reader recursion".into()));
         }
@@ -972,13 +1180,21 @@ impl<'a> Machine<'a> {
                 },
                 Op::RdBody(v) => {
                     let ver = self.ev(v, &regs)?;
-                    let (prog, _, _) = self.class_reader().ok_or_else(|| {
+                    let named = BODIES
+                        .iter()
+                        .find(|(at, _)| PROGRAMS.get(prog).is_some_and(|q| q.name == *at))
+                        .map(|&(_, sertype)| sertype);
+                    let reader = match named {
+                        Some(sertype) => self.reader_of(sertype),
+                        None => self.class_reader(),
+                    };
+                    let (prog, _, _) = reader.ok_or_else(|| {
                         Stop::Unresolved("embedded object of unknown class".into())
                     })?;
                     let Some((ver, _)) = ver else {
                         return Err(Stop::Unresolved("embedded object version".into()));
                     };
-                    self.run_nested(prog, ver as u16)?;
+                    self.run_named(prog, ver as u16, named)?;
                 }
                 Op::Call(q, dst, a) => {
                     let mut vals = Vec::with_capacity(a.len());
@@ -1020,6 +1236,7 @@ struct Outcome {
     stop: Option<Stop>,
     fields: Vec<Field>,
     consumed: usize,
+    opaque: usize,
     out: Vec<u8>,
     chooser: Chooser,
 }
@@ -1042,6 +1259,7 @@ fn attempt(
                 stop: Some(Stop::Virtual(format!("bundled reader IR: {why}"))),
                 fields: Vec::new(),
                 consumed: 0,
+                opaque: 0,
                 out: Vec::new(),
                 chooser,
             }
@@ -1055,6 +1273,7 @@ fn attempt(
             ))),
             fields: Vec::new(),
             consumed: 0,
+            opaque: 0,
             out: Vec::new(),
             chooser,
         };
@@ -1080,6 +1299,7 @@ fn attempt(
         stop,
         fields: m.fields,
         consumed: m.stream.pos,
+        opaque: m.opaque,
         out: m.stream.out,
         chooser: m.chooser,
     }
@@ -1121,7 +1341,47 @@ pub fn decode_prefix(sertype: u16, version: u16, bytes: &[u8]) -> Result<Decoded
     decode_inner(sertype, version, bytes, false)
 }
 
+type NestedKey = (u16, u16, usize, usize);
+/// Decode depth, and the nested decodes memoized at it.
+type Memo = (u32, HashMap<NestedKey, Result<Decoded, Undecoded>>);
+
+std::thread_local! {
+    /// Nested framed objects decoded during the outermost [`decode`]: a parent's host-state
+    /// search replays its stream, and the same bytes always decode the same way.
+    static DECODED: std::cell::RefCell<Memo> =
+        std::cell::RefCell::new((0, HashMap::new()));
+}
+
+/// [`decode`] of an object nested in the stream being decoded, memoized by where it lies.
+fn nested_decode(sertype: u16, version: u16, bytes: &[u8]) -> Result<Decoded, Undecoded> {
+    let key = (sertype, version, bytes.as_ptr() as usize, bytes.len());
+    if let Some(hit) = DECODED.with(|n| n.borrow().1.get(&key).cloned()) {
+        return hit;
+    }
+    let r = decode(sertype, version, bytes);
+    DECODED.with(|n| n.borrow_mut().1.insert(key, r.clone()));
+    r
+}
+
 fn decode_inner(
+    sertype: u16,
+    version: u16,
+    bytes: &[u8],
+    exact: bool,
+) -> Result<Decoded, Undecoded> {
+    DECODED.with(|n| n.borrow_mut().0 += 1);
+    let r = decode_search(sertype, version, bytes, exact);
+    DECODED.with(|n| {
+        let mut n = n.borrow_mut();
+        n.0 -= 1;
+        if n.0 == 0 {
+            n.1.clear();
+        }
+    });
+    r
+}
+
+fn decode_search(
     sertype: u16,
     version: u16,
     bytes: &[u8],
@@ -1138,6 +1398,7 @@ fn decode_inner(
                     class: r.class,
                     fields: o.fields,
                     consumed: o.consumed,
+                    opaque: o.opaque,
                 });
             }
             None => Undecoded::Trailing(bytes.len() - o.consumed),
@@ -1368,6 +1629,7 @@ mod catalog_equivalence_tests {
                 let h = l[0].atom().unwrap();
                 let a = |i: usize, b: &mut Builder<'_>| Box::new(legacy_ex(b, &l[i]));
                 match h {
+                    "rd" if l[1].atom().unwrap() == "O" => b.rd_obj(),
                     "rd" => Ex::Rd(l[1].atom().unwrap().chars().next().unwrap()),
                     "sel" => Ex::Sel(a(1, b), a(2, b), a(3, b)),
                     "&&" => Ex::AndAnd(a(1, b), a(2, b)),
@@ -1420,6 +1682,8 @@ mod catalog_equivalence_tests {
             regs: HashMap::new(),
             labels: HashMap::new(),
             progs,
+            name: src.name,
+            objects: 0,
         };
         let params = src.params.iter().map(|p| b.reg(p)).collect();
         let sp = b.reg("sp");
@@ -1477,7 +1741,10 @@ mod catalog_equivalence_tests {
                 }
                 "ret" => ops.push(Op::Ret(l.get(1).map(|e| legacy_ex(&mut b, e)))),
                 "throw" => ops.push(Op::Throw),
-                "callx" => ops.push(Op::CallX(atom(1))),
+                "callx" => {
+                    let op = b.callx(atom(1));
+                    ops.push(op);
+                }
                 h => panic!("invalid catalog instruction {h}"),
             }
         }
@@ -1526,6 +1793,8 @@ mod catalog_equivalence_tests {
             regs: HashMap::new(),
             labels: HashMap::new(),
             progs: &index,
+            name: "",
+            objects: 0,
         };
         for width in [1, 2, 4, 8] {
             for suffix in ["", "u", "s"] {

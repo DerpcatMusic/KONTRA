@@ -9,22 +9,26 @@
 //! Every chunk of every chunk stream is walked (structured children and the
 //! slots a decoder holds). Each one is judged against Kontakt 8.13.1's own
 //! reader for its SerType and stored version (`native_schema`):
-//! - **full**: Kontakt's reader accounts for every byte of the block it reads, and the chunk
-//!   holds nothing past its children;
+//! - **full**: Kontakt's reader accounts for every byte of each non-empty
+//!   block of an object whose framing covers the chunk exactly;
 //! - **partial**: a reader recognises it but bytes stay unaccounted for
 //!   (trailing, truncated, rejected, unmodelled), or only a hand reader with
 //!   no byte accounting reads it;
 //! - **unrecognised**: no reader for it at all.
 //!
-//! Encrypted presets are reported as protected and not opened: nothing is
-//! decrypted.
+//! Presets open through the plugin's own load path (`decode`), as installed
+//! libraries do in KONTRA; what it cannot open is protected. No chunk of an
+//! encrypted preset is dumped: only counts and class names are kept.
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
+use kontra_format::ProtectionStatus;
 use ni_file::kontakt::native_schema::{self, Undecoded};
-use ni_file::kontakt::{Chunk, KontaktObject, StructuredObject, objects::read_param_slots};
+use ni_file::kontakt::{
+    Chunk, KontaktChunks, KontaktObject, StructuredObject, objects::read_param_slots,
+};
 use ni_file::nkr::Archive;
 
 /// Preset files: a Kontakt chunk stream inside NKS, NIS or a monolith.
@@ -36,6 +40,7 @@ const OTHERS: [&str; 4] = ["nkr", "nkx", "nkc", "nicnt"];
 struct Files {
     total: usize,
     read: usize,
+    encrypted: usize,
     protected: usize,
     unreadable: usize,
 }
@@ -58,6 +63,8 @@ struct Census {
     files: BTreeMap<String, Files>,
     why: BTreeMap<String, usize>,
     objects: BTreeMap<Key, Tally>,
+    /// Whether chunks of the current file may be dumped: never an encrypted one's.
+    keep: bool,
 }
 
 fn main() {
@@ -95,27 +102,31 @@ impl Census {
         if !PRESETS.contains(&ext.as_str()) {
             return;
         }
-        let opened = kontra_format_kontakt::encrypted(path).and_then(|e| {
-            (!e).then(|| kontra_format_kontakt::chunks(path))
-                .transpose()
-        });
+        // The plugin's own load path: a library's preset opens here exactly
+        // when it opens in KONTRA. Only counts and class names leave it.
+        let opened = match kontra_format_kontakt::decode(path) {
+            Ok((bytes, encrypted)) => KontaktChunks::read(Cursor::new(bytes))
+                .map(|c| (c, encrypted == Some(true)))
+                .map_err(|e| Some(format!("Kontakt chunks: {e}"))),
+            Err(e) if e.protection != ProtectionStatus::Open => Err(None),
+            Err(e) => Err(Some(format!("{}: {}", e.what, e.reason))),
+        };
         let f = self.files.entry(ext.clone()).or_default();
         f.total += 1;
         match opened {
-            Ok(None) => f.protected += 1,
-            Ok(Some(chunks)) => {
+            Ok((chunks, encrypted)) => {
                 f.read += 1;
+                f.encrypted += usize::from(encrypted);
+                self.keep = !encrypted;
                 let file = path.display().to_string();
                 for chunk in &chunks.0 {
                     self.walk(chunk, &file, 0);
                 }
             }
-            Err(e) => {
+            Err(None) => f.protected += 1,
+            Err(Some(why)) => {
                 f.unreadable += 1;
-                *self
-                    .why
-                    .entry(format!(".{ext}: {}: {}", e.what, e.reason))
-                    .or_default() += 1;
+                *self.why.entry(format!(".{ext}: {why}")).or_default() += 1;
             }
         }
     }
@@ -143,9 +154,20 @@ impl Census {
     fn walk(&mut self, chunk: &Chunk, file: &str, depth: usize) {
         // A serialized object starts with its framing flag: 1 structured
         // (private, public, children), 0 a version and the public bytes only.
+        // Unframed records (lists led by a u32 count) can start with either
+        // byte, so framing counts only when it covers the chunk exactly, and a
+        // 0 only when Kontakt has a reader for that version.
+        let structured = chunk.data.first() == Some(&1);
         let object = matches!(chunk.data.first(), Some(0 | 1))
             .then(|| StructuredObject::read(Cursor::new(chunk.data.as_slice())).ok())
-            .flatten();
+            .flatten()
+            .filter(|o| {
+                if structured {
+                    framed(o, true) == chunk.data.len()
+                } else {
+                    native_schema::accepts(chunk.id, o.version)
+                }
+            });
         let hand = chunk.into_object();
         let version = object.as_ref().map(|o| o.version);
         let class = version
@@ -177,7 +199,6 @@ impl Census {
         let verdict = match &object {
             Some(o) => {
                 t.bytes += o.public_data.len() + o.private_data.len();
-                let tail = chunk.data.len() - framed(o, chunk.data.first() == Some(&1));
                 // Kontakt reads the public and private blocks with separate
                 // readers (docs/re/NI_FILE_BINARY_RECORDS.md §2); a class keeps
                 // its fields in one, and the catalog reader is that one's.
@@ -189,11 +210,12 @@ impl Census {
                 if blocks.is_empty() {
                     blocks.push(&[]);
                 }
-                let mut why = (tail > 0).then_some("bytes past the children");
-                let mut miss = tail;
+                let mut why = None;
+                let mut miss = 0;
                 for block in blocks {
                     let (w, n) = match native_schema::decode(chunk.id, o.version, block) {
-                        Ok(_) => continue,
+                        Ok(d) if d.opaque == 0 => continue,
+                        Ok(d) => ("nested object of unknown class", d.opaque),
                         Err(Undecoded::Trailing(n)) => ("trailing bytes", n),
                         Err(Undecoded::NoReader) if hand_typed => ("hand reader only", block.len()),
                         Err(Undecoded::NoReader) => ("", block.len()),
@@ -227,7 +249,7 @@ impl Census {
                 t.unaccounted += n;
             }
         }
-        if verdict.is_err() {
+        if verdict.is_err() && self.keep {
             dump(chunk, t.n);
         }
         let mut nested = hand.map(inner_chunks).unwrap_or_default();
@@ -241,12 +263,12 @@ impl Census {
 
     fn print(&self) {
         println!("## Files\n");
-        println!("| Type | Files | Read | Protected | Unreadable |");
-        println!("| --- | ---: | ---: | ---: | ---: |");
+        println!("| Type | Files | Read | of them encrypted | Protected | Unreadable |");
+        println!("| --- | ---: | ---: | ---: | ---: | ---: |");
         for (ext, f) in &self.files {
             println!(
-                "| .{ext} | {} | {} | {} | {} |",
-                f.total, f.read, f.protected, f.unreadable
+                "| .{ext} | {} | {} | {} | {} | {} |",
+                f.total, f.read, f.encrypted, f.protected, f.unreadable
             );
         }
         if !self.why.is_empty() {
@@ -327,7 +349,7 @@ fn reason(e: &Undecoded) -> &'static str {
     match e {
         Undecoded::Truncated => "truncated for Kontakt's reader",
         Undecoded::Rejected => "Kontakt's reader rejects it",
-        Undecoded::Unresolved(_) => "reader not modelled",
+        Undecoded::Unresolved(why) => leak(format!("reader not modelled: {why}")),
         Undecoded::Budget => "host-state search over budget",
         Undecoded::Trailing(_) => "trailing bytes",
         Undecoded::NoReader => "no reader",
@@ -342,7 +364,24 @@ fn hand_name(hand: &Result<KontaktObject, ni_file::Error>) -> &'static str {
     if name == "Unsupported" {
         return "?";
     }
-    Box::leak(name.to_owned().into_boxed_str())
+    leak(name.to_owned())
+}
+
+/// A class or reason name, kept for the whole run (few distinct ones).
+fn leak(s: String) -> &'static str {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    static SEEN: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
+    let mut seen = SEEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let seen = seen.get_or_insert_with(HashSet::new);
+    if let Some(&s) = seen.get(s.as_str()) {
+        return s;
+    }
+    let s: &'static str = Box::leak(s.into_boxed_str());
+    seen.insert(s);
+    s
 }
 
 /// Chunks a decoder holds outside the structured children: parameter-array
