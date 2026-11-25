@@ -883,7 +883,9 @@ impl<'a> Machine<'a> {
                     return Ok(None);
                 }
                 let n = u32::from_le_bytes(len_bytes) as usize;
-                if n > 1 << 24 {
+                // Kontakt's string reads take any length; a decoded stream bounds it. Only a
+                // synthesized stream needs a cap, so a chosen length allocates nothing absurd.
+                if n > 1 << 24 && self.stream.data.is_none() {
                     return Err(Stop::Throw);
                 }
                 self.take(n * if kind == 'W' { 2 } else { 1 }, false)?;

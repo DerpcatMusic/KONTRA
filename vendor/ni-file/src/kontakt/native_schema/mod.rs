@@ -60,6 +60,23 @@ mod tests {
         );
     }
 
+    /// Kontakt's string reads take any length: a BParScript v0x60 whose source is longer
+    /// than 16 MiB (152 saved presets hold one of 19264696 bytes) reads in full.
+    #[test]
+    fn long_script_source_reads_in_full() {
+        let text = 17usize << 20;
+        let mut b = (text as u32).to_le_bytes().to_vec();
+        b.resize(4 + text, b'x');
+        b.extend([0, 0, 0]); // editor open, touched, bypass
+        b.extend(0u32.to_le_bytes()); // password hash: none
+        b.extend((-1i32).to_le_bytes()); // description: null
+        b.extend((-1i32).to_le_bytes()); // text file name: null
+        b.extend(0u32.to_le_bytes()); // persistent values: none
+        let d = decode(0x06, 0x60, &b).unwrap();
+        assert_eq!(d.consumed, b.len());
+        assert_eq!(d.fields[0].len, 4 + text);
+    }
+
     /// curated.rs BInsertBus (FUN_140d0d300): a name, two floats, then a u32 from 0x11
     /// and two bytes from 0x12.
     #[test]

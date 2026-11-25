@@ -255,7 +255,7 @@ class Machine:
             if kind == "N" and n >= 1 << 31:  # negative i32: null string, no bytes
                 s.reads.append((kind, start, 4, 0))
                 return None
-            if n > 1 << 24:
+            if n > 1 << 24 and s.data is None:  # cap synthesized lengths only (Kontakt has none)
                 raise Stop("string-length")
             s.take(n * (2 if kind == "W" else 1))
             s.reads.append((kind, start, s.pos - start, n))
