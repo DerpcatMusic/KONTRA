@@ -88,6 +88,11 @@ pub enum FormulaId {
     /// The envelope's attack curve in whole percent (`0x1407b6d60`, then `0x1407b8430`):
     /// the bipolar `2x − 1` through `(c·0.5 + 0.5)·2 − 1`, `·100` and truncated.
     AttackCurvePercent,
+    /// Stereo Tune's drift in percent (`0x140a9dbe0`): `clamp(x)·0.99·100 + 1`.
+    StereoTuneDriftPercent,
+    /// Transpose Stretch's key in semitones (`0x140a9df10`): `120x − 60` below the
+    /// middle, `24·(x − 0.5)` from it.
+    TransStretchKey,
     /// Phasis's centre in Hz (`0x140a752e0`, Ultra off): note `30 + 90·x`,
     /// `440·2^((note − 69)/12)` by a quartic exp2.
     PhasisCenterHz,
@@ -154,6 +159,15 @@ impl FormulaId {
             Self::FlairPitchNote => T::of(((x.to_f32() * 97.0) as i32).clamp(0, 96) as f32),
             Self::PhasisNotches => {
                 T::of((2 - (x.to_f32().clamp(0.0, 1.0) * -11.0) as i32).clamp(2, 12) as f32)
+            }
+            Self::StereoTuneDriftPercent => T::of(x.to_f32().clamp(0.0, 1.0) * 0.99 * 100.0 + 1.0),
+            Self::TransStretchKey => {
+                let x = x.to_f32();
+                T::of(if x >= 0.5 {
+                    (x - 0.5) * 24.0
+                } else {
+                    x * 120.0 - 60.0
+                })
             }
             Self::AttackCurvePercent => {
                 let c = (x.to_f32() * 2.0 - 1.0).clamp(-1.0, 1.0);
@@ -222,6 +236,8 @@ impl FormulaId {
             | Self::FlairPitchNote
             | Self::PhasisNotches
             | Self::AttackCurvePercent
+            | Self::StereoTuneDriftPercent
+            | Self::TransStretchKey
             | Self::PhasisCenterHz
             | Self::FreakFrequencyHz
             | Self::RotatorMixDb
