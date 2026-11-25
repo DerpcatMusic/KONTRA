@@ -47,7 +47,6 @@ impl SampleFmt {
     /// With `mix`, channel `c` adds `mix[c]` times its value to the outputs;
     /// without, mono plays on both sides and channels past the second are not
     /// played.
-    // ponytail: scalar per value; SIMD per encoding when a profile shows it.
     pub(crate) fn decode(
         self,
         bytes: &[u8],
@@ -55,6 +54,9 @@ impl SampleFmt {
         out: &mut [[f32; 2]],
         mix: Option<&Mix>,
     ) {
+        if self.decode_whole(bytes, first, out, mix) {
+            return;
+        }
         let width = self.encoding.bytes();
         let frame_bytes = self.bytes_per_frame();
         let value = |at: usize| -> f32 {
@@ -71,6 +73,82 @@ impl SampleFmt {
         let at = |n: usize, c: usize| value((first + n) * frame_bytes + c * width);
         emit(usize::from(self.channels), at, out, mix);
     }
+}
+
+impl SampleFmt {
+    /// [`Self::decode`] of frames wholly inside `bytes`, mono or stereo, one
+    /// tight loop per layout; false (nothing written) otherwise. The same
+    /// arithmetic in the same order as [`emit`].
+    fn decode_whole(
+        self,
+        bytes: &[u8],
+        first: usize,
+        out: &mut [[f32; 2]],
+        mix: Option<&Mix>,
+    ) -> bool {
+        let frame = self.bytes_per_frame();
+        let Some(src) = bytes.get(first * frame..(first + out.len()) * frame) else {
+            return false;
+        };
+        let i16 = |b: [u8; 2]| f32::from(i16::from_le_bytes(b)) / 32_768.0;
+        let i24 = |[a, b, c]: [u8; 3]| (i32::from_le_bytes([0, a, b, c]) >> 8) as f32 / 8_388_608.0;
+        let f32 = f32::from_le_bytes;
+        match (self.encoding, self.channels) {
+            (Encoding::I16, 1) => frames::<2, _>(src, out, mix, |&[a, b]| [i16([a, b]); 1]),
+            (Encoding::I16, 2) => frames::<4, _>(src, out, mix, |&[a, b, c, d]| [i16([a, b]), i16([c, d])]),
+            (Encoding::I24, 1) => frames::<3, _>(src, out, mix, |&b| [i24(b); 1]),
+            (Encoding::I24, 2) => {
+                frames::<6, _>(src, out, mix, |&[a, b, c, d, e, f]| [i24([a, b, c]), i24([d, e, f])]);
+            }
+            (Encoding::F32, 1) => frames::<4, _>(src, out, mix, |&b| [f32(b); 1]),
+            (Encoding::F32, 2) => frames::<8, _>(src, out, mix, |&[a, b, c, d, e, f, g, h]| {
+                [f32([a, b, c, d]), f32([e, f, g, h])]
+            }),
+            _ => return false,
+        }
+        true
+    }
+}
+
+/// Each `F`-byte frame of `src` into `out` through [`stereo`].
+#[inline(always)]
+fn frames<const F: usize, const C: usize>(
+    src: &[u8],
+    out: &mut [[f32; 2]],
+    mix: Option<&Mix>,
+    value: impl Fn(&[u8; F]) -> [f32; C],
+) {
+    let (chunks, _) = src.as_chunks::<F>();
+    match mix {
+        Some(mix) => {
+            for (frame, chunk) in out.iter_mut().zip(chunks) {
+                *frame = mixed(value(chunk), mix);
+            }
+        }
+        None => {
+            for (frame, chunk) in out.iter_mut().zip(chunks) {
+                *frame = stereo(value(chunk));
+            }
+        }
+    }
+}
+
+/// A frame of 1 or 2 channel values as [`emit`] plays it without a mix.
+#[inline(always)]
+pub(crate) fn stereo<const C: usize>(v: [f32; C]) -> [f32; 2] {
+    match v.as_slice() {
+        &[l, r, ..] => [l, r],
+        &[m] => [m, m],
+        [] => [0.0; 2],
+    }
+}
+
+/// A frame of channel values through `mix`, summed as [`emit`] sums them.
+#[inline(always)]
+pub(crate) fn mixed<const C: usize>(v: [f32; C], mix: &Mix) -> [f32; 2] {
+    v.iter()
+        .zip(mix)
+        .fold([0.0; 2], |[l, r], (v, gain)| [l + v * gain[0], r + v * gain[1]])
 }
 
 /// Writes frame `n` of `out` from `value(n, channel)`. With `mix`, channel

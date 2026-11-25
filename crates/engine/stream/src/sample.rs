@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use crate::cache::tag;
-use crate::fmt::{Mix, SampleFmt, emit};
+use crate::fmt::{Mix, SampleFmt, emit, mixed, stereo};
 use crate::source::Source;
 use crate::store::{Request, StreamClient};
 
@@ -318,6 +318,25 @@ impl Sample {
                 chunk.fill([0.0; 2]);
                 return false;
             };
+            let channels = usize::from(self.fmt.channels);
+            if skip + n <= frames && (1..=2).contains(&channels) {
+                let [left, right] = values;
+                let (left, right) = (&left[skip..skip + n], &right[skip..skip + n]);
+                match (channels, mix) {
+                    (1, Some(mix)) => (chunk.iter_mut().zip(left))
+                        .for_each(|(o, &l)| *o = mixed([packing.value(l)], mix)),
+                    (1, None) => (chunk.iter_mut().zip(left))
+                        .for_each(|(o, &l)| *o = stereo([packing.value(l)])),
+                    (_, Some(mix)) => (chunk.iter_mut().zip(left.iter().zip(right))).for_each(
+                        |(o, (&l, &r))| *o = mixed([packing.value(l), packing.value(r)], mix),
+                    ),
+                    (_, None) => (chunk.iter_mut().zip(left.iter().zip(right))).for_each(
+                        |(o, (&l, &r))| *o = stereo([packing.value(l), packing.value(r)]),
+                    ),
+                }
+                done += n;
+                continue;
+            }
             let value = |f: usize, c: usize| {
                 let v = values.get(c).and_then(|ch| ch.get(skip + f)).copied();
                 if skip + f < frames {
