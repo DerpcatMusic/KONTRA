@@ -35,7 +35,7 @@ def one(p):
     Kontakt colours them) is no failure: the row is replayed on the playable key nearest C3."""
     row=play(p,SCENARIO)
     keys=row.pop('playable_keys',None)
-    if 'error' not in row and (row.get('rms') or 0)<SILENT and keys and 60 not in keys:
+    if 'error' not in row and level(row)<SILENT and keys and 60 not in keys:
         key=min(keys,key=lambda k:abs(k-60))
         ev=json.load(open(SCENARIO))
         for e in ev['events']:
@@ -60,6 +60,7 @@ def play(p,scenario):
         row['faults']=res.get('script_faults',[])
         row['peak']=res['metrics']['peak']
         row['rms']=res['metrics'].get('rms')
+        row['note_rms']=res.get('note_rms')
         row['voices_left']=len(res.get('remaining_voices',[]))
         row['complete']=res.get('render_complete')
         row['load_s']=res['load_ms']/1e3 if res.get('load_ms') is not None else None
@@ -91,7 +92,11 @@ def checks(row):
         script=not faulted(row)
             and not any(d.get('impact')=='Broken' and str(d.get('feature','')).startswith('script') for d in row['diag']),
         ui=None if ui is None else all('error' not in u and not u.get('unsupported') for u in ui),
-        sound=(row.get('rms') or 0)>=SILENT)
+        sound=level(row)>=SILENT)
+
+def level(row):
+    """RMS while the note is held when the row has it (a quiet pad is not averaged away by the tail)."""
+    return row.get('note_rms') if row.get('note_rms') is not None else (row.get('rms') or 0)
 
 def classes(row):
     """The failure classes a row shows: load error, silence, each audible diagnostic feature."""
@@ -101,7 +106,7 @@ def classes(row):
     for u in row.get('ui') or []:
         if 'error' in u: c.append('ui-error:'+u['error'][:60])
         c+=['ui-unsupported:'+k for k in u.get('unsupported',{})]
-    if (row.get('rms') or 0)<SILENT: c.append('silent')
+    if level(row)<SILENT: c.append('silent')
     for d in row['diag']:
         if d.get('impact')=='Audible': c.append('diag:'+str(d.get('feature')))
     c+=['unhandled:'+a for a,_ in row['unhandled']]
@@ -120,7 +125,7 @@ def summary():
         f.write('instrument\tloads\tsilent\trms\tpeak\tclasses\n')
         for p,r in sorted(rows.items()):
             loads='error' not in r
-            f.write(f"{p}\t{int(loads)}\t{int(loads and (r.get('rms') or 0)<SILENT)}\t{r.get('rms','')}\t{r.get('peak','')}\t{','.join(classes(r))}\n")
+            f.write(f"{p}\t{int(loads)}\t{int(loads and level(r)<SILENT)}\t{r.get('rms','')}\t{r.get('peak','')}\t{','.join(classes(r))}\n")
     n=collections.Counter(c for r in rows.values() for c in classes(r))
     print(f'{len(rows)} instruments, {sum("error" not in r for r in rows.values())} load, {n["silent"]} silent -> {tsv}')
     for c,k in n.most_common(): print(f'{k:5d}  {c}')

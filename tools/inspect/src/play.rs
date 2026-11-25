@@ -129,6 +129,11 @@ fn run_events(
     } else {
         kontra_engine::RenderMode::Offline
     });
+    // As the host does: the zones `on init` moved into a wavetable group play
+    // their tables (Conflux picks its table by moving a bank zone in).
+    if let Some(tabled) = kontra_prepare::tables(engine.plan(), &stream) {
+        engine.swap_plan(&mut Arc::new(tabled), &[]);
+    }
     let mut at = 0u64;
     let mut next = 0usize;
     let mut next_tail = last_off;
@@ -358,6 +363,23 @@ fn run_events(
         .sum::<f64>()
         / rendered.len().max(1) as f64)
         .sqrt();
+    // While a note is held: from the first note-on to the last note-off, so a
+    // quiet pad is not averaged away by the silent tail.
+    let first_on = (events.iter())
+        .filter(|e| e.description.get("type").and_then(Value::as_str) == Some("note_on"))
+        .map(|e| e.frame)
+        .min()
+        .unwrap_or(0);
+    let held = usize::try_from(first_on).unwrap_or(usize::MAX)
+        ..usize::try_from(last_off).unwrap_or(usize::MAX);
+    let note_rms = rendered.get(held).map(|held| {
+        (held
+            .iter()
+            .map(|[l, r]| f64::from(l * l + r * r) / 2.0)
+            .sum::<f64>()
+            / held.len().max(1) as f64)
+            .sqrt()
+    });
     let octave_time: Vec<_> = rendered
         .chunks(RATE as usize)
         .enumerate()
@@ -492,6 +514,7 @@ fn run_events(
     if let Some(result) = out.get_mut("result").and_then(Value::as_object_mut) {
         result.insert("ui_build".into(), json!(ui));
         result.insert("playable_keys".into(), json!(playable));
+        result.insert("note_rms".into(), json!(note_rms));
     }
     Ok((out, summary))
 }

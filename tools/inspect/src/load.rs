@@ -44,6 +44,7 @@ pub fn run(path: &Path) -> Result<(Value, String)> {
                 "id": id, "name": g.name, "trigger": format!("{:?}", g.trigger),
                 "start_rules": format!("{:?}", g.start), "purged": g.purged,
                 "stream": format!("{:?}", g.stream), "envelope": format!("{:?}", g.envelope),
+                "wavetable": g.effective_wavetable().map(|w| format!("{w:?}")),
                 "zones": g.zones.iter().map(|z| json!({
                     "sample": z.sample, "keys": [z.keys.start(), z.keys.end()],
                     "velocities": [z.velocities.start(), z.velocities.end()], "root": z.root,

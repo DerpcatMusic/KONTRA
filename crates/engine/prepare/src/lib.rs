@@ -552,13 +552,16 @@ fn load_samples(
     });
     // A wavetable zone's table is built from its frames right here, so those
     // samples load whole (every frame pinned) now, even when the store leaves
-    // heads for later or the zone streams.
-    let tabled: Vec<usize> = (instrument
-        .groups
-        .iter()
-        .filter(|g| !g.purged && g.effective_wavetable().is_some()))
-    .flat_map(|g| g.zones.iter().map(|z| z.sample))
-    .collect();
+    // heads for later or the zone streams. With a wavetable group live, so do
+    // the in-memory groups' samples: `on init` can move one of their zones into
+    // it (Conflux picks its table from a bank group that way), and its table is
+    // built right after init from frames that must be in.
+    let wavetable = |g: &ir::Group| !g.purged && g.effective_wavetable().is_some();
+    let any_table = instrument.groups.iter().any(wavetable);
+    let tabled: Vec<usize> = (instrument.groups.iter())
+        .filter(|g| wavetable(g) || (any_table && !g.purged && g.stream.is_none()))
+        .flat_map(|g| g.zones.iter().map(|z| z.sample))
+        .collect();
     let mut requests = Vec::new();
     let mut slots = Vec::new();
     // A folder that moved fails every sample in it alike: one line per
@@ -1320,6 +1323,75 @@ mod tests {
         assert!(plan.groups[0].wavetable.is_some());
         assert!((plan.groups[0].wavetable.unwrap().position - 0.25).abs() < 1e-6);
         assert!(plan.zones[0].region.table.is_some());
+    }
+
+    /// A zone `on init` moves from an in-memory bank group into a wavetable
+    /// group gets its table right after init, though the store leaves heads
+    /// for later: with a wavetable group live, the bank's samples load now.
+    #[test]
+    fn a_bank_zone_moved_into_a_wavetable_group_at_init_gets_its_table() {
+        let frames = 8 * 2048u64;
+        let pcm: Vec<u8> = (0..frames)
+            .flat_map(|i| {
+                ((i % 2048) as f32 / 2048.0 * std::f32::consts::TAU)
+                    .sin()
+                    .to_le_bytes()
+            })
+            .collect();
+        let fmt = SampleFmt {
+            encoding: Encoding::F32,
+            channels: 1,
+        };
+        let sample = |name: &str| ir::Sample {
+            name: name.into(),
+            file: name.into(),
+            offset: 0,
+            len: Some(pcm.len() as u64),
+            frames,
+            rate: 48_000,
+            channels: 1,
+            keystream: None,
+            raw: None,
+        };
+        let wt = ir::Wavetable {
+            position: 0.0,
+            phase: 0.0,
+            phase_random: 0.0,
+            gain: 1.0,
+            inharmonic: ir::Inharmonic::OFF,
+            modosc: ir::ModOsc::OFF,
+            quality: ir::Quality::High,
+            warps: [ir::Warp::OFF; 2],
+        };
+        let mut table_zone = at(0, 0);
+        table_zone.end = frames;
+        let mut bank_zone = at(0, 0);
+        (bank_zone.id, bank_zone.sample, bank_zone.end) = (1, 1, frames);
+        let inst = ir::Instrument {
+            samples: vec![sample("table.wav"), sample("bank.wav")],
+            groups: vec![
+                ir::Group {
+                    generator: Some(ir::Generator::Wavetable(wt)),
+                    zones: vec![table_zone],
+                    ..ir::Group::DEFAULT
+                },
+                ir::Group {
+                    zones: vec![bank_zone],
+                    ..ir::Group::DEFAULT
+                },
+            ],
+            ..ir::Instrument::DEFAULT
+        };
+        let mut store = Store::new(kontra_stream::StoreConfig::DEFAULT).unwrap();
+        store.defer_heads(true);
+        let (mut plan, _) = prepare(&inst, 48_000, &mut store, &|_| {
+            Ok((Arc::new(MemSource::new(fmt, pcm.clone())), fmt))
+        });
+        let bank = plan.zones.iter().position(|z| z.id == 1).unwrap();
+        assert!(plan.zones[bank].region.table.is_none());
+        plan.zones[bank].group = 0; // `set_zone_par($ZONE_PAR_GROUP)` in `on init`
+        let tabled = tables(&plan, &store.client()).unwrap();
+        assert!(tabled.zones[bank].region.table.is_some());
     }
 
     /// A streamed wavetable zone longer than its preload window still builds
