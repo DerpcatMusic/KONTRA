@@ -31,6 +31,7 @@ mod prefs;
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::PoisonError;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 pub use cache::Cache;
@@ -131,23 +132,50 @@ pub struct RootStatus {
     pub error: Option<Issue>,
     /// Its modification time when scanned ([`stale`]).
     pub stamp: Option<u128>,
+    /// Files listed under it this scan (an unchanged library is not listed).
+    pub files: usize,
+    /// Presets catalogued from it, by format, largest first.
+    pub recognized: Vec<(&'static str, usize)>,
+    /// What was passed over, by reason: "other file types" (not an
+    /// instrument, bank, sample or picture), "unreadable", "protected",
+    /// "parse error", "duplicate" (a library another root listed).
+    pub skipped: Vec<(&'static str, usize)>,
 }
 
 impl RootStatus {
-    /// One short line: "3 libraries found", "can't read: permission denied"…
+    /// One line: "3 libraries found · presets 40 (UVI 38, SFZ 2) · files
+    /// listed 120 · skipped: other file types 70, protected 1", or "can't
+    /// read: permission denied"…
     #[must_use]
     pub fn summary(&self) -> String {
         use std::io::ErrorKind;
-        match &self.error {
-            Some(e) => match e.kind {
-                Some(ErrorKind::PermissionDenied) => "can't read: permission denied".into(),
-                Some(ErrorKind::NotFound) => "not found".into(),
-                _ => format!("can't read: {}", e.reason),
-            },
-            None if self.libraries == 0 => "0 libraries \u{2014} nothing matched".into(),
-            None if self.libraries == 1 => "1 library found".into(),
+        let mut line = match &self.error {
+            Some(e) => {
+                return match e.kind {
+                    Some(ErrorKind::PermissionDenied) => "can't read: permission denied".into(),
+                    Some(ErrorKind::NotFound) => "not found".into(),
+                    _ => format!("can't read: {}", e.reason),
+                };
+            }
+            None if self.libraries == 0 => "0 libraries \u{2014} nothing matched".to_owned(),
+            None if self.libraries == 1 => "1 library found".to_owned(),
             None => format!("{} libraries found", self.libraries),
+        };
+        let list = |counts: &[(&str, usize)]| {
+            let parts: Vec<String> = counts.iter().map(|(k, n)| format!("{k} {n}")).collect();
+            parts.join(", ")
+        };
+        let presets: usize = self.recognized.iter().map(|(_, n)| n).sum();
+        if presets > 0 {
+            line += &format!(" \u{b7} presets {presets} ({})", list(&self.recognized));
         }
+        if self.files > 0 {
+            line += &format!(" \u{b7} files listed {}", self.files);
+        }
+        if !self.skipped.is_empty() {
+            line += &format!(" \u{b7} skipped: {}", list(&self.skipped));
+        }
+        line
     }
 
     /// What the player can do about an unreadable root: the Flatpak
@@ -201,11 +229,26 @@ pub struct Progress {
     pub folders: AtomicUsize,
     pub found: AtomicUsize,
     pub cancel: AtomicBool,
+    /// Files listed, and of those, files of other types.
+    pub files: AtomicUsize,
+    pub other: AtomicUsize,
+    /// Each library as it is catalogued, for the browser to show before the
+    /// scan ends; the browser takes them.
+    pub partial: std::sync::Mutex<Vec<Library>>,
 }
 
 impl Progress {
     fn canceled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
+    }
+
+    /// The libraries catalogued since the last call.
+    pub fn take_partial(&self) -> Vec<Library> {
+        std::mem::take(&mut self.partial.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    fn catalogued(&self, library: &Library) {
+        (self.partial.lock().unwrap_or_else(PoisonError::into_inner)).push(library.clone());
     }
 }
 
@@ -246,6 +289,12 @@ impl BankError {
 
 /// Lists a bank's programs with structured [`ProtectionStatus`] reporting.
 pub type BankInspector<'a> = &'a dyn Fn(&Path) -> Result<BankListing, BankError>;
+
+/// Files a library keeps beside its instruments that are not instruments
+/// (pictures, docs, monolith parts), not counted as other types.
+const COMPANIONS: [&str; 11] = [
+    "png", "jpg", "jpeg", "nkr", "nicnt", "nkx", "nkc", "pdf", "txt", "html", "nkp",
+];
 
 /// A folder with this many audio files and no presets holds samples only.
 pub(crate) const SAMPLE_ONLY: usize = 64;
@@ -305,6 +354,14 @@ pub fn scan_incremental(
     let mut statuses = Vec::new();
     for root in roots {
         let before = (issues.len(), libraries.len());
+        let counted = |p: &Progress| {
+            (
+                p.files.load(Ordering::Relaxed),
+                p.other.load(Ordering::Relaxed),
+            )
+        };
+        let (files, other) = counted(progress);
+        let mut duplicates = 0;
         let founds = detect(root, progress, &mut issues);
         // Every library found under this root, nested ones included: a library
         // inside another is catalogued as itself, so the outer one's walk stops
@@ -314,32 +371,61 @@ pub fn scan_incremental(
         for found in founds {
             let key = path_identity(&found.dir);
             if !seen.insert(key) {
+                duplicates += 1;
                 continue;
             }
             let same = previous.iter().find(|l| {
                 l.dir == found.dir && !l.stamps.is_empty() && index::unchanged(&l.stamps)
             });
-            if let Some(same) = same {
-                libraries.push(Library {
+            let library = match same {
+                Some(same) => Some(Library {
                     offline: None,
                     ..same.clone()
-                });
-                continue;
-            }
-            let library = catalog(found, &dirs, progress, cache, inspect, &mut issues);
+                }),
+                None => catalog(found, &dirs, progress, cache, inspect, &mut issues),
+            };
             if progress.canceled() {
                 return None;
             }
-            libraries.extend(library);
+            if let Some(library) = library {
+                progress.catalogued(&library);
+                libraries.push(library);
+            }
         }
+        let error = (issues.iter().skip(before.0))
+            .find(|i| i.path == root.path && i.kind.is_some())
+            .cloned();
+        let (files_now, other_now) = counted(progress);
+        let mine = issues.get(before.0..).unwrap_or_default();
+        let others = |keep: fn(&Issue) -> bool| {
+            mine.iter()
+                .filter(|i| Some(*i) != error.as_ref() && keep(i))
+                .count()
+        };
         statuses.push(RootStatus {
             path: root.path.clone(),
             auto: root.auto,
             libraries: libraries.len() - before.1,
-            error: (issues.iter().skip(before.0))
-                .find(|i| i.path == root.path && i.kind.is_some())
-                .cloned(),
             stamp: index::mtime(&root.path),
+            files: files_now - files,
+            recognized: recognized(libraries.get(before.1..).unwrap_or_default()),
+            skipped: [
+                ("other file types", other_now - other),
+                (
+                    "unreadable",
+                    others(|i| i.kind.is_some() && !i.protection.is_protected()),
+                ),
+                ("protected", others(|i| i.protection.is_protected())),
+                (
+                    "parse error",
+                    others(|i| i.kind.is_none() && !i.protection.is_protected()),
+                ),
+                ("duplicate", duplicates),
+            ]
+            .into_iter()
+            .filter(|(_, n)| *n > 0)
+            .collect(),
+            error,
         });
     }
     cache.forget_unseen();
@@ -348,6 +434,28 @@ pub fn scan_incremental(
         issues,
         roots: statuses,
     })
+}
+
+/// The presets of `libraries` by format, largest first.
+fn recognized(libraries: &[Library]) -> Vec<(&'static str, usize)> {
+    let mut counts: Vec<(&'static str, usize)> = Vec::new();
+    for preset in libraries.iter().flat_map(|l| &l.presets) {
+        let format = match ext(preset).as_str() {
+            "nki" | "nkm" | "nksn" => "Kontakt",
+            "uvip" => "UVI",
+            "sfz" => "SFZ",
+            "sf2p" => "SoundFont",
+            "dspreset" => "DecentSampler",
+            "kontra" => "KONTRA",
+            _ => "other",
+        };
+        match counts.iter_mut().find(|(f, _)| *f == format) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((format, 1)),
+        }
+    }
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    counts
 }
 
 /// Infers a structured [`ProtectionStatus`] from a plain string error returned
@@ -403,6 +511,9 @@ struct Listing {
     banks: Vec<PathBuf>,
     audio: usize,
     folders: Vec<PathBuf>,
+    /// Files, and files of no type the scan knows.
+    files: usize,
+    other: usize,
 }
 
 fn ext(path: &Path) -> String {
@@ -452,6 +563,7 @@ fn list(dir: &Path, issues: &mut Vec<Issue>) -> Listing {
         if !is_file {
             continue;
         }
+        out.files += 1;
         match ext(&path).as_str() {
             "nicnt" => out.nicnt = out.nicnt.take().or(Some(path)),
             "nkx" | "nkc" | "nkr" => out.monolith = true,
@@ -461,6 +573,7 @@ fn list(dir: &Path, issues: &mut Vec<Issue>) -> Listing {
             }
             "nki" | "nkm" | "nksn" | "uvip" | "sfz" | "dspreset" | "kontra" => out.presets += 1,
             "wav" | "ncw" | "aif" | "aiff" | "flac" | "ogg" => out.audio += 1,
+            e if !COMPANIONS.contains(&e) => out.other += 1,
             _ => {}
         }
     }
@@ -666,6 +779,11 @@ fn search(root: PathBuf, progress: &Progress, issues: &mut Vec<Issue>) -> Vec<Fo
             return Vec::new();
         }
         let inside = v.within || library;
+        // A library's own files are counted by its catalog walk.
+        if !inside {
+            progress.files.fetch_add(l.files, Ordering::Relaxed);
+            progress.other.fetch_add(l.other, Ordering::Relaxed);
+        }
         // Below the root, the first folder that is not a library is its vendor.
         let vendor = if library {
             None
@@ -888,6 +1006,7 @@ fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut 
             if !is_file {
                 continue;
             }
+            state.progress.files.fetch_add(1, Ordering::Relaxed);
             match ext(&path).as_str() {
                 "nki" | "nkm" | "nksn" | "uvip" | "sfz" | "dspreset" | "kontra" | "ufs" | "sf2"
                 | "sf3" => {
@@ -917,6 +1036,10 @@ fn walk(dir: &Path, state: &mut Walk<'_>, presets: &mut Vec<PathBuf>, art: &mut 
                             artwork.insert(id, (alias, path));
                         }
                     }
+                }
+                "wav" | "ncw" | "aif" | "aiff" | "flac" | "ogg" => {}
+                e if !COMPANIONS.contains(&e) => {
+                    state.progress.other.fetch_add(1, Ordering::Relaxed);
                 }
                 _ => {}
             }

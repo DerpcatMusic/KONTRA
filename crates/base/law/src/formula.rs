@@ -81,6 +81,13 @@ pub enum FormulaId {
     SolidEqLfHz,
     /// Solid G-EQ's HMF and LMF Q (objects 5 and 8): `0.7 + 1.8·x` in f64.
     SolidEqQ,
+    /// Flair's pitch as a note number (`0x140adfb60`): `trunc(97·x)`, `0..=96`.
+    FlairPitchNote,
+    /// Phasis's notch count (`0x1407baee0`): `2 − trunc(−11·clamp(x))`, `2..=12`.
+    PhasisNotches,
+    /// The envelope's attack curve in whole percent (`0x1407b6d60`, then `0x1407b8430`):
+    /// the bipolar `2x − 1` through `(c·0.5 + 0.5)·2 − 1`, `·100` and truncated.
+    AttackCurvePercent,
     /// Phasis's centre in Hz (`0x140a752e0`, Ultra off): note `30 + 90·x`,
     /// `440·2^((note − 69)/12)` by a quartic exp2.
     PhasisCenterHz,
@@ -144,6 +151,14 @@ impl FormulaId {
             Self::SolidEqLmfHz => T::of(object(f64::from(199.96_f32), 2_500.0, true, x.to_f32())),
             Self::SolidEqLfHz => T::of(object(f64::from(40.02_f32), 600.0, true, x.to_f32())),
             Self::SolidEqQ => T::of(object(f64::from(0.7_f32), 2.5, false, x.to_f32())),
+            Self::FlairPitchNote => T::of(((x.to_f32() * 97.0) as i32).clamp(0, 96) as f32),
+            Self::PhasisNotches => {
+                T::of((2 - (x.to_f32().clamp(0.0, 1.0) * -11.0) as i32).clamp(2, 12) as f32)
+            }
+            Self::AttackCurvePercent => {
+                let c = (x.to_f32() * 2.0 - 1.0).clamp(-1.0, 1.0);
+                T::of((((c * 0.5 + 0.5) * 2.0 - 1.0) * 100.0).trunc())
+            }
             Self::PhasisRateHz => {
                 T::of(fast_exp2((1.666_666_7 + 10.0) * x.to_f32() - 15.75) * 440.0)
             }
@@ -204,6 +219,9 @@ impl FormulaId {
             | Self::SolidEqLmfHz
             | Self::SolidEqLfHz
             | Self::SolidEqQ
+            | Self::FlairPitchNote
+            | Self::PhasisNotches
+            | Self::AttackCurvePercent
             | Self::PhasisCenterHz
             | Self::FreakFrequencyHz
             | Self::RotatorMixDb

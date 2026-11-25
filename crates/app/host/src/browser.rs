@@ -101,6 +101,13 @@ pub struct Browser {
     pub user: Option<PathBuf>,
 }
 
+impl Drop for Browser {
+    /// A scan outlives no editor or plugin: it stops at its next check.
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
 impl Browser {
     /// The player's prefs from `config` (v2's roots on a first run), with a
     /// scan started; `None` folders keep nothing on disk.
@@ -332,8 +339,27 @@ impl Browser {
     /// draws no frame for it.
     pub fn poll(&mut self) -> bool {
         self.watch_disk();
-        let Some(scanned) = self.scan.as_ref().and_then(|r| r.result.try_recv().ok()) else {
+        let Some(running) = self.scan.as_ref() else {
             return false;
+        };
+        let Ok(scanned) = running.result.try_recv() else {
+            // Libraries catalogued so far show at once, each in place of the
+            // one the index had in its folder; the scan's end sorts and names
+            // them.
+            let partial = running.progress.take_partial();
+            for library in &partial {
+                match self
+                    .catalog
+                    .libraries
+                    .iter_mut()
+                    .find(|l| l.dir == library.dir)
+                {
+                    Some(old) => *old = library.clone(),
+                    None => self.catalog.libraries.push(library.clone()),
+                }
+            }
+            self.generation += u64::from(!partial.is_empty());
+            return !partial.is_empty();
         };
         self.scan = None;
         self.watch.1 = Instant::now();
@@ -704,7 +730,7 @@ mod tests {
         let v2_after = std::fs::read_to_string(v2.join("settings.json")).unwrap();
         assert!(!v2_after.contains("UVI"), "v2's settings are never written");
         b.remove_root(0);
-        let roots = Browser::open(Some(&dir), None).prefs.roots;
+        let roots = Browser::open(Some(&dir), None).prefs.roots.clone();
         assert_eq!(roots.len(), 1, "a removed folder stays removed");
         assert_eq!(roots[0].path, Path::new("/nowhere/UVI"));
         // Kontakt's snapshot folder, once chosen, is the one read from then on.
@@ -773,5 +799,46 @@ mod tests {
         }
         assert!(!b.scanning(), "the scan finished");
         assert_eq!(b.generation, before);
+    }
+
+    /// A library shows as soon as the scan catalogues it, in place of the one
+    /// listed in its folder, before the scan ends; dropping the browser
+    /// stops the scan.
+    #[test]
+    fn libraries_show_while_the_scan_runs() {
+        let mut b = Browser::open(None, None);
+        b.catalog.libraries = vec![Library {
+            dir: "/libs/Old".into(),
+            name: "Old".into(),
+            ..Library::default()
+        }];
+        let progress = Arc::new(Progress::default());
+        let (_send, result) = mpsc::channel();
+        b.scan = Some(Running {
+            progress: Arc::clone(&progress),
+            find: Find::Nothing,
+            result,
+        });
+        let before = b.generation;
+        for (dir, name) in [("/libs/Old", "Old, rescanned"), ("/libs/New", "New")] {
+            (progress.partial.lock().unwrap()).push(Library {
+                dir: dir.into(),
+                name: name.into(),
+                ..Library::default()
+            });
+        }
+        assert!(b.poll(), "the catalogued libraries show");
+        let names: Vec<_> = b
+            .catalog
+            .libraries
+            .iter()
+            .map(|l| l.name.as_str())
+            .collect();
+        assert_eq!(names, ["Old, rescanned", "New"]);
+        assert!(b.generation > before);
+        assert!(!b.poll(), "nothing new since");
+        assert!(b.scanning());
+        drop(b);
+        assert!(progress.cancel.load(Ordering::Relaxed));
     }
 }

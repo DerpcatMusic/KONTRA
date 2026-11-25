@@ -497,6 +497,101 @@ impl Ufs {
         Ok(records)
     }
 
+    /// The members below the root folder whose name passes `keep`, with
+    /// their paths, found by following folder links from the root entry.
+    /// Unlike [`Self::decode_directory`], it does not walk the record chain,
+    /// which visits every sample of a bank (140 000 scattered reads in an
+    /// 18 GB one). It reads only folders, their child tables and the kept
+    /// members. A name `keep` rejects is taken to be a member, not a folder.
+    pub fn list_members(
+        &self,
+        namespace: &[u8],
+        keep: impl Fn(&str) -> bool,
+    ) -> Result<Vec<Member>> {
+        if self.header.encoded_names && namespace.is_empty() {
+            return Err(NeedsMetadataNamespace.into());
+        }
+        let key = crypto::metadata_key(namespace, &self.header.bank_name);
+        // The record whose payload starts at `payload`: its tag and up to
+        // `want` payload bytes (fewer at the end of the file).
+        let read = |payload: u64, want: u64| -> Result<(u32, Vec<u8>)> {
+            let start = payload
+                .checked_sub(8)
+                .filter(|&s| s >= HEADER_SIZE)
+                .context("UFS link points into the header")?;
+            let have = self.header.physical_size.saturating_sub(payload).min(want);
+            ensure!(have >= 4, "UFS link at {payload} is past the end");
+            let mut bytes = vec![0; 8 + have as usize];
+            self.read_exact_at(start, &mut bytes)?;
+            // Only what the record holds; the rest belongs to the next one.
+            bytes.truncate(8 + have.min(u64_le(&bytes[..8])) as usize);
+            ensure!(bytes.len() >= 12, "UFS record at {start} is empty");
+            let payload = bytes.split_off(8);
+            Ok((u32_le(&payload[..4]), payload))
+        };
+        let expect = |(tag, bytes): (u32, Vec<u8>), want: u32, need: usize| {
+            ensure!(
+                tag == want && bytes.len() >= need,
+                "UFS link does not point at the expected record"
+            );
+            Ok(bytes)
+        };
+        let mut members = Vec::new();
+        let mut tables = HashSet::new();
+        let root = self.header.root_entry_offset;
+        let mut folders = vec![(
+            root,
+            String::new(),
+            expect(read(root, 268)?, DIRECTORY_TAG, 268)?,
+        )];
+        while let Some((folder, prefix, bytes)) = folders.pop() {
+            let descriptor = expect(read(u64_le(&bytes[260..268]), 28)?, DESCRIPTOR_TAG, 28)?;
+            let mut table = u64_le(&descriptor[12..20]);
+            while table != u64::MAX {
+                ensure!(
+                    tables.insert(table) && tables.len() < MAX_RECORDS,
+                    "UFS child tables loop or exceed the record limit"
+                );
+                let count = u32_le(&expect(read(table, 8)?, TABLE_TAG, 8)?[4..8]) as usize;
+                let used = 24 + count * 264;
+                let mut entries = expect(read(table, used as u64)?, TABLE_TAG, used)?;
+                for i in 0..count {
+                    let at = 8 + i * 264;
+                    if self.header.encoded_names {
+                        crypto::transform(&mut entries[at..at + 256], key, table + at as u64);
+                    }
+                    let name = text(&entries[at..at + 256])?;
+                    if !keep(&name) {
+                        continue;
+                    }
+                    let child = u64_le(&entries[at + 256..at + 264]);
+                    let path = format!("{prefix}{name}");
+                    match read(child, 277)? {
+                        (DIRECTORY_TAG, b) if b.len() >= 268 => {
+                            folders.push((child, format!("{path}/"), b));
+                        }
+                        (FILE_TAG, b) if b.len() >= 277 => members.push(Member {
+                            record_offset: child - 8,
+                            name,
+                            parent: Some(folder - 8),
+                            path: Some(path),
+                            size: u64_le(&b[260..268]),
+                            offset: u64_le(&b[268..276]),
+                            mode: b[276].into(),
+                            footer: Vec::new(),
+                        }),
+                        (tag, _) => bail!("UFS child {path} has an unknown record ({tag:#x})"),
+                    }
+                }
+                table = u64_le(&entries[used - 8..used]);
+            }
+        }
+        if namespace.is_empty() && members.iter().any(|m| m.mode == Protection::Metadata) {
+            return Err(NeedsMetadataNamespace.into());
+        }
+        Ok(members)
+    }
+
     pub fn decode_directory(&self, namespace: &[u8]) -> Result<Directory> {
         // The product cache is metadata-only and remains outside scanner runs.
         // Unit fixtures call cache load/store explicitly in their owned directory.
@@ -1415,6 +1510,27 @@ mod tests {
         let ufs = Ufs::open(&path).unwrap();
         let directory = ufs.decode_directory_window(namespace, 0).unwrap();
         assert_directory_windows(&ufs, namespace, &directory);
+        // Following links from the root lists the same members, and reads
+        // only those kept.
+        let listed = |ufs: &Ufs, namespace: &[u8], keep: fn(&str) -> bool| {
+            let mut members = ufs.list_members(namespace, keep).unwrap();
+            members.sort_by_key(|m| m.record_offset);
+            members
+                .into_iter()
+                .map(|m| (m.path.unwrap(), m.size, m.offset, m.mode))
+                .collect::<Vec<_>>()
+        };
+        let decoded = |directory: &Directory| {
+            (directory.files.iter())
+                .map(|m| (m.path.clone().unwrap(), m.size, m.offset, m.mode))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(listed(&ufs, namespace, |_| true), decoded(&directory));
+        assert_eq!(
+            listed(&ufs, namespace, |n| n != "other.wav").len(),
+            directory.files.len() - 1
+        );
+        assert!(ufs.list_members(&[], |_| true).is_err());
         assert_eq!(
             directory
                 .files
@@ -1445,6 +1561,10 @@ mod tests {
         assert!(!clear_bank.header.encoded_names);
         let clear_directory = clear_bank.decode_directory_window(&[], 0).unwrap();
         assert_directory_windows(&clear_bank, &[], &clear_directory);
+        assert_eq!(
+            listed(&clear_bank, &[], |_| true),
+            decoded(&clear_directory)
+        );
         assert_eq!(
             clear_directory
                 .files

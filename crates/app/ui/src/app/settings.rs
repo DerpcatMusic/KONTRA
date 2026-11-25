@@ -386,7 +386,7 @@ fn plain(s: &str) -> String {
 }
 
 /// About: the build on the left, the changelog scrolling on the right.
-fn about_view(build: &Build) -> El {
+fn about_view(ui: &mut Ui, build: &Build) -> El {
     let fact = |k: &str, v: &str, id: &str| {
         row![
             caption(k.to_owned())
@@ -418,38 +418,16 @@ fn about_view(build: &Build) -> El {
     .align(Align::Stretch)
     .w(TEXT * 20.)
     .shrink(0);
-    let mut log = Vec::new();
-    for (idx, r) in changelog(build.changelog).into_iter().enumerate() {
-        log.push(
-            row![
-                body(r.heading)
-                    .text_weight(Weight::SEMIBOLD)
-                    .lines(1)
-                    .min_w(0)
-            ]
-            .pad(kit::edges(if idx == 0 { 0. } else { SPACE }, 0., 0., 0.)),
-        );
-        for l in r.lines {
-            log.push(
-                row![
-                    caption("•").fill(secondary()).shrink(0),
-                    caption(l).fill(Role::Ink).min_w(0).grow(1),
-                ]
-                .gap(TIGHT)
-                .align(Align::Start),
-            );
-        }
-    }
+    // Hundreds of wrapped lines: parsed, shaped and laid out once, then kept
+    // while the list scrolls under them (`changelog` is a `&'static str`,
+    // so where it lives is what it is).
+    let text = build.changelog;
+    let log = ui.memo("about-changelog-log", (text.as_ptr(), text.len()), |_| {
+        changelog_list(text)
+    });
     let right = col![
         row![section("Changelog")].align(Align::Center),
-        col(log)
-            .gap(TIGHT)
-            .align(Align::Stretch)
-            .pad(kit::edges(0., SPACE, 0., 0.))
-            .scroll()
-            .id("about-changelog")
-            .min_h(0)
-            .grow(1),
+        col![log].scroll().id("about-changelog").min_h(0).grow(1),
     ]
     .gap(SPACE)
     .align(Align::Stretch)
@@ -463,6 +441,32 @@ fn about_view(build: &Build) -> El {
         .grow(1)
 }
 
+/// The changelog's releases, a heading over its bulleted lines each.
+fn changelog_list(text: &str) -> El {
+    let mut log = Vec::new();
+    for (idx, r) in changelog(text).into_iter().enumerate() {
+        log.push(
+            row![
+                body(r.heading)
+                    .text_weight(Weight::SEMIBOLD)
+                    .lines(1)
+                    .min_w(0)
+            ]
+            .pad(kit::edges(if idx == 0 { 0. } else { SPACE }, 0., 0., 0.)),
+        );
+        // One text node for all its lines: a scroll moves every node under
+        // the scroller each frame, so the cost follows the count of nodes.
+        let lines: Vec<String> = r.lines.iter().map(|l| format!("•  {l}")).collect();
+        if !lines.is_empty() {
+            log.push(caption(lines.join("\n")).fill(Role::Ink).min_w(0));
+        }
+    }
+    col(log)
+        .gap(TIGHT)
+        .align(Align::Stretch)
+        .pad(kit::edges(0., SPACE, 0., 0.))
+}
+
 /// The open sheet: Settings, a preset dialog or About.
 pub(super) fn sheet(ui: &mut Ui, app: &mut App, which: Sheet, out: &mut Vec<Action>) -> El {
     let (title, content) = match which {
@@ -470,7 +474,7 @@ pub(super) fn sheet(ui: &mut Ui, app: &mut App, which: Sheet, out: &mut Vec<Acti
         Sheet::SavePreset(n) | Sheet::RenamePreset(n) | Sheet::DeletePreset(n) => {
             super::preset::sheet(ui, app, n, which, out)
         }
-        Sheet::About => ("About", about_view(&app.build)),
+        Sheet::About => ("About", about_view(ui, &app.build)),
     };
     let r = kit::sheet(ui, "sheet", title, content);
     if r.changed {

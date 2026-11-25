@@ -138,30 +138,28 @@ None — all verification tiers execute on the current host.
   `0.33333334 + 2.6666667·clamp(x)` (`0x1407b7440`) is printed through `0x1407baa90`.
   Bypass, resonance and Formant talk/sharp/size are percents. GAIN and BANDWIDTH on
   a one-band EQ read empty, so the reference has no such control there.
-- Still pending:
-  - Convolution (IRC) controls: the setter always applies them asynchronously, so the
-    sweep reads the old value; they need a read after `on async_complete`.
-  - Phasis notches (`0x1407baee0`: `2 − trunc(−11·clamp(x))`, 2..12) and Flair
-    pitch (`0x140adfb60`: `i = trunc(97x)`, 0..96, note `i % 12`, octave
-    `i/12 − 2`) read their floor (2, C-2) at every set value. Both descriptors are
-    identity and their defaults are 1.0, so the value handed to the formatter is 0,
-    not the set or default value. It is not a read-before-set artefact: read one
-    200 ms audio tick after each set (the same 10 points), both still show 2 and
-    C-2, while Phasis rate in the same run reads as in the direct sweep.
-    Read so far, and not the cause: both descriptors (0x174, 0x17b) have identity
-    w2/w3 and no bipolar flag (+0x38); the name map `0x140780c80` gives Phasis
-    0x16f..0x177 and Flair 0x17a..0x17c in order; and `0x1408a6400`'s generic
-    path (`0x1408a6c4a` → `0x140514930` mode 2 → w3 → w4 at `0x1408a7250`)
-    hands the formatter `xmm0 = x`, as it does for the knobs that read right.
-    Only their unit word (`0x14470787b`) sets them apart. The probe of
-    `get_engine_par` after each set (same 10 points, one tick later) read Flair
-    pitch 0 and Phasis notches 2 throughout, the fresh unit's values. The
-    setter (`0x140789c30`) says why: it takes notches as a count 2..12
-    (stored `(n − 2)·0.1`) and pitch as a note 0..96 (stored `n/96`), and
-    refuses anything else with an error, storing nothing. Every sweep value
-    but pitch's 0 is out of range. The same unsigned range check guards the
-    menu controls (Replika type, Flair mode, Choral mode, …); KONTRA now
-    refuses those sets too (`kontra_format_kontakt::accepts`).
+- Batch 4 (2026-11-25): names read with `get_engine_par_disp_ext(name, x, -1, -1, -1)`
+  and no module (`disp_sweep.py EXT`), as the KONTRA test reads them.
+  - Formatting needs no unit, so the IRC controls read directly: sizes 50..150 % in
+    one decimal, cut-offs as the knob laws.
+  - The `--async` sweep (one set a 200 ms tick, read on the next) agrees wherever
+    the value had landed. The applied value often lags more than a tick, and
+    `on async_complete` fired 2 times for 60 sets, so that route is not a sweep.
+  - Flair pitch is `trunc(97x)` clamped to 0..96 and printed as a note name, C-2 at
+    0 (`0x140adfb60`). Phasis notches are `2 − trunc(−11·clamp(x))` (`0x1407baee0`).
+  - Setting them (in range, `--values`) reads the same texts. Their earlier floors
+    were the setter refusing out-of-range values.
+  - Attack curve (`0x1407b6d60`, `0x1407b8430`) truncates: `(2x − 1)` in f32,
+    `·100`, then `%d`. So 900000 prints 79.
+  - An LFO's waveform mixes are bipolar percents. Wavetable phase random is a
+    percent.
+  - An LFO's delay is the Fade In descriptor (`0x1407b8950`): `e^(8.5175934·x +
+    ln 2) − 2`. Its constant is ln 5002, not ln 5001, so the top is 10 002 ms, as the
+    saved-value probe read it. `common::STAGE_10S` now uses 5002, which also moves
+    the fade time by up to 0.02 %.
+  - The text is empty for the switches and menus (`INTMOD_BYPASS`,
+    `SEND_EFFECT_BYPASS`/`TYPE`, `WT_INHARMONIC_MODE`, `WT_MOD_TYPE`), and for a
+    one-band EQ's `GAIN` and `BANDWIDTH` (`FILTER/EQ1BAND`).
 - V5 and SF100 had no owner family, so their controls were not held and read
   nothing. They are now held by `$EFFECT_TYPE_VAN51` / `$EFFECT_TYPE_SUPERFAST100`.
 - The manual and `crates/script/ksp/data/vendor_constants.txt` spell

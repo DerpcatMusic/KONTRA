@@ -1,6 +1,6 @@
 //! Finding library folders the player never named: where Native Instruments
 //! and UVI registered or install them (the registry, Service Center XMLs,
-//! plists, Wine prefixes, UVI's prefs), and a parallel walk of the whole
+//! plists, Wine prefixes, UVI's `SoundBanksFolders` setting and prefs), and a parallel walk of the whole
 //! machine that matches folders by file extension alone, without opening any
 //! file.
 //!
@@ -411,14 +411,18 @@ pub fn registered() -> Vec<PathBuf> {
         let program = env("ProgramFiles").unwrap_or_else(|| r"C:\Program Files".into());
         out.extend([
             public.join(r"Documents\Native Instruments"),
-            public.join(r"Documents\UVI Soundbanks"),
+            public.join(r"Documents\UVISoundBanks"),
             program.join("Native Instruments"),
             program.join("UVISoundBanks"),
             home.join(r"Documents\Native Instruments"),
-            home.join(r"Documents\UVI Soundbanks"),
+            home.join(r"Documents\UVISoundBanks"),
         ]);
         if let Some(app) = env("APPDATA") {
             out.extend(uvi_pref_dirs(&app.join("UVI"), None));
+        }
+        let key = r"HKCU\SOFTWARE\com.uvisoundsource";
+        if let Some(text) = run("reg", &["query", key, "/s", "/v", "SoundBanksFolders"]) {
+            out.extend(uvi_soundbank_folders(&text).into_iter().map(PathBuf::from));
         }
     }
     #[cfg(target_os = "macos")]
@@ -536,13 +540,17 @@ fn wine_prefixes(home: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// The NI and UVI folders that a Wine prefix registered or holds, as host paths.
+/// The NI and UVI folders that a Wine prefix registered or holds, as host
+/// paths. Like [`registered`], it keeps only folders that exist.
 #[cfg(all(unix, not(target_os = "macos")))]
-fn in_prefix(prefix: &Path) -> Vec<PathBuf> {
+#[must_use]
+pub fn in_prefix(prefix: &Path) -> Vec<PathBuf> {
     let mut wins = Vec::new();
     for reg in ["system.reg", "user.reg"] {
         if let Ok(b) = std::fs::read(prefix.join(reg)) {
-            wins.extend(reg_file(&String::from_utf8_lossy(&b)));
+            let text = String::from_utf8_lossy(&b);
+            wins.extend(reg_file(&text));
+            wins.extend(uvi_reg_file(&text));
         }
     }
     let c = prefix.join("drive_c");
@@ -555,18 +563,19 @@ fn in_prefix(prefix: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = wins.iter().map(|w| wine_path(prefix, w)).collect();
     out.extend([
         c.join("users/Public/Documents/Native Instruments"),
-        c.join("users/Public/Documents/UVI Soundbanks"),
+        c.join("users/Public/Documents/UVISoundBanks"),
         c.join("Program Files/Native Instruments"),
         c.join("Program Files/UVISoundBanks"),
     ]);
     for user in children(&c.join("users")) {
         out.push(user.join("Documents/Native Instruments"));
-        out.push(user.join("Documents/UVI Soundbanks"));
+        out.push(user.join("Documents/UVISoundBanks"));
         out.extend(uvi_pref_dirs(
             &user.join("AppData/Roaming/UVI"),
             Some(prefix),
         ));
     }
+    out.retain(|p| p.is_dir());
     out
 }
 
@@ -644,6 +653,38 @@ pub fn reg_file(text: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// The soundbank folders UVI Workstation and Falcon search, from the
+/// `SoundBanksFolders` values (`<SearchPaths><folder path="…"/>`) under
+/// `com.uvisoundsource` in a Wine `.reg` file, unescaped.
+#[must_use]
+pub fn uvi_reg_file(text: &str) -> Vec<String> {
+    let mut uvi = false;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            uvi = line.to_ascii_lowercase().contains("com.uvisoundsource");
+        } else if uvi && let Some(value) = line.strip_prefix("\"SoundBanksFolders\"=") {
+            out.extend(uvi_soundbank_folders(
+                &value.replace("\\\"", "\"").replace("\\\\", "\\"),
+            ));
+        }
+    }
+    out
+}
+
+/// The `path` of each `<folder>` in a UVI `SoundBanksFolders` value, as
+/// `reg query` prints it or as the `.reg` file holds it once unescaped.
+#[must_use]
+pub fn uvi_soundbank_folders(text: &str) -> Vec<String> {
+    text.split("<folder path=\"")
+        .skip(1)
+        .filter_map(|s| s.split_once('"'))
+        .map(|(v, _)| unescape(v.trim()))
+        .filter(|v| !v.is_empty())
+        .collect()
 }
 
 /// Every `<ContentDir>` value in a Service Center XML.

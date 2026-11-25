@@ -159,7 +159,7 @@ impl Bank {
                 return Err(Error::new(path, "bank", format!("{err:#}")));
             }
         };
-        Ok(directory_protection(path, &directory))
+        Ok(directory_protection(path, &directory.files))
     }
 
     /// The program at `member` (a path inside the bank; empty: the first
@@ -204,18 +204,35 @@ impl Bank {
         inspect: bool,
     ) -> std::result::Result<(Vec<String>, ProtectionStatus), Error> {
         let ufs = Ufs::open(path).map_err(|e| Error::new(path, "bank", format!("{e:#}")))?;
-        let directory = ufs
-            .decode_directory(&Namespaces::native().metadata)
-            .map_err(|e| classify_directory_error(path, e))?;
+        let namespace = &Namespaces::native().metadata;
+        // Samples are most of a bank's members and are stored clear (in every
+        // bank seen), so their records are not read. A bank whose folder
+        // links can't be followed is decoded whole.
+        let audio = |name: &str| {
+            let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+            matches!(
+                ext.as_deref(),
+                Some("wav" | "aif" | "aiff" | "flac" | "ogg")
+            )
+        };
+        let files = match ufs.list_members(namespace, |n| !audio(n)) {
+            Ok(files) => files,
+            Err(_) => {
+                (ufs.decode_directory(namespace))
+                    .map_err(|e| classify_directory_error(path, e))?
+                    .files
+            }
+        };
         let protection = if inspect {
-            directory_protection(path, &directory)
+            directory_protection(path, &files)
         } else {
             ProtectionStatus::Open
         };
-        let paths = programs(&directory)
-            .into_iter()
-            .filter_map(|i| directory.files.get(i)?.path.clone())
+        let mut paths: Vec<String> = (files.into_iter())
+            .filter_map(|m| m.path)
+            .filter(|p| p.to_ascii_lowercase().ends_with(".uvip"))
             .collect();
+        paths.sort();
         Ok((paths, protection))
     }
 
@@ -366,9 +383,8 @@ fn classify_directory_error(path: &Path, err: anyhow::Error) -> Error {
     }
 }
 
-fn directory_protection(path: &Path, directory: &Directory) -> ProtectionStatus {
-    if let Some(Protection::Unknown(mode)) = directory
-        .files
+fn directory_protection(path: &Path, files: &[Member]) -> ProtectionStatus {
+    if let Some(Protection::Unknown(mode)) = files
         .iter()
         .map(|m| m.mode)
         .find(|m| matches!(m, Protection::Unknown(_)))
@@ -378,17 +394,14 @@ fn directory_protection(path: &Path, directory: &Directory) -> ProtectionStatus 
             format!("UFS bank uses unsupported protection mode {mode}"),
         );
     }
-    let has_content = directory
-        .files
-        .iter()
-        .any(|m| m.mode == Protection::Content);
+    let has_content = files.iter().any(|m| m.mode == Protection::Content);
     if !has_content {
         return ProtectionStatus::Open;
     }
     if Bank::has_cached_key(path) {
         return ProtectionStatus::Open;
     }
-    let has_verifiable_png = directory.files.iter().any(|m| {
+    let has_verifiable_png = files.iter().any(|m| {
         m.mode == Protection::Content
             && (45..=16 << 20).contains(&m.size)
             && m.name.to_ascii_lowercase().ends_with(".png")
@@ -789,6 +802,38 @@ fn programs(directory: &Directory) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::{DiskLibrary, STILL, picture_rank};
+
+    /// On installed banks, listing by folder links gives the programs and the
+    /// protection that decoding the whole directory gives.
+    #[test]
+    fn listing_by_links_matches_the_whole_directory_on_installed_banks() {
+        use uvi_file::{access::Namespaces, ufs::Ufs};
+        let banks = [
+            "/data/main/Libraries/UVI/VWinds - Flutes/VWinds-C_Flute.ufs",
+            "/data/main/Libraries/UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs",
+        ];
+        let home = dirs::home_dir().unwrap_or_default();
+        let starter = home.join(".wine/drive_c/Program Files/UVISoundBanks/UVI Starter.ufs");
+        let paths = banks.iter().map(std::path::PathBuf::from).chain([starter]);
+        for bank in paths.filter(|p| p.is_file()) {
+            let (listed, protection) = super::Bank::list_programs(&bank, true).unwrap();
+            let ufs = Ufs::open(&bank).unwrap();
+            let whole = ufs
+                .decode_directory(&Namespaces::native().metadata)
+                .unwrap();
+            let programs: Vec<String> = super::programs(&whole)
+                .into_iter()
+                .filter_map(|i| whole.files[i].path.clone())
+                .collect();
+            assert_eq!(listed, programs, "{}", bank.display());
+            assert_eq!(
+                protection,
+                super::directory_protection(&bank, &whole.files),
+                "{}",
+                bank.display()
+            );
+        }
+    }
     use crate::program::Library;
     use kontra_format::paths::normalize_virtual_path;
 

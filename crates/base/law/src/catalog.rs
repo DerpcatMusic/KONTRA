@@ -76,7 +76,7 @@ pub fn catalog() -> Vec<Named> {
         n(
             "common::STAGE_10S",
             &common::STAGE_10S,
-            "measured only: probe mod_par_laws.lua",
+            "Kontakt 0x1407b8950",
             unit,
         ),
         n(

@@ -755,7 +755,10 @@ fn deep_layouts_are_found_at_any_depth() {
     assert_eq!(names, ["g", "Lib", "Other Lib"]);
     assert_eq!(catalog.roots.len(), 1);
     assert_eq!(catalog.roots[0].libraries, 3);
-    assert_eq!(catalog.roots[0].summary(), "3 libraries found");
+    assert_eq!(
+        catalog.roots[0].summary(),
+        "3 libraries found \u{b7} presets 3 (Kontakt 2, UVI 1) \u{b7} files listed 3"
+    );
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -783,8 +786,8 @@ fn each_root_reports_found_missing_unreadable_or_nothing_matched() {
     assert_eq!(
         said,
         [
-            "1 library found",
-            "0 libraries \u{2014} nothing matched",
+            "1 library found \u{b7} presets 1 (Kontakt 1) \u{b7} files listed 1",
+            "0 libraries \u{2014} nothing matched \u{b7} files listed 1",
             "not found"
         ]
     );
@@ -818,5 +821,47 @@ fn each_root_reports_found_missing_unreadable_or_nothing_matched() {
         }
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Each root says what it recognised and what it passed over, by reason, and
+/// each library is handed over as soon as it is catalogued.
+#[test]
+fn each_root_reports_what_it_recognised_and_skipped() {
+    let dir = tree(
+        "report",
+        &[
+            ("Banks/Good.ufs", "Presets/Lead.uvip\nPresets/Pad.uvip"),
+            ("Banks/Broken.ufs", "bad"),
+            ("Banks/readme.pdf", ""),
+            ("Banks/notes.rtf", ""),
+            ("Pads/Warm.sfz", ""),
+        ],
+    );
+    let progress = Progress::default();
+    let roots = [root(&dir), root(&dir)];
+    let catalog = scan(&roots, &progress, &mut Cache::default(), &programs).unwrap();
+    let names: Vec<_> = progress
+        .take_partial()
+        .into_iter()
+        .map(|l| l.name)
+        .collect();
+    assert_eq!(names.len(), catalog.libraries.len(), "{names:?}");
+    let first = catalog.roots[0].summary();
+    assert_eq!(
+        first,
+        "2 libraries found \u{b7} presets 3 (UVI 2, SFZ 1) \u{b7} files listed 5 \u{b7} \
+         skipped: other file types 1, parse error 1",
+        "{first}"
+    );
+    // The same root again lists libraries already catalogued.
+    let second = catalog.roots[1].summary();
+    assert!(second.ends_with("duplicate 2"), "{second}");
+    let missing = Root {
+        path: dir.join("Gone"),
+        ..root(&dir)
+    };
+    let catalog = scan(&[missing], &progress, &mut Cache::default(), &programs).unwrap();
+    assert_eq!(catalog.roots[0].summary(), "not found");
     std::fs::remove_dir_all(dir).unwrap();
 }
