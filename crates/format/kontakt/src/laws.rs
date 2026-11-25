@@ -920,6 +920,10 @@ pub(crate) fn solid_eq(
     [lf, lmf, hmf, hf]
 }
 
+/// True dB per Kontakt dB: its levels are `2^(dB/6)`, so a saved or scripted dB is
+/// `20·log10(2)/6` true dB (the Compressor setter 0x140ab9220 `powf(2, dB/6)`).
+pub(crate) const KONTAKT_DB: f32 = 20.0 * std::f32::consts::LOG10_2 / 6.0;
+
 /// The Compressor (0x19): saved mode, threshold dB, ratio knob, attack and
 /// release ms, link byte. The Pro core's law (docs/re/engine/dyn-compressors.md,
 /// setter 0x140ab9220): the knob `r` is the output slope over the threshold
@@ -963,18 +967,14 @@ pub(crate) fn compressor(
         ),
     };
     ir::Compressor {
-        threshold_db: threshold_db * 20.0 * 2f32.log10() / 6.0,
+        threshold_db: threshold_db * KONTAKT_DB,
         ratio: 1.0 / r.max(1e-3),
         knee_db: 12.0,
         attack_ms,
         release_ms,
         makeup_db: 0.0,
         // The IR threshold is `2^(dB/6)` in true dB; Pro's slope reads the saved dB.
-        makeup_slope: if mode == 2 {
-            0.666 * 6.0 / (20.0 * 2f32.log10())
-        } else {
-            0.0
-        },
+        makeup_slope: if mode == 2 { 0.666 / KONTAKT_DB } else { 0.0 },
         link: link || mode == 2,
         mix: 1.0,
         detector: if mode == 0 {

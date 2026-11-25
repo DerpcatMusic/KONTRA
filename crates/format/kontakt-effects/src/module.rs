@@ -113,6 +113,8 @@ pub mod ids {
     pub const SOLID_BUS_COMP: ModelId = ModelId(B + 13);
     pub const RAUM: ModelId = ModelId(B + 14);
     pub const WOWFLUTTER: ModelId = ModelId(B + 15);
+    pub const LEGACY_CHORUS: ModelId = ModelId(B + 16);
+    pub const LEGACY_FLANGER: ModelId = ModelId(B + 17);
 }
 
 /// All modules defined in `kontra-kontakt-effects`.
@@ -129,6 +131,8 @@ pub static ALL: &[&Module] = &[
     &crate::freak::MODULE,
     &crate::psyche::MODULE,
     &crate::vibrato::MODULE,
+    &crate::delays::CHORUS,
+    &crate::delays::FLANGER,
 ];
 
 /// Standard `Knob(0..N)` slice helper for static [`Module`] tables.

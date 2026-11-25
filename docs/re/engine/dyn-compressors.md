@@ -31,6 +31,16 @@ threshold = `2^(dB/6)`, floor `.0004` only on the excess denominator; attack
 `1/(r+.13) − .884`; release multiplier `1 − 35.566/rate` below 50 ms, else
 `1 − 1778.3/(rate·release_ms)`.
 
+That ratio term is not a `ratio:1`. The setter (0140ab0000.c:6521) stores
+`(term / thr) · (1 + 0.2895·ln attack_ms)` at `+0x2ec`, one coefficient of the
+piecewise curve, and the term falls to about 0 at r = 1. Mapping it onto the IR
+ratio would give 0.703:1 at r = 0.5, an expander. KONTRA keeps `1/r` for
+Enhanced until the core's curve (0x140ab2c80) is read (audit KT-06, part 1).
+
+Script laws (descriptors 0x11d, 0x11e): `$ENGINE_PAR_THRESHOLD` stores
+`65·x − 68` dB (0x1407b8cd0), Kontakt dB as a saved one; `$ENGINE_PAR_RATIO`
+stores `25^(−x)` (0x1407b8d30), shown as `1:(1/r)` (0x1407b8db0).
+
 Link: Classic and Enhanced use the signed channel mean when linked; Pro
 always uses the channel maximum and ignores the byte (`dynamics.rs`).
 

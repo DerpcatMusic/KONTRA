@@ -50,7 +50,8 @@ pub fn write(readout: Readout, x: f64, out: &mut Text) -> bool {
         Readout::Db(top) if x > 0.0 => out.push_fmt(format_args!("{:.1}", db_readout(top, x))),
         Readout::Db(_) => out.push("-inf"),
         Readout::Padded(ms) if ms.abs() < 1.0 => out.push_fmt(format_args!("{ms:5.2}")),
-        Readout::Padded(ms) if ms < 1000.0 => out.push_fmt(format_args!("{ms:5.1}")),
+        // The k form takes |ms| ≥ 1000 (the reference 8.13 masks the sign first, `0x1407baa90`).
+        Readout::Padded(ms) if ms.abs() < 1000.0 => out.push_fmt(format_args!("{ms:5.1}")),
         Readout::Padded(ms) => out.push_fmt(format_args!("{:5.1}k", ms / 1000.0)),
         Readout::Signed(v) => out.push_fmt(format_args!("{v:.1}")),
         Readout::Wide(v) => out.push_fmt(format_args!("{v:5.1}")),

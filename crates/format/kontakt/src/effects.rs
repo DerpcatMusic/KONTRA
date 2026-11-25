@@ -71,8 +71,8 @@ use kontra_kontakt_effects::module::Module;
 #[rustfmt::skip]
 const MODULES: &[Fx] = &[
     fx(0x10, "Delay (legacy)", 18, true, Read(legacy_delay)),
-    fx(0x11, "Chorus (legacy)", 16, true, Read(legacy_delay)),
-    fx(0x12, "Flanger (legacy)", 15, true, Read(legacy_delay)),
+    model(&crate::delays::CHORUS, "Chorus (legacy)", true, |s| crate::delays::saved(s.version, s.public).map(|p: [f32; 4]| crate::delays::CHORUS.knob_model(&p))),
+    model(&crate::delays::FLANGER, "Flanger (legacy)", true, |s| crate::delays::saved(s.version, s.public).map(|p: [f32; 6]| crate::delays::FLANGER.knob_model(&p))),
     fx(0x13, "Gainer", 20, false, Read(|s| s.f32_at(0).map(ir::EffectKind::Gain))),
     fx(0x14, "Phaser (legacy)", 14, true, Read(legacy_delay)),
     fx(0x15, "Reverb (legacy)", 17, true, Read(legacy_reverb)),
@@ -564,7 +564,7 @@ fn reverb(s: &mut Slot) -> Option<ir::EffectKind> {
     Some(ir::EffectKind::Reverb(crate::reverb::reverb(s.kind_id?, v)))
 }
 
-/// Delay, Chorus, Flanger and Phaser (legacy); the Delay's knobs move.
+/// Delay and Phaser (legacy); the Delay's knobs move.
 fn legacy_delay(s: &mut Slot) -> Option<ir::EffectKind> {
     if let Some(saved) = crate::delays::saved(s.version, s.public).filter(|_| s.id == 0x10) {
         *s.knobs = crate::script_knobs::delay_knobs(saved);
