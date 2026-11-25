@@ -39,6 +39,12 @@ pub fn set_moved(moved: &[(PathBuf, PathBuf)]) {
     }
 }
 
+/// Whether any folder is set as moved ([`set_moved`]).
+#[must_use]
+pub fn any_moved() -> bool {
+    MOVED.read().is_ok_and(|moved| !moved.is_empty())
+}
+
 /// `file` where a moved folder put it; `file` itself when none did.
 ///
 /// When several moved folders match `file`, the longest (most specific) source

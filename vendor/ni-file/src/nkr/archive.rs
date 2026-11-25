@@ -95,6 +95,18 @@ impl Archive {
         }
         Ok(Some(e))
     }
+    /// Keeps `e`, a member [`Archive::member`] checked, so later lookups of
+    /// it read nothing (a caller that checks many members at once, off the
+    /// lookups' thread).
+    pub fn keep(&mut self, e: Entry) {
+        if let Some(variant) = self.case_variants.get_mut(&e.name) {
+            *variant = e;
+        } else if let Some(entry) = self.entries.get_mut(&e.name.to_lowercase()) {
+            if entry.name == e.name {
+                *entry = e;
+            }
+        }
+    }
     /// Every distinct exact path, including case variants, in the archive's
     /// own order (by member header offset), never the index's hash order.
     /// Identical paths are last-wins.

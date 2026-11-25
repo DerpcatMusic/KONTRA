@@ -45,6 +45,36 @@ pub(crate) struct Resolver {
     /// Files checked to be under the root (each canonicalizes it).
     #[cfg(test)]
     inside_checks: std::cell::Cell<usize>,
+    /// Archive member headers a lookup read (not checked beforehand).
+    #[cfg(test)]
+    header_reads: std::cell::Cell<usize>,
+}
+
+/// A file read at a position of its own (`pread`), so threads share one
+/// open file: what a header check reads it through.
+struct At<'a> {
+    file: &'a File,
+    at: u64,
+}
+
+impl std::io::Read for At<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.file.read_at(self.at, buf)?;
+        self.at += n as u64;
+        Ok(n)
+    }
+}
+
+impl std::io::Seek for At<'_> {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        let invalid = || std::io::Error::from(std::io::ErrorKind::InvalidInput);
+        self.at = match to {
+            std::io::SeekFrom::Start(at) => at,
+            std::io::SeekFrom::Current(by) => self.at.checked_add_signed(by).ok_or_else(invalid)?,
+            std::io::SeekFrom::End(_) => return Err(std::io::ErrorKind::Unsupported.into()),
+        };
+        Ok(self.at)
+    }
 }
 
 impl Resolver {
@@ -101,6 +131,8 @@ impl Resolver {
             resolved: HashMap::new(),
             #[cfg(test)]
             inside_checks: std::cell::Cell::new(0),
+            #[cfg(test)]
+            header_reads: std::cell::Cell::new(0),
         })
     }
 
@@ -362,12 +394,13 @@ impl Resolver {
         );
     }
 
-    /// Reads the member headers of `names` in parallel, so the lookups that
-    /// follow find them in the page cache: on a cold disk each is a random
-    /// read, and one at a time they dominate the load.
+    /// Reads and checks the member headers of `names` in parallel (on a
+    /// cold disk each is a random read, and one at a time they dominate the
+    /// load), and resolves each name it found in an archive, so the lookups
+    /// that follow are found already.
     fn warm<'a>(&mut self, names: impl Iterator<Item = &'a str>) {
         let phase = kontra_format::timing::span("warm: names");
-        let mut named: Vec<(PathBuf, String)> = Vec::new();
+        let mut named: Vec<(&str, PathBuf, String)> = Vec::new();
         // Each archive checked once (whether it may be opened): a library's
         // thousands of samples sit in a few archives, and each check stats
         // and canonicalizes it.
@@ -399,7 +432,7 @@ impl Resolver {
                         .or_insert(self.can_open_archive(&archive)),
                 };
                 if open {
-                    found = Some((archive, member));
+                    found = Some((name, archive, member));
                     break;
                 }
             }
@@ -410,7 +443,7 @@ impl Resolver {
         // Open the archives (each reads its directory) side by side.
         let mut missing: Vec<&PathBuf> = named
             .iter()
-            .map(|(archive, _)| archive)
+            .map(|(_, archive, _)| archive)
             .filter(|a| !self.archives.contains_key(*a))
             .collect();
         missing.sort();
@@ -433,32 +466,69 @@ impl Resolver {
         self.archives.extend(opened);
         drop(phase);
         let _phase = kontra_format::timing::span("warm: headers");
-        let mut wanted: Vec<(PathBuf, u64)> = (named.iter())
-            .filter_map(|(archive, member)| {
+        // Each member's header is checked here, side by side, and kept in
+        // its index: the lookups that follow read nothing more.
+        let mut wanted: Vec<(u64, &PathBuf, &str)> = (named.iter())
+            .filter_map(|(_, archive, member)| {
                 let (_, index) = self.archives.get(archive)?.as_ref()?;
-                Some((archive.clone(), index.find(member)?.header_offset))
+                let entry = index.find(member).filter(|e| !e.checked)?;
+                Some((entry.header_offset, archive, member.as_str()))
             })
             .collect();
-        wanted.sort();
+        wanted.sort_unstable();
         let archives = &self.archives;
         let lanes = 16;
-        std::thread::scope(|scope| {
-            for lane in 0..lanes {
-                let wanted = &wanted;
-                scope.spawn(move || {
-                    let mut header = [0u8; 31];
-                    for (archive, offset) in wanted.iter().skip(lane).step_by(lanes) {
-                        if let Some(Some((file, _))) = archives.get(archive) {
-                            // Only the page cache matters; a short or failed read is fine.
-                            let _ = file.read_at(*offset, &mut header);
+        let checked: Vec<(PathBuf, ni_file::nkr::Entry)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..lanes)
+                .map(|lane| {
+                    let wanted = &wanted;
+                    scope.spawn(move || {
+                        let mut checked = Vec::new();
+                        for &(_, archive, member) in wanted.iter().skip(lane).step_by(lanes) {
+                            if let Some(Some((file, index))) = archives.get(archive)
+                                // A failed read leaves it to its lookup.
+                                && let Ok(Some(entry)) = index.member(At { file, at: 0 }, member)
+                            {
+                                checked.push((archive.clone(), entry));
+                            }
                         }
-                    }
-                });
-            }
+                        checked
+                    })
+                })
+                .collect();
+            (handles.into_iter())
+                .filter_map(|h| h.join().ok())
+                .flatten()
+                .collect()
         });
+        for (archive, entry) in checked {
+            if let Some(Some((_, index))) = self.archives.get_mut(&archive) {
+                index.keep(entry);
+            }
+        }
+        // What [`Resolver::find`] would answer, found here: its first base
+        // whose archive opens and holds the member. Only when nothing comes
+        // before an archive there (a monolith's own members, a moved
+        // folder); a name not found, or found damaged, is left to it.
+        if !self.monolith.is_empty() || kontra_format::any_moved() {
+            return;
+        }
+        for (name, archive, member) in named {
+            if !self.resolved.contains_key(name)
+                && let Ok(Some(at)) = self.archive_entry(&archive, &member)
+            {
+                self.resolved.insert(name.to_owned(), Some(at));
+            }
+        }
     }
 
     fn archive_entry(&mut self, archive: &Path, member: &str) -> Result<Option<Location>, String> {
+        #[cfg(test)]
+        if let Some(Some((_, index))) = self.archives.get(archive)
+            && index.find(member).is_some_and(|e| !e.checked)
+        {
+            self.header_reads.set(self.header_reads.get() + 1);
+        }
         let index = self.open(archive);
         let Some((file, index)) = index else {
             return Ok(None);
@@ -638,6 +708,72 @@ fn walk(dir: &Path, found: &mut impl FnMut(PathBuf)) {
 mod tests {
     use super::*;
 
+    /// An archive of `n` plain members `0.ncw`..: a directory, then each
+    /// member's 22-byte header and 4 bytes.
+    fn archive(n: u32) -> Vec<u8> {
+        let names: Vec<Vec<u8>> = (0..n)
+            .map(|m| {
+                format!("{m}.ncw")
+                    .encode_utf16()
+                    .chain([0])
+                    .flat_map(u16::to_le_bytes)
+                    .collect()
+            })
+            .collect();
+        let directory = 22 + names.iter().map(|b| 8 + b.len()).sum::<usize>();
+        let mut bytes = 0x5e70_ac54u32.to_le_bytes().to_vec();
+        bytes.extend(0x110u16.to_le_bytes());
+        bytes.extend([0; 8]);
+        bytes.extend(n.to_le_bytes());
+        bytes.extend([0; 4]);
+        for (m, name) in (0u32..).zip(&names) {
+            let at = directory as u32 + m * 26;
+            bytes.extend((8 + name.len() as u16).to_le_bytes());
+            bytes.extend(at.to_le_bytes());
+            bytes.extend(0u16.to_le_bytes());
+            bytes.extend(name);
+        }
+        for _ in 0..n {
+            bytes.extend(0x2ae9_05fau32.to_le_bytes());
+            bytes.extend(0x110u16.to_le_bytes());
+            bytes.extend([0; 4]);
+            bytes.extend(0xffu32.to_le_bytes());
+            bytes.extend(4u32.to_le_bytes());
+            bytes.extend([0; 4]);
+            bytes.extend([1, 2, 3, 4]);
+        }
+        bytes
+    }
+
+    /// Held by the tests that set or rely on the process's moved folders.
+    static MOVED: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The headers a warm checked stay checked and its names resolved:
+    /// resolving every sample then reads no member header again.
+    #[test]
+    fn a_warmed_archive_resolves_its_samples_without_reading_headers() {
+        let _moved = MOVED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!("kontra-headers-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("Samples")).unwrap();
+        std::fs::write(dir.join("Samples/pack.nkx"), archive(200)).unwrap();
+        let instrument = dir.join("x.nki");
+        std::fs::write(&instrument, b"").unwrap();
+        let mut resolver = Resolver::new(&instrument, None).unwrap();
+        let names: Vec<String> = (0..200)
+            .map(|n| format!("Samples/pack.nkx/{n}.ncw"))
+            .collect();
+        resolver.warm(names.iter().map(String::as_str));
+        assert_eq!(resolver.resolved.len(), 200, "every name found by the warm");
+        for name in &names {
+            let at = resolver.resolve(name).unwrap().expect(name);
+            assert_eq!(at.size, Some(4), "{name}");
+        }
+        assert_eq!(resolver.header_reads.get(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// A library's samples sit in a few archives: warming thousands of
     /// names checks each archive once, not once per name.
     #[test]
@@ -747,6 +883,9 @@ mod tests {
 
         let old_prefix = base.join("OldLocation/MyLib");
         let other_old = base.join("OtherLib");
+        let _moved = MOVED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         kontra_format::set_moved(&[
             (old_prefix.clone(), moved_dest.clone()),
             (PathBuf::from("C:/OldLib"), moved_dest.clone()),
