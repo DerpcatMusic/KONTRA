@@ -245,6 +245,7 @@ pub fn compile<'a>(
         symbols: c.symbols,
         conditions,
         shows: c.shows,
+        picks: c.picks,
     })
 }
 
@@ -352,6 +353,8 @@ struct Compiler<'a> {
     symbol_ids: HashMap<&'a str, i32>,
     /// Script::shows.
     shows: Vec<(u32, u32)>,
+    /// Script::picks.
+    picks: Vec<(u32, u32)>,
 }
 
 impl<'a> Compiler<'a> {
@@ -461,13 +464,13 @@ impl<'a> Compiler<'a> {
             .ok_or_else(|| Error::new(span, format!("{name} is not declared")))
     }
 
-    /// Records a picture whose frame or position one control's value sets
-    /// (Script::shows): a literal `get_ui_id` target and a value reading
-    /// exactly one control, unindexed.
-    fn note_shows(&mut self, args: &[Expr<'a>]) {
-        let [id, par, value] = args else { return };
+    /// `(picture, control)` when `args` set one of `pars` of a literal
+    /// `get_ui_id($picture)` from a value reading exactly one control,
+    /// unindexed or as an index (Script::shows, Script::names).
+    fn binding(&self, args: &[Expr<'a>], pars: &[&str]) -> Option<(u32, u32)> {
+        let [id, par, value] = args else { return None };
         let ExprKind::Call(f, of) = &id.kind else {
-            return;
+            return None;
         };
         let [
             Expr {
@@ -476,21 +479,15 @@ impl<'a> Compiler<'a> {
             },
         ] = of.as_slice()
         else {
-            return;
+            return None;
         };
         let ExprKind::Var(par, None) = &par.kind else {
-            return;
+            return None;
         };
         let par = par.trim_start_matches('$');
-        let moves = [
-            "CONTROL_PAR_PICTURE_STATE",
-            "CONTROL_PAR_POS_X",
-            "CONTROL_PAR_POS_Y",
-        ];
-        if !f.eq_ignore_ascii_case("get_ui_id")
-            || !moves.iter().any(|m| m.eq_ignore_ascii_case(par))
+        if !f.eq_ignore_ascii_case("get_ui_id") || !pars.iter().any(|m| m.eq_ignore_ascii_case(par))
         {
-            return;
+            return None;
         }
         let mut read = Vec::new();
         reads(value, &mut read);
@@ -498,18 +495,10 @@ impl<'a> Compiler<'a> {
             let v = *self.names.get(&n.to_ascii_lowercase())?;
             self.vars.get(v)?.control.map(|_| v)
         });
-        let (Some(control), Some(picture)) = (
-            controls.next(),
-            self.names.get(&picture.to_ascii_lowercase()),
-        ) else {
-            return;
-        };
-        if controls.all(|c| c == control) && control != *picture {
-            let pair = (*picture as u32, control as u32);
-            if !self.shows.contains(&pair) {
-                self.shows.push(pair);
-            }
-        }
+        let control = controls.next()?;
+        let picture = *self.names.get(&picture.to_ascii_lowercase())?;
+        (controls.all(|c| c == control) && control != picture)
+            .then_some((picture as u32, control as u32))
     }
 
     fn var(&self, v: usize) -> Result<&Var, Error> {
@@ -542,8 +531,27 @@ impl<'a> Compiler<'a> {
                 }
                 let b = Builtin::from_name(name)
                     .ok_or_else(|| Error::new(s.span, format!("unknown command {name}")))?;
-                if b == Builtin::SetControlPar {
-                    self.note_shows(args);
+                const MOVES: &[&str] = &[
+                    "CONTROL_PAR_PICTURE_STATE",
+                    "CONTROL_PAR_POS_X",
+                    "CONTROL_PAR_POS_Y",
+                ];
+                let bound = match b {
+                    Builtin::SetControlPar => self.binding(args, MOVES).map(|p| (p, false)),
+                    Builtin::SetControlParStr => self
+                        .binding(args, &["CONTROL_PAR_PICTURE"])
+                        .map(|p| (p, true)),
+                    _ => None,
+                };
+                if let Some((pair, picked)) = bound {
+                    let list = if picked {
+                        &mut self.picks
+                    } else {
+                        &mut self.shows
+                    };
+                    if !list.contains(&pair) {
+                        list.push(pair);
+                    }
                 }
                 match self.builtin(b, args, s.span)? {
                     None => {}

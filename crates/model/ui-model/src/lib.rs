@@ -539,6 +539,10 @@ pub struct Widget {
     /// leaves it out while that control is shown; the control shows its
     /// value itself.
     pub shows: Option<WidgetRef>,
+    /// The menu whose chosen item this picture spells: the source picks
+    /// the picture by that menu's value. Where [`Presentation::Kontra`]
+    /// leaves the picture out ([`Self::shows`]), it writes that item.
+    pub spells: Option<WidgetRef>,
     /// Position and size in pixels. Position is ignored for
     /// [`Placement::Grid`]; size is ignored when [`Widget::auto_size`].
     pub rect: Rect,
@@ -636,6 +640,7 @@ impl Widget {
             page,
             parent: None,
             shows: None,
+            spells: None,
             rect,
             placement: Placement::Pixels,
             auto_size: false,

@@ -1558,3 +1558,40 @@ fn kontra_leaves_out_a_picture_that_shows_a_controls_value() {
         "with its control hidden, it shows the value"
     );
 }
+
+/// A picture KONTRA leaves out that spelled a menu's chosen item (a macro's
+/// name) keeps that word in its place: nothing the Original says is lost.
+#[test]
+fn kontra_writes_the_word_a_left_out_picture_spelled() {
+    let (mut tree, ..) = tree();
+    let mut name = Widget::new(
+        "$name",
+        PageRef(0),
+        Rect::new(0, 0, 1, 1),
+        Kind::Menu {
+            items: vec![model::MenuItem {
+                text: "Rhythm".into(),
+                value: 0,
+                visible: true,
+            }],
+        },
+    );
+    name.hidden = true;
+    tree.widgets.push(name);
+    let mut word = tree.widgets[0].clone();
+    word.kind = Kind::Label;
+    word.images[0].role = Role::Background;
+    word.shows = Some(model::WidgetRef(0));
+    word.spells = Some(model::WidgetRef(1));
+    tree.widgets.push(word);
+    let page = plan::page(&tree, PageRef(0), true, 1., (&[], &[])).unwrap();
+    let w = page.widgets.iter().find(|w| w.index.0 == 2).expect("kept");
+    assert_eq!(w.words, "Rhythm");
+    assert!(w.picture.is_none(), "its picture is still left out");
+    let page = plan::page(&tree, PageRef(0), false, 1., (&[], &[])).unwrap();
+    let w = page.widgets.iter().find(|w| w.index.0 == 2).expect("drawn");
+    assert!(
+        w.words.is_empty() && w.picture.is_some(),
+        "Original draws the picture"
+    );
+}
