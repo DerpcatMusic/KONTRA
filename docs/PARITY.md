@@ -3055,7 +3055,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.dsp.DigitalEq.ir` | Digital Eq: in IR | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | [KONTRA#912](https://github.com/DerpcatMusic/KONTRA/pull/912) | 2026-10-28 | https://lua.uvi.net/_elements.html#DigitalEq |
+| tested | `uvi.dsp.DigitalEq.ir` | Digital Eq: in IR | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | #308 | 2026-11-25 | https://lua.uvi.net/_elements.html#DigitalEq |
 | done | `uvi.dsp.DigitalEq.driven` | Digital Eq: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) | [KONTRA#64](https://github.com/DerpcatMusic/KONTRA/pull/64) | 2026-10-14 | mapped + ignored/unsupported |
 | missing | `uvi.dsp.DigitalEq.measured` | Digital Eq: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | missing | `uvi.dsp.Pultec.ir` | Passive EQ: in IR |  |  |  | https://lua.uvi.net/_elements.html#Pultec |
@@ -4586,7 +4586,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.DigitalEq.Gain7` | DigitalEq.Gain7 |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.DigitalEq.Gain8` | DigitalEq.Gain8 |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.DigitalEq.Gain9` | DigitalEq.Gain9 |  |  |  | law ✗ range ✗ acts ✗ |
-| done | `uvi.par.DigitalEq.GainScale` | DigitalEq.GainScale | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | [KONTRA#912](https://github.com/DerpcatMusic/KONTRA/pull/912) | 2026-10-28 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.DigitalEq.GainScale` | DigitalEq.GainScale | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | #308 | 2026-11-25 | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.DigitalEq.KeyTracking` | DigitalEq.KeyTracking | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | [KONTRA#912](https://github.com/DerpcatMusic/KONTRA/pull/912) | 2026-10-28 | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.DigitalEq.OverallGain` | DigitalEq.OverallGain | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | [KONTRA#912](https://github.com/DerpcatMusic/KONTRA/pull/912) | 2026-10-28 | law ✓ range ✗ acts ✓ |
 | missing | `uvi.par.DigitalEq.Q1` | DigitalEq.Q1 |  |  |  | law ✗ range ✗ acts ✗ |
@@ -5803,7 +5803,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | done | `uvi.par.MultiLFO.Bypass` | MultiLFO.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
 | tested | `uvi.par.MultiLFO.Depth` | MultiLFO.Depth | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | [KONTRA#1069](https://github.com/DerpcatMusic/KONTRA/pull/1069) | 2026-10-29 | law ✓ range ✓ acts ✓ |
 | tested | `uvi.par.MultiLFO.Freq` | MultiLFO.Freq | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | [KONTRA#912](https://github.com/DerpcatMusic/KONTRA/pull/912) | 2026-10-28 | law ✓ range ✓ acts ✓ |
-| done | `uvi.par.MultiLFO.Invert` | MultiLFO.Invert | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | [KONTRA#1069](https://github.com/DerpcatMusic/KONTRA/pull/1069) | 2026-10-29 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.MultiLFO.Invert` | MultiLFO.Invert | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | #308 | 2026-11-25 | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.MultiLFO.ManualTrigger` | MultiLFO.ManualTrigger | [modulation.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/modulation.rs) | [KONTRA#1063](https://github.com/DerpcatMusic/KONTRA/pull/1063) | 2026-10-29 | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.MultiLFO.NoiseDepth` | MultiLFO.NoiseDepth | [modulation.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/modulation.rs) | [KONTRA#932](https://github.com/DerpcatMusic/KONTRA/pull/932) | 2026-10-28 | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.MultiLFO.NormalizeOutput` | MultiLFO.NormalizeOutput | [modulation.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/modulation.rs) | [KONTRA#932](https://github.com/DerpcatMusic/KONTRA/pull/932) | 2026-10-28 | law ✓ range ✗ acts ✓ |

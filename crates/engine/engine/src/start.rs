@@ -205,7 +205,9 @@ impl Engine {
                     .map_or(1.0, f64::from),
             };
             let now = self.now;
-            let Some(i) = self.free_slot().inspect(|&i| self.live_end = self.live_end.max(i + 1))
+            let Some(i) = self
+                .free_slot()
+                .inspect(|&i| self.live_end = self.live_end.max(i + 1))
             else {
                 #[cfg(feature = "trace")]
                 if let Some(trace) = &self.trace {

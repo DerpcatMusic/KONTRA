@@ -12,8 +12,7 @@ use kontra_ir as ir;
 const SYNC: f32 = 1e-9;
 const RATE: f32 = 48_000.0;
 /// Legacy Delay: the share of the feedback knob in the loop and the input
-/// (setter case 0x43, [ref]), and of the damping knob in the one-pole
-///. Raising either lengthens the tail or darkens it more.
+/// (setter case 0x43, [ref]), and of the damping knob in the one-pole. Raising either lengthens the tail or darkens it more.
 const DELAY_LOOP: f32 = 0.98;
 const DELAY_DAMPING: f32 = 0.7;
 /// The legacy Chorus's per-head smoothing coefficient.

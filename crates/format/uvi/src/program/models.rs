@@ -357,8 +357,7 @@ pub static DIGITAL_EQ: UviModule = UviModule {
 ///   third in Release ms (`e^(ln(1/3)/frames)`, ln(1/3) at [ref]),
 ///   one 100× slower (`e^(−0.010986/frames)`); a rise uses Attack, which
 ///   CeilingMode 0 (Brickwall, the default) forces to 0;
-/// - the largest level over the last `2·⌊Lookahead·rate/2000⌋` frames
-///, applied to the audio delayed by as many frames.
+/// - the largest level over the last `2·⌊Lookahead·rate/2000⌋` frames, applied to the audio delayed by as many frames.
 ///
 /// CeilingMode 2 (Hard) also clamps the output at Ceiling (`10^(C/20)`).
 /// Threshold-to-Ceiling is input gain into a limiter at Ceiling.

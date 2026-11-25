@@ -3,8 +3,7 @@
 //! (the clipped input and each pole). Its passband falls `1/(1 + 4.16 q)`
 //! as resonance rises, and each selector's compensation curve lifts it back.
 //!
-//! The law is Kontakt 8's Ladder core [ref]: feedback scale 4.16
-//!, the tan series `((40.80263 w² + 10.335426) w² + π) w`
+//! The law is Kontakt 8's Ladder core [ref]: feedback scale 4.16, the tan series `((40.80263 w² + 10.335426) w² + π) w`
 //! for the pole gain clamped at 8, the ±24 clamp then `v (1 − |v|/48)`
 //! clip, tap weights [ref] and compensation knots/values
 //! [ref] (all twelve rows read from the binary).

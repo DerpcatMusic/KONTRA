@@ -32,18 +32,8 @@ pub fn catalog() -> Vec<Named> {
     };
     let unit = [0.0, 1.0];
     vec![
-        n(
-            "common::BIPOLAR",
-            &common::BIPOLAR,
-            "Kontakt [ref]",
-            unit,
-        ),
-        n(
-            "common::CUBE",
-            &common::CUBE,
-            "Kontakt [ref]",
-            unit,
-        ),
+        n("common::BIPOLAR", &common::BIPOLAR, "Kontakt [ref]", unit),
+        n("common::CUBE", &common::CUBE, "Kontakt [ref]", unit),
         n(
             "common::SQUARE",
             &common::SQUARE,
@@ -134,12 +124,7 @@ pub fn catalog() -> Vec<Named> {
             "[ref]",
             [20.0, 131.0],
         ),
-        n(
-            "kontakt::UNIT_FIFTH",
-            &kontakt::UNIT_FIFTH,
-            "[ref]",
-            unit,
-        ),
+        n("kontakt::UNIT_FIFTH", &kontakt::UNIT_FIFTH, "[ref]", unit),
         n(
             "kontakt::REPLIKA_LOW_CUT",
             &kontakt::REPLIKA_LOW_CUT,
@@ -158,12 +143,7 @@ pub fn catalog() -> Vec<Named> {
             "[ref]",
             unit,
         ),
-        n(
-            "kontakt::FLEX_SHAPE",
-            &kontakt::FLEX_SHAPE,
-            "[ref]",
-            unit,
-        ),
+        n("kontakt::FLEX_SHAPE", &kontakt::FLEX_SHAPE, "[ref]", unit),
         n(
             "kontakt::EQ_PEAK_DB",
             &kontakt::EQ_PEAK_DB,
@@ -243,12 +223,7 @@ pub fn catalog() -> Vec<Named> {
             UNVERIFIED,
             [-1.0, 1.0],
         ),
-        n(
-            "uvi::fade_edge(2)",
-            &uvi::fade_edge(2.0),
-            "[ref]",
-            unit,
-        ),
+        n("uvi::fade_edge(2)", &uvi::fade_edge(2.0), "[ref]", unit),
     ]
 }
 

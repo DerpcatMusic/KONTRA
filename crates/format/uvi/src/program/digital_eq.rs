@@ -1,5 +1,4 @@
-//! UVI's DigitalEq: sixteen bands, each at `Gain × GainScale` dB
-//!, designed by [ref] at the order its Slope index
+//! UVI's DigitalEq: sixteen bands, each at `Gain × GainScale` dB, designed by [ref] at the order its Slope index
 //! names ({1, 2, 3, 4, 6, 8, 12, 16}, table [ref]). Types: 0 low
 //! pass, 1 high pass, 2 band pass, 3 notch, 4 low shelf, 5 high shelf,
 //! 6 peak. A first-order peak is RBJ's with `alpha = tan(Δω/2)`,

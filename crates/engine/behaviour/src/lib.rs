@@ -199,8 +199,7 @@ impl Behaviour {
     }
 
     /// Whether `zone`'s start conditions hold for this note. They form one
-    /// unparenthesized condition, so `and`/`and not` bind tighter than `or`
-    ///: `a or b and c` is `a or (b and c)`.
+    /// unparenthesized condition, so `and`/`and not` bind tighter than `or`: `a or b and c` is `a or (b and c)`.
     /// Every atom is read, so each round robin steps.
     pub fn starts(&mut self, zone: &Zone, channel: u8, key: u8, draw: RrDraw, step: Step) -> bool {
         let (mut any, mut term) = (false, true);

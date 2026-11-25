@@ -17,7 +17,12 @@ const UNITY: Gain = [[0.8, 0.1], [0.2, 0.7]];
 const ZERO: Gain = [[0.0; 2]; 2];
 
 /// A stereo tone with no exact interpolation: every read matters.
-fn region(store: &mut Store, frames: u64, pinned: u64, loops: Vec<Loop>) -> Region {
+fn region(
+    store: &mut Store,
+    frames: u64,
+    pinned: u64,
+    loops: Vec<Loop>,
+) -> std::io::Result<Region> {
     let bytes = (0..frames)
         .flat_map(|n| {
             let t = n as f32;
@@ -30,15 +35,13 @@ fn region(store: &mut Store, frames: u64, pinned: u64, loops: Vec<Loop>) -> Regi
         offset: 0,
         fmt: FMT,
     };
-    let sample = store
-        .load(
-            &key,
-            Arc::new(MemSource::new(FMT, bytes)),
-            frames,
-            std::slice::from_ref(&(0..pinned)),
-        )
-        .unwrap();
-    Region {
+    let sample = store.load(
+        &key,
+        Arc::new(MemSource::new(FMT, bytes)),
+        frames,
+        std::slice::from_ref(&(0..pinned)),
+    )?;
+    Ok(Region {
         mix: None,
         table: None,
         sample,
@@ -46,7 +49,7 @@ fn region(store: &mut Store, frames: u64, pinned: u64, loops: Vec<Loop>) -> Regi
         end: frames,
         loops: Region::pack_loops(loops),
         reverse: false,
-    }
+    })
 }
 
 fn voice(region: Region, step: f64, gain: Gain, envelope: Ahdsr) -> Voice {
@@ -105,11 +108,11 @@ fn same(
     envelope: Ahdsr,
     blocks: usize,
     at: impl Fn(usize, &mut Voice) + Copy,
-) {
+) -> std::io::Result<()> {
     let client = store.client();
     let skip = play(
         voice(
-            region(store, 20_000, 20_000, loops.clone()),
+            region(store, 20_000, 20_000, loops.clone())?,
             step,
             ZERO,
             envelope,
@@ -120,7 +123,7 @@ fn same(
         at,
     );
     let full = play(
-        voice(region(store, 20_000, 20_000, loops), step, ZERO, envelope),
+        voice(region(store, 20_000, 20_000, loops)?, step, ZERO, envelope),
         &client,
         true,
         blocks,
@@ -135,6 +138,7 @@ fn same(
                 .fold(0.0, f32::max);
         assert!(worst <= 1e-6, "block {b}: off by {worst}");
     }
+    Ok(())
 }
 
 fn crossfaded_loop() -> Vec<Loop> {
@@ -156,7 +160,7 @@ fn gain_coming_back_up_plays_what_full_rendering_plays() {
         _ => {}
     };
     for step in [1.0, 0.9187, 1.31] {
-        same(&mut store, step, crossfaded_loop(), Ahdsr::GATE, 60, at);
+        same(&mut store, step, crossfaded_loop(), Ahdsr::GATE, 60, at).unwrap();
     }
 }
 
@@ -175,7 +179,7 @@ fn an_envelope_rising_under_zero_gain_resumes_at_its_level() {
             v.set_gain(UNITY);
         }
     };
-    same(&mut store, 0.9187, Vec::new(), envelope, 50, at);
+    same(&mut store, 0.9187, Vec::new(), envelope, 50, at).unwrap();
 }
 
 #[test]
@@ -188,8 +192,8 @@ fn a_silent_voice_crosses_loops_and_resumes_mid_crossfade() {
                 v.set_gain(UNITY);
             }
         };
-        same(&mut store, 1.0, crossfaded_loop(), Ahdsr::GATE, 80, at);
-        same(&mut store, 1.31, crossfaded_loop(), Ahdsr::GATE, 80, at);
+        same(&mut store, 1.0, crossfaded_loop(), Ahdsr::GATE, 80, at).unwrap();
+        same(&mut store, 1.31, crossfaded_loop(), Ahdsr::GATE, 80, at).unwrap();
     }
 }
 
@@ -207,8 +211,8 @@ fn a_silent_voice_releases_and_ends_at_the_same_frame() {
             v.release();
         }
     };
-    same(&mut store, 1.0, crossfaded_loop(), envelope, 40, at);
-    same(&mut store, 1.31, Vec::new(), envelope, 160, |_, _| {});
+    same(&mut store, 1.0, crossfaded_loop(), envelope, 40, at).unwrap();
+    same(&mut store, 1.31, Vec::new(), envelope, 160, |_, _| {}).unwrap();
 }
 
 #[test]
@@ -217,7 +221,7 @@ fn a_silent_voice_stays_active_and_counts_as_playing() {
     let client = store.client();
     let trace = play(
         voice(
-            region(&mut store, 20_000, 20_000, crossfaded_loop()),
+            region(&mut store, 20_000, 20_000, crossfaded_loop()).unwrap(),
             1.0,
             ZERO,
             Ahdsr::GATE,
@@ -247,13 +251,13 @@ fn a_silent_voice_does_not_read_its_source() {
     let client = store.client();
     let frames = 8 * PAGE_FRAMES;
     let mut skipped = voice(
-        region(&mut store, frames, PAGE_FRAMES, Vec::new()),
+        region(&mut store, frames, PAGE_FRAMES, Vec::new()).unwrap(),
         1.0,
         ZERO,
         Ahdsr::GATE,
     );
     let mut full = voice(
-        region(&mut store, frames, PAGE_FRAMES, Vec::new()),
+        region(&mut store, frames, PAGE_FRAMES, Vec::new()).unwrap(),
         1.0,
         ZERO,
         Ahdsr::GATE,
@@ -287,7 +291,7 @@ fn lowpass(frames: &std::cell::Cell<usize>) -> impl FnMut(&mut [[f32; 2]]) + '_ 
 fn a_culled_filtered_voice_comes_back_without_a_click() {
     let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
     let client = store.client();
-    let regions = [0, 1].map(|_| region(&mut store, 20_000, 20_000, crossfaded_loop()));
+    let regions = [0, 1].map(|_| region(&mut store, 20_000, 20_000, crossfaded_loop()).unwrap());
     let [mut culled, mut kept] = regions.map(|r| voice(r, 0.9187, UNITY, Ahdsr::GATE));
     let (culled_frames, kept_frames) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
     let (mut a, mut b) = (lowpass(&culled_frames), lowpass(&kept_frames));

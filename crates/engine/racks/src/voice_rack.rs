@@ -28,8 +28,7 @@ use kontra_effects::summed::{VoiceEq, shape};
 pub const MIN_DAMPING: f32 = 0.01;
 
 /// Frames between a drive unit's steps toward its next refresh: Kontakt's
-/// modulated Saturation and Lo-Fi re-read their controls every 32 frames
-///. Held for the whole 256-frame refresh, a
+/// modulated Saturation and Lo-Fi re-read their controls every 32 frames. Held for the whole 256-frame refresh, a
 /// 5 Hz LFO on Saturation differs from that by −24 dB RMS (−12.6 dB at
 /// 20 Hz); stepping linearly between refreshes costs no extra spans.
 ///

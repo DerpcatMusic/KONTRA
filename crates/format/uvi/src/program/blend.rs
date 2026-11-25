@@ -36,8 +36,7 @@ pub(super) fn carries(connection: Node, r: &Route) -> Vec<NodeId> {
 /// `None` for an LFO read as a wave, else what a route reads of one read
 /// through a table (`None` inside when it is not carried):
 /// - unipolar: `m = (w + 1)·d/2` (process [ref], `Depth` `d`), as a
-///   table over its wave; a route takes `m` itself, inverted `1 − m`
-///. ponytail: none with a delay or rise (it holds the wave
+///   table over its wave; a route takes `m` itself, inverted `1 − m`. ponytail: none with a delay or rise (it holds the wave
 ///   at −1, then pulls it up from there: [ref]), nor
 ///   with depth routes; no library routes one.
 /// - `WaveFormType` 9, its `UserTable`: 256 points a cycle, the phase's top

@@ -483,8 +483,7 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
 /// Saved ms for a knob `x`, `lo + (hi − lo)·(e^(kx) − 1)/(e^k − 1)`, fitted
 /// to Kontakt's saves at x = 0, .1, .25, .5, .75, .9, 1 (probes/fx_knob_laws.lua):
 /// the legacy Reverb's predelay 0..180 ms. The Limiter's release 10..1000 ms
-/// is this form exactly: the reference 8.13 stores `e^(4.4248466·x + ln 12) − 2`
-///, and its texts read through it (readouts.rs).
+/// is this form exactly: the reference 8.13 stores `e^(4.4248466·x + ln 12) − 2`, and its texts read through it (readouts.rs).
 pub(crate) const REVERB_PREDELAY_MS: [(f32, f32, f32); 2] = [(0.0, 0.0, 4.511), (1.0, 180.0, 0.0)];
 pub(crate) const LIMITER_RELEASE_MS: [(f32, f32, f32); 2] =
     [(0.0, 10.0, 4.424_846_6), (1.0, 1000.0, 0.0)];

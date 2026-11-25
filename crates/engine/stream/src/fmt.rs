@@ -95,10 +95,14 @@ impl SampleFmt {
         let f32 = f32::from_le_bytes;
         match (self.encoding, self.channels) {
             (Encoding::I16, 1) => frames::<2, _>(src, out, mix, |&[a, b]| [i16([a, b]); 1]),
-            (Encoding::I16, 2) => frames::<4, _>(src, out, mix, |&[a, b, c, d]| [i16([a, b]), i16([c, d])]),
+            (Encoding::I16, 2) => {
+                frames::<4, _>(src, out, mix, |&[a, b, c, d]| [i16([a, b]), i16([c, d])])
+            }
             (Encoding::I24, 1) => frames::<3, _>(src, out, mix, |&b| [i24(b); 1]),
             (Encoding::I24, 2) => {
-                frames::<6, _>(src, out, mix, |&[a, b, c, d, e, f]| [i24([a, b, c]), i24([d, e, f])]);
+                frames::<6, _>(src, out, mix, |&[a, b, c, d, e, f]| {
+                    [i24([a, b, c]), i24([d, e, f])]
+                });
             }
             (Encoding::F32, 1) => frames::<4, _>(src, out, mix, |&b| [f32(b); 1]),
             (Encoding::F32, 2) => frames::<8, _>(src, out, mix, |&[a, b, c, d, e, f, g, h]| {
@@ -146,9 +150,9 @@ pub(crate) fn stereo<const C: usize>(v: [f32; C]) -> [f32; 2] {
 /// A frame of channel values through `mix`, summed as [`emit`] sums them.
 #[inline(always)]
 pub(crate) fn mixed<const C: usize>(v: [f32; C], mix: &Mix) -> [f32; 2] {
-    v.iter()
-        .zip(mix)
-        .fold([0.0; 2], |[l, r], (v, gain)| [l + v * gain[0], r + v * gain[1]])
+    v.iter().zip(mix).fold([0.0; 2], |[l, r], (v, gain)| {
+        [l + v * gain[0], r + v * gain[1]]
+    })
 }
 
 /// Writes frame `n` of `out` from `value(n, channel)`. With `mix`, channel

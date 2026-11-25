@@ -7,11 +7,9 @@
 //! [ref], reset [ref] and audio [ref]:
 //! - combs of 25.31..36.67 ms (doubles [ref]..[ref]) and
 //!   allpasses of 12.61, 10, 7.73, 5.10 ms ([ref],
-//!   [ref]), each channel's 0.5215 ms longer
-//!, lengths `ms·0.001·rate` truncated;
+//!   [ref]), each channel's 0.5215 ms longer, lengths `ms·0.001·rate` truncated;
 //! - comb feedback `0.3·size + 0.65` and its
-//!   one-pole keeping `1 − 0.35·(1 − colour)` of the new sample
-//!; the allpasses run as plain delays: the reference 8.13
+//!   one-pole keeping `1 − 0.35·(1 − colour)` of the new sample; the allpasses run as plain delays: the reference 8.13
 //!   renders each comb's first echo 35.44 ms (their summed lengths) later
 //!   with no recirculation between (docs/re/engine/fx-measured/legacy-reverb.md);
 //! - the channels mix toward their mean by `1 − stereo` (the mix reads
@@ -23,8 +21,7 @@
 //!   −88.6 dB with a gain of 3.0000).
 //!
 //! That low-pass (+0x1100, vtable [ref]) is a two-pole Butterworth:
-//! init [ref] designs a 2-pole, 0-ripple Chebyshev prototype
-//!, set [ref] moves it to the corner by the LP→LP
+//! init [ref] designs a 2-pole, 0-ripple Chebyshev prototype, set [ref] moves it to the corner by the LP→LP
 //! transform at resonance 0 and unity DC gain. That is the
 //! bilinear Butterworth, −3 dB at the corner.
 

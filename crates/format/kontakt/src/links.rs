@@ -5,8 +5,7 @@
 //! Its reader (Kontakt 8.13 [ref]) takes, after the object's
 //! structured flag and version: the source kind ([ref], 0..=2), a
 //! byte, (0x70 only: a byte), the controller (u16), (0x71 only: an i32),
-//! an i32, the range's from and to (f32), and the parameter's name
-//!, which for a script control is
+//! an i32, the range's from and to (f32), and the parameter's name, which for a script control is
 //! `pts_script_<knob|slider|switch|xy>_<slot>_<n>`: the slot's `n`th
 //! declared control of that kind. Dolce's Legato ties CC 1 to
 //! `pts_script_slider_2_40` (its Dynamics, slot 2's 41st slider) and

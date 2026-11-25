@@ -288,7 +288,13 @@ mod tests {
             ),
             (P::LowShelf, "$ENGINE_PAR_RV2_LOWSHELF", 0.0, -6.0, -12.0),
             (P::Stereo, "$ENGINE_PAR_RV2_STEREO", 0.0, 0.5, 1.0),
-            (P::Modulation, "$ENGINE_PAR_RV2_MOD", 0.0, 5.0 / 44.1, 10.0 / 44.1),
+            (
+                P::Modulation,
+                "$ENGINE_PAR_RV2_MOD",
+                0.0,
+                5.0 / 44.1,
+                10.0 / 44.1,
+            ),
         ];
         let mappings = crate::engine_pars();
         for (par, name, lo, mid, hi) in cases {

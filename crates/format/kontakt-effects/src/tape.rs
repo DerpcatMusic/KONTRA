@@ -3,8 +3,7 @@
 //! 0, 4, 8, 12 (bindings table `fx_dynamics_dist_tape.tsv`). The structure
 //! is read from Kontakt 8.13's binary; no constant is fitted:
 //!
-//! - Knobs (setter [ref]): gain → drive `300·10^(48·gain/20)`
-//!; warmth → `10^((6·warmth − 3)/20)`; roll-off moves two
+//! - Knobs (setter [ref]): gain → drive `300·10^(48·gain/20)`; warmth → `10^((6·warmth − 3)/20)`; roll-off moves two
 //!   low-passes.
 //! - Process, coefficients in [ref], with Quality
 //!   off at 48 kHz running twice the rate:

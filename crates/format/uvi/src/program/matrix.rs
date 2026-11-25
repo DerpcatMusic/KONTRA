@@ -1,7 +1,6 @@
 //! A keygroup GainMatrix's cells and the macros that crossfade them.
 //!
-//! UVI scales a cell by each multiplicative connection on it
-//!: `(r < 0 ? 1 : 1 - r) + r * m`, `r` the ratio clamped to
+//! UVI scales a cell by each multiplicative connection on it: `(r < 0 ? 1 : 1 - r) + r * m`, `r` the ratio clamped to
 //! ±1 and `m` its source through the connection's mapper. A macro
 //! (`ConstantModulation`) is its `Value` plus each additive connection on
 //! it ([ref]: `value + r * m`), each of those ratios scaled the

@@ -224,8 +224,10 @@ impl Engine {
         self.graph_redirected = false;
         let has_graph = self.graph_groups();
         let live_end = self.live_end.min(self.voices.len());
-        for (_index, slot) in self.voices[..live_end]
+        for (_index, slot) in self
+            .voices
             .iter_mut()
+            .take(live_end)
             .enumerate()
             .filter(|(_, s)| s.voice.is_active())
         {
@@ -341,7 +343,11 @@ impl Engine {
                 );
             }
         }
-        let ended = self.voices[..live_end].iter().rposition(|s| s.voice.is_active());
+        let ended = self
+            .voices
+            .iter()
+            .take(live_end)
+            .rposition(|s| s.voice.is_active());
         self.live_end = ended.map_or(0, |i| i + 1);
         self.mix_chains(len);
     }

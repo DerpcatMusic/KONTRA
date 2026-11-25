@@ -42,8 +42,7 @@ pub(crate) fn envelope(e: &EnvelopeAhdsr) -> ir::Envelope {
 /// byte 3 of the internal modulator's flags. Kontakt 8's legacy-modulation
 /// compiler ([ref], AHDSR type 2 with mode +0x600 < 2) emits, with the
 /// byte set (+0x548), `$out := $in * env * $intensity` (template [ref]),
-/// a scaled envelope; clear, `$out := $in * (1.0 - (1.0 - env) * $intensity)`
-///, the envelope above a floor of `1 − i`. Both are the plain
+/// a scaled envelope; clear, `$out := $in * (1.0 - (1.0 - env) * $intensity)`, the envelope above a floor of `1 − i`. Both are the plain
 /// envelope at full intensity, which is every Areia, Dolce, Pacific and probe
 /// route in the corpus census. Note: mode `+0x600 == 2` (`* 3.0` signal) is
 /// `BParEnv_DBD` ([ref], 3970-3975`), translated via [`dbd`]
@@ -191,8 +190,7 @@ pub(crate) fn zone_envelope(
 pub(crate) const ATTACK_FLOOR_MS: f32 = 2.0;
 
 /// Envelope-time scaling law selected by external modulator flag `+0x53d`
-/// (`simulate_k2_env_time`, [ref]) and source type
-///:
+/// (`simulate_k2_env_time`, [ref]) and source type:
 /// - `false` (modern K3–K8): scales the logarithmic time knob by `m^power`
 ///   (`LogKnob { floor_ms: 2.0, power }`), with `power = 3` (`fcubic`) for
 ///   external source types 7..=13 and `power = 1` for types 1..=5 / ZoneEnvelope.
@@ -562,8 +560,7 @@ pub(crate) fn step_mod_table(
 }
 
 /// One-shot (`single_trigger`) unsynced per-voice Step Modulator as unipolar
-/// `0..=1` hold-then-step breakpoints, holding the final step indefinitely
-///. Signed targets map `0..=1 → -1..=1` through a
+/// `0..=1` hold-then-step breakpoints, holding the final step indefinitely. Signed targets map `0..=1 → -1..=1` through a
 /// linear `ir::Transfer` so `ir::Breakpoints` stays strictly within `0..=1`.
 pub(crate) fn step_mod_oneshot(
     s: &StepMod,
