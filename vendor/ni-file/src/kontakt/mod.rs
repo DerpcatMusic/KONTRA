@@ -1,5 +1,6 @@
 //! Data types relating to the Kontakt sampler
 
+mod accounted;
 mod chunk;
 mod chunk_set;
 mod error;

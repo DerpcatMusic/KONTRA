@@ -424,3 +424,43 @@ three containers.
 - 0x37 SlotList: 286327735 → 286314986. The containers read in full; what
   remains is each container's children area, its ProgramList (0x36), which
   holds the Program objects (0x28). That is the next batch.
+
+## Batch 11: clean-room byte-accounted readers
+
+`vendor/ni-file/src/kontakt/accounted.rs` reads the classes the native tables
+left unaccounted. Every layout comes from the bytes of real files (version
+fields, length prefixes, repeated structures), not from the reference binary.
+Each reader accounts for every byte or fails, and records each value as a field
+so a test can check that the fields tile the stream and re-encode to its bytes.
+The native decoder prefers these readers where they apply, and falls back to its
+own reader when they fail.
+
+| Class | Layout read from the bytes |
+| --- | --- |
+| 0x03 Bank 0x73/0x76/0x77 | private: 3 bytes, from 0x76 8 bytes and an identifier string; public: volume, tune, tempo, name |
+| 0x28 Program 0xa8–0xb5 | private: fixed prefix, a u32 size (when non-zero, a count of inline 0x70/0x71 named records), then a suffix of 26/40/52 bytes by version; public: the positional record |
+| 0x32 VoiceGroups | an instrument voice limit, a 128-bit mask, one limit per set bit |
+| 0x35 zone sample markers 0x10 | byte, i32, count, then (when non-zero) a length and 12-byte markers (u32 frame, f32 frame, flags) |
+| 0x36 ProgramList | u16 count, per program a u16 index and the framed program |
+| 0x38 StartCriteriaList | 8-bit mask, one inline 0x70 criterion of 31 bytes per set bit |
+| 0x3E BOutputConfiguration | counted channel map, 128-bit strip mask, strips with counted framed BParFX |
+| 0x48 MultiSlots, 0x49 MidiPortMaps | 64 slot records of either size; one 64-entry or four 16-entry maps |
+| 0x4B FNTableImpl v2/v3 | v2: special, sample (plus a u64 and a u32 per sample) and other name lists, a u16 per other file, trailing empty lists; v3: flat entries of two u32, two names, a u64 and two u32 |
+| 0x0F02 SessionState 0x10 | child chunks 0x0F01 (a u64 length and a MessagePack document, walked to its end) and 0x0F00 (31 bytes) |
+
+Where every file seen holds zeros, a field's width cannot be observed; those
+spans read as single bytes.
+
+Evidence: the full census was not re-run (the last one took 54 min). On two
+samples of `/data/main/Libraries/Kontakt` (one file in 25 per library, at most
+three per library, mostly encrypted), plus the open library files and the
+in-repo fixtures, every listed class reads in full:
+
+| Sample | Files | Objects | Full | Unaccounted bytes |
+| --- | ---: | ---: | ---: | ---: |
+| open files and fixtures | 14 | 895 | 895 | 0 |
+| sample A (before the FNTableImpl v2 trailing lists) | 20 | 1157 | 1156 | 886731 |
+| sample A | 20 | 1157 | 1157 | 0 |
+| sample B (held out) | 16 | 1009 | 1009 | 0 |
+
+Test: `accounted_records_read_every_byte_of_real_files` (crates/format/kontakt/tests/kontakt.rs).

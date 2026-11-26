@@ -11,6 +11,7 @@ use std::sync::OnceLock;
 
 use super::curated::{CURATED_PRIVATE, CURATED_PROGRAMS, CURATED_READERS, CURATED_UNFRAMED};
 use super::programs::{ProgramSrc, ReaderSrc, PROGRAMS, READERS};
+use crate::kontakt::accounted;
 
 /// The generated programs and the curated ones (curated.rs); a curated program replaces the
 /// generated one of the same name.
@@ -1113,8 +1114,9 @@ impl<'a> Machine<'a> {
     /// (the parent's reader does not read it).
     fn chunk(&mut self, id: u16, body: &[u8], at: usize) {
         let opaque = body.len();
-        // A record Kontakt reads from its chunk header on (curated.rs CURATED_UNFRAMED).
-        if CURATED_UNFRAMED.iter().any(|r| r.sertype == id) {
+        // A record Kontakt reads from its chunk header on (curated.rs CURATED_UNFRAMED), or
+        // one accounted.rs reads from its body on.
+        if accounted::has_record(id) || CURATED_UNFRAMED.iter().any(|r| r.sertype == id) {
             match nested_decode(id, None, false, body) {
                 Ok(d) => self.merge(d, at - 6),
                 Err(e) => hide(&mut self.opaque, Some(id), cause(&e), opaque),
@@ -1438,7 +1440,7 @@ fn private_reader_for(sertype: u16, version: u16) -> Option<&'static ReaderSrc> 
 
 /// Whether curated.rs holds a separate private-block reader for `sertype`.
 fn has_private_reader(sertype: u16) -> bool {
-    CURATED_PRIVATE.iter().any(|r| r.sertype == sertype)
+    accounted::has_block(sertype) || CURATED_PRIVATE.iter().any(|r| r.sertype == sertype)
 }
 
 fn reader_for(sertype: u16, version: u16) -> Option<&'static ReaderSrc> {
@@ -1551,12 +1553,74 @@ fn next_prefix(c: &Chooser) -> Option<Vec<usize>> {
 ///
 /// Ok means Kontakt's own reader accepts exactly these bytes. The error names what stops it.
 pub fn decode(sertype: u16, version: u16, bytes: &[u8]) -> Result<Decoded, Undecoded> {
-    decode_inner(reader_for(sertype, version), version, bytes, true)
+    prefer(
+        || accounted::block(sertype, version, false, bytes),
+        || decode_inner(reader_for(sertype, version), version, bytes, true),
+    )
+}
+
+/// accounted.rs's reader where it has one for the stream, else (or when it fails and a
+/// native reader exists) the native one.
+fn prefer(
+    accounted: impl FnOnce() -> Option<Result<Decoded, Undecoded>>,
+    native: impl FnOnce() -> Result<Decoded, Undecoded>,
+) -> Result<Decoded, Undecoded> {
+    match scoped(accounted) {
+        Some(Ok(d)) => Ok(d),
+        Some(Err(e)) => match native() {
+            Err(Undecoded::NoReader) => Err(e),
+            r => r,
+        },
+        None => native(),
+    }
+}
+
+/// Run `f` as one decode: nested decodes it makes are memoized until the outermost ends.
+fn scoped<T>(f: impl FnOnce() -> T) -> T {
+    DECODED.with(|n| n.borrow_mut().0 += 1);
+    let r = f();
+    DECODED.with(|n| {
+        let mut n = n.borrow_mut();
+        n.0 -= 1;
+        if n.0 == 0 {
+            n.1.clear();
+            n.2.clear();
+        }
+    });
+    r
+}
+
+/// The opaque bytes of `body` read as a framed object's child chunk `id` is: decoded by its
+/// SerType where a reader exists, opaque otherwise.
+pub(crate) fn decode_chunk(id: u16, body: &[u8]) -> Vec<Opaque> {
+    let Ok(lib) = library() else {
+        return vec![Opaque {
+            sertype: Some(id),
+            why: "not modelled",
+            bytes: body.len(),
+        }];
+    };
+    scoped(|| {
+        let mut m = Machine::new(
+            lib,
+            Stream::decode(body, 0),
+            Chooser::default(),
+            &[],
+            None,
+            0,
+        );
+        m.chunk(id, body, 6);
+        m.opaque
+    })
 }
 
 /// Decode a record that is not a serialized object (curated.rs `CURATED_UNFRAMED`), from its
 /// chunk header (u16 id, u32 length) on, as Kontakt reads it.
 pub fn decode_unframed(id: u16, data: &[u8]) -> Result<Decoded, Undecoded> {
+    prefer(|| accounted::record(id, data), || decode_curated(id, data))
+}
+
+fn decode_curated(id: u16, data: &[u8]) -> Result<Decoded, Undecoded> {
     let reader = CURATED_UNFRAMED.iter().find(|r| r.sertype == id);
     let len = u32::try_from(data.len()).map_err(|_| Undecoded::Rejected)?;
     let chunk = [&id.to_le_bytes()[..], &len.to_le_bytes(), data].concat();
@@ -1575,7 +1639,10 @@ pub fn decode_unframed(id: u16, data: &[u8]) -> Result<Decoded, Undecoded> {
 /// [`decode`] of an object's private block: with its private reader where curated.rs has
 /// one (Kontakt reads the two blocks with separate readers), else the catalog reader.
 pub fn decode_private(sertype: u16, version: u16, bytes: &[u8]) -> Result<Decoded, Undecoded> {
-    decode_inner(private_reader_for(sertype, version), version, bytes, true)
+    prefer(
+        || accounted::block(sertype, version, true, bytes),
+        || decode_inner(private_reader_for(sertype, version), version, bytes, true),
+    )
 }
 
 /// Like [`decode`] but the object may be followed by other data: `consumed` says how much
@@ -1638,17 +1705,7 @@ fn decode_inner(
     exact: bool,
 ) -> Result<Decoded, Undecoded> {
     let reader = reader.ok_or(Undecoded::NoReader)?;
-    DECODED.with(|n| n.borrow_mut().0 += 1);
-    let r = decode_search(reader, version, bytes, exact);
-    DECODED.with(|n| {
-        let mut n = n.borrow_mut();
-        n.0 -= 1;
-        if n.0 == 0 {
-            n.1.clear();
-            n.2.clear();
-        }
-    });
-    r
+    scoped(|| decode_search(reader, version, bytes, exact))
 }
 
 fn decode_search(
@@ -1727,7 +1784,7 @@ pub fn class_of(sertype: u16, version: u16) -> Option<&'static str> {
 
 /// Whether `version` of `sertype` is one Kontakt's reader accepts.
 pub fn accepts(sertype: u16, version: u16) -> bool {
-    reader_for(sertype, version).is_some()
+    accounted::reads_block(sertype, version) || reader_for(sertype, version).is_some()
 }
 
 /// Integer literals in branch conditions of the program: values worth trying for fields

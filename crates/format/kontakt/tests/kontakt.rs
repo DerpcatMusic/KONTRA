@@ -606,3 +606,130 @@ fn slot_list_reads_every_program_container() {
         .count();
     assert_eq!(programs, 3);
 }
+
+/// Every byte of the records and objects ni-file's clean-room readers decode (bank,
+/// program, voice groups, output routing, multi MIDI tables, file-name table, session
+/// state, and nested start criteria, sample markers and program lists) is accounted for
+/// in real files, and each value it reads re-encodes to the bytes it came from.
+#[test]
+fn accounted_records_read_every_byte_of_real_files() {
+    use ni_file::kontakt::native_schema::{self as ns, Decoded};
+    use ni_file::kontakt::{Chunk, KontaktChunks, StructuredObject};
+    use std::collections::BTreeSet;
+    use std::io::Cursor;
+
+    const MINE: [&str; 8] = [
+        "Bank",
+        "Program",
+        "VoiceGroups",
+        "BOutputConfiguration",
+        "MultiSlots",
+        "MidiPortMaps",
+        "FNTableImpl",
+        "SessionState",
+    ];
+    const RECORDS: [u16; 8] = [0x32, 0x33, 0x34, 0x37, 0x3e, 0x48, 0x49, 0x4b];
+
+    /// The fields tile the stream, and every value re-encodes to its bytes.
+    fn round_trips(d: &Decoded, data: &[u8]) {
+        let mut at = 0;
+        let mut top: Vec<_> = d.fields.iter().filter(|f| f.depth == 0).collect();
+        top.sort_by_key(|f| f.offset);
+        for f in top {
+            assert_eq!(f.offset, at, "{}: gap or overlap at {at}", d.class);
+            let bytes = &data[f.offset..f.offset + f.len];
+            let v = f.value.unwrap_or(0);
+            match f.kind {
+                'B' | 'H' | 'I' | 'Q' | 'F' => assert_eq!(bytes, &v.to_le_bytes()[..f.len]),
+                'W' => assert_eq!(
+                    (f.len, &bytes[..4]),
+                    (4 + 2 * v as usize, &(v as u32).to_le_bytes()[..])
+                ),
+                'S' => assert_eq!(
+                    (f.len, &bytes[..4]),
+                    (4 + v as usize, &(v as u32).to_le_bytes()[..])
+                ),
+                _ => {}
+            }
+            at += f.len;
+        }
+        assert_eq!(at, data.len(), "{}: fields end before the stream", d.class);
+    }
+
+    fn check(
+        r: Result<Decoded, ns::Undecoded>,
+        data: &[u8],
+        what: &str,
+        seen: &mut BTreeSet<&'static str>,
+    ) {
+        let d = r.unwrap_or_else(|e| panic!("{what}: {e:?}"));
+        assert!(d.opaque.is_empty(), "{what}: {:?}", d.opaque);
+        if MINE.contains(&d.class) {
+            assert_eq!(d.consumed, data.len(), "{what}");
+            round_trips(&d, data);
+            seen.insert(d.class);
+        }
+    }
+
+    fn walk(c: &Chunk, file: &str, seen: &mut BTreeSet<&'static str>) {
+        let what = format!("{file} {:#06x}", c.id);
+        if RECORDS.contains(&c.id) {
+            return check(ns::decode_unframed(c.id, &c.data), &c.data, &what, seen);
+        }
+        let mut cur = Cursor::new(c.data.as_slice());
+        let Ok(o) = StructuredObject::read(&mut cur) else {
+            return;
+        };
+        if cur.position() as usize != c.data.len() || !ns::accepts(c.id, o.version) {
+            return;
+        }
+        if !o.private_data.is_empty() {
+            check(
+                ns::decode_private(c.id, o.version, &o.private_data),
+                &o.private_data,
+                &what,
+                seen,
+            );
+        }
+        if !o.public_data.is_empty() {
+            check(
+                ns::decode(c.id, o.version, &o.public_data),
+                &o.public_data,
+                &what,
+                seen,
+            );
+        }
+        for k in &o.children {
+            walk(k, file, seen);
+        }
+    }
+
+    let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+    let fixtures = [
+        "glide-time.nki",
+        "start-criteria.nki",
+        "three-slots.nkm",
+        "multi-script.nkm",
+    ]
+    .map(|f| data.join(f));
+    // Library files, where installed: a recovered multi with its session state, and
+    // instruments with large version 2 and 3 file-name tables.
+    let library = [
+        "Pacific Ensemble Strings/KONTRA project recovery/7790ec24-2e11-44c8-bd01-45486dce2357.vstpreset.nkm",
+        "Morphology Evolved [Zero-G] rutracker.org/Morphology Evolved.nki",
+        "Performance Samples Vista/Instruments/Vista - 3 Basses.nki",
+    ]
+    .map(|f| Path::new("/data/main/Libraries/Kontakt").join(f));
+    let mut seen = BTreeSet::new();
+    for path in fixtures.iter().chain(library.iter().filter(|p| p.exists())) {
+        let (bytes, _) = kontra_format_kontakt::decode(path).unwrap();
+        let chunks = KontaktChunks::read(Cursor::new(bytes)).unwrap();
+        for c in &chunks.0 {
+            walk(c, &path.display().to_string(), &mut seen);
+        }
+    }
+    // The fixtures alone hold every class but the session state.
+    for class in MINE.iter().filter(|&&c| c != "SessionState") {
+        assert!(seen.contains(class), "no {class} read: {seen:?}");
+    }
+}
