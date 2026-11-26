@@ -7,60 +7,8 @@ use kontra_ui::app::{
 };
 use mui::prelude::{Buttons, Input, Key, KeyPress, Mods, Point, PointerInput, Size, Ui};
 
-fn frame(ui: &mut Ui, app: &mut App, input: Input) -> (Vec<Action>, bool) {
-    let r = app::view(ui, app);
-    let f = ui.frame(r.el, Some(Size::new(900., 600.)), input, 1. / 60.);
-    (r.changed, f.is_ok_and(|f| f.animating))
-}
-
-/// Frames until nothing moves; the actions they carried (a click lands the
-/// frame after its release).
-fn settle(ui: &mut Ui, app: &mut App) -> Vec<Action> {
-    let mut out = Vec::new();
-    for _ in 0..240 {
-        let (actions, moving) = frame(ui, app, Input::default());
-        out.extend(actions);
-        if !moving {
-            break;
-        }
-    }
-    out
-}
-
-fn click(ui: &mut Ui, app: &mut App, id: &str) -> Vec<Action> {
-    clicks(ui, app, id, 1)
-}
-
-/// `n` clicks on `id` in quick succession (2: a double-click).
-fn clicks(ui: &mut Ui, app: &mut App, id: &str, n: usize) -> Vec<Action> {
-    // A missing target clicks nothing, and the asserts after it say so.
-    let Some(s) = ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame) else {
-        return Vec::new();
-    };
-    let at = Point::new(s.x + s.size.width / 2., s.y + s.size.height / 2.);
-    let mut out = Vec::new();
-    let presses = [Buttons::PRIMARY, Buttons::default()].repeat(n);
-    for buttons in presses {
-        let pointer = PointerInput {
-            pos: Some(at),
-            buttons,
-            ..Default::default()
-        };
-        out.extend(
-            frame(
-                ui,
-                app,
-                Input {
-                    pointer,
-                    ..Default::default()
-                },
-            )
-            .0,
-        );
-    }
-    out.extend(settle(ui, app));
-    out
-}
+mod common;
+use common::{about_app, click, clicks, frame, settle};
 
 #[test]
 fn clicks_drive_the_editor_and_idle_costs_no_frames() {
@@ -1342,21 +1290,6 @@ fn report_hides_latent_diagnostics_until_developer_toggle_is_enabled() {
     );
 }
 
-fn about_app() -> App {
-    App {
-        folders: vec!["/music/libraries".into()],
-        build: app::Build {
-            version: "0.6.24",
-            revision: "abc123def",
-            built: "2026-11-24 12:00 UTC",
-            target: "x86_64-unknown-linux-gnu",
-            formats: "CLAP · VST3",
-            changelog: include_str!("../../../../CHANGELOG.md"),
-        },
-        ..App::default()
-    }
-}
-
 /// No string in Settings (each dropdown and a colour picker open) or About
 /// draws `.notdef`: the bundled Noto Sans has every glyph shown.
 #[test]
@@ -1410,32 +1343,6 @@ fn settings_and_about_draw_no_empty_glyph_boxes() {
     }
     let missing = missing.lock().unwrap();
     assert!(missing.is_empty(), "drawn as .notdef: {missing:?}");
-}
-
-/// A preset picked in Settings applies on the next frame and asks the host
-/// to save its tokens; Reset brings back the neutral default.
-#[test]
-fn a_theme_preset_applies_at_once_and_is_saved() {
-    use kontra_ui::theme::{self, Look};
-    let mut ui = kontra_ui::ui();
-    let mut app = about_app();
-    app.view.sheet = Some(app::Sheet::Settings);
-    settle(&mut ui, &mut app);
-    click(&mut ui, &mut app, "theme-preset");
-    settle(&mut ui, &mut app);
-    let mut actions = click(&mut ui, &mut app, "theme-preset/list/1");
-    actions.extend(settle(&mut ui, &mut app));
-    let midnight = Look::PRESETS[1].1;
-    assert_eq!(theme::look(), midnight);
-    assert_eq!(ui.theme().palette, midnight.theme().palette);
-    assert!(
-        actions.contains(&Action::Theme(midnight.tokens())),
-        "{actions:?}"
-    );
-    click(&mut ui, &mut app, "theme-reset");
-    settle(&mut ui, &mut app);
-    assert_eq!(theme::look(), Look::GRAPHITE);
-    assert!(ui.theme().palette.neutral.chroma.abs() < 1e-6);
 }
 
 /// Settings lists long scanned folders (a tester's): each folder is one
