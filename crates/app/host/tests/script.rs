@@ -4700,19 +4700,19 @@ fn an_uncarried_modules_controls_hold_what_a_script_sets() {
         dry: 0.0,
     });
     plan.inserts = vec![pass.clone(), pass];
-    // Slot 0 holds a Replika (40), slot 1 a Jump (31).
-    plan.slot_shapes.saved_types = vec![(ir::RackAt::Inserts, 0, 40), (ir::RackAt::Inserts, 1, 31)];
+    // Slot 0 holds a Supercharger GT (46), slot 1 a Jump (31).
+    plan.slot_shapes.saved_types = vec![(ir::RackAt::Inserts, 0, 46), (ir::RackAt::Inserts, 1, 31)];
     // What the instrument saved there (the translator's held seeds).
-    let saturation = ir::held_key("$ENGINE_PAR_RDL_SATURATION");
-    plan.slot_shapes.held = vec![(ir::RackAt::Inserts, 0, saturation, 123_456)];
+    let link = ir::held_key("$ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE");
+    plan.slot_shapes.held = vec![(ir::RackAt::Inserts, 0, link, 1)];
     let script = kontra_ksp::compile(
         "on init
             declare $saved
-            $saved := get_engine_par($ENGINE_PAR_RDL_SATURATION, -1, 0, 1)
-            set_engine_par($ENGINE_PAR_RDL_SATURATION, 300000, -1, 0, 1)
-            set_engine_par($ENGINE_PAR_RDL_SATURATION, 420000, -1, 1, 1)
-            message($saved & \" \" & get_engine_par($ENGINE_PAR_RDL_SATURATION, -1, 0, 1) ...
-                & \" \" & get_engine_par($ENGINE_PAR_RDL_SATURATION, -1, 1, 1))
+            $saved := get_engine_par($ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE, -1, 0, 1)
+            set_engine_par($ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE, 2, -1, 0, 1)
+            set_engine_par($ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE, 1, -1, 1, 1)
+            message($saved & \" \" & get_engine_par($ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE, -1, 0, 1) ...
+                & \" \" & get_engine_par($ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE, -1, 1, 1))
         end on",
         &[],
     )
@@ -4720,7 +4720,7 @@ fn an_uncarried_modules_controls_hold_what_a_script_sets() {
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     let e = Engine::new(Arc::new(plan), store.client(), RATE);
     assert_eq!(e.unhandled_actions(), vec![]);
-    assert_eq!(e.last_message(), "123456 300000 0");
+    assert_eq!(e.last_message(), "1 2 0");
 }
 
 /// A control the reference 8.13's setter takes in its own units refuses a
@@ -4774,10 +4774,10 @@ fn a_loaded_module_reads_its_fresh_values() {
     };
     plan.inserts = vec![Some(unit(ir::EffectKind::Gain(1.0)))];
     plan.slot_shapes.types = vec![ir::SlotType {
-        id: 49,
+        id: 46,
         subtype: false,
         reads: 0,
-        kind: 49,
+        kind: 46,
         effect: Some(unit(ir::EffectKind::Stereo {
             width: 0.5,
             pan: 0.0,
@@ -4785,12 +4785,12 @@ fn a_loaded_module_reads_its_fresh_values() {
         laws: Vec::new().into(),
         model: None,
     }];
-    let mode = ir::held_key("$ENGINE_PAR_PSYDL_TIME_UNIT");
-    plan.slot_shapes.fresh = vec![(49, mode, 1), (40, mode, 7)];
+    let mode = ir::held_key("$ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE");
+    plan.slot_shapes.fresh = vec![(46, mode, 1), (40, mode, 2)];
     let script = kontra_ksp::compile(
         "on init
-            set_engine_par($ENGINE_PAR_EFFECT_TYPE, 49, -1, 0, 1)
-            message(get_engine_par($ENGINE_PAR_PSYDL_TIME_UNIT, -1, 0, 1))
+            set_engine_par($ENGINE_PAR_EFFECT_TYPE, 46, -1, 0, 1)
+            message(get_engine_par($ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE, -1, 0, 1))
         end on",
         &[],
     )

@@ -11,21 +11,21 @@ PR: the squash merge that last changed each row's evidence line (`Parity: <row-i
 | Criterion | Items | tested | done | partial | unseen | missing | % tested | % passing |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | Scripting (KSP): commands, callbacks and variables | 714 | 267 | 444 | 0 | 0 | 3 | 37.4 | 99.6 |
-| Script parameters: engine, control and zone | 966 | 87 | 495 | 383 | 0 | 1 | 9.0 | 60.2 |
+| Script parameters: engine, control and zone | 966 | 87 | 524 | 354 | 0 | 1 | 9.0 | 63.3 |
 | Instrument panels: each control type and property | 290 | 249 | 41 | 0 | 0 | 0 | 85.9 | 100.0 |
-| Effects and modulators | 192 | 7 | 113 | 16 | 0 | 56 | 3.6 | 62.5 |
-|   Kontakt DSP: EQ | 3 | 0 | 1 | 2 | 0 | 0 | 0.0 | 33.3 |
-|   Kontakt DSP: LFO | 3 | 0 | 2 | 0 | 0 | 1 | 0.0 | 66.7 |
-|   Kontakt DSP: convolution | 3 | 0 | 1 | 1 | 0 | 1 | 0.0 | 33.3 |
-|   Kontakt DSP: delay | 12 | 0 | 6 | 2 | 0 | 4 | 0.0 | 50.0 |
-|   Kontakt DSP: distortion | 57 | 2 | 36 | 2 | 0 | 17 | 3.5 | 66.7 |
-|   Kontakt DSP: dynamics | 21 | 2 | 10 | 4 | 0 | 5 | 9.5 | 57.1 |
-|   Kontakt DSP: envelope | 15 | 0 | 10 | 0 | 0 | 5 | 0.0 | 66.7 |
-|   Kontakt DSP: filter | 6 | 1 | 3 | 1 | 0 | 1 | 16.7 | 66.7 |
-|   Kontakt DSP: modulation FX | 36 | 2 | 23 | 1 | 0 | 10 | 5.6 | 69.4 |
-|   Kontakt DSP: modulation source | 12 | 0 | 8 | 0 | 0 | 4 | 0.0 | 66.7 |
-|   Kontakt DSP: reverb | 12 | 0 | 7 | 1 | 0 | 4 | 0.0 | 58.3 |
-|   Kontakt DSP: utility | 12 | 0 | 6 | 2 | 0 | 4 | 0.0 | 50.0 |
+| Effects and modulators | 192 | 41 | 128 | 0 | 0 | 23 | 21.4 | 88.0 |
+|   Kontakt DSP: EQ | 3 | 1 | 2 | 0 | 0 | 0 | 33.3 | 100.0 |
+|   Kontakt DSP: LFO | 3 | 1 | 2 | 0 | 0 | 0 | 33.3 | 100.0 |
+|   Kontakt DSP: convolution | 3 | 1 | 2 | 0 | 0 | 0 | 33.3 | 100.0 |
+|   Kontakt DSP: delay | 12 | 3 | 8 | 0 | 0 | 1 | 25.0 | 91.7 |
+|   Kontakt DSP: distortion | 57 | 8 | 38 | 0 | 0 | 11 | 14.0 | 80.7 |
+|   Kontakt DSP: dynamics | 21 | 7 | 14 | 0 | 0 | 0 | 33.3 | 100.0 |
+|   Kontakt DSP: envelope | 15 | 3 | 10 | 0 | 0 | 2 | 20.0 | 86.7 |
+|   Kontakt DSP: filter | 6 | 1 | 4 | 0 | 0 | 1 | 16.7 | 83.3 |
+|   Kontakt DSP: modulation FX | 36 | 10 | 24 | 0 | 0 | 2 | 27.8 | 94.4 |
+|   Kontakt DSP: modulation source | 12 | 1 | 8 | 0 | 0 | 3 | 8.3 | 75.0 |
+|   Kontakt DSP: reverb | 12 | 3 | 8 | 0 | 0 | 1 | 25.0 | 91.7 |
+|   Kontakt DSP: utility | 12 | 2 | 8 | 0 | 0 | 2 | 16.7 | 83.3 |
 | File loading: every saved object type | 129 | 45 | 0 | 11 | 61 | 12 | 34.9 | 34.9 |
 | Scripting (Lua API) | 123 | 123 | 0 | 0 | 0 | 0 | 100.0 | 100.0 |
 | Instrument panels: widgets | 158 | 158 | 0 | 0 | 0 | 0 | 100.0 | 100.0 |
@@ -46,9 +46,9 @@ PR: the squash merge that last changed each row's evidence line (`Parity: <row-i
 |   UVI DSP: time-stretch / slicing | 12 | 0 | 0 | 0 | 0 | 12 | 0.0 | 0.0 |
 |   UVI DSP: utility | 51 | 5 | 5 | 0 | 0 | 41 | 9.8 | 19.6 |
 | Parameters | 3065 | 47 | 224 | 761 | 0 | 2033 | 1.5 | 8.8 |
-| **Kontakt overall** | 2291 | 655 | 1093 | 410 | 61 | 72 | 28.6 | 76.3 |
+| **Kontakt overall** | 2291 | 689 | 1137 | 365 | 61 | 39 | 30.1 | 79.7 |
 | **UVI overall** | 3892 | 362 | 261 | 762 | 0 | 2507 | 9.3 | 16.0 |
-| **All** | 6183 | 1017 | 1354 | 1172 | 61 | 2579 | 16.4 | 38.3 |
+| **All** | 6183 | 1051 | 1398 | 1127 | 61 | 2546 | 17.0 | 39.6 |
 | **Kontakt corpus** (playable) | 1821 | 1567 | 0 | 254 | 0 | 0 | 86.1 | 86.1 |
 | **UVI corpus** (playable) | 660 | 648 | 0 | 12 | 0 | 0 | 98.2 | 98.2 |
 
@@ -435,7 +435,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | tested | `kontakt.ksp.cmd.get_control_par` | get_control_par | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) |  | 2026-10-27 | User Interface Commands |
 | tested | `kontakt.ksp.cmd.get_control_par_arr` | get_control_par_arr | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) | [KONTRA#1115](https://github.com/DerpcatMusic/KONTRA/pull/1115) | 2026-10-29 | User Interface Commands |
 | tested | `kontakt.ksp.cmd.get_engine_par` | get_engine_par | [ksp_slices_and_mods.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/ksp_slices_and_mods.rs) |  | 2026-11-26 | Engine Parameter Commands |
-| tested | `kontakt.ksp.cmd.get_engine_par_disp` | get_engine_par_disp | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameter Commands |
+| tested | `kontakt.ksp.cmd.get_engine_par_disp` | get_engine_par_disp | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameter Commands |
 | tested | `kontakt.ksp.cmd.get_engine_par_disp_ext` | get_engine_par_disp_ext | [ksp_slices_and_mods.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/ksp_slices_and_mods.rs) |  | 2026-11-26 | Engine Parameter Commands |
 | tested | `kontakt.ksp.cmd.get_event_ids` | get_event_ids | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) | #212 | 2026-11-25 | Event Commands |
 | tested | `kontakt.ksp.cmd.get_event_mark` | get_event_mark | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) | #212 | 2026-11-25 | Event Commands |
@@ -601,21 +601,21 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | done | `kontakt.ksp.const.DURATION_QUARTER_TRIPLET` | $DURATION_QUARTER_TRIPLET | [builtins.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/ksp/src/builtins.rs) |  | 2026-10-27 | Built-in Variables and Constants |
 | done | `kontakt.ksp.const.DURATION_SIXTEENTH` | $DURATION_SIXTEENTH | [builtins.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/ksp/src/builtins.rs) |  | 2026-10-27 | Built-in Variables and Constants |
 | done | `kontakt.ksp.const.DURATION_SIXTEENTH_TRIPLET` | $DURATION_SIXTEENTH_TRIPLET | [builtins.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/ksp/src/builtins.rs) |  | 2026-10-27 | Built-in Variables and Constants |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_ACBOX` | $EFFECT_TYPE_ACBOX | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_AET_FILTER` | $EFFECT_TYPE_AET_FILTER | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_ACBOX` | $EFFECT_TYPE_ACBOX | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_AET_FILTER` | $EFFECT_TYPE_AET_FILTER | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_BASSINVADER` | $EFFECT_TYPE_BASSINVADER |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_BASSPRO` | $EFFECT_TYPE_BASSPRO | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_BASSPRO` | $EFFECT_TYPE_BASSPRO | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
 | tested | `kontakt.ksp.const.EFFECT_TYPE_BEATMASHER` | $EFFECT_TYPE_BEATMASHER | [slicing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/slicing_dsp_parity.rs) | #349 | 2026-11-26 | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_BIGFUZZ` | $EFFECT_TYPE_BIGFUZZ |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_BITE` | $EFFECT_TYPE_BITE |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_BUS_COMP` | $EFFECT_TYPE_BUS_COMP |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_CABINET` | $EFFECT_TYPE_CABINET | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_CAT` | $EFFECT_TYPE_CAT | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_CABINET` | $EFFECT_TYPE_CABINET | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_CAT` | $EFFECT_TYPE_CAT | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_CHAINSAW` | $EFFECT_TYPE_CHAINSAW |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_CHORAL` | $EFFECT_TYPE_CHORAL |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_CHORUS` | $EFFECT_TYPE_CHORUS |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_COMPRESSOR` | $EFFECT_TYPE_COMPRESSOR |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_CRYWAH` | $EFFECT_TYPE_CRYWAH | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_CRYWAH` | $EFFECT_TYPE_CRYWAH | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_DELAY` | $EFFECT_TYPE_DELAY |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_DIRT` | $EFFECT_TYPE_DIRT |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_DISTORTION` | $EFFECT_TYPE_DISTORTION |  |  |  | Engine Parameters |
@@ -628,40 +628,40 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | done | `kontakt.ksp.const.EFFECT_TYPE_FREAK` | $EFFECT_TYPE_FREAK |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_FUZZ` | $EFFECT_TYPE_FUZZ |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_GAINER` | $EFFECT_TYPE_GAINER |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_HOTSOLO` | $EFFECT_TYPE_HOTSOLO | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_HOTSOLO` | $EFFECT_TYPE_HOTSOLO | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_INVERTER` | $EFFECT_TYPE_INVERTER |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_IRC` | $EFFECT_TYPE_IRC |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_JUMP` | $EFFECT_TYPE_JUMP | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_KOLOR` | $EFFECT_TYPE_KOLOR | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_JUMP` | $EFFECT_TYPE_JUMP | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_KOLOR` | $EFFECT_TYPE_KOLOR | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_LIMITER` | $EFFECT_TYPE_LIMITER |  |  |  | Engine Parameters |
 | tested | `kontakt.ksp.const.EFFECT_TYPE_LOFI` | $EFFECT_TYPE_LOFI | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) | [KONTRA#1322](https://github.com/DerpcatMusic/KONTRA/pull/1322) | 2026-11-12 | Engine Parameters |
 | tested | `kontakt.ksp.const.EFFECT_TYPE_NONE` | $EFFECT_TYPE_NONE | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) | [KONTRA#974](https://github.com/DerpcatMusic/KONTRA/pull/974) | 2026-10-29 | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_PHASER` | $EFFECT_TYPE_PHASER |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_PHASIS` | $EFFECT_TYPE_PHASIS |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_PLATEREVERB` | $EFFECT_TYPE_PLATEREVERB | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_PLATEREVERB` | $EFFECT_TYPE_PLATEREVERB | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_PSYCHEDELAY` | $EFFECT_TYPE_PSYCHEDELAY |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_RAUM` | $EFFECT_TYPE_RAUM |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_REPLIKA` | $EFFECT_TYPE_REPLIKA |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_REVERB` | $EFFECT_TYPE_REVERB |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_REVERB2` | $EFFECT_TYPE_REVERB2 |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_RINGMOD` | $EFFECT_TYPE_RINGMOD | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_RINGMOD` | $EFFECT_TYPE_RINGMOD | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
 | tested | `kontakt.ksp.const.EFFECT_TYPE_ROTATOR` | $EFFECT_TYPE_ROTATOR | [slicing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/slicing_dsp_parity.rs) | #349 | 2026-11-26 | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_SEND_LEVELS` | $EFFECT_TYPE_SEND_LEVELS |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_SHAPER` | $EFFECT_TYPE_SHAPER |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_SKREAMER` | $EFFECT_TYPE_SKREAMER |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_SKREAMERDLX` | $EFFECT_TYPE_SKREAMERDLX | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_SKREAMERDLX` | $EFFECT_TYPE_SKREAMERDLX | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_SOLID_GEQ` | $EFFECT_TYPE_SOLID_GEQ |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_STEREO` | $EFFECT_TYPE_STEREO |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_STEREO_TUNE` | $EFFECT_TYPE_STEREO_TUNE | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_STEREO_TUNE` | $EFFECT_TYPE_STEREO_TUNE | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_SUPERFAST100` | $EFFECT_TYPE_SUPERFAST100 |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_SUPERGT` | $EFFECT_TYPE_SUPERGT |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_SURROUND_PANNER` | $EFFECT_TYPE_SURROUND_PANNER |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_TAPE_SAT` | $EFFECT_TYPE_TAPE_SAT |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_TRANSLIM` | $EFFECT_TYPE_TRANSLIM |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_TRANS_MASTER` | $EFFECT_TYPE_TRANS_MASTER |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_TWANG` | $EFFECT_TYPE_TWANG | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_TWINDELAY` | $EFFECT_TYPE_TWINDELAY | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_VAN51` | $EFFECT_TYPE_VAN51 | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_TWANG` | $EFFECT_TYPE_TWANG | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_TWINDELAY` | $EFFECT_TYPE_TWINDELAY | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_VAN51` | $EFFECT_TYPE_VAN51 | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_VIBRATO_CHORUS` | $EFFECT_TYPE_VIBRATO_CHORUS |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_WOWFLUTTER` | $EFFECT_TYPE_WOWFLUTTER |  |  |  | Engine Parameters |
 | tested | `kontakt.ksp.const.ENGINE_UPTIME` | $ENGINE_UPTIME | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) | [KONTRA#1324](https://github.com/DerpcatMusic/KONTRA/pull/1324) | 2026-11-12 | Built-in Variables and Constants |
@@ -899,7 +899,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | tested | `kontakt.par.CONTROL_PAR_WT_ZONE` | $CONTROL_PAR_WT_ZONE | [control_pars_1.kspp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/kontakt-oracle/probes/ksp/control_pars_1.kspp) | #211 | 2026-11-25 | law ✓ acts ✓ |
 | tested | `kontakt.par.CONTROL_PAR_ZERO_LINE_COLOR` | $CONTROL_PAR_ZERO_LINE_COLOR | [control_pars_13.kspp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/kontakt-oracle/probes/ksp/control_pars_13.kspp) |  |  | law ✓ acts ✓ |
 | tested | `kontakt.par.CONTROL_PAR_Z_LAYER` | $CONTROL_PAR_Z_LAYER | [layers.ksp](https://github.com/DerpcatMusic/KONTRA/blob/main/tools/ksp-ui/probes/layers.ksp) | #230 | 2026-11-25 | law ✓ acts ✓ |
-### $ENGINE_PAR (0 tested, 463 done, 204 partial, 0 unseen, 0 missing)
+### $ENGINE_PAR (0 tested, 492 done, 175 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
@@ -1086,7 +1086,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | partial | `kontakt.par.ENGINE_PAR_EXP_FILTER_AMOUNT` | $ENGINE_PAR_EXP_FILTER_AMOUNT | [engine-par-disp.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine-par-disp.tsv) |  |  | law ✗ display ✓ range ✗ acts ✓ |
 | partial | `kontakt.par.ENGINE_PAR_EXP_FILTER_MORPH` | $ENGINE_PAR_EXP_FILTER_MORPH | [engine-par-disp.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine-par-disp.tsv) |  |  | law ✗ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_FCOMP_ATTACK` | $ENGINE_PAR_FCOMP_ATTACK | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
-| partial | `kontakt.par.ENGINE_PAR_FCOMP_HQ_MODE` | $ENGINE_PAR_FCOMP_HQ_MODE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
+| done | `kontakt.par.ENGINE_PAR_FCOMP_HQ_MODE` | $ENGINE_PAR_FCOMP_HQ_MODE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_FCOMP_INPUT` | $ENGINE_PAR_FCOMP_INPUT | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✗ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_FCOMP_LINK` | $ENGINE_PAR_FCOMP_LINK | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_FCOMP_MAKEUP` | $ENGINE_PAR_FCOMP_MAKEUP | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✗ range ✗ acts ✓ |
@@ -1246,14 +1246,14 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | done | `kontakt.par.ENGINE_PAR_LIM_IN_GAIN` | $ENGINE_PAR_LIM_IN_GAIN | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_LIM_RELEASE` | $ENGINE_PAR_LIM_RELEASE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | partial | `kontakt.par.ENGINE_PAR_LP_CUTOFF` | $ENGINE_PAR_LP_CUTOFF | [engine-par-disp.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine-par-disp.tsv) |  |  | law ✗ display ✓ range ✗ acts ✗ |
-| partial | `kontakt.par.ENGINE_PAR_LR_SWAP` | $ENGINE_PAR_LR_SWAP | [engine-par-disp.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine-par-disp.tsv) |  |  | law ✗ display ✓ range ✗ acts ✗ |
+| partial | `kontakt.par.ENGINE_PAR_LR_SWAP` | $ENGINE_PAR_LR_SWAP | [engine-par-disp.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine-par-disp.tsv) |  |  | law ✗ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_MOD_TARGET_INTENSITY` | $ENGINE_PAR_MOD_TARGET_INTENSITY | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_MOD_TARGET_MP_INTENSITY` | $ENGINE_PAR_MOD_TARGET_MP_INTENSITY | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
-| partial | `kontakt.par.ENGINE_PAR_NOISECOLOR` | $ENGINE_PAR_NOISECOLOR | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
-| partial | `kontakt.par.ENGINE_PAR_NOISELEVEL` | $ENGINE_PAR_NOISELEVEL | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
+| done | `kontakt.par.ENGINE_PAR_NOISECOLOR` | $ENGINE_PAR_NOISECOLOR | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
+| done | `kontakt.par.ENGINE_PAR_NOISELEVEL` | $ENGINE_PAR_NOISELEVEL | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_OUTPUT_CHANNEL` | $ENGINE_PAR_OUTPUT_CHANNEL | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✗ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_PAN` | $ENGINE_PAR_PAN | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
-| partial | `kontakt.par.ENGINE_PAR_PHASE_INVERT` | $ENGINE_PAR_PHASE_INVERT | [engine-par-disp.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine-par-disp.tsv) |  |  | law ✗ display ✓ range ✗ acts ✗ |
+| partial | `kontakt.par.ENGINE_PAR_PHASE_INVERT` | $ENGINE_PAR_PHASE_INVERT | [engine-par-disp.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine-par-disp.tsv) |  |  | law ✗ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_PHASIS_AMOUNT` | $ENGINE_PAR_PHASIS_AMOUNT | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_PHASIS_CENTER` | $ENGINE_PAR_PHASIS_CENTER | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_PHASIS_FEEDBACK` | $ENGINE_PAR_PHASIS_FEEDBACK | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
@@ -1287,51 +1287,51 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | done | `kontakt.par.ENGINE_PAR_PSYDL_REVERSE` | $ENGINE_PAR_PSYDL_REVERSE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_PSYDL_REVERSE_STEREO` | $ENGINE_PAR_PSYDL_REVERSE_STEREO | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_PSYDL_TIME` | $ENGINE_PAR_PSYDL_TIME | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
-| partial | `kontakt.par.ENGINE_PAR_PSYDL_TIME_UNIT` | $ENGINE_PAR_PSYDL_TIME_UNIT | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
+| done | `kontakt.par.ENGINE_PAR_PSYDL_TIME_UNIT` | $ENGINE_PAR_PSYDL_TIME_UNIT | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RATIO` | $ENGINE_PAR_RATIO | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RAUM_DAMPING` | $ENGINE_PAR_RAUM_DAMPING | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RAUM_DECAY` | $ENGINE_PAR_RAUM_DECAY | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RAUM_DIFFUSION` | $ENGINE_PAR_RAUM_DIFFUSION | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
-| partial | `kontakt.par.ENGINE_PAR_RAUM_FEEDBACK` | $ENGINE_PAR_RAUM_FEEDBACK | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
-| partial | `kontakt.par.ENGINE_PAR_RAUM_FREEZE` | $ENGINE_PAR_RAUM_FREEZE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
+| done | `kontakt.par.ENGINE_PAR_RAUM_FEEDBACK` | $ENGINE_PAR_RAUM_FEEDBACK | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
+| done | `kontakt.par.ENGINE_PAR_RAUM_FREEZE` | $ENGINE_PAR_RAUM_FREEZE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RAUM_HIGHCUT` | $ENGINE_PAR_RAUM_HIGHCUT | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RAUM_LOWSHELF` | $ENGINE_PAR_RAUM_LOWSHELF | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RAUM_MOD` | $ENGINE_PAR_RAUM_MOD | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RAUM_PREDELAY` | $ENGINE_PAR_RAUM_PREDELAY | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
-| partial | `kontakt.par.ENGINE_PAR_RAUM_PREDELAY_UNIT` | $ENGINE_PAR_RAUM_PREDELAY_UNIT | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
+| done | `kontakt.par.ENGINE_PAR_RAUM_PREDELAY_UNIT` | $ENGINE_PAR_RAUM_PREDELAY_UNIT | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RAUM_RATE` | $ENGINE_PAR_RAUM_RATE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
-| partial | `kontakt.par.ENGINE_PAR_RAUM_REVERB` | $ENGINE_PAR_RAUM_REVERB | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
+| done | `kontakt.par.ENGINE_PAR_RAUM_REVERB` | $ENGINE_PAR_RAUM_REVERB | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RAUM_SIZE` | $ENGINE_PAR_RAUM_SIZE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
-| partial | `kontakt.par.ENGINE_PAR_RAUM_SPARSE` | $ENGINE_PAR_RAUM_SPARSE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
+| done | `kontakt.par.ENGINE_PAR_RAUM_SPARSE` | $ENGINE_PAR_RAUM_SPARSE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RAUM_TYPE` | $ENGINE_PAR_RAUM_TYPE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
-| partial | `kontakt.par.ENGINE_PAR_RDL_ACCENT` | $ENGINE_PAR_RDL_ACCENT | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
-| partial | `kontakt.par.ENGINE_PAR_RDL_AMOUNT` | $ENGINE_PAR_RDL_AMOUNT | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
-| partial | `kontakt.par.ENGINE_PAR_RDL_BBDTYPE` | $ENGINE_PAR_RDL_BBDTYPE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
-| partial | `kontakt.par.ENGINE_PAR_RDL_DENSE` | $ENGINE_PAR_RDL_DENSE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
+| done | `kontakt.par.ENGINE_PAR_RDL_ACCENT` | $ENGINE_PAR_RDL_ACCENT | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
+| done | `kontakt.par.ENGINE_PAR_RDL_AMOUNT` | $ENGINE_PAR_RDL_AMOUNT | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
+| done | `kontakt.par.ENGINE_PAR_RDL_BBDTYPE` | $ENGINE_PAR_RDL_BBDTYPE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
+| done | `kontakt.par.ENGINE_PAR_RDL_DENSE` | $ENGINE_PAR_RDL_DENSE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RDL_DEPTH` | $ENGINE_PAR_RDL_DEPTH | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
-| partial | `kontakt.par.ENGINE_PAR_RDL_DUCKING_AMOUNT` | $ENGINE_PAR_RDL_DUCKING_AMOUNT | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
-| partial | `kontakt.par.ENGINE_PAR_RDL_DUCKING_RELEASE` | $ENGINE_PAR_RDL_DUCKING_RELEASE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
-| partial | `kontakt.par.ENGINE_PAR_RDL_DUCKING_SENSE` | $ENGINE_PAR_RDL_DUCKING_SENSE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
+| done | `kontakt.par.ENGINE_PAR_RDL_DUCKING_AMOUNT` | $ENGINE_PAR_RDL_DUCKING_AMOUNT | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
+| done | `kontakt.par.ENGINE_PAR_RDL_DUCKING_RELEASE` | $ENGINE_PAR_RDL_DUCKING_RELEASE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
+| done | `kontakt.par.ENGINE_PAR_RDL_DUCKING_SENSE` | $ENGINE_PAR_RDL_DUCKING_SENSE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RDL_FEEDBACK` | $ENGINE_PAR_RDL_FEEDBACK | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
-| partial | `kontakt.par.ENGINE_PAR_RDL_FEEL` | $ENGINE_PAR_RDL_FEEL | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
+| done | `kontakt.par.ENGINE_PAR_RDL_FEEL` | $ENGINE_PAR_RDL_FEEL | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RDL_FLUTTER` | $ENGINE_PAR_RDL_FLUTTER | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RDL_HIGHCUT` | $ENGINE_PAR_RDL_HIGHCUT | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RDL_LOWCUT` | $ENGINE_PAR_RDL_LOWCUT | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RDL_LR_OFFSET` | $ENGINE_PAR_RDL_LR_OFFSET | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
-| partial | `kontakt.par.ENGINE_PAR_RDL_MODULATION` | $ENGINE_PAR_RDL_MODULATION | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
+| done | `kontakt.par.ENGINE_PAR_RDL_MODULATION` | $ENGINE_PAR_RDL_MODULATION | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RDL_NOISE` | $ENGINE_PAR_RDL_NOISE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RDL_PAN` | $ENGINE_PAR_RDL_PAN | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RDL_PINGPONG` | $ENGINE_PAR_RDL_PINGPONG | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RDL_PINGPONG_FLIP` | $ENGINE_PAR_RDL_PINGPONG_FLIP | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RDL_QUALITY` | $ENGINE_PAR_RDL_QUALITY | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RDL_RATE` | $ENGINE_PAR_RDL_RATE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
-| partial | `kontakt.par.ENGINE_PAR_RDL_SATURATION` | $ENGINE_PAR_RDL_SATURATION | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
-| partial | `kontakt.par.ENGINE_PAR_RDL_SHUFFLE` | $ENGINE_PAR_RDL_SHUFFLE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
-| partial | `kontakt.par.ENGINE_PAR_RDL_SIZE` | $ENGINE_PAR_RDL_SIZE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
+| done | `kontakt.par.ENGINE_PAR_RDL_SATURATION` | $ENGINE_PAR_RDL_SATURATION | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
+| done | `kontakt.par.ENGINE_PAR_RDL_SHUFFLE` | $ENGINE_PAR_RDL_SHUFFLE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
+| done | `kontakt.par.ENGINE_PAR_RDL_SIZE` | $ENGINE_PAR_RDL_SIZE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RDL_STEREO` | $ENGINE_PAR_RDL_STEREO | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RDL_TAPEAGE` | $ENGINE_PAR_RDL_TAPEAGE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RDL_TIME` | $ENGINE_PAR_RDL_TIME | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
-| partial | `kontakt.par.ENGINE_PAR_RDL_TIME_UNIT` | $ENGINE_PAR_RDL_TIME_UNIT | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
+| done | `kontakt.par.ENGINE_PAR_RDL_TIME_UNIT` | $ENGINE_PAR_RDL_TIME_UNIT | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RDL_TYPE` | $ENGINE_PAR_RDL_TYPE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RDL_WIDTH` | $ENGINE_PAR_RDL_WIDTH | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_RELEASE` | $ENGINE_PAR_RELEASE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
@@ -1423,7 +1423,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | partial | `kontakt.par.ENGINE_PAR_SF100_PRESENCE` | $ENGINE_PAR_SF100_PRESENCE | [engine-par-disp.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine-par-disp.tsv) |  |  | law ✗ display ✓ range ✗ acts ✗ |
 | partial | `kontakt.par.ENGINE_PAR_SF100_TREBLE` | $ENGINE_PAR_SF100_TREBLE | [engine-par-disp.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine-par-disp.tsv) |  |  | law ✗ display ✓ range ✗ acts ✗ |
 | done | `kontakt.par.ENGINE_PAR_SHAPE` | $ENGINE_PAR_SHAPE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
-| partial | `kontakt.par.ENGINE_PAR_SHAPE_TYPE` | $ENGINE_PAR_SHAPE_TYPE | [engine-par-disp.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine-par-disp.tsv) |  |  | law ✗ display ✓ range ✗ acts ✗ |
+| partial | `kontakt.par.ENGINE_PAR_SHAPE_TYPE` | $ENGINE_PAR_SHAPE_TYPE | [engine-par-disp.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine-par-disp.tsv) |  |  | law ✗ display ✓ range ✗ acts ✓ |
 | partial | `kontakt.par.ENGINE_PAR_SKDLX_BASS` | $ENGINE_PAR_SKDLX_BASS | [engine-par-disp.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine-par-disp.tsv) |  |  | law ✗ display ✓ range ✗ acts ✓ |
 | partial | `kontakt.par.ENGINE_PAR_SKDLX_DRIVE` | $ENGINE_PAR_SKDLX_DRIVE | [engine-par-disp.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine-par-disp.tsv) |  |  | law ✗ display ✓ range ✗ acts ✓ |
 | partial | `kontakt.par.ENGINE_PAR_SKDLX_MID` | $ENGINE_PAR_SKDLX_MID | [engine-par-disp.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine-par-disp.tsv) |  |  | law ✗ display ✓ range ✗ acts ✓ |
@@ -1469,7 +1469,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | partial | `kontakt.par.ENGINE_PAR_STEREOTUNE_SPLIT` | $ENGINE_PAR_STEREOTUNE_SPLIT | [engine-par-disp.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine-par-disp.tsv) |  |  | law ✗ display ✓ range ✗ acts ✓ |
 | partial | `kontakt.par.ENGINE_PAR_STEREOTUNE_SPREAD` | $ENGINE_PAR_STEREOTUNE_SPREAD | [engine-par-disp.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine-par-disp.tsv) |  |  | law ✗ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_STEREO_PAN` | $ENGINE_PAR_STEREO_PAN | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
-| partial | `kontakt.par.ENGINE_PAR_STEREO_PSEUDO` | $ENGINE_PAR_STEREO_PSEUDO | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
+| done | `kontakt.par.ENGINE_PAR_STEREO_PSEUDO` | $ENGINE_PAR_STEREO_PSEUDO | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_SUPERGT_ATTACK` | $ENGINE_PAR_SUPERGT_ATTACK | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | partial | `kontakt.par.ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE` | $ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE | [engine-par-disp.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine-par-disp.tsv) |  |  | law ✗ display ✓ range ✗ acts ✗ |
 | done | `kontakt.par.ENGINE_PAR_SUPERGT_CHARACTER` | $ENGINE_PAR_SUPERGT_CHARACTER | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
@@ -1505,9 +1505,9 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | done | `kontakt.par.ENGINE_PAR_TP_WARMTH` | $ENGINE_PAR_TP_WARMTH | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | partial | `kontakt.par.ENGINE_PAR_TRACKING` | $ENGINE_PAR_TRACKING | [engine-par-disp.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine-par-disp.tsv) |  |  | law ✗ display ✓ range ✗ acts ✗ |
 | partial | `kontakt.par.ENGINE_PAR_TRANSIENT_SIZE` | $ENGINE_PAR_TRANSIENT_SIZE | [mod_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/mod_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
-| partial | `kontakt.par.ENGINE_PAR_TRANSLIM_CEILING` | $ENGINE_PAR_TRANSLIM_CEILING | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
-| partial | `kontakt.par.ENGINE_PAR_TRANSLIM_RELEASE` | $ENGINE_PAR_TRANSLIM_RELEASE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
-| partial | `kontakt.par.ENGINE_PAR_TRANSLIM_THRESHOLD` | $ENGINE_PAR_TRANSLIM_THRESHOLD | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
+| done | `kontakt.par.ENGINE_PAR_TRANSLIM_CEILING` | $ENGINE_PAR_TRANSLIM_CEILING | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
+| done | `kontakt.par.ENGINE_PAR_TRANSLIM_RELEASE` | $ENGINE_PAR_TRANSLIM_RELEASE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
+| done | `kontakt.par.ENGINE_PAR_TRANSLIM_THRESHOLD` | $ENGINE_PAR_TRANSLIM_THRESHOLD | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_TR_ATTACK` | $ENGINE_PAR_TR_ATTACK | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_TR_INPUT` | $ENGINE_PAR_TR_INPUT | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | partial | `kontakt.par.ENGINE_PAR_TR_SMOOTH` | $ENGINE_PAR_TR_SMOOTH | [engine-par-disp.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine-par-disp.tsv) |  |  | law ✗ display ✓ range ✗ acts ✗ |
@@ -1549,10 +1549,10 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | done | `kontakt.par.ENGINE_PAR_VOLUME` | $ENGINE_PAR_VOLUME | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_WOWFLUTTER_AGE` | $ENGINE_PAR_WOWFLUTTER_AGE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_WOWFLUTTER_FLUTTER` | $ENGINE_PAR_WOWFLUTTER_FLUTTER | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
-| partial | `kontakt.par.ENGINE_PAR_WOWFLUTTER_GATE` | $ENGINE_PAR_WOWFLUTTER_GATE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
+| done | `kontakt.par.ENGINE_PAR_WOWFLUTTER_GATE` | $ENGINE_PAR_WOWFLUTTER_GATE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_WOWFLUTTER_MIX` | $ENGINE_PAR_WOWFLUTTER_MIX | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
-| partial | `kontakt.par.ENGINE_PAR_WOWFLUTTER_SATURATION` | $ENGINE_PAR_WOWFLUTTER_SATURATION | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
-| partial | `kontakt.par.ENGINE_PAR_WOWFLUTTER_SCRAPE` | $ENGINE_PAR_WOWFLUTTER_SCRAPE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✗ |
+| done | `kontakt.par.ENGINE_PAR_WOWFLUTTER_SATURATION` | $ENGINE_PAR_WOWFLUTTER_SATURATION | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
+| done | `kontakt.par.ENGINE_PAR_WOWFLUTTER_SCRAPE` | $ENGINE_PAR_WOWFLUTTER_SCRAPE | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_WOWFLUTTER_SPEED` | $ENGINE_PAR_WOWFLUTTER_SPEED | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_WOWFLUTTER_STEREO` | $ENGINE_PAR_WOWFLUTTER_STEREO | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
 | done | `kontakt.par.ENGINE_PAR_WOWFLUTTER_WOW` | $ENGINE_PAR_WOWFLUTTER_WOW | [engine_par_laws.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-bindings/engine_par_laws.tsv) |  |  | law ✓ display ✓ range ✗ acts ✓ |
@@ -1654,7 +1654,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | partial | `kontakt.par.MOD_scLevelB06` | scLevelB06 (target 127) | [modulation-targets.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/modulation-targets.tsv) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `kontakt.par.MOD_scLevelB07` | scLevelB07 (target 128) | [modulation-targets.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/modulation-targets.tsv) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `kontakt.par.MOD_scLevelB08` | scLevelB08 (target 129) | [modulation-targets.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/modulation-targets.tsv) |  |  | law ✓ range ✗ acts ✗ |
-| done | `kontakt.par.MOD_wavetablePosition` | wavetablePosition (target 13) | [timed.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/timed.rs) | #151 | 2026-11-24 | law ✓ range ✗ acts ✓ |
+| done | `kontakt.par.MOD_wavetablePosition` | wavetablePosition (target 13) | [external.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/external.rs) |  |  | law ✓ range ✗ acts ✓ |
 | partial | `kontakt.par.MOD_scLevelB09` | scLevelB09 (target 130) | [modulation-targets.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/modulation-targets.tsv) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `kontakt.par.MOD_scLevelB10` | scLevelB10 (target 131) | [modulation-targets.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/modulation-targets.tsv) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `kontakt.par.MOD_scLevelB11` | scLevelB11 (target 132) | [modulation-targets.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/modulation-targets.tsv) |  |  | law ✓ range ✗ acts ✗ |
@@ -1741,9 +1741,9 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | done | `kontakt.par.MOD_intensity` | intensity (target 25) | [external.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/external.rs) | [KONTRA#1306](https://github.com/DerpcatMusic/KONTRA/pull/1306) | 2026-11-11 | law ✓ range ✗ acts ✓ |
 | done | `kontakt.par.MOD_frequency` | frequency (target 26) | [external.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/external.rs) | [KONTRA#1395](https://github.com/DerpcatMusic/KONTRA/pull/1395) | 2026-11-13 | law ✓ range ✗ acts ✓ |
 | partial | `kontakt.par.MOD_pulseWidth` | pulseWidth (target 27) | [modulation-targets.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/modulation-targets.tsv) |  |  | law ✓ range ✗ acts ✗ |
-| done | `kontakt.par.MOD_pan` | pan (target 3) | [external.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/external.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
-| done | `kontakt.par.MOD_filterCutoff` | filterCutoff (target 31) | [external.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/external.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
-| done | `kontakt.par.MOD_filterQ` | filterQ (target 32) | [external.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/external.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `kontakt.par.MOD_pan` | pan (target 3) | [external.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/external.rs) |  |  | law ✓ range ✗ acts ✓ |
+| done | `kontakt.par.MOD_filterCutoff` | filterCutoff (target 31) | [external.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/external.rs) |  |  | law ✓ range ✗ acts ✓ |
+| done | `kontakt.par.MOD_filterQ` | filterQ (target 32) | [external.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/external.rs) |  |  | law ✓ range ✗ acts ✓ |
 | partial | `kontakt.par.MOD_filterFM` | filterFM (target 33) | [modulation-targets.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/modulation-targets.tsv) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `kontakt.par.MOD_filterFeedback` | filterFeedback (target 34) | [modulation-targets.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/modulation-targets.tsv) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `kontakt.par.MOD_filterBandwidth` | filterBandwidth (target 35) | [modulation-targets.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/modulation-targets.tsv) |  |  | law ✓ range ✗ acts ✗ |
@@ -1752,7 +1752,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | done | `kontakt.par.MOD_formantSharp` | formantSharp (target 38) | [drive.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/drive.rs) | [KONTRA#861](https://github.com/DerpcatMusic/KONTRA/pull/861) | 2026-10-28 | law ✓ range ✗ acts ✓ |
 | done | `kontakt.par.MOD_eqFreq1` | eqFreq1 (target 40) | [drive.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/drive.rs) | [KONTRA#861](https://github.com/DerpcatMusic/KONTRA/pull/861) | 2026-10-28 | law ✓ range ✗ acts ✓ |
 | partial | `kontakt.par.MOD_eqBandWidth1` | eqBandWidth1 (target 41) | [modulation-targets.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/modulation-targets.tsv) |  |  | law ✓ range ✗ acts ✗ |
-| done | `kontakt.par.MOD_eqGain1` | eqGain1 (target 42) | [laws.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/laws.rs) | [KONTRA#1124](https://github.com/DerpcatMusic/KONTRA/pull/1124) | 2026-10-29 | law ✓ range ✗ acts ✓ |
+| done | `kontakt.par.MOD_eqGain1` | eqGain1 (target 42) | [external.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/external.rs) |  |  | law ✓ range ✗ acts ✓ |
 | partial | `kontakt.par.MOD_eqFreq2` | eqFreq2 (target 43) | [modulation-targets.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/modulation-targets.tsv) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `kontakt.par.MOD_eqBandWidth2` | eqBandWidth2 (target 44) | [modulation-targets.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/modulation-targets.tsv) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `kontakt.par.MOD_eqGain2` | eqGain2 (target 45) | [modulation-targets.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/modulation-targets.tsv) |  |  | law ✓ range ✗ acts ✗ |
@@ -2153,159 +2153,159 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 
 ## Effects and modulators
 
-### EQ (0 tested, 1 done, 2 partial, 0 unseen, 0 missing)
+### EQ (1 tested, 2 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| done | `kontakt.dsp.solid_g_eq.ir` | Solid G-EQ: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| partial | `kontakt.dsp.solid_g_eq.driven` | Solid G-EQ: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  | load-time only |
-| partial | `kontakt.dsp.solid_g_eq.measured` | Solid G-EQ: output vs oracle | [measured_dsp.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/effects/src/measured_dsp.rs) |  |  | partial: max 1.5 dB (solid_pass_filters_match_18db_hp_and_12db_lp_slopes_and_tsv) |
-### LFO (0 tested, 2 done, 0 partial, 0 unseen, 1 missing)
+| done | `kontakt.dsp.solid_g_eq.ir` | Solid G-EQ: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| done | `kontakt.dsp.solid_g_eq.driven` | Solid G-EQ: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| tested | `kontakt.dsp.solid_g_eq.measured` | Solid G-EQ: output vs oracle | [measured_dsp.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/effects/src/measured_dsp.rs) | #151 | 2026-11-24 | max 0.4 dB (solid_pass_filters_match_18db_hp_and_12db_lp_slopes_and_tsv) |
+### LFO (1 tested, 2 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
 | done | `kontakt.dsp.lfo.ir` | BParLFO: in IR | [timed.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/timed.rs) | [KONTRA#1178](https://github.com/DerpcatMusic/KONTRA/pull/1178) | 2026-10-29 |  |
 | done | `kontakt.dsp.lfo.driven` | BParLFO: driven | [voice_gain.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/engine/src/voice_gain.rs) | #146 | 2026-11-24 |  |
-| missing | `kontakt.dsp.lfo.measured` | BParLFO: output vs oracle |  |  |  |  |
-### convolution (0 tested, 1 done, 1 partial, 0 unseen, 1 missing)
+| tested | `kontakt.dsp.lfo.measured` | BParLFO: output vs oracle | [laws.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/laws.rs) | [KONTRA#937](https://github.com/DerpcatMusic/KONTRA/pull/937) | 2026-10-29 | max 0.01 dB (a_synced_lfos_note_value_counts_quarter_notes) |
+### convolution (1 tested, 2 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| done | `kontakt.dsp.convolution.ir` | Convolution: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| partial | `kontakt.dsp.convolution.driven` | Convolution: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  | load-time only |
-| missing | `kontakt.dsp.convolution.measured` | Convolution: output vs oracle |  |  |  |  |
-### delay (0 tested, 6 done, 2 partial, 0 unseen, 4 missing)
+| done | `kontakt.dsp.convolution.ir` | Convolution: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| done | `kontakt.dsp.convolution.driven` | Convolution: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| tested | `kontakt.dsp.convolution.measured` | Convolution: output vs oracle | [oracle_dsp_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/oracle_dsp_measured.rs) |  | 2026-11-26 | max 0.01 dB (dynamics_rotator_phaser_utility_and_convolution_match_oracle_laws) |
+### delay (3 tested, 8 done, 0 partial, 0 unseen, 1 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
 | done | `kontakt.dsp.delay.ir` | Delay (legacy): in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | done | `kontakt.dsp.delay.driven` | Delay (legacy): driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| missing | `kontakt.dsp.delay.measured` | Delay (legacy): output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.replika.ir` | Replika: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #231 | 2026-11-25 |  |
-| partial | `kontakt.dsp.replika.driven` | Replika: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  | held: ENGINE_PAR_RDL_ACCENT ENGINE_PAR_RDL_AMOUNT ENGINE_PAR_RDL_BBDTYPE ENGINE_PAR_RDL_DENSE ENGINE_PAR_RDL_DUCKING_AMOUNT ENGINE_PAR_RDL_DUCKING_RELEASE ENGINE_PAR_RDL_DUCKING_SENSE ENGINE_PAR_RDL_FEEL ENGINE_PAR_RDL_MODULATION ENGINE_PAR_RDL_SATURATION ENGINE_PAR_RDL_SHUFFLE ENGINE_PAR_RDL_SIZE ENGINE_PAR_RDL_TIME_UNIT |
-| missing | `kontakt.dsp.replika.measured` | Replika: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.psyche_delay.ir` | Psyche Delay: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| partial | `kontakt.dsp.psyche_delay.driven` | Psyche Delay: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  | held: ENGINE_PAR_PSYDL_TIME_UNIT |
-| missing | `kontakt.dsp.psyche_delay.measured` | Psyche Delay: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.twin_delay.ir` | Twin Delay: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
-| done | `kontakt.dsp.twin_delay.driven` | Twin Delay: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
+| tested | `kontakt.dsp.delay.measured` | Delay (legacy): output vs oracle | [legacy_delay_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/legacy_delay_measured.rs) | #288 | 2026-11-26 | max 0.25 dB (the_legacy_delay_matches_the_reference_render) |
+| done | `kontakt.dsp.replika.ir` | Replika: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| done | `kontakt.dsp.replika.driven` | Replika: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| tested | `kontakt.dsp.replika.measured` | Replika: output vs oracle | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 | max 0.8 dB (replika_matches_kontakt_oracle_echo_gains_and_bodies) |
+| done | `kontakt.dsp.psyche_delay.ir` | Psyche Delay: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| done | `kontakt.dsp.psyche_delay.driven` | Psyche Delay: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| tested | `kontakt.dsp.psyche_delay.measured` | Psyche Delay: output vs oracle | [oracle_dsp_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/oracle_dsp_measured.rs) |  | 2026-11-26 | max 0.5 dB (psyche_delay_matches_kontakt_oracle_echo_times_feedback_and_pitch) |
+| done | `kontakt.dsp.twin_delay.ir` | Twin Delay: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
+| done | `kontakt.dsp.twin_delay.driven` | Twin Delay: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
 | missing | `kontakt.dsp.twin_delay.measured` | Twin Delay: output vs oracle |  |  |  |  |
-### distortion (2 tested, 36 done, 2 partial, 0 unseen, 17 missing)
+### distortion (8 tested, 38 done, 0 partial, 0 unseen, 11 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| done | `kontakt.dsp.saturation.ir` | Saturation: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| partial | `kontakt.dsp.saturation.driven` | Saturation: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  | load-time only |
+| done | `kontakt.dsp.saturation.ir` | Saturation: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| done | `kontakt.dsp.saturation.driven` | Saturation: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
 | tested | `kontakt.dsp.saturation.measured` | Saturation: output vs oracle | [drive.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/dsp/drive/tests/drive.rs) | [KONTRA#856](https://github.com/DerpcatMusic/KONTRA/pull/856) | 2026-10-28 | max 0.1 dB (the_curves_match_v1s_measured_transfer_vectors) |
 | done | `kontakt.dsp.distortion.ir` | Distortion: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | done | `kontakt.dsp.distortion.driven` | Distortion: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| missing | `kontakt.dsp.distortion.measured` | Distortion: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.lo_fi.ir` | Lo-Fi: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| partial | `kontakt.dsp.lo_fi.driven` | Lo-Fi: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  | held: ENGINE_PAR_NOISECOLOR ENGINE_PAR_NOISELEVEL |
-| missing | `kontakt.dsp.lo_fi.measured` | Lo-Fi: output vs oracle |  |  |  |  |
+| tested | `kontakt.dsp.distortion.measured` | Distortion: output vs oracle | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 | max 0.35 dB (distortion_matches_kontakt_oracle_tube_and_dc_blocker) |
+| done | `kontakt.dsp.lo_fi.ir` | Lo-Fi: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| done | `kontakt.dsp.lo_fi.driven` | Lo-Fi: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| tested | `kontakt.dsp.lo_fi.measured` | Lo-Fi: output vs oracle | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 | max 0.1 dB (limiters_lofi_raum_wowflutter_and_bus_comp_match_oracle_laws) |
 | done | `kontakt.dsp.skreamer.ir` | Skreamer: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | done | `kontakt.dsp.skreamer.driven` | Skreamer: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | tested | `kontakt.dsp.skreamer.measured` | Skreamer: output vs oracle | [overdrive.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/dsp/drive/src/overdrive.rs) |  | 2026-10-28 | max 0.01 dB (a_sine_matches_the_native_core) |
-| done | `kontakt.dsp.twang.ir` | Twang: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
-| done | `kontakt.dsp.twang.driven` | Twang: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
+| done | `kontakt.dsp.twang.ir` | Twang: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
+| done | `kontakt.dsp.twang.driven` | Twang: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
 | missing | `kontakt.dsp.twang.measured` | Twang: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.cabinet.ir` | Cabinet: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
-| done | `kontakt.dsp.cabinet.driven` | Cabinet: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
+| done | `kontakt.dsp.cabinet.ir` | Cabinet: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
+| done | `kontakt.dsp.cabinet.driven` | Cabinet: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
 | missing | `kontakt.dsp.cabinet.measured` | Cabinet: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.tape_saturator.ir` | Tape Saturator: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| done | `kontakt.dsp.tape_saturator.driven` | Tape Saturator: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| missing | `kontakt.dsp.tape_saturator.measured` | Tape Saturator: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.jump.ir` | Jump: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
-| done | `kontakt.dsp.jump.driven` | Jump: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
+| done | `kontakt.dsp.tape_saturator.ir` | Tape Saturator: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| done | `kontakt.dsp.tape_saturator.driven` | Tape Saturator: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| tested | `kontakt.dsp.tape_saturator.measured` | Tape Saturator: output vs oracle | [oracle_dsp_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/oracle_dsp_measured.rs) |  | 2026-11-26 | max 0.1 dB (tape_saturator_matches_kontakt_oracle_curve_and_hf_rolloff) |
+| done | `kontakt.dsp.jump.ir` | Jump: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
+| done | `kontakt.dsp.jump.driven` | Jump: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
 | missing | `kontakt.dsp.jump.measured` | Jump: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.van51.ir` | Van51: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
-| done | `kontakt.dsp.van51.driven` | Van51: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
+| done | `kontakt.dsp.van51.ir` | Van51: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
+| done | `kontakt.dsp.van51.driven` | Van51: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
 | missing | `kontakt.dsp.van51.measured` | Van51: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.ac_box.ir` | AC Box: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
-| done | `kontakt.dsp.ac_box.driven` | AC Box: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
+| done | `kontakt.dsp.ac_box.ir` | AC Box: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
+| done | `kontakt.dsp.ac_box.driven` | AC Box: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
 | missing | `kontakt.dsp.ac_box.measured` | AC Box: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.hot_solo.ir` | Hot Solo: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
-| done | `kontakt.dsp.hot_solo.driven` | Hot Solo: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
+| done | `kontakt.dsp.hot_solo.ir` | Hot Solo: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
+| done | `kontakt.dsp.hot_solo.driven` | Hot Solo: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
 | missing | `kontakt.dsp.hot_solo.measured` | Hot Solo: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.cat.ir` | Cat: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
-| done | `kontakt.dsp.cat.driven` | Cat: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
+| done | `kontakt.dsp.cat.ir` | Cat: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
+| done | `kontakt.dsp.cat.driven` | Cat: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
 | missing | `kontakt.dsp.cat.measured` | Cat: output vs oracle |  |  |  |  |
 | done | `kontakt.dsp.dstortion.ir` | DStortion: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | done | `kontakt.dsp.dstortion.driven` | DStortion: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| missing | `kontakt.dsp.dstortion.measured` | DStortion: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.core_cell.ir` | Core Cell: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
-| done | `kontakt.dsp.core_cell.driven` | Core Cell: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
+| tested | `kontakt.dsp.dstortion.measured` | DStortion: output vs oracle | [oracle_dsp_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/oracle_dsp_measured.rs) |  | 2026-11-26 | max 0.5 dB (dstortion_matches_kontakt_oracle_saturation_and_tone_rolloff) |
+| done | `kontakt.dsp.core_cell.ir` | Core Cell: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
+| done | `kontakt.dsp.core_cell.driven` | Core Cell: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
 | missing | `kontakt.dsp.core_cell.measured` | Core Cell: output vs oracle |  |  |  |  |
 | done | `kontakt.dsp.supercharger.ir` | Supercharger: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | done | `kontakt.dsp.supercharger.driven` | Supercharger: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| missing | `kontakt.dsp.supercharger.measured` | Supercharger: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.bass_pro.ir` | Bass Pro: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
-| done | `kontakt.dsp.bass_pro.driven` | Bass Pro: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
+| tested | `kontakt.dsp.supercharger.measured` | Supercharger: output vs oracle | [oracle_dsp_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/oracle_dsp_measured.rs) |  | 2026-11-26 | max 0.35 dB (supercharger_gt_matches_kontakt_oracle_saturator_ceilings_and_compressor) |
+| done | `kontakt.dsp.bass_pro.ir` | Bass Pro: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
+| done | `kontakt.dsp.bass_pro.driven` | Bass Pro: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
 | missing | `kontakt.dsp.bass_pro.measured` | Bass Pro: output vs oracle |  |  |  |  |
 | done | `kontakt.dsp.bite.ir` | Bite: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | done | `kontakt.dsp.bite.driven` | Bite: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| missing | `kontakt.dsp.bite.measured` | Bite: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.skreamer_deluxe.ir` | Skreamer Deluxe: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
-| done | `kontakt.dsp.skreamer_deluxe.driven` | Skreamer Deluxe: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
+| tested | `kontakt.dsp.bite.measured` | Bite: output vs oracle | [oracle_dsp_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/oracle_dsp_measured.rs) |  | 2026-11-26 | max 0.8 dB (bite_matches_kontakt_oracle_sinc2_hpf_and_filter_rolloff) |
+| done | `kontakt.dsp.skreamer_deluxe.ir` | Skreamer Deluxe: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
+| done | `kontakt.dsp.skreamer_deluxe.driven` | Skreamer Deluxe: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
 | missing | `kontakt.dsp.skreamer_deluxe.measured` | Skreamer Deluxe: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.kolor.ir` | Kolor: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
-| done | `kontakt.dsp.kolor.driven` | Kolor: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
+| done | `kontakt.dsp.kolor.ir` | Kolor: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
+| done | `kontakt.dsp.kolor.driven` | Kolor: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
 | missing | `kontakt.dsp.kolor.measured` | Kolor: output vs oracle |  |  |  |  |
-### dynamics (2 tested, 10 done, 4 partial, 0 unseen, 5 missing)
+### dynamics (7 tested, 14 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| done | `kontakt.dsp.gainer.ir` | Gainer: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| partial | `kontakt.dsp.gainer.driven` | Gainer: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  | load-time only |
-| missing | `kontakt.dsp.gainer.measured` | Gainer: output vs oracle |  |  |  |  |
+| done | `kontakt.dsp.gainer.ir` | Gainer: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| done | `kontakt.dsp.gainer.driven` | Gainer: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| tested | `kontakt.dsp.gainer.measured` | Gainer: output vs oracle | [oracle_dsp_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/oracle_dsp_measured.rs) |  | 2026-11-26 | max 0.001 dB (dynamics_rotator_phaser_utility_and_convolution_match_oracle_laws) |
 | done | `kontakt.dsp.compressor.ir` | Compressor: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | done | `kontakt.dsp.compressor.driven` | Compressor: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | tested | `kontakt.dsp.compressor.measured` | Compressor: output vs oracle | [measured_dsp.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/effects/src/measured_dsp.rs) | #151 | 2026-11-24 | max 0.001 dB (enhanced_compressor_matches_native_golden_vectors_and_link_cancellation) |
-| done | `kontakt.dsp.limiter.ir` | Limiter: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| partial | `kontakt.dsp.limiter.driven` | Limiter: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  | load-time only |
-| missing | `kontakt.dsp.limiter.measured` | Limiter: output vs oracle |  |  |  |  |
+| done | `kontakt.dsp.limiter.ir` | Limiter: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| done | `kontakt.dsp.limiter.driven` | Limiter: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| tested | `kontakt.dsp.limiter.measured` | Limiter: output vs oracle | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 | max 0.2 dB (limiters_lofi_raum_wowflutter_and_bus_comp_match_oracle_laws) |
 | done | `kontakt.dsp.transient_master.ir` | Transient Master: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | done | `kontakt.dsp.transient_master.driven` | Transient Master: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | tested | `kontakt.dsp.transient_master.measured` | Transient Master: output vs oracle | [dynamics.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/dsp/dynamics/tests/dynamics.rs) |  | 2026-10-28 | max 0.02 dB (the_transient_shaper_matches_the_native_core) |
 | done | `kontakt.dsp.solid_bus_comp.ir` | Solid Bus Comp: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | done | `kontakt.dsp.solid_bus_comp.driven` | Solid Bus Comp: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| missing | `kontakt.dsp.solid_bus_comp.measured` | Solid Bus Comp: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.feedback_compressor.ir` | Feedback Compressor: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| partial | `kontakt.dsp.feedback_compressor.driven` | Feedback Compressor: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  | held: ENGINE_PAR_FCOMP_HQ_MODE |
-| missing | `kontakt.dsp.feedback_compressor.measured` | Feedback Compressor: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.hilbert_limiter.ir` | Hilbert Limiter: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| partial | `kontakt.dsp.hilbert_limiter.driven` | Hilbert Limiter: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  | held: ENGINE_PAR_TRANSLIM_CEILING ENGINE_PAR_TRANSLIM_RELEASE ENGINE_PAR_TRANSLIM_THRESHOLD |
-| missing | `kontakt.dsp.hilbert_limiter.measured` | Hilbert Limiter: output vs oracle |  |  |  |  |
-### envelope (0 tested, 10 done, 0 partial, 0 unseen, 5 missing)
+| tested | `kontakt.dsp.solid_bus_comp.measured` | Solid Bus Comp: output vs oracle | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 | max 0.2 dB (limiters_lofi_raum_wowflutter_and_bus_comp_match_oracle_laws) |
+| done | `kontakt.dsp.feedback_compressor.ir` | Feedback Compressor: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| done | `kontakt.dsp.feedback_compressor.driven` | Feedback Compressor: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| tested | `kontakt.dsp.feedback_compressor.measured` | Feedback Compressor: output vs oracle | [oracle_dsp_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/oracle_dsp_measured.rs) |  | 2026-11-26 | max 0.5 dB (dynamics_rotator_phaser_utility_and_convolution_match_oracle_laws) |
+| done | `kontakt.dsp.hilbert_limiter.ir` | Hilbert Limiter: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| done | `kontakt.dsp.hilbert_limiter.driven` | Hilbert Limiter: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| tested | `kontakt.dsp.hilbert_limiter.measured` | Hilbert Limiter: output vs oracle | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 | max 0.6 dB (limiters_lofi_raum_wowflutter_and_bus_comp_match_oracle_laws) |
+### envelope (3 tested, 10 done, 0 partial, 0 unseen, 2 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| done | `kontakt.dsp.envf.ir` | BParEnvF: in IR | [timed.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/timed.rs) |  |  |  |
-| done | `kontakt.dsp.envf.driven` | BParEnvF: driven | [voice_gain.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/engine/src/voice_gain.rs) |  |  |  |
+| done | `kontakt.dsp.envf.ir` | BParEnvF: in IR | [timed.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/timed.rs) | #363 | 2026-11-26 |  |
+| done | `kontakt.dsp.envf.driven` | BParEnvF: driven | [voice_gain.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/engine/src/voice_gain.rs) | #363 | 2026-11-26 |  |
 | missing | `kontakt.dsp.envf.measured` | BParEnvF: output vs oracle |  |  |  |  |
 | done | `kontakt.dsp.zonelevelenv.ir` | BZoneLevelEnv: in IR | [laws.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/laws.rs) | #93 | 2026-11-22 |  |
 | done | `kontakt.dsp.zonelevelenv.driven` | BZoneLevelEnv: driven | [voice_gain.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/engine/src/voice_gain.rs) | #93 | 2026-11-22 |  |
-| missing | `kontakt.dsp.zonelevelenv.measured` | BZoneLevelEnv: output vs oracle |  |  |  |  |
+| tested | `kontakt.dsp.zonelevelenv.measured` | BZoneLevelEnv: output vs oracle | [laws.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/laws.rs) | #93 | 2026-11-22 | max 0.01 dB (zone_envelope_law_scales_curvature_by_segment_direction) |
 | done | `kontakt.dsp.ahdsr.ir` | BParEnv_AHDSR: in IR | [timed.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/timed.rs) | [KONTRA#1178](https://github.com/DerpcatMusic/KONTRA/pull/1178) | 2026-10-29 |  |
 | done | `kontakt.dsp.ahdsr.driven` | BParEnv_AHDSR: driven | [voice_gain.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/engine/src/voice_gain.rs) | [KONTRA#1478](https://github.com/DerpcatMusic/KONTRA/pull/1478) | 2026-11-13 |  |
-| missing | `kontakt.dsp.ahdsr.measured` | BParEnv_AHDSR: output vs oracle |  |  |  |  |
+| tested | `kontakt.dsp.ahdsr.measured` | BParEnv_AHDSR: output vs oracle | [voice_gain.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/engine/src/voice_gain.rs) | #191 | 2026-11-24 | max 0.01 dB (kt01_ahdsr_time_route_and_sustain_match_binary_fcubic_values) |
 | done | `kontakt.dsp.fm7.ir` | BParEnv_FM7: in IR | [timed.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/timed.rs) | [KONTRA#1178](https://github.com/DerpcatMusic/KONTRA/pull/1178) | 2026-10-29 |  |
 | done | `kontakt.dsp.fm7.driven` | BParEnv_FM7: driven | [voice_gain.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/engine/src/voice_gain.rs) | [KONTRA#1478](https://github.com/DerpcatMusic/KONTRA/pull/1478) | 2026-11-13 |  |
 | missing | `kontakt.dsp.fm7.measured` | BParEnv_FM7: output vs oracle |  |  |  |  |
 | done | `kontakt.dsp.dbd.ir` | BParEnv_DBD: in IR | [timed.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/timed.rs) | #95 | 2026-11-22 |  |
 | done | `kontakt.dsp.dbd.driven` | BParEnv_DBD: driven | [voice_gain.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/engine/src/voice_gain.rs) | [KONTRA#1478](https://github.com/DerpcatMusic/KONTRA/pull/1478) | 2026-11-13 |  |
-| missing | `kontakt.dsp.dbd.measured` | BParEnv_DBD: output vs oracle |  |  |  |  |
-### filter (1 tested, 3 done, 1 partial, 0 unseen, 1 missing)
+| tested | `kontakt.dsp.dbd.measured` | BParEnv_DBD: output vs oracle | [external.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/external.rs) | #95 | 2026-11-22 | max 0.01 dB (laws_cover_inverted_env_depth_pressure_power_time_scale_and_dbd) |
+### filter (1 tested, 4 done, 0 partial, 0 unseen, 1 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| done | `kontakt.dsp.filter.ir` | Filter: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| partial | `kontakt.dsp.filter.driven` | Filter: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  | load-time only |
+| done | `kontakt.dsp.filter.ir` | Filter: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| done | `kontakt.dsp.filter.driven` | Filter: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
 | tested | `kontakt.dsp.filter.measured` | Filter: output vs oracle | [formant.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/dsp/filter/tests/formant.rs) | [KONTRA#853](https://github.com/DerpcatMusic/KONTRA/pull/853) | 2026-10-28 | max 0.1 dB (the_formant_matches_kontakt_within_a_tenth_of_a_db) |
-| done | `kontakt.dsp.cry_wah.ir` | Cry Wah: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
-| done | `kontakt.dsp.cry_wah.driven` | Cry Wah: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
+| done | `kontakt.dsp.cry_wah.ir` | Cry Wah: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
+| done | `kontakt.dsp.cry_wah.driven` | Cry Wah: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
 | missing | `kontakt.dsp.cry_wah.measured` | Cry Wah: output vs oracle |  |  |  |  |
-### modulation FX (2 tested, 23 done, 1 partial, 0 unseen, 10 missing)
+### modulation FX (10 tested, 24 done, 0 partial, 0 unseen, 2 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
@@ -2317,82 +2317,82 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | tested | `kontakt.dsp.flanger.measured` | Flanger (legacy): output vs oracle | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/dsp/delay/tests/delay.rs) |  | 2026-10-28 | max 0.2 dB (legacy_chorus_and_flanger_land_near_the_native_vectors) |
 | done | `kontakt.dsp.phaser.ir` | Phaser (legacy): in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | done | `kontakt.dsp.phaser.driven` | Phaser (legacy): driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| missing | `kontakt.dsp.phaser.measured` | Phaser (legacy): output vs oracle |  |  |  |  |
+| tested | `kontakt.dsp.phaser.measured` | Phaser (legacy): output vs oracle | [oracle_dsp_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/oracle_dsp_measured.rs) |  | 2026-11-26 | max 0.5 dB (dynamics_rotator_phaser_utility_and_convolution_match_oracle_laws) |
 | done | `kontakt.dsp.rotator.ir` | Rotator: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #349 | 2026-11-26 |  |
 | done | `kontakt.dsp.rotator.driven` | Rotator: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #349 | 2026-11-26 |  |
-| missing | `kontakt.dsp.rotator.measured` | Rotator: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.phasis.ir` | Phasis: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| done | `kontakt.dsp.phasis.driven` | Phasis: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| missing | `kontakt.dsp.phasis.measured` | Phasis: output vs oracle |  |  |  |  |
+| tested | `kontakt.dsp.rotator.measured` | Rotator: output vs oracle | [oracle_dsp_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/oracle_dsp_measured.rs) |  | 2026-11-26 | max 0.05 dB (dynamics_rotator_phaser_utility_and_convolution_match_oracle_laws) |
+| done | `kontakt.dsp.phasis.ir` | Phasis: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| done | `kontakt.dsp.phasis.driven` | Phasis: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| tested | `kontakt.dsp.phasis.measured` | Phasis: output vs oracle | [oracle_dsp_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/oracle_dsp_measured.rs) |  | 2026-11-26 | max 0.2 dB (phasis_matches_kontakt_oracle_notches_mix_and_feedback) |
 | done | `kontakt.dsp.flair.ir` | Flair: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | done | `kontakt.dsp.flair.driven` | Flair: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| missing | `kontakt.dsp.flair.measured` | Flair: output vs oracle |  |  |  |  |
+| tested | `kontakt.dsp.flair.measured` | Flair: output vs oracle | [oracle_dsp_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/oracle_dsp_measured.rs) |  | 2026-11-26 | max 0.5 dB (flair_and_choral_match_kontakt_oracle_comb_and_ensemble_laws) |
 | done | `kontakt.dsp.choral.ir` | Choral: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | done | `kontakt.dsp.choral.driven` | Choral: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| missing | `kontakt.dsp.choral.measured` | Choral: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.ring_modulator.ir` | Ring Modulator: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
-| done | `kontakt.dsp.ring_modulator.driven` | Ring Modulator: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
+| tested | `kontakt.dsp.choral.measured` | Choral: output vs oracle | [oracle_dsp_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/oracle_dsp_measured.rs) |  | 2026-11-26 | max 0.15 dB (flair_and_choral_match_kontakt_oracle_comb_and_ensemble_laws) |
+| done | `kontakt.dsp.ring_modulator.ir` | Ring Modulator: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
+| done | `kontakt.dsp.ring_modulator.driven` | Ring Modulator: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
 | missing | `kontakt.dsp.ring_modulator.measured` | Ring Modulator: output vs oracle |  |  |  |  |
 | done | `kontakt.dsp.freak.ir` | Freak: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | done | `kontakt.dsp.freak.driven` | Freak: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| missing | `kontakt.dsp.freak.measured` | Freak: output vs oracle |  |  |  |  |
+| tested | `kontakt.dsp.freak.measured` | Freak: output vs oracle | [oracle_dsp_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/oracle_dsp_measured.rs) |  | 2026-11-26 | max 0.5 dB (freak_matches_kontakt_oracle_ssb_frequency_shift_and_am_envelope) |
 | done | `kontakt.dsp.vibrato_chorus.ir` | Vibrato Chorus: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | done | `kontakt.dsp.vibrato_chorus.driven` | Vibrato Chorus: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| missing | `kontakt.dsp.vibrato_chorus.measured` | Vibrato Chorus: output vs oracle |  |  |  |  |
+| tested | `kontakt.dsp.vibrato_chorus.measured` | Vibrato Chorus: output vs oracle | [oracle_dsp_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/oracle_dsp_measured.rs) |  | 2026-11-26 | max 0.05 dB (vibrato_chorus_matches_kontakt_oracle_scanner_rate_color_and_mix) |
 | done | `kontakt.dsp.wow_flutter.ir` | Wow / Flutter: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #195 | 2026-11-25 |  |
-| partial | `kontakt.dsp.wow_flutter.driven` | Wow / Flutter: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  | held: ENGINE_PAR_WOWFLUTTER_GATE ENGINE_PAR_WOWFLUTTER_SATURATION ENGINE_PAR_WOWFLUTTER_SCRAPE |
-| missing | `kontakt.dsp.wow_flutter.measured` | Wow / Flutter: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.stereo_tune.ir` | Stereo Tune: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
-| done | `kontakt.dsp.stereo_tune.driven` | Stereo Tune: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
+| done | `kontakt.dsp.wow_flutter.driven` | Wow / Flutter: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #195 | 2026-11-25 |  |
+| tested | `kontakt.dsp.wow_flutter.measured` | Wow / Flutter: output vs oracle | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 | max 0.1 dB (limiters_lofi_raum_wowflutter_and_bus_comp_match_oracle_laws) |
+| done | `kontakt.dsp.stereo_tune.ir` | Stereo Tune: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
+| done | `kontakt.dsp.stereo_tune.driven` | Stereo Tune: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
 | missing | `kontakt.dsp.stereo_tune.measured` | Stereo Tune: output vs oracle |  |  |  |  |
-### modulation source (0 tested, 8 done, 0 partial, 0 unseen, 4 missing)
+### modulation source (1 tested, 8 done, 0 partial, 0 unseen, 3 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| done | `kontakt.dsp.arp.ir` | BParArp: in IR | [timed.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/timed.rs) | #144 | 2026-11-24 |  |
-| done | `kontakt.dsp.arp.driven` | BParArp: driven | [voice_gain.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/engine/src/voice_gain.rs) | [KONTRA#1478](https://github.com/DerpcatMusic/KONTRA/pull/1478) | 2026-11-13 |  |
+| done | `kontakt.dsp.arp.ir` | BParArp: in IR | [timed.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/timed.rs) |  | 2026-11-26 |  |
+| done | `kontakt.dsp.arp.driven` | BParArp: driven | [voice_gain.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/engine/src/voice_gain.rs) |  | 2026-11-26 |  |
 | missing | `kontakt.dsp.arp.measured` | BParArp: output vs oracle |  |  |  |  |
 | done | `kontakt.dsp.glide.ir` | BParGlide: in IR | [translate.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/translate.rs) | #115 | 2026-11-22 |  |
 | done | `kontakt.dsp.glide.driven` | BParGlide: driven | [glide.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/engine/src/glide.rs) | [KONTRA#1568](https://github.com/DerpcatMusic/KONTRA/pull/1568) | 2026-11-14 |  |
-| missing | `kontakt.dsp.glide.measured` | BParGlide: output vs oracle |  |  |  |  |
+| tested | `kontakt.dsp.glide.measured` | BParGlide: output vs oracle | [glide.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/engine/src/glide.rs) | #53 | 2026-11-19 | max 0.02 dB (a_straight_slide_is_linear_in_semitones_and_ends_on_the_note) |
 | done | `kontakt.dsp.externalmod.ir` | BParExternalMod: in IR | [external.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/external.rs) |  | 2026-10-28 |  |
 | done | `kontakt.dsp.externalmod.driven` | BParExternalMod: driven | [voice_gain.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/engine/src/voice_gain.rs) | [KONTRA#842](https://github.com/DerpcatMusic/KONTRA/pull/842) | 2026-10-28 |  |
 | missing | `kontakt.dsp.externalmod.measured` | BParExternalMod: output vs oracle |  |  |  |  |
 | done | `kontakt.dsp.internalmod.ir` | BParInternalMod: in IR | [timed.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/timed.rs) | [KONTRA#1178](https://github.com/DerpcatMusic/KONTRA/pull/1178) | 2026-10-29 |  |
 | done | `kontakt.dsp.internalmod.driven` | BParInternalMod: driven | [voice_gain.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/engine/src/voice_gain.rs) | #146 | 2026-11-24 |  |
 | missing | `kontakt.dsp.internalmod.measured` | BParInternalMod: output vs oracle |  |  |  |  |
-### reverb (0 tested, 7 done, 1 partial, 0 unseen, 4 missing)
+### reverb (3 tested, 8 done, 0 partial, 0 unseen, 1 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
 | done | `kontakt.dsp.reverb.ir` | Reverb (legacy): in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | done | `kontakt.dsp.reverb.driven` | Reverb (legacy): driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| missing | `kontakt.dsp.reverb.measured` | Reverb (legacy): output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.plate_reverb.ir` | Plate Reverb: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
-| done | `kontakt.dsp.plate_reverb.driven` | Plate Reverb: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
+| tested | `kontakt.dsp.reverb.measured` | Reverb (legacy): output vs oracle | [legacy_reverb_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/legacy_reverb_measured.rs) | #288 | 2026-11-25 | max 0.8 dB (the_legacy_reverb_matches_the_reference_render) |
+| done | `kontakt.dsp.plate_reverb.ir` | Plate Reverb: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
+| done | `kontakt.dsp.plate_reverb.driven` | Plate Reverb: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
 | missing | `kontakt.dsp.plate_reverb.measured` | Plate Reverb: output vs oracle |  |  |  |  |
 | done | `kontakt.dsp.reverb.ir_` | Reverb: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | done | `kontakt.dsp.reverb.driven_` | Reverb: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192, #279 | 2026-11-24 |  |
-| missing | `kontakt.dsp.reverb.measured_` | Reverb: output vs oracle |  |  |  |  |
+| tested | `kontakt.dsp.reverb.measured_` | Reverb: output vs oracle | [legacy_reverb_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/legacy_reverb_measured.rs) | #288 | 2026-11-25 | max 0.8 dB (the_legacy_reverb_matches_the_reference_render) |
 | done | `kontakt.dsp.raum.ir` | Raum: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| partial | `kontakt.dsp.raum.driven` | Raum: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  | held: ENGINE_PAR_RAUM_FEEDBACK ENGINE_PAR_RAUM_FREEZE ENGINE_PAR_RAUM_PREDELAY_UNIT ENGINE_PAR_RAUM_REVERB ENGINE_PAR_RAUM_SPARSE ENGINE_PAR_RAUM_TIME_UNIT |
-| missing | `kontakt.dsp.raum.measured` | Raum: output vs oracle |  |  |  |  |
-### utility (0 tested, 6 done, 2 partial, 0 unseen, 4 missing)
+| done | `kontakt.dsp.raum.driven` | Raum: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
+| tested | `kontakt.dsp.raum.measured` | Raum: output vs oracle | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 | max 0.1 dB (limiters_lofi_raum_wowflutter_and_bus_comp_match_oracle_laws) |
+### utility (2 tested, 8 done, 0 partial, 0 unseen, 2 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
 | done | `kontakt.dsp.send_levels.ir` | Send Levels: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | done | `kontakt.dsp.send_levels.driven` | Send Levels: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | missing | `kontakt.dsp.send_levels.measured` | Send Levels: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.inverter.ir` | Inverter: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| partial | `kontakt.dsp.inverter.driven` | Inverter: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  | load-time only |
-| missing | `kontakt.dsp.inverter.measured` | Inverter: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.dyx.ir` | DYX: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
-| done | `kontakt.dsp.dyx.driven` | DYX: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  |  |
+| done | `kontakt.dsp.inverter.ir` | Inverter: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| done | `kontakt.dsp.inverter.driven` | Inverter: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| tested | `kontakt.dsp.inverter.measured` | Inverter: output vs oracle | [oracle_dsp_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/oracle_dsp_measured.rs) |  | 2026-11-26 | max 0.001 dB (dynamics_rotator_phaser_utility_and_convolution_match_oracle_laws) |
+| done | `kontakt.dsp.dyx.ir` | DYX: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
+| done | `kontakt.dsp.dyx.driven` | DYX: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #363 | 2026-11-26 |  |
 | missing | `kontakt.dsp.dyx.measured` | DYX: output vs oracle |  |  |  |  |
-| done | `kontakt.dsp.stereo_modeller.ir` | Stereo Modeller: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| partial | `kontakt.dsp.stereo_modeller.driven` | Stereo Modeller: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  |  | held: ENGINE_PAR_STEREO_PSEUDO |
-| missing | `kontakt.dsp.stereo_modeller.measured` | Stereo Modeller: output vs oracle |  |  |  |  |
+| done | `kontakt.dsp.stereo_modeller.ir` | Stereo Modeller: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| done | `kontakt.dsp.stereo_modeller.driven` | Stereo Modeller: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) |  | 2026-11-26 |  |
+| tested | `kontakt.dsp.stereo_modeller.measured` | Stereo Modeller: output vs oracle | [measured_dsp.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/effects/src/measured_dsp.rs) | #151 | 2026-11-24 | max 0.01 dB (stereo_modeller_pseudo_delay_and_settled_matrix_match_spec) |
 
 ## File loading: every saved object type
 

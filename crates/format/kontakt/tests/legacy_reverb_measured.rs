@@ -1,7 +1,7 @@
 //! The legacy Reverb (0x15) against the reference 8.13's own renders
 //! (docs/re/engine/fx-measured/legacy-reverb.md): an impulse into the left
-//! input, stereo 1, predelay 0; per case the frame of the first echo and the
-//! wet level of four windows, dB re the impulse.
+//! input across size, colour, damping, stereo narrowing, and predelay; per case
+//! the frame of the first echo and the wet level of four windows, dB re the impulse.
 
 use kontra_effects::processors::{Dsp, Responses, processor};
 use kontra_ir as ir;
@@ -15,7 +15,7 @@ fn the_legacy_reverb_matches_the_reference_render() {
         let f: Vec<&str> = line.split('\t').collect();
         let num = |i: usize| f[i].parse::<f32>().unwrap();
         let reverb =
-            kontra_kontakt_effects::legacy_reverb::reverb(0.0, [num(1), num(2), 1.0, num(3)]);
+            kontra_kontakt_effects::legacy_reverb::reverb(num(1), [num(2), num(3), num(4), num(5)]);
         let slot = ir::Effect {
             kind: ir::EffectKind::Reverb(reverb),
             bypass: false,
@@ -36,11 +36,11 @@ fn the_legacy_reverb_matches_the_reference_render() {
             .skip(2)
             .position(|v| v.abs() > 1e-5)
             .map(|p| p + 2);
-        assert_eq!(first, Some(f[4].parse().unwrap()), "{}: first echo", f[0]);
+        assert_eq!(first, Some(f[6].parse().unwrap()), "{}: first echo", f[0]);
         for (k, (a, b)) in windows.iter().enumerate() {
             let w = &left[(a * 48_000.0) as usize..(b * 48_000.0) as usize];
             let db = 10.0 * (w.iter().map(|v| v * v).sum::<f64>() / w.len() as f64).log10();
-            let want = f64::from(num(5 + k));
+            let want = f64::from(num(7 + k));
             assert!(
                 (db - want).abs() < 0.3,
                 "{} {a}-{b} s: {db:.2} dB, reference {want:.2}",

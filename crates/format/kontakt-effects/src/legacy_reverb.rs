@@ -26,7 +26,20 @@
 //! bilinear Butterworth, −3 dB at the corner.
 
 use kontra_ir as ir;
-use kontra_law::kontakt::LEGACY_REVERB_HIGH_CUT_HZ;
+
+/// Legacy cutoff law in Hz: 8-term Taylor series of `exp(6.15x) - 1`,
+/// clamped to 1 after scaling by `0.0025728317`, plus `0.002`, over `44011.976 * 0.495` Hz.
+fn legacy_cutoff_hz(x: f32) -> f32 {
+    let z = 6.15_f64 * f64::from(x.clamp(0.0, 1.0));
+    let mut sum = 0.0_f64;
+    let mut term = 1.0_f64;
+    for k in 1..=8 {
+        term *= z / f64::from(k);
+        sum += term;
+    }
+    let v = (sum * 0.002_572_831_7).min(1.0) + 0.002;
+    (44_011.976 * 0.495 * v) as f32
+}
 
 static COMBS: ir::CombNetwork = ir::CombNetwork {
     combs_ms: [
@@ -74,7 +87,7 @@ pub fn reverb(predelay_ms: f32, knobs: [f32; 4]) -> ir::Reverb {
         // The allpasses' gain: they only delay.
         diffusion: 0.0,
         predelay_ms: predelay_ms.clamp(0.0, 180.0),
-        high_cut_hz: LEGACY_REVERB_HIGH_CUT_HZ.eval(x),
+        high_cut_hz: legacy_cutoff_hz(x),
         low_shelf_db: 0.0,
         stereo,
         modulation_ms: 0.0,
@@ -95,9 +108,9 @@ mod tests {
         assert!((large.seconds - 4.21).abs() < 0.02, "{}", large.seconds);
         assert_eq!(small.damping, 0.0);
         assert_eq!(reverb(0.0, [0.0; 4]).damping, 0.35);
-        // Damping 0.5: x = 0.625, about 2.6 kHz.
+        // Damping 0.5: x = 0.625, about 2.56 kHz (8-term Taylor cutoff law).
         assert!(
-            (small.high_cut_hz - 2_603.0).abs() < 20.0,
+            (small.high_cut_hz - 2_562.0).abs() < 10.0,
             "{}",
             small.high_cut_hz
         );

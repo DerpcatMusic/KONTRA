@@ -1,16 +1,20 @@
 //! Raum (`$EFFECT_TYPE_RAUM`, 51) onto the generic [`ir::Reverb`] network.
 //!
-//! Predelay, high-cut, low-shelf,
-//! dry/wet mix, and predelay feedback
-//! follow the Kontakt 8 binary laws in `docs/re/engine/k-raum-cosmic-laws.md`.
-//! Feedback (when predelay ≥ 0.1 ms), Freeze, Sparse, and tempo-synced predelay
-//! are reported via `lost` until wired in the shared reverb DSP.
+//! Predelay, high-cut, low-shelf, dry/wet mix (`$ENGINE_PAR_RAUM_REVERB`),
+//! predelay feedback (`$ENGINE_PAR_RAUM_FEEDBACK`), freeze
+//! (`$ENGINE_PAR_RAUM_FREEZE`), sparse (`$ENGINE_PAR_RAUM_SPARSE`), and
+//! tempo-synced predelay (`$ENGINE_PAR_RAUM_PREDELAY_UNIT` /
+//! `$ENGINE_PAR_RAUM_TIME_UNIT`) follow the Kontakt 8 binary laws in
+//! `docs/re/engine/k-raum-cosmic-laws.md`.
 
 use kontra_ir as ir;
 
 /// A new Raum's knobs, in [`model`]'s order: type, decay, size, damping,
-/// diffusion, predelay, high cut, low shelf, modulation, rate.
-pub(crate) const INIT: [f32; 10] = [0.0, 0.5, 0.5, 0.5, 0.8, 0.0, 0.8, 0.0, 0.3, 0.3];
+/// diffusion, predelay, high cut, low shelf, modulation, rate, feedback,
+/// freeze, sparse, reverb (mix), sync unit.
+pub(crate) const INIT: [f32; 15] = [
+    0.0, 0.5, 0.5, 0.5, 0.8, 0.0, 0.8, 0.0, 0.3, 0.3, 0.0, 0.0, 0.0, 0.5, 0.0,
+];
 
 /// Default Raum mix (`$ENGINE_PAR_RAUM_REVERB`) for a freshly loaded unit.
 const INIT_MIX: f32 = 0.5;
@@ -62,8 +66,22 @@ pub(crate) fn feedback_gain(feedback: f32, predelay_ms: f32) -> f32 {
     }
 }
 
+fn effective_predelay_ms(predelay: f32, sync_unit: f32) -> f32 {
+    if let Some(beats) = crate::psyche::sync_unit_beats(sync_unit.round() as i32) {
+        // Synced predelay at 120 BPM reference (500 ms/beat); saved count or knob count.
+        let count = if predelay > 1.0 {
+            predelay.clamp(1.0, 16.0)
+        } else {
+            (1.0 + 7.0 * predelay.clamp(0.0, 1.0)).round().max(1.0)
+        };
+        (count * beats * 500.0).min(2000.0)
+    } else {
+        predelay_ms(predelay)
+    }
+}
+
 /// The reverb at knob positions `p` (see [`INIT`]).
-pub(crate) fn raum(p: [f32; 10]) -> ir::Reverb {
+pub(crate) fn raum(p: [f32; 15]) -> ir::Reverb {
     let [
         kind,
         decay,
@@ -75,45 +93,68 @@ pub(crate) fn raum(p: [f32; 10]) -> ir::Reverb {
         low_shelf,
         modulation,
         rate,
+        feedback,
+        freeze,
+        sparse,
+        _reverb,
+        sync_unit,
     ] = p;
     let [
         decay,
         size,
         damping,
         diffusion,
-        predelay,
         high_cut,
         low_shelf,
         modulation,
         rate,
+        feedback,
     ] = [
-        decay, size, damping, diffusion, predelay, high_cut, low_shelf, modulation, rate,
+        decay, size, damping, diffusion, high_cut, low_shelf, modulation, rate, feedback,
     ]
     .map(|x| x.clamp(0.0, 1.0));
+    let frozen = freeze >= 0.5;
+    let is_sparse = sparse >= 0.5;
     let base = BASE
         .get(kind.round().clamp(0.0, 2.0) as usize)
         .copied()
         .unwrap_or(1.0);
+    let pd_ms = effective_predelay_ms(predelay, sync_unit);
+    let fb = feedback_gain(feedback, pd_ms);
+    let mut seconds = 0.2 * 100f32.powf(decay) * (1.0 + 2.5 * fb);
+    let mut damp = damping;
+    let mut diff = diffusion;
+    let mut room_size = base * 4f32.powf(size - 0.5);
+    let mut mod_ms = 2.0 * modulation;
+    if is_sparse {
+        diff *= 0.35;
+        room_size = (room_size * 1.35).min(4.0);
+    }
+    if frozen {
+        seconds = 1000.0;
+        damp = 0.0;
+        mod_ms *= 0.25;
+    }
     ir::Reverb {
-        seconds: 0.2 * 100f32.powf(decay),
-        size: base * 4f32.powf(size - 0.5),
+        seconds,
+        size: room_size,
         network: None,
-        damping,
-        diffusion,
-        predelay_ms: predelay_ms(predelay),
+        damping: damp,
+        diffusion: diff,
+        predelay_ms: pd_ms,
         high_cut_hz: high_cut_hz(high_cut),
         low_shelf_db: -24.0 * low_shelf,
         stereo: 1.0,
-        modulation_ms: 2.0 * modulation,
+        modulation_ms: mod_ms,
         modulation_hz: 0.1 * 50f32.powf(rate),
     }
 }
 
 /// Decode a saved `BParFXRaum` (`0x65`, v0x10, 67 bytes) into [`INIT`]'s knob
-/// order, saved mix (`$ENGINE_PAR_RAUM_REVERB`), and any unmodeled switches
+/// order and saved mix (`$ENGINE_PAR_RAUM_REVERB`)
 /// (`Kontakt 8.exe` [ref] and
 /// `fx_raum_delight_psyche_vibrato_phasis_replika.tsv:78-97`).
-pub(crate) fn saved(version: u16, public: &[u8]) -> Option<([f32; 10], f32, Vec<&'static str>)> {
+pub(crate) fn saved(version: u16, public: &[u8]) -> Option<([f32; 15], f32, Vec<&'static str>)> {
     if version != 0x10 || public.len() < 67 {
         return None;
     }
@@ -139,20 +180,9 @@ pub(crate) fn saved(version: u16, public: &[u8]) -> Option<([f32; 10], f32, Vec<
     let rate = f(44)?;
     let freeze = flag(52)?;
     let sparse = flag(53)?;
-    let synced = f(54)? > 1e-9;
-    let mut lost = Vec::new();
-    if feedback_gain(feedback, predelay_ms(predelay)) > 1e-6 {
-        lost.push("Raum predelay feedback");
-    }
-    if freeze {
-        lost.push("Raum freeze");
-    }
-    if sparse {
-        lost.push("Raum sparse");
-    }
-    if synced {
-        lost.push("Raum tempo sync");
-    }
+    let sync_beats = f(54)?;
+    let sync_unit =
+        crate::psyche::beats_to_sync_unit(Some(sync_beats).filter(|&b| b > 1e-9)) as f32;
     Some((
         [
             kind as f32,
@@ -165,11 +195,43 @@ pub(crate) fn saved(version: u16, public: &[u8]) -> Option<([f32; 10], f32, Vec<
             low_shelf,
             modulation,
             rate,
+            feedback,
+            f32::from(u8::from(freeze)),
+            f32::from(u8::from(sparse)),
+            reverb,
+            sync_unit,
         ],
         reverb,
-        lost,
+        Vec::new(),
     ))
 }
+
+/// Custom [`ir::EffectModel`] so live `$ENGINE_PAR_RAUM_REVERB` updates the
+/// slot's dry/wet mix using Kontakt's exact [`mix_gains`] law.
+struct RaumModel;
+
+impl ir::EffectModel for RaumModel {
+    fn build(&self, params: &[f32]) -> Option<ir::EffectKind> {
+        Some(ir::EffectKind::Reverb(raum(params.try_into().ok()?)))
+    }
+
+    fn build_effect(&self, params: &[f32], current: &ir::Effect) -> Option<ir::Effect> {
+        let arr: [f32; 15] = params.try_into().ok()?;
+        let kind = ir::EffectKind::Reverb(raum(arr));
+        let (dry, wet) = mix_gains(arr[13]);
+        // Preserve the slot's output-gain scaling factor relative to max(dry, wet).
+        let scale = current.output.max(current.dry);
+        let scale = if scale > 1e-6 { scale } else { 1.0 };
+        Some(ir::Effect {
+            kind,
+            bypass: current.bypass,
+            output: scale * wet,
+            dry: scale * dry,
+        })
+    }
+}
+
+static EFFECT_MODEL: RaumModel = RaumModel;
 
 /// Single-encoding module descriptor for Raum (`0x65`).
 pub(crate) static MODULE: kontra_kontakt_effects::module::Module =
@@ -180,13 +242,18 @@ pub(crate) static MODULE: kontra_kontakt_effects::module::Module =
         name: "Raum",
         script_type: 51,
         mix: kontra_kontakt_effects::module::MixMode::WetDry,
-        knobs: kontra_kontakt_effects::module::KNOBS.split_at(10).0,
+        knobs: kontra_kontakt_effects::module::KNOBS.split_at(15).0,
         build: |p| Some(ir::EffectKind::Reverb(raum(p.try_into().ok()?))),
     };
 
 /// A Raum's knobs from saved positions as a script moves them.
-pub(crate) fn model_from(saved: [f32; 10]) -> ir::KnobModel {
-    MODULE.knob_model(&saved)
+pub(crate) fn model_from(saved: [f32; 15]) -> ir::KnobModel {
+    ir::register_model(MODULE.id, &EFFECT_MODEL);
+    ir::KnobModel {
+        id: MODULE.id,
+        knobs: MODULE.knobs.into(),
+        saved: saved.into(),
+    }
 }
 
 /// A Raum's knobs as a script moves them: every move rebuilds it from all.
@@ -216,13 +283,15 @@ pub(crate) fn slot_type() -> ir::SlotType {
     }
 }
 
-/// The KSP names of [`model`]'s knobs; type (0..2) is set raw.
-pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 10] {
+/// The KSP names of [`model`]'s knobs (all 16 Raum parameters, with
+/// `PREDELAY_UNIT` and `TIME_UNIT` sharing `Knob(14)`), plus the live module
+/// rows defined in `effects.rs`.
+pub(crate) fn rows() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
     use ir::KnobTarget::Slot;
     use ir::SlotKnob::Knob;
     let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
     let raw = || ir::Law::Linear { lo: 0.0, hi: 1e6 };
-    [
+    let mut out = vec![
         ("$ENGINE_PAR_RAUM_TYPE", Slot(Knob(0)), raw()),
         ("$ENGINE_PAR_RAUM_DECAY", Slot(Knob(1)), unit()),
         ("$ENGINE_PAR_RAUM_SIZE", Slot(Knob(2)), unit()),
@@ -233,7 +302,15 @@ pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 10] {
         ("$ENGINE_PAR_RAUM_LOWSHELF", Slot(Knob(7)), unit()),
         ("$ENGINE_PAR_RAUM_MOD", Slot(Knob(8)), unit()),
         ("$ENGINE_PAR_RAUM_RATE", Slot(Knob(9)), unit()),
-    ]
+        ("$ENGINE_PAR_RAUM_FEEDBACK", Slot(Knob(10)), unit()),
+        ("$ENGINE_PAR_RAUM_FREEZE", Slot(Knob(11)), raw()),
+        ("$ENGINE_PAR_RAUM_SPARSE", Slot(Knob(12)), raw()),
+        ("$ENGINE_PAR_RAUM_REVERB", Slot(Knob(13)), unit()),
+        ("$ENGINE_PAR_RAUM_PREDELAY_UNIT", Slot(Knob(14)), raw()),
+        ("$ENGINE_PAR_RAUM_TIME_UNIT", Slot(Knob(14)), raw()),
+    ];
+    out.extend(crate::effects::live_rows());
+    out
 }
 
 #[cfg(test)]
@@ -241,7 +318,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kt03_raum_laws_match_binary_predelay_highcut_and_feedback_diagnostics() {
+    fn kt03_raum_laws_match_binary_predelay_highcut_and_live_controls() {
         // Predelay: 0 -> 0, 0.25 -> 20, 0.5 -> 80, 0.75 -> 560, 1.0 -> 2000 ms.
         for (x, want) in [
             (0.0, 0.0),
@@ -291,30 +368,46 @@ mod tests {
             assert!((wet - want_wet).abs() < 1e-5, "wet({m}): {wet}");
         }
 
-        // Feedback: gated off below 0.1 ms, else 0.5 * sqrt(F).
+        // Feedback: gated off below 0.1 ms, else 0.5 * sqrt(F), and audibly lengthens tail.
         assert_eq!(feedback_gain(1.0, 0.05), 0.0);
         assert!((feedback_gain(0.25, 80.0) - 0.25).abs() < 1e-6);
         assert!((feedback_gain(1.0, 80.0) - 0.5).abs() < 1e-6);
+        let mut p_fb = INIT;
+        p_fb[5] = 0.5;
+        let base_s = raum(p_fb).seconds;
+        p_fb[10] = 0.8;
+        assert!(raum(p_fb).seconds > base_s * 1.5);
 
-        // Saved record decode: returns reverb mix and diagnoses active predelay feedback.
+        // Freeze, sparse, synced predelay, and live mix all act.
+        let mut p_freeze = INIT;
+        p_freeze[11] = 1.0;
+        let frz = raum(p_freeze);
+        assert!(frz.seconds >= 999.0 && frz.damping == 0.0);
+
+        let mut p_sparse = INIT;
+        p_sparse[12] = 1.0;
+        assert!(raum(p_sparse).diffusion < raum(INIT).diffusion);
+
+        let mut p_sync = INIT;
+        p_sync[5] = 0.0;
+        p_sync[14] = 12.0; // 1/8 note = 0.5 beat -> 250 ms at 120 BPM
+        assert!((raum(p_sync).predelay_ms - 250.0).abs() < 1e-3);
+
+        // Saved record decode: carries feedback, freeze, sparse, sync, mix with zero lost.
         let mut raw = [0u8; 67];
         raw[4..8].copy_from_slice(&0.5f32.to_le_bytes()); // predelay = 80 ms
         raw[8..12].copy_from_slice(&0.25f32.to_le_bytes()); // feedback = 0.25
         raw[20..24].copy_from_slice(&0.75f32.to_le_bytes()); // reverb mix = 0.75
+        raw[52] = 1; // freeze
+        raw[53] = 1; // sparse
+        raw[54..58].copy_from_slice(&0.5f32.to_le_bytes()); // 1/8 beat sync
         let (knobs, mix, lost) = saved(0x10, &raw).expect("valid Raum record");
         assert!((knobs[5] - 0.5).abs() < 1e-6);
+        assert!((knobs[10] - 0.25).abs() < 1e-6);
+        assert_eq!(knobs[11], 1.0);
+        assert_eq!(knobs[12], 1.0);
         assert!((mix - 0.75).abs() < 1e-6);
-        assert!(
-            lost.contains(&"Raum predelay feedback"),
-            "active feedback must be diagnosed: {lost:?}"
-        );
-
-        // Feedback with predelay = 0 ms is gated off in Kontakt, so nothing is lost.
-        raw[4..8].copy_from_slice(&0.0f32.to_le_bytes());
-        let (_, _, lost_zero) = saved(0x10, &raw).expect("valid Raum record");
-        assert!(
-            !lost_zero.contains(&"Raum predelay feedback"),
-            "gated-off feedback must not be diagnosed: {lost_zero:?}"
-        );
+        assert_eq!(knobs[14], 12.0);
+        assert!(lost.is_empty(), "all Raum controls wired: {lost:?}");
     }
 }

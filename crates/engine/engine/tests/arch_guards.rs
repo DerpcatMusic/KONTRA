@@ -938,9 +938,7 @@ fn all_kontakt_effect_modules_register_unique_ids_and_roundtrip_saved() {
         "Freak $ENGINE_PAR_FREAK_TUNING",
         "Freak $ENGINE_PAR_FREAK_WIDTH",
         "Phasis $ENGINE_PAR_PHASIS_INVERT_MOD_MIX",
-        "Phasis $ENGINE_PAR_PHASIS_RATE_UNIT",
         "Psyche Delay $ENGINE_PAR_PSYDL_DETUNE_STEREO",
-        "Tape Saturator $ENGINE_PAR_TP_QUALITY",
     ];
     dead.sort();
     assert_eq!(

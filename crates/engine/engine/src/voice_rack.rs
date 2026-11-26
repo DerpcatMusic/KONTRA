@@ -62,7 +62,9 @@ impl Engine {
             };
             let mut ramp = None;
             let effect = match u.kind {
-                Kind::Filter(_) | Kind::Eq(_) | Kind::Comb(_) | Kind::Matrix => None,
+                Kind::Filter(_) | Kind::Eq(_) | Kind::Comb(_) | Kind::Clocked(_) | Kind::Matrix => {
+                    None
+                }
                 _ => self.voice_effect(zone, u.insert, note, age),
             };
             let tune = match u.kind {
@@ -74,6 +76,9 @@ impl Engine {
                 Kind::Comb(_) => self
                     .voice_comb(zone, u.insert, note, age)
                     .map(|(hz, g)| Tune::Comb(hz, g)),
+                Kind::Clocked(_) => self
+                    .voice_clocked(zone, u.insert, note, age)
+                    .map(Tune::Clocked),
                 Kind::Formant(_) | Kind::Overdrive(_) => effect.as_ref().map(Tune::Effect),
                 Kind::Shaper(_) | Kind::Strip(..) | Kind::Crush(_) => {
                     // The next refresh, on the grid.
@@ -200,6 +205,41 @@ impl Engine {
         Some((hz, damping))
     }
 
+    /// The cutoff and resonance of the clocked filter in `insert` of `zone`'s
+    /// group, moved by its routes for this note at `age`.
+    pub(crate) fn voice_clocked(
+        &self,
+        zone: &Zone,
+        insert: u8,
+        note: &Note,
+        age: Age,
+    ) -> Option<[f32; 2]> {
+        let group = self.groups.get(zone.group as usize)?;
+        let effect = group.inserts.get(usize::from(insert))?.as_ref()?;
+        let ir::EffectKind::Clocked(c) = effect.kind else {
+            return None;
+        };
+        let (mut cut, mut res) = (c.cutoff, c.resonance);
+        for m in group.mods.iter().filter(|m| !m.bypass) {
+            let ir::ModRoute {
+                source,
+                target,
+                depth,
+                ..
+            } = m.route;
+            match target {
+                ir::ParamAddr::FilterCutoff { insert: i } if i == insert => {
+                    cut += self.routed(zone, source, note, age).unwrap_or(0.0) * depth;
+                }
+                ir::ParamAddr::FilterResonance { insert: i } if i == insert => {
+                    res += self.routed(zone, source, note, age).unwrap_or(0.0) * depth;
+                }
+                _ => {}
+            }
+        }
+        Some([cut.clamp(0.0, 1.0), res.clamp(0.0, 1.0)])
+    }
+
     /// The pitch in Hz and feedback of the comb in `insert` of `zone`'s group,
     /// its cutoff routes applied for this note at `age`.
     pub(crate) fn voice_comb(
@@ -272,9 +312,10 @@ impl Engine {
                     (r.source, r.depth, r.law == ir::RouteLaw::Unipolar);
                 let input = self.source(zone, source, note, age);
                 let x = input.unwrap_or(0.0);
-                let x = match source {
-                    ir::Source::Lfo(_) if unipolar => (x + 1.0) * 0.5,
-                    _ => x,
+                let x = if unipolar && source.is_bipolar() {
+                    (x + 1.0) * 0.5
+                } else {
+                    x
                 };
                 let amount = x * depth * self.scale(zone, source, note, age);
                 #[cfg(feature = "trace")]

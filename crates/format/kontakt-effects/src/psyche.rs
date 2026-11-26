@@ -81,6 +81,43 @@ pub fn saved(version: u16, public: &[u8]) -> Option<Psyche> {
     })
 }
 
+/// Quarter-note beats per `$NI_SYNC_UNIT_*` index (`5..=21`); `None` for
+/// free (`0..=4`) or unused/out-of-range units.
+#[must_use]
+pub fn sync_unit_beats(unit: i32) -> Option<f32> {
+    const T: f32 = 2.0 / 3.0;
+    match unit {
+        5 => Some(4.0),
+        6 => Some(4.0 * T),
+        7 => Some(2.0),
+        8 => Some(2.0 * T),
+        9 => Some(1.0),
+        10 => Some(T),
+        12 => Some(0.5),
+        13 => Some(0.5 * T),
+        15 => Some(0.25),
+        16 => Some(0.25 * T),
+        17 => Some(0.125),
+        18 => Some(0.125 * T),
+        19 => Some(0.0625),
+        20 => Some(0.0625 * T),
+        21 => Some(1.0 / 64.0),
+        _ => None,
+    }
+}
+
+/// Inverse of [`sync_unit_beats`]: maps a saved beat duration back to its
+/// `$NI_SYNC_UNIT_*` index, or `0` (`ABS`) when free.
+#[must_use]
+pub fn beats_to_sync_unit(beats: Option<f32>) -> i32 {
+    let Some(beats) = beats.filter(|&b| b > 0.0) else {
+        return 0;
+    };
+    (5..=21)
+        .find(|&u| sync_unit_beats(u).is_some_and(|b| (b - beats).abs() < 1e-4))
+        .unwrap_or(0)
+}
+
 #[must_use]
 pub fn shifter(p: Psyche) -> ir::Shifter {
     let semis = (p.pitch.clamp(0.0, 1.0) * 24.0 - 12.0).round_ties_even();
@@ -100,7 +137,14 @@ pub fn shifter(p: Psyche) -> ir::Shifter {
     };
     ir::Shifter {
         time: match p.beats {
-            Some(beats) => ir::DelayTime::Beats(p.ms.max(1.0) * beats),
+            Some(beats) => {
+                let count = if p.ms > 32.0 {
+                    ((p.ms / LONGEST_MS) * 15.0 + 1.0).round().clamp(1.0, 16.0)
+                } else {
+                    p.ms.max(1.0)
+                };
+                ir::DelayTime::Beats(count * beats)
+            }
             None => ir::DelayTime::Ms(p.ms.clamp(SHORTEST_MS, LONGEST_MS)),
         },
         right: 1.0 - 0.5 * p.offset.clamp(0.0, 1.0),
@@ -118,7 +162,7 @@ pub static MODULE: crate::module::Module = crate::module::Module {
     name: "Psyche Delay",
     script_type: 49,
     mix: crate::module::MixMode::WetDry,
-    knobs: crate::module::KNOBS.split_at(9).0,
+    knobs: crate::module::KNOBS.split_at(10).0,
     build: |v| {
         let [
             ms,
@@ -130,11 +174,12 @@ pub static MODULE: crate::module::Module = crate::module::Module {
             rs,
             ds,
             rev,
-            beats,
+            unit,
         ] = *v
         else {
             return None;
         };
+        let beats = sync_unit_beats(unit.round() as i32);
         Some(ir::EffectKind::Shifter(shifter(Psyche {
             ms,
             feedback,
@@ -145,13 +190,13 @@ pub static MODULE: crate::module::Module = crate::module::Module {
             reverse_stereo: rs > 0.0,
             detune_stereo: ds > 0.0,
             reverse: rev > 0.0,
-            beats: Some(beats).filter(|&b| b > 0.0),
+            beats,
         })))
     },
 };
 
 /// The record as a script moves it: every knob move rebuilds the echo
-/// through [`shifter`]; the synced unit holds as saved.
+/// through [`shifter`], including live `$ENGINE_PAR_PSYDL_TIME_UNIT` sync.
 #[must_use]
 pub fn model(p: Psyche) -> ir::KnobModel {
     let on = |b: bool| if b { 1.0 } else { 0.0 };
@@ -165,15 +210,16 @@ pub fn model(p: Psyche) -> ir::KnobModel {
         on(p.reverse_stereo),
         on(p.detune_stereo),
         on(p.reverse),
-        p.beats.unwrap_or(-1.0),
+        beats_to_sync_unit(p.beats) as f32,
     ])
 }
 
 /// The KSP names of [`model`]'s knobs: TIME saves 2000 ms per unit, the
-/// switches save on at any value above 0, the rest as set (bindings table
+/// switches save on at any value above 0, TIME_UNIT takes `$NI_SYNC_UNIT_*`
+/// (`0..=21`), the rest as set (bindings table
 /// `fx_raum_delight_psyche_vibrato_phasis_replika.tsv`).
 #[must_use]
-pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 9] {
+pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 10] {
     use ir::KnobTarget::Slot;
     use ir::SlotKnob::Knob;
     let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
@@ -195,6 +241,7 @@ pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 9] {
         ("$ENGINE_PAR_PSYDL_REVERSE_STEREO", Slot(Knob(6)), raw()),
         ("$ENGINE_PAR_PSYDL_DETUNE_STEREO", Slot(Knob(7)), raw()),
         ("$ENGINE_PAR_PSYDL_REVERSE", Slot(Knob(8)), raw()),
+        ("$ENGINE_PAR_PSYDL_TIME_UNIT", Slot(Knob(9)), raw()),
     ]
 }
 

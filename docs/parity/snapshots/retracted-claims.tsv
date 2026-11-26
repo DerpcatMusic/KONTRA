@@ -1,6 +1,4 @@
 id	reason
-kontakt.dsp.delay.measured	no passing oracle test in dsp-oracle.tsv; the trailer marked the row kept missing
-kontakt.dsp.reverb.measured	no passing oracle test in dsp-oracle.tsv; the trailer marked the row kept missing
 kontakt.par.CONTROL_PAR_CUSTOM_ID	no verified law: acts alone grades partial, not done
 kontakt.par.ENGINE_PAR_ENVELOPE_ORDER	no verified law: acts alone grades partial, not done
 kontakt.par.ENGINE_PAR_FORMANT	no verified law: acts alone grades partial, not done

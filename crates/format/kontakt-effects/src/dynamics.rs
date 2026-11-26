@@ -37,8 +37,8 @@ pub fn effect(
         // Input, make-up, attack, release, ratio, mix and an unbound float;
         // then high quality, link and side chain bytes.
         0x4c => {
-            let (saved, link) = feedback_saved(public)?;
-            let c = feedback(saved, link);
+            let (saved, link, hq) = feedback_saved(public)?;
+            let c = feedback(saved, link, hq);
             Some((
                 ir::EffectKind::Compressor(c),
                 byte(30)?.then_some("Feedback Compressor side chain"),
@@ -48,21 +48,30 @@ pub fn effect(
     }
 }
 
+/// Unbound float 6 (offset 24..28) in a version `0x10` Feedback Compressor record.
+#[must_use]
+pub fn feedback_extra_float(public: &[u8]) -> Option<f32> {
+    let bytes: [u8; 4] = public.get(24..28)?.try_into().ok()?;
+    Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
+}
+
 /// A version 0x10 Feedback Compressor record's six knobs (input, make-up,
-/// attack, release, ratio, mix, each 0..=1) and its link byte.
-fn feedback_saved(public: &[u8]) -> Option<([f32; 6], bool)> {
+/// attack, release, ratio, mix, each 0..=1), its link byte (29), and its
+/// HQ mode byte (28).
+fn feedback_saved(public: &[u8]) -> Option<([f32; 6], bool, bool)> {
     let f = |n: usize| {
         let bytes = public.get(4 * n..4 * n + 4)?.try_into().ok()?;
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
     };
     let saved = [f(0)?, f(1)?, f(2)?, f(3)?, f(4)?, f(5)?];
-    Some((saved, *public.get(29)? != 0))
+    Some((saved, *public.get(29)? != 0, *public.get(28)? != 0))
 }
 
 /// The Feedback Compressor's script knobs (`$ENGINE_PAR_FCOMP_*`): every
-/// move rebuilds the compressor from all seven through [`feedback`], as the
+/// move rebuilds the compressor from all eight through [`feedback`], as the
 /// native setter derives each field from all of them (the input drives the
-/// threshold down and the make-up up; the ratio moves the knee).
+/// threshold down and the make-up up; the ratio moves the knee; HQ mode
+/// enables the 10 Hz detector high-pass and tighter attack tracking).
 /// Single-encoding module descriptor for Feedback Compressor (`0x4c`).
 pub static FEEDBACK_MODULE: crate::module::Module = crate::module::Module {
     id: crate::module::ids::FEEDBACK_COMP,
@@ -79,20 +88,31 @@ pub static FEEDBACK_MODULE: crate::module::Module = crate::module::Module {
         ir::SlotKnob::Ratio,
         ir::SlotKnob::Mix,
         ir::SlotKnob::Knob(6),
+        ir::SlotKnob::Knob(7),
     ],
     build: |p| {
         let (knobs, link) = (p.get(..6)?.try_into().ok()?, *p.get(6)? > 0.5);
-        Some(ir::EffectKind::Compressor(feedback(knobs, link)))
+        let hq = p.get(7).is_some_and(|&v| v > 0.5);
+        Some(ir::EffectKind::Compressor(feedback(knobs, link, hq)))
     },
 };
 
 pub fn feedback_model(public: &[u8]) -> Option<ir::KnobModel> {
-    let ([p0, p1, p2, p3, p4, p5], link) = feedback_saved(public)?;
-    Some(FEEDBACK_MODULE.knob_model(&[p0, p1, p2, p3, p4, p5, f32::from(u8::from(link))]))
+    let ([p0, p1, p2, p3, p4, p5], link, hq) = feedback_saved(public)?;
+    Some(FEEDBACK_MODULE.knob_model(&[
+        p0,
+        p1,
+        p2,
+        p3,
+        p4,
+        p5,
+        f32::from(u8::from(link)),
+        f32::from(u8::from(hq)),
+    ]))
 }
 
 /// The Feedback Compressor's KSP names, each a knob of [`feedback_model`].
-pub fn feedback_rows() -> [(&'static str, ir::KnobTarget, ir::Law); 7] {
+pub fn feedback_rows() -> [(&'static str, ir::KnobTarget, ir::Law); 8] {
     use ir::KnobTarget::Slot;
     use ir::SlotKnob::{Attack, Input, Knob, Makeup, Mix, Ratio, Release};
     let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
@@ -105,6 +125,7 @@ pub fn feedback_rows() -> [(&'static str, ir::KnobTarget, ir::Law); 7] {
         ("$ENGINE_PAR_FCOMP_RATIO", Slot(Ratio), unit()),
         ("$ENGINE_PAR_FCOMP_MIX", Slot(Mix), unit()),
         ("$ENGINE_PAR_FCOMP_LINK", Slot(Knob(6)), raw()),
+        ("$ENGINE_PAR_FCOMP_HQ_MODE", Slot(Knob(7)), raw()),
     ]
 }
 
@@ -130,7 +151,11 @@ fn transient(attack: f32, sustain: f32, gain: f32, clip: bool) -> ir::Transient 
 // ponytail: the native quartic knee, its gain smoother and 10 Hz detector
 // high-pass, and the 2x/4x sub-steps are the standard soft knee and one-pole
 // ballistics here; no native recording says how far apart they sound.
-fn feedback([input, makeup, attack, release, ratio, mix]: [f32; 6], link: bool) -> ir::Compressor {
+fn feedback(
+    [input, makeup, attack, release, ratio, mix]: [f32; 6],
+    link: bool,
+    hq: bool,
+) -> ir::Compressor {
     let [input, makeup, attack, release, ratio, mix] =
         [input, makeup, attack, release, ratio, mix].map(|x| x.clamp(0.0, 1.0));
     let r = 1.0 + 19.0 * ratio;
@@ -139,18 +164,19 @@ fn feedback([input, makeup, attack, release, ratio, mix]: [f32; 6], link: bool) 
     let knee = FEEDBACK_KNEE.eval_unclamped(r);
     let drive_db = 50.0 * input - 10.0;
     let knee_db = db(knee).max(0.0);
+    let attack_scale = if hq { 0.85 } else { 1.0 };
     ir::Compressor {
         threshold_db: db(threshold) + knee_db / 2.0 - drive_db,
         ratio: r,
         knee_db,
-        attack_ms: 1000.0 * (0.049_896_6 * attack + 0.000_103_4),
+        attack_ms: 1000.0 * (0.049_896_6 * attack + 0.000_103_4) * attack_scale,
         release_ms: 1000.0 * (1.15 * release + 0.05),
         makeup_db: 50.0 * makeup - 40.0 + drive_db,
         makeup_slope: 0.0,
         link,
         mix,
         detector: ir::Detector::Output,
-        sidechain_hz: None,
+        sidechain_hz: hq.then_some(10.0),
     }
 }
 
@@ -168,6 +194,10 @@ mod tests {
         let (read, _) = effect(0x4c, 0x10, &public).unwrap();
         let model = feedback_model(&public).unwrap();
         assert_eq!(model.build(&model.saved), Some(read));
+        // HQ toggle visibly changes detector high-pass and attack tracking.
+        let mut no_hq = model.saved.to_vec();
+        no_hq[7] = 0.0;
+        assert_ne!(model.build(&no_hq), model.build(&model.saved));
     }
 
     #[test]
@@ -188,11 +218,14 @@ mod tests {
 
     #[test]
     fn the_feedback_compressor_drives_its_threshold_down_and_its_output_up() {
-        let quiet = feedback([0.2, 0.8, 0.5, 0.5, 0.25, 1.0], true);
-        let loud = feedback([0.6, 0.8, 0.5, 0.5, 0.25, 1.0], true);
+        let quiet = feedback([0.2, 0.8, 0.5, 0.5, 0.25, 1.0], true, false);
+        let loud = feedback([0.6, 0.8, 0.5, 0.5, 0.25, 1.0], true, false);
         assert!((quiet.threshold_db - loud.threshold_db - 20.0).abs() < 1e-3);
         assert!((loud.makeup_db - quiet.makeup_db - 20.0).abs() < 1e-3);
         assert!((quiet.ratio - 5.75).abs() < 1e-5 && quiet.detector == ir::Detector::Output);
         assert!((quiet.release_ms - 625.0).abs() < 1e-3);
+        let hq = feedback([0.6, 0.8, 0.5, 0.5, 0.25, 1.0], true, true);
+        assert_eq!(hq.sidechain_hz, Some(10.0));
+        assert!(hq.attack_ms < loud.attack_ms);
     }
 }

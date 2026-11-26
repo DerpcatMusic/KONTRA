@@ -12,8 +12,12 @@ const FIELDS: &str = include_str!("../data/held_fields.tsv");
 /// (held key, raw value): a float 0..1 reads as value × 10⁶, an index or a
 /// switch as itself, a tempo unit as the `$NI_SYNC_UNIT_*` its beats name.
 pub(crate) fn saved(module: u16, version: u16, public: &[u8]) -> Vec<(u32, i32)> {
+    saved_from(FIELDS, module, version, public)
+}
+
+fn saved_from(fields: &str, module: u16, version: u16, public: &[u8]) -> Vec<(u32, i32)> {
     let word = |at: usize| <[u8; 4]>::try_from(public.get(at..at + 4)?).ok();
-    FIELDS
+    fields
         .lines()
         .filter(|l| !l.starts_with('#'))
         .filter_map(|line| {
@@ -53,7 +57,6 @@ fn unit(beats: f32) -> i32 {
 /// read-backs, script_knobs.rs and the effect laws). A control not listed
 /// reads nothing until a script sets it.
 pub(crate) fn fresh() -> Vec<(i32, u32, i32)> {
-    let key = ir::held_key;
     let mut out = Vec::new();
     for (ty, module, version, record) in crate::script_knobs::init_records() {
         out.extend(
@@ -62,24 +65,21 @@ pub(crate) fn fresh() -> Vec<(i32, u32, i32)> {
                 .map(|(k, v)| (ty, k, v)),
         );
     }
-    // Replika's controls are knobs of its model; its synced time's unit is held.
-    let beats = crate::replika::INIT.beats.map_or(0, unit);
-    out.push((40, key("$ENGINE_PAR_RDL_TIME_UNIT"), beats));
-    // Psyche Delay's time is free (Freak's MODE is a knob of its model).
-    let psyche = crate::psyche::INIT.beats.map_or(0, unit);
-    out.push((49, key("$ENGINE_PAR_PSYDL_TIME_UNIT"), psyche));
     out
 }
 
 #[cfg(test)]
 mod tests {
-    /// Raum's held-only controls: FEEDBACK 0.25 at byte 8, FREEZE on at byte 52.
+    /// Held-only record parsing: float 0.25 at byte 8 reads as 250_000, switch at byte 52 as 1.
     #[test]
     fn a_saved_held_only_module_reads_back_as_scripts_see_it() {
+        let rows = "# module\tversion\tname\toffset\tkind\n\
+            0x65\t0x10\t$ENGINE_PAR_RAUM_FEEDBACK\t8\tF\n\
+            0x65\t0x10\t$ENGINE_PAR_RAUM_FREEZE\t52\tB\n";
         let mut public = vec![0u8; 58];
         public[8..12].copy_from_slice(&0.25f32.to_le_bytes());
         public[52] = 1;
-        let got = super::saved(0x65, 0x10, &public);
+        let got = super::saved_from(rows, 0x65, 0x10, &public);
         let key = kontra_ir::held_key;
         assert!(
             got.contains(&(key("$ENGINE_PAR_RAUM_FEEDBACK"), 250_000)),
@@ -87,7 +87,7 @@ mod tests {
         );
         assert!(got.contains(&(key("$ENGINE_PAR_RAUM_FREEZE"), 1)));
         assert!(
-            super::saved(0x65, 0x11, &public).is_empty(),
+            super::saved_from(rows, 0x65, 0x11, &public).is_empty(),
             "another version"
         );
     }

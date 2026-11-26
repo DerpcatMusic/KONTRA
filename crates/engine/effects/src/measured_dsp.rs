@@ -1198,30 +1198,41 @@ mod tests {
             "HP passband should be flat: {db1000:.2} dB"
         );
 
-        // LP at norm=1.0 (~3270 Hz): TSV measures -8.40 dB @ 5 kHz, -19.56 dB @ 10 kHz.
+        // LP at norm=1.0 (~3270 Hz): TSV measures -0.55 dB @ 2 kHz, -8.40 dB @ 5 kHz,
+        // -19.56 dB @ 10 kHz, -26.78 dB @ 15 kHz.
         let mut lp = SolidPassFilters::new(
             SolidPassSettings::from_normalized(false, 0.0, true, 1.0),
             rate,
         );
         let db200_lp = sine_gain_db(&mut lp, 200.0, rate);
+        let db2k = sine_gain_db(&mut lp, 2_000.0, rate);
         let db5k = sine_gain_db(&mut lp, 5_000.0, rate);
         let db10k = sine_gain_db(&mut lp, 10_000.0, rate);
+        let db15k = sine_gain_db(&mut lp, 15_000.0, rate);
         assert!(
             db200_lp.abs() < 0.1,
             "LP passband should be flat: {db200_lp:.2} dB"
         );
         assert!(
-            (db5k - (-8.40)).abs() < 1.0,
+            (db2k - (-0.55)).abs() < 0.4,
+            "LP norm=1.0 @2 kHz expected ~-0.55 dB, got {db2k:.2} dB"
+        );
+        assert!(
+            (db5k - (-8.40)).abs() < 0.4,
             "LP norm=1.0 @5 kHz expected ~-8.40 dB, got {db5k:.2} dB"
         );
         assert!(
-            (db10k - (-19.56)).abs() < 1.5,
+            (db10k - (-19.56)).abs() < 0.4,
             "LP norm=1.0 @10 kHz expected ~-19.56 dB, got {db10k:.2} dB"
+        );
+        assert!(
+            (db15k - (-26.78)).abs() < 0.4,
+            "LP norm=1.0 @15 kHz expected ~-26.78 dB, got {db15k:.2} dB"
         );
         let lp_slope = db5k - db10k;
         assert!(
-            (lp_slope - 11.5).abs() < 2.0,
-            "LP 2nd-order rolloff 5k->10k expected ~11-12 dB, got {lp_slope:.2} dB"
+            (lp_slope - 11.5).abs() < 0.5,
+            "LP 2nd-order rolloff 5k->10k expected ~11.5 dB, got {lp_slope:.2} dB"
         );
     }
 

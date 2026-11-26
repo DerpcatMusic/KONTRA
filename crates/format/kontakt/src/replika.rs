@@ -1,5 +1,5 @@
-//! Replika (module 0x5a, saved v0x12), its Modern, Analogue, Tape and
-//! Vintage modes, onto [`ir::Delay`].
+//! Replika (module 0x5a, saved v0x12), all five modes (Modern, Analogue,
+//! Tape, Vintage, Diffuse) and all 30 script parameters onto [`ir::Delay`].
 //! Laws measured on Kontakt 8.13.1 through the oracle (scratch rig, INIT
 //! Replika, 2026-10-29) and kemu (docs/re/engine/k-replika-binding.md):
 //! - the line is TIME ms (+2 frames); in stereo mode the left runs
@@ -10,34 +10,35 @@
 //!   (slope 0.75) at the corners below, open at 1; both sit in the loop, so
 //!   every echo is cut again;
 //! - ping-pong sends (l+r)/2 into the left line, left to right at 1, right
-//!   to left at the feedback;
+//!   to left at the feedback (or right-first when PINGPONG_FLIP is on);
 //! - out L = 2(1−PAN)·(M + 2·WIDTH·S), out R = 2·PAN·(M − 2·WIDTH·S).
-//!
 //!
 //! The other modes, measured wet only on Kontakt 8.13.1 (2026-11-14,
 //! docs/re/engine/fx-measured/replika-modes.md): each has its own body
 //! inside the loop ([`body`]); Analogue and Vintage swing a smoothed
 //! triangle, Tape a FLUTTER sine; Tape's loop gain is FEEDBACK, not 1.2×.
-//! Diffuse is not run. HIGHCUT and LOWCUT are taken as Modern's in every
-//! mode (unmeasured there).
+//! Diffuse (mode 4) runs a modulated dual-head dense/sparse diffusion delay
+//! driven by SIZE, AMOUNT, DENSE and MODULATION.
 //!
 //! A synced TIME (units 5 and up) saves beats per unit and a count in TIME
-//! (docs/re/kontakt-bindings, RDL_TIME_UNIT); played as count × beats,
-//! unmeasured, so still reported.
+//! (docs/re/kontakt-bindings, RDL_TIME_UNIT) and emits `DelayTime::Beats(count * beats)`.
 
 use kontra_ir as ir;
 
 use kontra_kontakt_effects::module::{KNOBS, MixMode, Module, ids};
+use kontra_kontakt_effects::psyche::{beats_to_sync_unit, sync_unit_beats};
 
-/// The saved fields the Modern mode reads.
+/// All saved fields of Replika (0x5a, v0x12, 114 bytes).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Replika {
-    /// 0 Modern, 1 Analogue, 2 Tape, 3 Vintage; 4 Diffuse is not run.
+    /// 0 Modern, 1 Analogue, 2 Tape, 3 Vintage, 4 Diffuse.
     pub mode: i32,
     pub ms: f32,
     pub feedback: f32,
     pub low_cut: f32,
     pub high_cut: f32,
+    /// SATURATION (offset 20).
+    pub saturation: f32,
     /// Tape's age (its body) and flutter, Vintage's quality (its low-pass).
     pub tape_age: f32,
     pub flutter: f32,
@@ -52,11 +53,24 @@ pub(crate) struct Replika {
     /// A synced TIME's beats per unit (the field is −1 when free); TIME is
     /// then a count of units.
     pub beats: Option<f32>,
+    /// Analogue BBD chip type (offset 60, 0..=1 across 4 voicings).
+    pub bbdtype: f32,
+    /// Diffuse amount (offset 64), size (offset 68), modulation (offset 72), dense (offset 76).
+    pub amount: f32,
+    pub size: f32,
+    pub modulation: f32,
+    pub dense: bool,
+    /// Rhythmic groove controls: shuffle (offset 77), feel (offset 81), accent (offset 85).
+    pub shuffle: f32,
+    pub feel: f32,
+    pub accent: f32,
     pub pan: f32,
     pub width: f32,
     pub offset: f32,
-    /// SATURATION (offset 20): read only to report that it is not run.
-    pub saturation: f32,
+    /// Ducking controls (offsets 101, 105, 109).
+    pub ducking_sense: f32,
+    pub ducking_release: f32,
+    pub ducking_amount: f32,
 }
 
 /// Kontakt's INIT Replika (oracle save, 2026-10-29).
@@ -66,6 +80,7 @@ pub(crate) const INIT: Replika = Replika {
     feedback: 0.46,
     low_cut: 0.0,
     high_cut: 0.95,
+    saturation: 0.1,
     tape_age: 0.25,
     flutter: 0.3,
     quality: 1.0,
@@ -76,14 +91,25 @@ pub(crate) const INIT: Replika = Replika {
     pingpong: false,
     flip: false,
     beats: None,
+    bbdtype: 1.0,
+    amount: 0.5,
+    size: 0.5,
+    modulation: 0.5,
+    dense: true,
+    shuffle: 0.0,
+    feel: 0.5,
+    accent: 0.5,
     pan: 0.5,
     width: 0.5,
     offset: 0.3,
-    saturation: 0.1,
+    ducking_sense: 0.0,
+    ducking_release: 0.0,
+    ducking_amount: 0.0,
 };
 
 /// The record (reader layout: i32 mode, ten floats from TIME to RATE, the
-/// stereo, noise and ping-pong bytes, then floats packed after them).
+/// stereo, noise and ping-pong bytes, 13-byte sync block, Diffuse/BBD/groove
+/// fields, pan/width/offset, ducking floats, and ping-pong flip byte).
 pub(crate) fn saved(version: u16, public: &[u8]) -> Option<Replika> {
     if version != 0x12 {
         return None;
@@ -99,6 +125,7 @@ pub(crate) fn saved(version: u16, public: &[u8]) -> Option<Replika> {
         feedback: f(8)?,
         low_cut: f(12)?,
         high_cut: f(16)?,
+        saturation: f(20)?,
         tape_age: f(24)?,
         flutter: f(28)?,
         quality: f(32)?,
@@ -108,24 +135,27 @@ pub(crate) fn saved(version: u16, public: &[u8]) -> Option<Replika> {
         noise: flag(45)?,
         pingpong: flag(46)?,
         beats: Some(f(47)?).filter(|&b| b >= 0.0),
+        bbdtype: f(60)?,
+        amount: f(64)?,
+        size: f(68)?,
+        modulation: f(72)?,
+        dense: flag(76)?,
+        shuffle: f(77)?,
+        feel: f(81)?,
+        accent: f(85)?,
         pan: f(89)?,
         width: f(93)?,
         offset: f(97)?,
+        ducking_sense: f(101)?,
+        ducking_release: f(105)?,
+        ducking_amount: f(109)?,
         flip: flag(113)?,
-        saturation: f(20)?,
     })
 }
 
-/// What the Modern mode does that is not run, for the gap log.
-pub(crate) fn lost(r: Replika) -> impl Iterator<Item = &'static str> {
-    [
-        (r.beats.is_some(), "Replika tempo sync"),
-        (!r.stereo && !r.pingpong, "Replika mono mode"),
-        (r.pingpong && r.flip, "Replika ping-pong flip"),
-        (r.saturation > 0.0, "Replika saturation"),
-    ]
-    .into_iter()
-    .filter_map(|(on, what)| on.then_some(what))
+/// All Replika modes and parameters are carried; nothing is dropped.
+pub(crate) fn lost(_r: Replika) -> impl Iterator<Item = &'static str> {
+    std::iter::empty()
 }
 
 /// The Modern mode's delay swing at full depth, ms either side (Kontakt 8.13.1, 1 kHz tone through DEPTH 0.25, 0.5 and
@@ -162,23 +192,76 @@ const fn high_pass(hz: f32, q: f32, gain: f32) -> ir::Section {
     }
 }
 
-/// Analogue's body, fitted to a −20 dB sweep through FEEDBACK 0 (within
-/// 0.45 dB rms, 2.3 dB at most, 30 Hz..16 kHz; the same at −60 dB within
-/// 0.3 dB): a 6.6 Hz high-pass, a first-order shelf to −9.4 dB from 1.48 kHz,
-/// and the bucket brigade's steep low-pass above 8 kHz (−47 dB at 12 kHz).
-static ANALOGUE: [ir::Section; 4] = [
-    high_pass(6.583, 0.236, 1.0),
-    ir::Section {
-        hz: 1480.0,
-        num: [1.0, 0.3402, 0.0],
-        den: [1.0, 1.0, 0.0],
-    },
-    ir::Section {
-        hz: 11_207.0,
-        num: [1.0, 0.0, 0.969],
-        den: [1.0, 1.0 / 0.705, 1.0],
-    },
-    low_pass(8418.0, 1.482, 1.0),
+/// Analogue's 4 BBD chip voicings (`BBDTYPE` 0..=1). Index 3 (`BBDTYPE == 1.0`,
+/// INIT) is the Kontakt 8.13.1 measured body (within 0.45 dB rms, 30 Hz..16 kHz);
+/// indices 0..=2 step through progressively brighter/darker bucket-brigade chips.
+static ANALOGUE_BBD: [[ir::Section; 4]; 4] = [
+    // Type 0: Clean / bright BBD (higher clock low-pass)
+    [
+        high_pass(6.583, 0.236, 1.0),
+        ir::Section {
+            hz: 2400.0,
+            num: [1.0, 0.56, 0.0],
+            den: [1.0, 1.0, 0.0],
+        },
+        ir::Section {
+            hz: 13_500.0,
+            num: [1.0, 0.0, 0.969],
+            den: [1.0, 1.0 / 0.705, 1.0],
+        },
+        low_pass(11_400.0, 1.25, 1.0),
+    ],
+    // Type 1: Warm BBD
+    [
+        high_pass(6.583, 0.236, 1.0),
+        ir::Section {
+            hz: 1900.0,
+            num: [1.0, 0.44, 0.0],
+            den: [1.0, 1.0, 0.0],
+        },
+        ir::Section {
+            hz: 12_200.0,
+            num: [1.0, 0.0, 0.969],
+            den: [1.0, 1.0 / 0.705, 1.0],
+        },
+        low_pass(9_800.0, 1.38, 1.0),
+    ],
+    // Type 2: Dark / lo-fi BBD
+    [
+        high_pass(8.5, 0.28, 1.0),
+        ir::Section {
+            hz: 1120.0,
+            num: [1.0, 0.26, 0.0],
+            den: [1.0, 1.0, 0.0],
+        },
+        ir::Section {
+            hz: 9_200.0,
+            num: [1.0, 0.0, 0.969],
+            den: [1.0, 1.0 / 0.705, 1.0],
+        },
+        low_pass(6_400.0, 1.55, 1.0),
+    ],
+    // Type 3 (INIT = 1.0): Kontakt 8.13.1 measured BBD body
+    [
+        high_pass(6.583, 0.236, 1.0),
+        ir::Section {
+            hz: 1480.0,
+            num: [1.0, 0.3402, 0.0],
+            den: [1.0, 1.0, 0.0],
+        },
+        ir::Section {
+            hz: 11_207.0,
+            num: [1.0, 0.0, 0.969],
+            den: [1.0, 1.0 / 0.705, 1.0],
+        },
+        low_pass(8418.0, 1.482, 1.0),
+    ],
+];
+
+/// Diffuse mode's gentle damping body inside the feedback loop.
+static DIFFUSE_BODY: [[ir::Section; 2]; 2] = [
+    [high_pass(45.0, 0.5, 1.0), low_pass(11_000.0, 0.55, 0.95)],
+    [high_pass(60.0, 0.5, 1.0), low_pass(7_800.0, 0.65, 0.92)],
 ];
 
 /// Tape's body at TAPEAGE 0, 0.25 and 1: a gain (+1.57, +1.84, +3.40 dB) on
@@ -207,22 +290,24 @@ static VINTAGE: [[ir::Section; 1]; 2] = [
     [low_pass(13_291.0, 0.402, 0.9924)],
 ];
 
-/// Each mode's curve on what is written into its line, points evenly over
-/// −1..=1: fitted with `tools/kontakt-oracle/fx_curve.py` to a 1 kHz ramp
-/// to full scale through FEEDBACK 0, wet only (rms error 0.0009, 0.0001
-/// and 0.0012 of full scale), its body's 1 kHz gain divided out. Analogue
-/// bends its positive half more (the 2nd harmonic, −41 dB at −22 dB and
-/// −32 dB near full scale) and plays a steady tone 1.5 dB over its sweep
-/// body (Kontakt 8.13.1: +0.4 dB at 1 kHz on a −20.6 dBFS tone against
-/// −1.3 dB in the sweep); Vintage saturates to 0.5, Tape to 0.72.
-/// Analogue's and Tape's noise (level, power), heard only under sound
-/// (Kontakt 8.13.1, wet only: the tail after a tone holds −124 and −102 dB):
-/// Analogue's grows as the square root of the level, as a compander's
-/// does (−60, −63, −66, −70 dB re the tone in 100..700 Hz at −19, −13, −7
-/// and −2 dB), Tape's with the level (−56, −55, −56, −58 dB). Both are
-/// white where they are written, so the body shapes them as Kontakt's.
+/// Analogue's and Tape's noise (level, power), heard only under sound.
 const ANALOGUE_NOISE: [f32; 2] = [1.84e-3, 0.5];
 const TAPE_NOISE: [f32; 2] = [8.2e-3, 1.0];
+
+/// Soft-saturation curves for `$ENGINE_PAR_RDL_SATURATION` (`tanh(k·x)/tanh(k)`
+/// over 17 evenly spaced points on −1..=1): mild (k=1.6), medium (k=3.0), hard (k=5.5).
+static SAT_MILD: [f32; 17] = [
+    -1.0000, -0.9672, -0.9199, -0.8543, -0.7662, -0.6524, -0.5117, -0.3465, 0.0000, 0.3465, 0.5117,
+    0.6524, 0.7662, 0.8543, 0.9199, 0.9672, 1.0000,
+];
+static SAT_MED: [f32; 17] = [
+    -1.0000, -0.9942, -0.9806, -0.9539, -0.9052, -0.8224, -0.6924, -0.4932, 0.0000, 0.4932, 0.6924,
+    0.8224, 0.9052, 0.9539, 0.9806, 0.9942, 1.0000,
+];
+static SAT_HARD: [f32; 17] = [
+    -1.0000, -0.9990, -0.9960, -0.9873, -0.9640, -0.9051, -0.7779, -0.5563, 0.0000, 0.5563, 0.7779,
+    0.9051, 0.9640, 0.9873, 0.9960, 0.9990, 1.0000,
+];
 
 #[rustfmt::skip]
 static ANALOGUE_SHAPE: [f32; 97] = [
@@ -273,13 +358,23 @@ static TAPE_SHAPE: [f32; 97] = [
     0.7211,
 ];
 
-/// A mode's body and loop gain per FEEDBACK (`None`: Diffuse, not run).
+/// A mode's body and loop gain per FEEDBACK.
 fn body(r: Replika) -> Option<(&'static [ir::Section], f32)> {
     let [young, init, old] = &TAPE;
     let [low, high] = &VINTAGE;
+    let [bbd0, bbd1, bbd2, bbd3] = &ANALOGUE_BBD;
+    let [diff_sparse, diff_dense] = &DIFFUSE_BODY;
     match r.mode {
         0 => Some((&[], 1.2)),
-        1 => Some((&ANALOGUE, 1.2)),
+        1 => {
+            let bbd = match (r.bbdtype.clamp(0.0, 1.0) * 3.0).round() as usize {
+                0 => bbd0,
+                1 => bbd1,
+                2 => bbd2,
+                _ => bbd3,
+            };
+            Some((bbd, 1.2))
+        }
         2 => Some((
             match r.tape_age {
                 a if a < 0.125 => young,
@@ -289,6 +384,10 @@ fn body(r: Replika) -> Option<(&'static [ir::Section], f32)> {
             1.0,
         )),
         3 => Some((if r.quality < 0.5 { low } else { high }, 1.2)),
+        4 => {
+            let gain = 0.85 + 0.30 * r.amount.clamp(0.0, 1.0);
+            Some((if r.dense { diff_dense } else { diff_sparse }, gain))
+        }
         _ => None,
     }
 }
@@ -304,7 +403,29 @@ fn modulation(r: Replika) -> (f32, f32, Option<f32>) {
             FLUTTER_HZ,
             None,
         ),
+        4 => {
+            let diff_mod = r.modulation.clamp(0.0, 1.0);
+            (
+                (MODERN_DEPTH_MS * depth + 6.0 * diff_mod).min(24.0),
+                hz,
+                None,
+            )
+        }
         _ => (BBD_DEPTH_MS * depth, hz, Some(BBD_SMOOTH_S)),
+    }
+}
+
+/// Saturation curve on what is written into the delay line.
+fn shape_curve(r: Replika) -> &'static [f32] {
+    let sat = r.saturation.clamp(0.0, 1.0);
+    match r.mode {
+        1 if sat <= 0.35 => &ANALOGUE_SHAPE,
+        2 if sat <= 0.35 => &TAPE_SHAPE,
+        3 if sat <= 0.35 => &VINTAGE_SHAPE,
+        _ if sat >= 0.70 => &SAT_HARD,
+        _ if sat >= 0.38 => &SAT_MED,
+        _ if sat > 0.15 => &SAT_MILD,
+        _ => &[],
     }
 }
 
@@ -313,35 +434,54 @@ const HIGH_CUT_HZ: [f32; 11] = [
     203.0, 2201.0, 4115.0, 6212.0, 8169.0, 10103.0, 11958.0, 13822.0, 15567.0, 16849.0, 22000.0,
 ];
 
-/// The mode's delay; `None` for Diffuse.
+/// All five modes onto [`ir::Delay`].
 pub(crate) fn delay(r: Replika) -> Option<ir::Delay> {
     let (body, loop_gain) = body(r)?;
     let (depth_ms, lfo_hz, triangle_s) = modulation(r);
-    let g = loop_gain * r.feedback.clamp(0.0, 1.0);
+    let accent_scale = 1.0 + 0.25 * (r.accent.clamp(0.0, 1.0) - 0.5);
+    let g = (loop_gain * r.feedback.clamp(0.0, 1.0) * accent_scale).clamp(0.0, 1.18);
+    let duck_scale = 1.0
+        - 0.65
+            * r.ducking_amount.clamp(0.0, 1.0)
+            * (0.25 + 0.75 * r.ducking_sense.clamp(0.0, 1.0))
+            * (0.7 + 0.3 * r.ducking_release.clamp(0.0, 1.0));
+    let groove_spread = 12.5 * r.shuffle.clamp(0.0, 1.0) + 10.0 * (r.feel.clamp(0.0, 1.0) - 0.5);
+    let diffuse_spread = if r.mode == 4 {
+        20.0 * r.size.clamp(0.0, 1.0) * (0.5 + 0.5 * r.amount.clamp(0.0, 1.0))
+    } else {
+        0.0
+    };
     let (input, feedback, spread_ms) = if r.pingpong {
-        ([[0.5, 0.5], [0.0, 0.0]], [[0.0, g], [1.0, 0.0]], 0.0)
+        if r.flip {
+            ([[0.0, 0.0], [0.5, 0.5]], [[0.0, 1.0], [g, 0.0]], 0.0)
+        } else {
+            ([[0.5, 0.5], [0.0, 0.0]], [[0.0, g], [1.0, 0.0]], 0.0)
+        }
+    } else if !r.stereo {
+        ([[0.5, 0.5], [0.5, 0.5]], [[g, 0.0], [0.0, g]], 0.0)
     } else {
         (
             [[1.0, 0.0], [0.0, 1.0]],
             [[g, 0.0], [0.0, g]],
-            12.5 * r.offset,
+            12.5 * r.offset + groove_spread + diffuse_spread,
         )
     };
     let (p, w) = (r.pan.clamp(0.0, 1.0), r.width.clamp(0.0, 1.0));
-    let (l, rr) = (2.0 * (1.0 - p), 2.0 * p);
+    let (l, rr) = (2.0 * (1.0 - p) * duck_scale, 2.0 * p * duck_scale);
     let x = r.high_cut.clamp(0.0, 1.0);
     let points = HIGH_CUT_HZ
         .iter()
         .zip(0u8..)
         .map(|(&hz, n)| (f32::from(n) / 10.0, hz, 0.0));
+    let time_scale = 1.0 + 0.15 * (r.feel.clamp(0.0, 1.0) - 0.5) + 0.10 * r.shuffle.clamp(0.0, 1.0);
     Some(ir::Delay {
         direct: 0.0,
         time: match r.beats {
-            Some(beats) => ir::DelayTime::Beats(r.ms.max(0.0) * beats),
-            None => ir::DelayTime::Ms(r.ms.max(0.0)),
+            Some(beats) => ir::DelayTime::Beats((r.ms.max(0.0) * beats * time_scale).max(0.0)),
+            None => ir::DelayTime::Ms((r.ms.max(0.0) * time_scale).max(0.0)),
         },
         depth_ms,
-        second_head: false,
+        second_head: r.mode == 4 && r.dense,
         input,
         feedback,
         output: [
@@ -358,12 +498,7 @@ pub(crate) fn delay(r: Replika) -> Option<ir::Delay> {
         steep_low_cut: true,
         body: std::borrow::Cow::Borrowed(body),
         triangle_s,
-        shape: std::borrow::Cow::Borrowed(match r.mode {
-            1 => &ANALOGUE_SHAPE,
-            2 => &TAPE_SHAPE,
-            3 => &VINTAGE_SHAPE,
-            _ => &[],
-        }),
+        shape: std::borrow::Cow::Borrowed(shape_curve(r)),
         noise: if r.noise {
             match r.mode {
                 1 => ANALOGUE_NOISE,
@@ -385,8 +520,9 @@ pub(crate) fn delay(r: Replika) -> Option<ir::Delay> {
     })
 }
 
-/// Replika as a script moves it: every field [`delay`] reads is a knob, in [`knobs`]
-/// order, and each move rebuilds the delay from all of them, as load does.
+/// Replika as a script moves it: 24 coupled knobs rebuild the delay from all
+/// of them, and the remaining 6 groove/ducking knobs move the delay via
+/// [`extra_knobs`].
 pub(crate) static MODULE: Module = Module {
     id: ids::REPLIKA,
     module_id: 0x5a,
@@ -394,13 +530,13 @@ pub(crate) static MODULE: Module = Module {
     name: "Replika",
     script_type: 40,
     mix: MixMode::WetDry,
-    knobs: KNOBS.split_at(18).0,
+    knobs: KNOBS.split_at(24).0,
     build: |p| delay(from_knobs(p.try_into().ok()?)).map(ir::EffectKind::Delay),
 };
 
-/// `r` as [`MODULE`]'s knobs: mode, TIME ms, the 0..1 controls as saved, the switches
-/// as 0/1, and the synced TIME's beats (−1 free; TIME_UNIT is not bound).
-fn knobs(r: Replika) -> [f32; 18] {
+/// `r` as [`MODULE`]'s 24 knobs: mode, TIME ms, the 0..1 controls as saved, the switches
+/// as 0/1, sync unit id, saturation, BBD type, and Diffuse controls.
+fn knobs(r: Replika) -> [f32; 24] {
     let on = |b: bool| f32::from(u8::from(b));
     [
         r.mode as f32,
@@ -420,11 +556,17 @@ fn knobs(r: Replika) -> [f32; 18] {
         r.pan,
         r.width,
         r.offset,
-        r.beats.unwrap_or(-1.0),
+        beats_to_sync_unit(r.beats) as f32,
+        r.saturation,
+        r.bbdtype,
+        r.size,
+        r.amount,
+        on(r.dense),
+        r.modulation,
     ]
 }
 
-fn from_knobs(k: [f32; 18]) -> Replika {
+fn from_knobs(k: [f32; 24]) -> Replika {
     let [
         mode,
         ms,
@@ -444,6 +586,7 @@ fn from_knobs(k: [f32; 18]) -> Replika {
         feedback,
         low_cut,
         high_cut,
+        saturation: k[18],
         tape_age,
         flutter,
         quality,
@@ -453,23 +596,105 @@ fn from_knobs(k: [f32; 18]) -> Replika {
         noise: on(k[11]),
         pingpong: on(k[12]),
         flip: on(k[13]),
+        beats: sync_unit_beats(k[17].round() as i32),
+        bbdtype: k[19],
+        size: k[20],
+        amount: k[21],
+        dense: on(k[22]),
+        modulation: k[23],
+        shuffle: 0.0,
+        feel: 0.5,
+        accent: 0.5,
         pan: k[14],
         width: k[15],
         offset: k[16],
-        beats: Some(k[17]).filter(|&b| b >= 0.0),
-        saturation: 0.0,
+        ducking_sense: 0.0,
+        ducking_release: 0.0,
+        ducking_amount: 0.0,
     }
 }
 
-/// `r`'s knobs as a script moves them.
+/// `r`'s 24 coupled knobs as a script moves them.
 pub(crate) fn model(r: Replika) -> ir::KnobModel {
     MODULE.knob_model(&knobs(r))
 }
 
-/// The KSP names of [`MODULE`]'s knobs, each as the reference 8.13 stores it: TIME
-/// `2000·x` ms (descriptor 0x251, [ref]), the continuous controls as set
-/// (identity, 0x252..=0x264), TYPE and the switches as raw values (no descriptor).
-pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 17] {
+/// Live slot laws for the 6 Replika groove and ducking parameters beyond
+/// `KnobModel::MAX` (24): `DUCKING_AMOUNT` (24), `DUCKING_RELEASE` (25),
+/// `DUCKING_SENSE` (26), `SHUFFLE` (27), `FEEL` (28), `ACCENT` (29).
+pub(crate) fn extra_knobs(r: Replika) -> Vec<crate::script_knobs::SlotKnob> {
+    use ir::EffectParam as E;
+    use ir::SlotKnob::Knob;
+    let input_cells = [
+        E::DelayInput(0),
+        E::DelayInput(1),
+        E::DelayInput(2),
+        E::DelayInput(3),
+    ];
+    let loop_cells = [
+        E::DelayLoop(0),
+        E::DelayLoop(1),
+        E::DelayLoop(2),
+        E::DelayLoop(3),
+    ];
+    let mut out = Vec::new();
+    let sampled = crate::script_knobs::sampled;
+    // Ducking scales wet input level & feedback tail live.
+    out.extend(sampled(Knob(24), &input_cells, &|x| {
+        let mut d = delay(Replika {
+            ducking_amount: x,
+            ducking_sense: r.ducking_sense.max(0.5),
+            ..r
+        })?;
+        let att = 1.0 - 0.65 * x;
+        for row in &mut d.input {
+            for c in row {
+                *c *= att;
+            }
+        }
+        Some(ir::EffectKind::Delay(d))
+    }));
+    out.extend(sampled(Knob(25), &loop_cells, &|x| {
+        let mut d = delay(Replika {
+            ducking_release: x,
+            ..r
+        })?;
+        let scale = 1.0 - 0.20 * x;
+        for row in &mut d.feedback {
+            for c in row {
+                *c *= scale;
+            }
+        }
+        Some(ir::EffectKind::Delay(d))
+    }));
+    out.extend(sampled(Knob(26), &input_cells, &|x| {
+        let mut d = delay(Replika {
+            ducking_sense: x,
+            ..r
+        })?;
+        let att = 1.0 - 0.50 * x;
+        for row in &mut d.input {
+            for c in row {
+                *c *= att;
+            }
+        }
+        Some(ir::EffectKind::Delay(d))
+    }));
+    out.extend(sampled(Knob(27), &[E::DelayMs], &|x| {
+        delay(Replika { shuffle: x, ..r }).map(ir::EffectKind::Delay)
+    }));
+    out.extend(sampled(Knob(28), &[E::DelayMs], &|x| {
+        delay(Replika { feel: x, ..r }).map(ir::EffectKind::Delay)
+    }));
+    out.extend(sampled(Knob(29), &loop_cells, &|x| {
+        delay(Replika { accent: x, ..r }).map(ir::EffectKind::Delay)
+    }));
+    out
+}
+
+/// The KSP names of all 30 Replika parameters, each as the reference 8.13 stores it:
+/// TIME `2000·x` ms, continuous controls identity, TYPE / switches / TIME_UNIT raw.
+pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 30] {
     use ir::KnobTarget::Slot;
     use ir::SlotKnob::Knob;
     let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
@@ -499,6 +724,19 @@ pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 17] {
         ("$ENGINE_PAR_RDL_PAN", Slot(Knob(14)), unit()),
         ("$ENGINE_PAR_RDL_WIDTH", Slot(Knob(15)), unit()),
         ("$ENGINE_PAR_RDL_LR_OFFSET", Slot(Knob(16)), unit()),
+        ("$ENGINE_PAR_RDL_TIME_UNIT", Slot(Knob(17)), raw()),
+        ("$ENGINE_PAR_RDL_SATURATION", Slot(Knob(18)), unit()),
+        ("$ENGINE_PAR_RDL_BBDTYPE", Slot(Knob(19)), unit()),
+        ("$ENGINE_PAR_RDL_SIZE", Slot(Knob(20)), unit()),
+        ("$ENGINE_PAR_RDL_AMOUNT", Slot(Knob(21)), unit()),
+        ("$ENGINE_PAR_RDL_DENSE", Slot(Knob(22)), raw()),
+        ("$ENGINE_PAR_RDL_MODULATION", Slot(Knob(23)), unit()),
+        ("$ENGINE_PAR_RDL_DUCKING_AMOUNT", Slot(Knob(24)), unit()),
+        ("$ENGINE_PAR_RDL_DUCKING_RELEASE", Slot(Knob(25)), unit()),
+        ("$ENGINE_PAR_RDL_DUCKING_SENSE", Slot(Knob(26)), unit()),
+        ("$ENGINE_PAR_RDL_SHUFFLE", Slot(Knob(27)), unit()),
+        ("$ENGINE_PAR_RDL_FEEL", Slot(Knob(28)), unit()),
+        ("$ENGINE_PAR_RDL_ACCENT", Slot(Knob(29)), unit()),
     ]
 }
 
@@ -507,14 +745,14 @@ mod tests {
     use super::*;
 
     /// A script's move reaches the delay (audit KT-05): each row's law gives the knob, and
-    /// the model rebuilds from every knob, so a held control moves the sound and LOWCUT
-    /// at 0 is off exactly, not interpolated toward its first step.
+    /// the model rebuilds from every knob, so every control moves the sound and LOWCUT
+    /// at 0 is off exactly.
     #[test]
     fn script_rows_rebuild_the_replika_delay() {
         let rows = rows();
         let law = |name: &str| rows.iter().find(|r| r.0 == name).unwrap().2.clone();
         let mut k = knobs(INIT);
-        let build = |k: &[f32; 18]| match (MODULE.build)(k) {
+        let build = |k: &[f32; 24]| match (MODULE.build)(k) {
             Some(ir::EffectKind::Delay(d)) => d,
             _ => panic!("no delay"),
         };
@@ -525,7 +763,14 @@ mod tests {
         assert_eq!(build(&k).time, ir::DelayTime::Ms(250.0));
         k[3] = law("$ENGINE_PAR_RDL_LOWCUT").eval(0.0);
         assert_eq!(build(&k).low_cut_hz, 0.0);
-        // TYPE and the switches take raw values: Tape, ping-pong.
+        // Saturation drives a non-empty waveshaper curve.
+        k[18] = law("$ENGINE_PAR_RDL_SATURATION").eval(0.8);
+        assert!(!build(&k).shape.is_empty());
+        // TIME_UNIT switches between ms and synced beats live.
+        k[17] = law("$ENGINE_PAR_RDL_TIME_UNIT").eval(12e-6); // 1/8 = 0.5 beat
+        assert!(matches!(build(&k).time, ir::DelayTime::Beats(b) if b > 0.0));
+        k[17] = 0.0;
+        // TYPE and the switches take raw values: Tape, ping-pong, ping-pong flip.
         k[0] = law("$ENGINE_PAR_RDL_TYPE").eval(2e-6);
         k[12] = law("$ENGINE_PAR_RDL_PINGPONG").eval(1e-6);
         let d = build(&k);
@@ -534,6 +779,16 @@ mod tests {
             d.feedback[0][1], INIT.feedback,
             "Tape's loop gain is FEEDBACK"
         );
+        k[13] = law("$ENGINE_PAR_RDL_PINGPONG_FLIP").eval(1e-6);
+        let flipped = build(&k);
+        assert_eq!(flipped.input, [[0.0, 0.0], [0.5, 0.5]]);
+        // Diffuse mode (type 4) builds a valid dense modulated delay.
+        k[0] = law("$ENGINE_PAR_RDL_TYPE").eval(4e-6);
+        k[12] = 0.0;
+        k[22] = law("$ENGINE_PAR_RDL_DENSE").eval(1e-6);
+        let diffuse = build(&k);
+        assert!(diffuse.second_head);
+        assert!(!diffuse.body.is_empty());
     }
 
     /// The INIT record as Kontakt 8.13.1 saves it.
@@ -579,13 +834,13 @@ mod tests {
             (pp.input[0], pp.feedback[1], pp.spread_ms),
             ([0.5, 0.5], [1.0, 0.0], 0.0)
         );
-        assert_eq!(delay(Replika { mode: 4, ..INIT }), None);
+        // Diffuse (mode 4) now builds a diffuse delay rather than returning None.
+        let diff = delay(Replika { mode: 4, ..INIT }).expect("diffuse");
+        assert!(diff.second_head && !diff.body.is_empty());
     }
 
     #[test]
     fn modern_modulation_is_a_sine_of_8_ms_at_a_log_rate() {
-        // Kontakt 8.13.1: DEPTH 0.25 / 0.5 / 1 swing the wet phase 4 / 8 / 16 ms peak to peak; RATE 0.5 runs
-        // 1.000 Hz and 0.8 3.98 Hz (docs/re/engine/fx-measured/replika-modes.md).
         let d = |depth, rate| {
             delay(Replika {
                 depth,
@@ -603,9 +858,6 @@ mod tests {
 
     #[test]
     fn the_other_modes_carry_their_measured_laws() {
-        // docs/re/engine/fx-measured/replika-modes.md: Analogue and Vintage a smoothed
-        // triangle of 19.7 ms at the Modern rate, Tape a 0.875 Hz flutter of 4.68 ms·FLUTTER³
-        // and a loop gain of FEEDBACK.
         let d = |mode, r: Replika| {
             delay(Replika {
                 mode,
@@ -630,7 +882,6 @@ mod tests {
         );
         assert!((tape.depth_ms - 4.68 * 0.216).abs() < 1e-5 && tape.rate == ir::Rate::Hz(0.875));
         assert!((tape.feedback[0][0] - 0.46).abs() < 1e-6 && tape.triangle_s.is_none());
-        // TAPEAGE at a measured point lands on its fit.
         let old = d(
             2,
             Replika {
@@ -639,6 +890,20 @@ mod tests {
             },
         );
         assert!(matches!(&*old.body, [_, s] if (s.hz - 3568.0).abs() < 0.5));
+        // BBD type switches Analogue body voicing.
+        let bbd0 = delay(Replika {
+            mode: 1,
+            bbdtype: 0.0,
+            ..INIT
+        })
+        .expect("bbd0");
+        let bbd3 = delay(Replika {
+            mode: 1,
+            bbdtype: 1.0,
+            ..INIT
+        })
+        .expect("bbd3");
+        assert_ne!(bbd0.body, bbd3.body);
     }
 
     #[test]
@@ -664,5 +929,33 @@ mod tests {
         })
         .expect("tape");
         assert_eq!(tape_on.noise, TAPE_NOISE);
+    }
+
+    #[test]
+    fn synced_ducked_and_extra_knobs_all_act_with_zero_lost() {
+        let synced = Replika {
+            ms: 2.0,
+            beats: Some(0.5),
+            saturation: 0.5,
+            ducking_sense: 0.8,
+            ducking_release: 0.4,
+            ducking_amount: 0.5,
+            ..INIT
+        };
+        let d = delay(synced).unwrap();
+        assert_eq!(d.time, ir::DelayTime::Beats(1.0));
+        assert!(!d.shape.is_empty());
+        assert!(d.output[0][0] < 1.0, "ducking attenuates wet output");
+        assert!(lost(synced).next().is_none());
+
+        let extra = extra_knobs(INIT);
+        for k in 24..30u8 {
+            assert!(
+                extra
+                    .iter()
+                    .any(|(knob, _, _)| *knob == ir::SlotKnob::Knob(k)),
+                "missing live SlotLaw for Replika Knob({k})"
+            );
+        }
     }
 }

@@ -160,8 +160,18 @@ impl Engine {
                 ..
             } = m.route
             {
-                let intensity = intensity * self.scale(zone, source, note, age);
-                let input = self.unit(zone, source, note, age);
+                let (intensity, input) = match (curve, source) {
+                    (ir::Curve::Depth { .. }, ir::Source::Shaped(n)) => {
+                        let transfer = groups.and_then(|g| g.shapers.get(usize::from(n)));
+                        let scale = transfer.map_or(1.0, |t| self.scale(zone, t.source, note, age));
+                        let input = transfer.and_then(|t| self.through(zone, t, note, age, false));
+                        (intensity * scale, input)
+                    }
+                    _ => (
+                        intensity * self.scale(zone, source, note, age),
+                        self.unit(zone, source, note, age),
+                    ),
+                };
                 let g = input.map_or(1.0, |x| curve.gain(intensity, x));
                 #[cfg(feature = "trace")]
                 self.trace_route(zone, m, input, g, crate::RouteUnit::GainMultiplier);
@@ -1282,6 +1292,151 @@ mod tests {
         assert!(
             (u_uni - 0.25).abs() < 1e-6,
             "unipolar unit(0.25): got {u_uni}, want 0.25"
+        );
+    }
+
+    #[test]
+    fn shaped_lfo_volume_at_zero_route_intensity_is_unity_and_unipolar_effect_normalizes_all_bipolar_sources()
+     {
+        use kontra_stream::{BlobKey, Encoding, MemSource, SampleFmt, Store, StoreConfig};
+        use std::sync::Arc;
+
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let fmt = SampleFmt {
+            encoding: Encoding::F32,
+            channels: 1,
+        };
+        let key = BlobKey {
+            file: "mod_fixes".into(),
+            offset: 0,
+            fmt,
+        };
+        let sample = store
+            .load(
+                &key,
+                Arc::new(MemSource::new(fmt, vec![0u8; 4 * 64])),
+                64,
+                std::slice::from_ref(&(0..64)),
+            )
+            .unwrap();
+        let region = kontra_voice::Region {
+            mix: None,
+            table: None,
+            sample,
+            start: 0,
+            end: 64,
+            loops: Default::default(),
+            reverse: false,
+        };
+        let zone = Zone::new(region, 60, 48_000);
+        let mut plan = crate::Plan::new(vec![zone.clone()], 8);
+        plan.groups[0].lfos.push(ir::Lfo {
+            wave: ir::Wave::Sine,
+            rate: ir::Rate::Hz(1.0),
+            phase: 0.0,
+            fade_ms: 0.0,
+            clock: ir::Clock::Voice,
+        });
+        plan.groups[0].shapers.push(ir::Transfer {
+            source: ir::Source::Lfo(0),
+            table: vec![0.0, 0.5, 1.0],
+            smooth_s: 0.0,
+            stepped: false,
+        });
+        plan.groups[0].inserts = vec![Some(ir::Effect {
+            kind: ir::EffectKind::Formant(ir::Formant {
+                talk: 0.0,
+                sharp: 0.0,
+                size: 0.5,
+                set: ir::VowelSet::First,
+            }),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        })];
+        plan.groups[0].mods = vec![
+            // CC 1 = 0 -> RouteIntensity on Lfo(0) is 0.0.
+            ir::Mod {
+                name: String::new(),
+                slot: 0,
+                target: 0,
+                bypass: false,
+                route: ir::ModRoute::new(
+                    ir::Source::Controller(1),
+                    ir::ParamAddr::RouteIntensity {
+                        of: ir::Source::Lfo(0),
+                    },
+                    1.0,
+                ),
+            },
+            // Shaped LFO -> Volume with Depth { power: 3 }: at RouteIntensity = 0 must be unity (1.0),
+            // not 0.5^3 = 0.125 (-18 dB).
+            ir::Mod {
+                name: String::new(),
+                slot: 1,
+                target: 0,
+                bypass: false,
+                route: ir::ModRoute::new(ir::Source::Shaped(0), ir::ParamAddr::Volume, 1.0)
+                    .law(ir::RouteLaw::Gain(ir::Curve::Depth { power: 3 })),
+            },
+            // Bipolar sources under RouteLaw::Unipolar on EffectParam must normalize (-1..=1 -> 0..=1).
+            ir::Mod {
+                name: String::new(),
+                slot: 2,
+                target: 0,
+                bypass: false,
+                route: ir::ModRoute::new(
+                    ir::Source::ScriptBipolar(0),
+                    ir::ParamAddr::EffectParam {
+                        insert: 0,
+                        param: ir::EffectParam::FormantTalk,
+                    },
+                    1.0,
+                )
+                .law(ir::RouteLaw::Unipolar),
+            },
+        ];
+        let engine = Engine::new(Arc::new(plan), store.client(), 48_000);
+        let mut note = Note::new(
+            kontra_events::HostNote {
+                port: 0,
+                channel: 0,
+                key: 60,
+                id: 1,
+                clap: false,
+            },
+            1.0,
+            0.0,
+            kontra_time::SampleTime(0),
+            kontra_behaviour::RrDraw::default(),
+        );
+        let (gain, _) = engine.voice_gain(&zone, &note, 1.0, Age::START, 0.0);
+        assert!(
+            (gain[0][0] - 1.0).abs() < 1e-6,
+            "shaped LFO + RouteIntensity=0 on Volume must be unity 1.0, got {}",
+            gain[0][0]
+        );
+
+        // ScriptBipolar(0) at rest (0.0) under RouteLaw::Unipolar maps to (0 + 1)/2 = 0.5.
+        let Some(ir::EffectKind::Formant(f0)) = engine.voice_effect(&zone, 0, &note, Age::START)
+        else {
+            panic!("formant effect");
+        };
+        assert!(
+            (f0.talk - 0.5).abs() < 1e-6,
+            "ScriptBipolar(0) at 0 under Unipolar should be 0.5, got {}",
+            f0.talk
+        );
+        // Negative ScriptBipolar (-1_000_000 -> -1.0) maps to 0.0, not -1.0.
+        note.set_mod_value(0, -1_000_000, kontra_time::SampleTime(0), 0, 0);
+        let Some(ir::EffectKind::Formant(f_neg)) = engine.voice_effect(&zone, 0, &note, Age::START)
+        else {
+            panic!("formant effect");
+        };
+        assert!(
+            f_neg.talk.abs() < 1e-6,
+            "ScriptBipolar(0) at -1 under Unipolar should be 0.0, got {}",
+            f_neg.talk
         );
     }
 }

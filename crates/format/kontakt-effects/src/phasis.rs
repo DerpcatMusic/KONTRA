@@ -42,7 +42,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 pub fn phasis(p: [f32; 13]) -> ir::EffectKind {
     let [
         rate,
-        _unit,
+        unit,
         ultra,
         amount,
         centre,
@@ -55,8 +55,8 @@ pub fn phasis(p: [f32; 13]) -> ir::EffectKind {
         invert_mod,
         mix,
     ] = p;
-    let [rate, amount, centre, stereo, spread, feedback, mod_mix, mix] =
-        [rate, amount, centre, stereo, spread, feedback, mod_mix, mix].map(|x| x.clamp(0.0, 1.0));
+    let [amount, centre, stereo, spread, feedback, mod_mix, mix] =
+        [amount, centre, stereo, spread, feedback, mod_mix, mix].map(|x| x.clamp(0.0, 1.0));
     let ultra = if ultra > 0.0 { 1.0 } else { 0.0 };
     let stages = notches.round().clamp(2.0, 12.0);
     // The ramps of [ref] ([ref]..f4), Ultra off to on.
@@ -65,8 +65,23 @@ pub fn phasis(p: [f32; 13]) -> ir::EffectKind {
     let reach = amount * amount * (1.0 + ultra * ((2.0 / stages).powf(0.7) - 1.0));
     let mm = (mod_mix * (2.0 * invert_mod.clamp(0.0, 1.0) - 1.0)).clamp(-1.0, 1.0);
     let note = lerp(lerp(30.0, -30.0, ultra), lerp(120.0, 190.0, ultra), centre);
-    let rate_note = lerp(-120.0, lerp(20.0, 111.0, ultra), rate);
-    let lfo_hz = 440.0 * ((rate_note - 69.0) / 12.0).exp2();
+    let rate_unit_beats = crate::psyche::sync_unit_beats(unit.round() as i32);
+    let rate_clamped = rate.clamp(0.0, 1.0);
+    let rate_note = lerp(-120.0, lerp(20.0, 111.0, ultra), rate_clamped);
+    let free_hz = 440.0 * ((rate_note - 69.0) / 12.0).exp2();
+    let (lfo_rate, lfo_hz) = match rate_unit_beats {
+        Some(beats) => {
+            let count = if rate > 1.0 {
+                rate.round().max(1.0)
+            } else {
+                (1.0 + 7.0 * (1.0 - rate_clamped)).round().max(1.0)
+            };
+            // Reference 120 BPM equivalent Hz for triangle rounding.
+            let eq_hz = (2.0 / (beats * count)).clamp(0.01, 200.0);
+            (ir::Rate::Steps { beats, count }, eq_hz)
+        }
+        None => (ir::Rate::Hz(free_hz), free_hz),
+    };
     ir::EffectKind::Notches(ir::Notches {
         stages: stages as u8,
         hz: 440.0 * ((note - 69.0) / 12.0).exp2(),
@@ -77,7 +92,7 @@ pub fn phasis(p: [f32; 13]) -> ir::EffectKind {
         feedback: 0.95 * feedback,
         loop_width: 1.0 / (0.25 / stages).tan(),
         loop_top: 0.1,
-        rate: ir::Rate::Hz(lfo_hz),
+        rate: lfo_rate,
         rounding: 1.995 * (lfo_hz - 1.0).clamp(0.0, 1.0).powi(3),
         // log₂₀ f as notes: 1 Hz is note −36.376, 20 Hz 51.86 notes on.
         depth: (-2.657_542_5 * ((rate_note + 36.376_3) * 0.019_281_5).clamp(0.0, 1.0)).exp2(),
@@ -123,7 +138,8 @@ pub fn saved(version: u16, public: &[u8]) -> Option<[f32; 13]> {
     let invert_phase = flag(37)?;
     let invert_mod_mix = flag(38)?;
     let rate_unit_beats = f(39)?;
-    let unit = if rate_unit_beats > 1e-9 { 1.0 } else { 0.0 };
+    let unit =
+        crate::psyche::beats_to_sync_unit(Some(rate_unit_beats).filter(|&b| b > 1e-9)) as f32;
     Some([
         rate,
         unit,
@@ -139,6 +155,19 @@ pub fn saved(version: u16, public: &[u8]) -> Option<[f32; 13]> {
         invert_mod_mix,
         mix,
     ])
+}
+
+/// Whether a saved `BParFXPhasis` v0x51 record uses host tempo sync (`rate_unit_beats > 0`).
+#[must_use]
+pub fn synced(version: u16, public: &[u8]) -> bool {
+    if version != 0x51 {
+        return false;
+    }
+    public
+        .get(39..43)
+        .and_then(|b| b.try_into().ok())
+        .map(f32::from_le_bytes)
+        .is_some_and(|beats| beats.is_finite() && beats > 1e-9)
 }
 
 /// Single-encoding module descriptor for Phasis (`0x5b`).
@@ -183,10 +212,10 @@ pub fn slot_type() -> ir::SlotType {
     }
 }
 
-/// The KSP names of [`model`]'s knobs: a straight 0..1 for the continuous
+/// The KSP names of [`model`]'s active knobs: a straight 0..1 for the continuous
 /// ones (their texts are 0..100 % straight lines, or the laws above); the
-/// stepped ones (notches 2..12, the switches, the unit) are set as raw
-/// values.
+/// stepped ones (notches 2..12, rate unit `$NI_SYNC_UNIT_*`, switches) are set
+/// as raw values.
 pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 13] {
     use ir::KnobTarget::Slot;
     use ir::SlotKnob::Knob;

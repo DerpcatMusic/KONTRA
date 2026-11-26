@@ -176,21 +176,6 @@ pub(crate) fn external(
                     }
                 }
                 let kind = match (source, t.param.as_str(), t.slot) {
-                    (Some(source), "volume", None) => Some(
-                        ir::ModRoute::new(source, ir::ParamAddr::Volume, t.signed_intensity())
-                            .law(ir::RouteLaw::Gain(laws::volume(raw.unwrap_or(source))))
-                            .smooth(laws::route_tau_ms(t.lag_ms)),
-                    ),
-                    (Some(source), "pan", None) => Some(ir::ModRoute::new(
-                        source,
-                        ir::ParamAddr::Pan,
-                        t.signed_intensity(),
-                    )),
-                    (Some(source), "pitch", None) => Some(
-                        ir::ModRoute::new(source, ir::ParamAddr::Pitch, t.signed_intensity())
-                            .span(laws::PITCH_SEMITONES)
-                            .smooth(laws::route_tau_ms(t.lag_ms)),
-                    ),
                     // Targets 7 and 8; the loop consumer
                     // [ref] adds `(int)(frames · x)` to both bounds,
                     // or to the end, every 32 frames.
@@ -205,46 +190,11 @@ pub(crate) fn external(
                             t.signed_intensity(),
                         ))
                     }
-                    (Some(source), param, None)
-                        if let Some(value) = crate::wavetable::target(param) =>
-                    {
-                        Some(ir::ModRoute::new(
-                            source,
-                            ir::ParamAddr::Wavetable(value),
-                            t.signed_intensity(),
-                        ))
-                    }
                     (Some(source), "playPos", None) => Some(ir::ModRoute::new(
                         source,
                         ir::ParamAddr::SampleStart,
                         t.signed_intensity(),
                     )),
-                    (Some(source), "filterCutoff", Some(insert)) => Some(ir::ModRoute::new(
-                        source,
-                        ir::ParamAddr::FilterCutoff { insert },
-                        t.signed_intensity(),
-                    )),
-                    (Some(source), "filterQ", Some(insert)) => Some(ir::ModRoute::new(
-                        source,
-                        ir::ParamAddr::FilterResonance { insert },
-                        t.signed_intensity(),
-                    )),
-                    (Some(source), param, Some(insert))
-                        if crate::provenance::eq_band_index(param, group_index, n, target)
-                            .is_some() =>
-                    {
-                        let result = laws::eq_gain(source, insert, param, t.signed_intensity());
-                        kontra_law::record(|| kontra_law::Application {
-                            id: kontra_law::LawId("kontakt.eq_gain_route.v1"),
-                            location: format!("groups/{group_index}/routes/{n}/targets/{target}"),
-                            input: format!(
-                                "source={source:?}, insert={insert}, param={param}, intensity={:?}",
-                                t.signed_intensity()
-                            ),
-                            output: format!("{result:?}"),
-                        });
-                        result
-                    }
                     // The target table names it 0xb4; the law
                     // compiler adds `E·intensity` in knob
                     // units, one cycle.
@@ -277,37 +227,20 @@ pub(crate) fn external(
                         });
                         result
                     }
-                    (Some(source), param, Some(insert)) => {
-                        crate::drive::route(source, insert, param, t.signed_intensity())
-                    }
+                    (Some(source), _, _) => common_route(
+                        source,
+                        raw.unwrap_or(source),
+                        t,
+                        laws::volume(raw.unwrap_or(source)),
+                        laws::PITCH_SEMITONES,
+                        true,
+                        group_index,
+                        n,
+                        target,
+                    ),
                     _ => None,
                 };
                 if let Some(kind) = kind {
-                    match &kind {
-                        ir::ModRoute {
-                            target: ir::ParamAddr::Volume,
-                            source,
-                            smooth_ms: tau_ms,
-                            law: ir::RouteLaw::Gain(curve),
-                            ..
-                        } => {
-                            kontra_law::record(|| kontra_law::Application {
-                                id: kontra_law::LawId("kontakt.volume_source_curve.v1"),
-                                location: format!(
-                                    "groups/{group_index}/routes/{n}/targets/{target}/curve"
-                                ),
-                                input: format!("source={:?}", raw.unwrap_or(*source)),
-                                output: format!("{curve:?}"),
-                            });
-                            record_lag(group_index, n, target, t.lag_ms, *tau_ms);
-                        }
-                        ir::ModRoute {
-                            target: ir::ParamAddr::Pitch,
-                            smooth_ms: tau_ms,
-                            ..
-                        } => record_lag(group_index, n, target, t.lag_ms, *tau_ms),
-                        _ => {}
-                    }
                     if t.lag_ms < 0 {
                         notes.add(ir::Impact::Audible, "negative modulation lag", &p.name);
                     }
@@ -351,6 +284,81 @@ fn staged_envelope(
     })
 }
 
+/// Shared live target routing for external and timed modulators: maps the
+/// common targets (`volume`, `pan`, `pitch`, `filterCutoff`, `filterQ`,
+/// wavetable, EQ gain, and drive/effect parameters) and preserves `t.lag_ms`
+/// via `smooth_ms` on every live route.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn common_route(
+    source: ir::Source,
+    raw_source: ir::Source,
+    t: &ModTarget,
+    volume_curve: ir::Curve,
+    pitch_semitones: f32,
+    record_volume_curve: bool,
+    group_index: usize,
+    route_slot: usize,
+    target: usize,
+) -> Option<ir::ModRoute> {
+    let intensity = t.signed_intensity();
+    let tau_ms = laws::route_tau_ms(t.lag_ms);
+    let route = match (t.param.as_str(), t.slot) {
+        ("volume", None) => {
+            if record_volume_curve {
+                kontra_law::record(|| kontra_law::Application {
+                    id: kontra_law::LawId("kontakt.volume_source_curve.v1"),
+                    location: format!(
+                        "groups/{group_index}/routes/{route_slot}/targets/{target}/curve"
+                    ),
+                    input: format!("source={raw_source:?}"),
+                    output: format!("{volume_curve:?}"),
+                });
+            }
+            ir::ModRoute::new(source, ir::ParamAddr::Volume, intensity)
+                .law(ir::RouteLaw::Gain(volume_curve))
+        }
+        ("pan", None) => ir::ModRoute::new(source, ir::ParamAddr::Pan, intensity),
+        ("pitch", None) => {
+            ir::ModRoute::new(source, ir::ParamAddr::Pitch, intensity).span(pitch_semitones)
+        }
+        ("filterCutoff", Some(insert)) => {
+            ir::ModRoute::new(source, ir::ParamAddr::FilterCutoff { insert }, intensity)
+        }
+        ("filterQ", Some(insert)) => {
+            ir::ModRoute::new(source, ir::ParamAddr::FilterResonance { insert }, intensity)
+        }
+        (param, None) if let Some(value) = crate::wavetable::target(param) => {
+            ir::ModRoute::new(source, ir::ParamAddr::Wavetable(value), intensity)
+        }
+        (param, Some(insert))
+            if crate::provenance::eq_band_index(param, group_index, route_slot, target)
+                .is_some() =>
+        {
+            let result = laws::eq_gain(source, insert, param, intensity);
+            kontra_law::record(|| kontra_law::Application {
+                id: kontra_law::LawId("kontakt.eq_gain_route.v1"),
+                location: format!("groups/{group_index}/routes/{route_slot}/targets/{target}"),
+                input: format!(
+                    "source={source:?}, insert={insert}, param={param}, intensity={intensity:?}"
+                ),
+                output: format!("{result:?}"),
+            });
+            result?
+        }
+        (param, Some(insert)) => crate::drive::route(source, insert, param, intensity)?,
+        _ => return None,
+    };
+    if tau_ms > 0.0
+        || matches!(
+            route.target,
+            ir::ParamAddr::Volume | ir::ParamAddr::Pitch | ir::ParamAddr::Wavetable(_)
+        )
+    {
+        record_lag(group_index, route_slot, target, t.lag_ms, tau_ms);
+    }
+    Some(route.smooth(tau_ms))
+}
+
 /// A route to another modulator's knob, by the target's law whatever modulates it:
 /// an LFO's `frequency` (0x1a) moves by `signal·intensity`; `intensity` (0x19) scales by
 /// `1 − (1 − signal)·intensity` ([ref]; flag 4, a screen form, is unused).
@@ -362,15 +370,19 @@ pub(crate) fn modulator_route(
     timed_slots: &[(usize, ir::Source)],
 ) -> Option<ir::ModRoute> {
     let (_, of) = timed_slots.iter().find(|&&(n, _)| n == usize::from(at))?;
+    let tau_ms = laws::route_tau_ms(t.lag_ms);
     match (param, *of) {
         ("frequency", ir::Source::Lfo(lfo)) => {
-            Some(laws::lfo_rate(source, lfo, t.signed_intensity()))
+            Some(laws::lfo_rate(source, lfo, t.signed_intensity()).smooth(tau_ms))
         }
-        ("intensity", of) if t.unknown_flags & 4 == 0 => Some(ir::ModRoute::new(
-            source,
-            ir::ParamAddr::RouteIntensity { of },
-            t.signed_intensity(),
-        )),
+        ("intensity", of) if t.unknown_flags & 4 == 0 => Some(
+            ir::ModRoute::new(
+                source,
+                ir::ParamAddr::RouteIntensity { of },
+                t.signed_intensity(),
+            )
+            .smooth(tau_ms),
+        ),
         _ => None,
     }
 }
@@ -384,60 +396,35 @@ fn ahdsr_route(
     scale: ir::TimeScale,
     envelope: Option<u8>,
 ) -> Option<ir::ModRoute> {
-    Some(match stage {
-        "ahdsr_attack" => ir::ModRoute::new(
-            source,
-            ir::ParamAddr::EnvelopeStage {
-                envelope,
-                stage: ir::EnvStage::Attack,
-            },
-            intensity,
-        )
-        .law(ir::RouteLaw::Time(scale)),
-        "ahdsr_hold" => ir::ModRoute::new(
-            source,
-            ir::ParamAddr::EnvelopeStage {
-                envelope,
-                stage: ir::EnvStage::Hold,
-            },
-            intensity,
-        )
-        .law(ir::RouteLaw::Time(scale)),
-        "ahdsr_decay" => ir::ModRoute::new(
-            source,
-            ir::ParamAddr::EnvelopeStage {
-                envelope,
-                stage: ir::EnvStage::Decay,
-            },
-            intensity,
-        )
-        .law(ir::RouteLaw::Time(scale)),
-        // Sustain scales knob `u` by `m^p` (`p = 3` for external source types
-        // 7..=13 via `fcubic`, `p = 1` for types 1..=5 / ZoneEnvelope), and
-        // Kontakt sustain level is `S = u³`, so `S' = (u·m^p)³ = S·m^(3p)`
-        //.
-        "ahdsr_sustain" => ir::ModRoute::new(
-            source,
-            ir::ParamAddr::EnvelopeStage {
-                envelope,
-                stage: ir::EnvStage::Sustain,
-            },
-            intensity,
-        )
-        .law(ir::RouteLaw::Gain(ir::Curve::Depth {
-            power: 3 * laws::source_power(raw_source),
-        })),
-        "ahdsr_release" => ir::ModRoute::new(
-            source,
-            ir::ParamAddr::EnvelopeStage {
-                envelope,
-                stage: ir::EnvStage::Release,
-            },
-            intensity,
-        )
-        .law(ir::RouteLaw::Time(scale)),
+    let env_stage = match stage {
+        "ahdsr_attack" => ir::EnvStage::Attack,
+        "ahdsr_hold" => ir::EnvStage::Hold,
+        "ahdsr_decay" => ir::EnvStage::Decay,
+        "ahdsr_sustain" => ir::EnvStage::Sustain,
+        "ahdsr_release" => ir::EnvStage::Release,
         _ => return None,
-    })
+    };
+    // Sustain scales knob `u` by `m^p` (`p = 3` for external source types
+    // 7..=13 via `fcubic`, `p = 1` for types 1..=5 / ZoneEnvelope), and
+    // Kontakt sustain level is `S = u³`, so `S' = (u·m^p)³ = S·m^(3p)`.
+    let law = if env_stage == ir::EnvStage::Sustain {
+        ir::RouteLaw::Gain(ir::Curve::Depth {
+            power: 3 * laws::source_power(raw_source),
+        })
+    } else {
+        ir::RouteLaw::Time(scale)
+    };
+    Some(
+        ir::ModRoute::new(
+            source,
+            ir::ParamAddr::EnvelopeStage {
+                envelope,
+                stage: env_stage,
+            },
+            intensity,
+        )
+        .law(law),
+    )
 }
 
 /// Deduplicated 2-point linear transfer mapping `ir::Source::Key` (`key / 127`)
@@ -745,5 +732,63 @@ mod tests {
         let bp = laws::dbd(&flagged);
         assert_eq!(bp.start, 0.0);
         assert!(bp.points.is_empty());
+    }
+
+    #[test]
+    fn kt14_common_route_preserves_lag_ms_across_all_live_targets() {
+        let make_target = |param: &str, slot: Option<u8>| ModTarget {
+            name: String::new(),
+            param: param.to_string(),
+            intensity: 0.5,
+            slot,
+            lag_ms: 50,
+            shaper: None,
+            table_open: false,
+            unknown_i16: -1,
+            unknown_flags: 0,
+        };
+        let cases = [
+            ("volume", None),
+            ("pan", None),
+            ("pitch", None),
+            ("wavetablePosition", None),
+            ("filterCutoff", Some(0)),
+            ("filterQ", Some(0)),
+            ("eqGain1", Some(1)),
+            ("distortionIntensity", Some(2)),
+        ];
+        for (param, slot) in cases {
+            let t = make_target(param, slot);
+            let route = common_route(
+                ir::Source::Controller(1),
+                ir::Source::Controller(1),
+                &t,
+                ir::Curve::Depth { power: 1 },
+                laws::PITCH_SEMITONES,
+                false,
+                0,
+                0,
+                0,
+            )
+            .unwrap_or_else(|| panic!("expected route for {param}"));
+            assert!(
+                route.smooth_ms > 0.0,
+                "KT-14: expected smooth_ms > 0 for {param}, got {}",
+                route.smooth_ms
+            );
+        }
+        let freq = make_target("frequency", Some(0));
+        let lfo_route = modulator_route(
+            ir::Source::Controller(1),
+            "frequency",
+            0,
+            &freq,
+            &[(0, ir::Source::Lfo(0))],
+        )
+        .expect("lfo frequency route");
+        assert!(
+            lfo_route.smooth_ms > 0.0,
+            "KT-14: expected smooth_ms > 0 for LFO frequency"
+        );
     }
 }

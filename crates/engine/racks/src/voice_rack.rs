@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use kontra_dsp::delay::{Comb, line_frames};
 use kontra_dsp::drive::{Core, Crush, Outer, Overdrive};
-use kontra_dsp::filter::{Formant, Svf, VowelSet, Vowels};
+use kontra_dsp::filter::{Clocked, ClockedShape, Formant, Svf, VowelSet, Vowels};
 use kontra_ir as ir;
 use kontra_plan::route_depth;
 
@@ -65,6 +65,7 @@ pub struct Ramp {
 #[derive(Clone)]
 pub enum Kind {
     Filter(Svf),
+    Clocked(Clocked),
     Eq(VoiceEq),
     Formant(Formant),
     Shaper(Core),
@@ -111,6 +112,14 @@ fn unit(kind: &ir::EffectKind, rate: u32) -> Option<(Kind, Outer)> {
             let mut svf = Svf::new(shape(f));
             svf.set_cutoff(f.hz, rate);
             Kind::Filter(svf)
+        }
+        ir::EffectKind::Clocked(c) => {
+            let shape = match c.shape {
+                ir::ClockedShape::Allpass => ClockedShape::Allpass,
+                ir::ClockedShape::VowelLow => ClockedShape::VowelLow,
+                ir::ClockedShape::VowelHigh => ClockedShape::VowelHigh,
+            };
+            Kind::Clocked(Clocked::new(shape, [c.cutoff, c.resonance], rate))
         }
         ir::EffectKind::Eq(bells) => Kind::Eq(VoiceEq::new(*bells, rate)),
         ir::EffectKind::Formant(f) => Kind::Formant(Formant::new(vowels(*f), rate)),
@@ -247,6 +256,7 @@ pub fn process(
             let (chunk, tail) = rest.split_at_mut(n);
             match &mut u.kind {
                 Kind::Filter(f) => f.process(chunk),
+                Kind::Clocked(c) => c.process(chunk),
                 Kind::Eq(q) => q.process(chunk),
                 Kind::Formant(f) => f.process(chunk),
                 Kind::Shaper(s) => drive(chunk, spare, e, |io| {
@@ -339,6 +349,7 @@ fn tune(kind: &mut Kind, outer: &mut Outer, t: Tune<'_>, rate: u32) {
             f.set_cutoff(hz, rate);
             f.set_damping(k);
         }
+        (Kind::Clocked(c), Tune::Clocked(knobs)) => c.set(knobs),
         (Kind::Eq(q), Tune::Eq(bells)) => q.retune(bells, rate),
         (Kind::Comb(c), Tune::Comb(hz, feedback)) => c.set(hz, feedback, rate),
         (Kind::Formant(f), Tune::Effect(ir::EffectKind::Formant(v))) => f.set(vowels(*v), rate),
@@ -363,6 +374,7 @@ fn tune(kind: &mut Kind, outer: &mut Outer, t: Tune<'_>, rate: u32) {
 /// A moved unit's new settings.
 pub enum Tune<'a> {
     Filter(f32, [f32; 3]),
+    Clocked([f32; 2]),
     Eq([ir::Bell; 4]),
     /// A comb's pitch in Hz and feedback.
     Comb(f32, f32),
@@ -450,5 +462,63 @@ mod tests {
         tune_unit(&mut rack[0], Tune::Effect(&squeezed), None, rate);
         let after = peak(&mut rack, &inserts);
         assert!(after < 0.5 * before, "not retuned: {before} then {after}");
+    }
+
+    /// KT-21: a group clocked phaser or vowel filter placed before a drive
+    /// runs per-voice in true signal order inside the voice rack and retunes
+    /// live without allocation.
+    #[test]
+    fn kt21_clocked_filter_before_drive_runs_per_voice_in_signal_order() {
+        let rate = 48_000;
+        let mut g = kontra_plan::Group::standard();
+        g.inserts = vec![
+            Some(ir::Effect {
+                kind: ir::EffectKind::Clocked(ir::Clocked {
+                    shape: ir::ClockedShape::Allpass,
+                    cutoff: 0.2,
+                    resonance: 0.8,
+                }),
+                bypass: false,
+                output: 1.0,
+                dry: 0.0,
+            }),
+            Some(ir::Effect {
+                kind: ir::EffectKind::Shaper(ir::Shaper {
+                    pre_lowpass_hz: None,
+                    curve: ir::DriveCurve::Soft(0.75),
+                    lowpass_hz: None,
+                    highpass_hz: None,
+                    sections: ir::Sections::NONE,
+                }),
+                bypass: false,
+                output: 1.0,
+                dry: 0.0,
+            }),
+        ];
+        let tmpl = template(&g, rate);
+        assert_eq!(tmpl.len(), 2, "clocked + shaper must both run per-voice");
+        assert!(matches!(tmpl[0].kind, Kind::Clocked(_)) && tmpl[0].insert == 0);
+        assert!(matches!(tmpl[1].kind, Kind::Shaper(_)) && tmpl[1].insert == 1);
+        assert_eq!(crate::group_racks::split(&g, &tmpl), None);
+
+        let mut rack: Vec<Unit> = tmpl.iter().cloned().collect();
+        let mut spare = vec![[0.0; 2]; 256];
+        let mut run = |rack: &mut [Unit]| -> f32 {
+            let mut io: Vec<[f32; 2]> = (0..256)
+                .map(|i| {
+                    let t = i as f32 / rate as f32;
+                    [0.6 * (std::f32::consts::TAU * 600.0 * t).sin(); 2]
+                })
+                .collect();
+            process(rack, &g.inserts, &mut io, &mut spare, &mut [], rate);
+            io.iter().map(|f| f[0] * f[0]).sum::<f32>().sqrt()
+        };
+        let r0 = run(&mut rack);
+        tune_unit(&mut rack[0], Tune::Clocked([0.9, 0.8]), None, rate);
+        let r1 = run(&mut rack);
+        assert!(
+            r0 > 0.1 && r1 > 0.1 && (r0 - r1).abs() > 1e-3,
+            "{r0} vs {r1}"
+        );
     }
 }

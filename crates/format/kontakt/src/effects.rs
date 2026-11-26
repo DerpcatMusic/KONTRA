@@ -64,36 +64,316 @@ const fn model(
 }
 
 use Map::Read;
-use kontra_kontakt_effects::module::Module;
+use kontra_kontakt_effects::module::{KNOBS, MixMode, Module};
 
+const ID_LOFI: ir::ModelId = ir::ModelId(ir::ModelId::KONTAKT_BASE + 52);
+const ID_HILBERT_LIMITER: ir::ModelId = ir::ModelId(ir::ModelId::KONTAKT_BASE + 53);
+const ID_LIMITER: ir::ModelId = ir::ModelId(ir::ModelId::KONTAKT_BASE + 54);
+const ID_INVERTER: ir::ModelId = ir::ModelId(ir::ModelId::KONTAKT_BASE + 55);
+const ID_GAINER: ir::ModelId = ir::ModelId(ir::ModelId::KONTAKT_BASE + 56);
+const ID_SATURATION: ir::ModelId = ir::ModelId(ir::ModelId::KONTAKT_BASE + 57);
+const ID_CONVOLUTION: ir::ModelId = ir::ModelId(ir::ModelId::KONTAKT_BASE + 58);
+const ID_STEREO: ir::ModelId = ir::ModelId(ir::ModelId::KONTAKT_BASE + 59);
+const ID_FILTER: ir::ModelId = ir::ModelId(ir::ModelId::KONTAKT_BASE + 60);
+
+struct LofiModel;
+impl ir::EffectModel for LofiModel {
+    fn build(&self, params: &[f32]) -> Option<ir::EffectKind> {
+        let &[noise, color, bits, freq] = params else {
+            return None;
+        };
+        Some(crate::drive::lofi(bits, freq, noise, color))
+    }
+
+    fn build_effect(&self, params: &[f32], current: &ir::Effect) -> Option<ir::Effect> {
+        let &[noise, color, ..] = params else {
+            return None;
+        };
+        let mut kind = current.kind.clone();
+        if let ir::EffectKind::Crush(c) = &mut kind {
+            c.noise = if noise >= 0.001 { noise * 0.075 } else { 0.0 };
+            c.noise_tone = 1.0 - 0.9 * color.clamp(0.0, 1.0);
+        } else {
+            kind = self.build(params)?;
+        }
+        Some(ir::Effect { kind, ..*current })
+    }
+}
+static LOFI_EFFECT_MODEL: LofiModel = LofiModel;
+
+struct SaturationModel;
+impl ir::EffectModel for SaturationModel {
+    fn build(&self, params: &[f32]) -> Option<ir::EffectKind> {
+        let &[algo, shape] = params else {
+            return None;
+        };
+        crate::drive::saturation_mode(algo.round() as i32, shape)
+    }
+
+    fn build_effect(&self, params: &[f32], current: &ir::Effect) -> Option<ir::Effect> {
+        let &[algo, saved_shape] = params else {
+            return None;
+        };
+        let shape = match &current.kind {
+            ir::EffectKind::Shaper(s) => match s.curve {
+                ir::DriveCurve::Soft(x) => x,
+                ir::DriveCurve::Blend { t, .. } => 2.0 * t - 1.0,
+                _ => saved_shape,
+            },
+            _ => saved_shape,
+        };
+        let kind = crate::drive::saturation_mode(algo.round() as i32, shape)?;
+        Some(ir::Effect { kind, ..*current })
+    }
+}
+static SATURATION_EFFECT_MODEL: SaturationModel = SaturationModel;
+
+/// Builds Stereo Modeller (`0x1f`) as `EffectKind::Stereo` when pseudo is off,
+/// or as a zero-feedback Haas delay (`10 * width^3` ms on the right channel)
+/// when `$ENGINE_PAR_STEREO_PSEUDO` is enabled.
+fn build_stereo(width: f32, pan: f32, pseudo: bool) -> ir::EffectKind {
+    let width = width.clamp(0.0, 1.0);
+    let pan = pan.clamp(-1.0, 1.0);
+    if !pseudo {
+        return ir::EffectKind::Stereo { width, pan };
+    }
+    let delay_ms = 10.0 * width.powi(3);
+    let half = delay_ms * 0.5;
+    let l_gain = (1.0 - pan.max(0.0)).clamp(0.0, 1.0);
+    let r_gain = (1.0 + pan.min(0.0)).clamp(0.0, 1.0);
+    ir::EffectKind::Delay(ir::Delay {
+        time: ir::DelayTime::Ms(half + 0.05),
+        depth_ms: 0.0,
+        second_head: false,
+        input: [[1.0, 0.0], [0.0, 1.0]],
+        feedback: [[0.0, 0.0], [0.0, 0.0]],
+        output: [[l_gain, 0.0], [0.0, r_gain]],
+        damping_hz: f32::INFINITY,
+        low_cut_hz: 0.0,
+        steep_low_cut: false,
+        body: std::borrow::Cow::Borrowed(&[]),
+        triangle_s: None,
+        shape: std::borrow::Cow::Borrowed(&[]),
+        noise: [0.0; 2],
+        high_shelf: None,
+        spread_ms: half,
+        rate: ir::Rate::Hz(0.0),
+        phase: 0.0,
+        direct: 0.0,
+    })
+}
+
+struct StereoModel;
+impl ir::EffectModel for StereoModel {
+    fn build(&self, params: &[f32]) -> Option<ir::EffectKind> {
+        let &[pseudo, width, pan] = params else {
+            return None;
+        };
+        Some(build_stereo(width, pan, pseudo >= 0.5))
+    }
+
+    fn build_effect(&self, params: &[f32], current: &ir::Effect) -> Option<ir::Effect> {
+        let &[pseudo, saved_width, saved_pan] = params else {
+            return None;
+        };
+        let (width, pan) = match &current.kind {
+            ir::EffectKind::Stereo { width, pan } => (*width, *pan),
+            _ => (saved_width, saved_pan),
+        };
+        let kind = build_stereo(width, pan, pseudo >= 0.5);
+        Some(ir::Effect { kind, ..*current })
+    }
+}
+static STEREO_EFFECT_MODEL: StereoModel = StereoModel;
+
+pub(crate) static LOFI_MODULE: Module = Module {
+    id: ID_LOFI,
+    module_id: 0x20,
+    versions: (0, u32::MAX),
+    name: "Lo-Fi",
+    script_type: 8,
+    mix: MixMode::InPlace,
+    knobs: KNOBS.split_at(2).0,
+    build: |p| {
+        let &[noise, color, bits, freq] = p else {
+            return None;
+        };
+        Some(crate::drive::lofi(bits, freq, noise, color))
+    },
+};
+
+pub(crate) static HILBERT_LIMITER_MODULE: Module = Module {
+    id: ID_HILBERT_LIMITER,
+    module_id: 0x5f,
+    versions: (0x51, 0x51),
+    name: "Hilbert Limiter",
+    script_type: 45,
+    mix: MixMode::InPlace,
+    knobs: KNOBS.split_at(3).0,
+    build: |p| {
+        let &[threshold, release, ceiling] = p else {
+            return None;
+        };
+        Some(ir::EffectKind::Limiter(crate::laws::transparent_limiter(
+            threshold, release, ceiling,
+        )))
+    },
+};
+
+pub(crate) static LIMITER_MODULE: Module = Module {
+    id: ID_LIMITER,
+    module_id: 0x1c,
+    versions: (0, u32::MAX),
+    name: "Limiter",
+    script_type: 3,
+    mix: MixMode::InPlace,
+    knobs: &[],
+    build: |p| {
+        let &[gain, release] = p else {
+            return None;
+        };
+        Some(ir::EffectKind::Limiter(crate::laws::limiter(gain, release)))
+    },
+};
+
+pub(crate) static INVERTER_MODULE: Module = Module {
+    id: ID_INVERTER,
+    module_id: 0x1a,
+    versions: (0, u32::MAX),
+    name: "Inverter",
+    script_type: 4,
+    mix: MixMode::InPlace,
+    knobs: KNOBS.split_at(2).0,
+    build: |p| {
+        let &[phase, swap] = p else {
+            return None;
+        };
+        Some(ir::EffectKind::Invert {
+            phase: phase >= 0.5,
+            swap: swap >= 0.5,
+        })
+    },
+};
+
+pub(crate) static GAINER_MODULE: Module = Module {
+    id: ID_GAINER,
+    module_id: 0x13,
+    versions: (0, u32::MAX),
+    name: "Gainer",
+    script_type: 20,
+    mix: MixMode::InPlace,
+    knobs: &[],
+    build: |p| p.first().copied().map(ir::EffectKind::Gain),
+};
+
+pub(crate) static SATURATION_MODULE: Module = Module {
+    id: ID_SATURATION,
+    module_id: 0x1d,
+    versions: (0, u32::MAX),
+    name: "Saturation",
+    script_type: 6,
+    mix: MixMode::InPlace,
+    knobs: KNOBS.split_at(1).0,
+    build: |p| {
+        let &[algo, shape] = p else {
+            return None;
+        };
+        crate::drive::saturation_mode(algo.round() as i32, shape)
+    },
+};
+
+pub(crate) static CONVOLUTION_MODULE: Module = Module {
+    id: ID_CONVOLUTION,
+    module_id: 0x16,
+    versions: (0, u32::MAX),
+    name: "Convolution",
+    script_type: 19,
+    mix: MixMode::WetDry,
+    knobs: &[],
+    build: |_| None,
+};
+
+pub(crate) static STEREO_MODULE: Module = Module {
+    id: ID_STEREO,
+    module_id: 0x1f,
+    versions: (0, u32::MAX),
+    name: "Stereo Modeller",
+    script_type: 9,
+    mix: MixMode::InPlace,
+    knobs: KNOBS.split_at(1).0,
+    build: |p| {
+        let &[pseudo, width, pan] = p else {
+            return None;
+        };
+        Some(build_stereo(width, pan, pseudo >= 0.5))
+    },
+};
+
+pub(crate) static FILTER_MODULE: Module = Module {
+    id: ID_FILTER,
+    module_id: 0x18,
+    versions: (0, u32::MAX),
+    name: "Filter",
+    script_type: 7,
+    mix: MixMode::InPlace,
+    knobs: &[],
+    build: |_| None,
+};
+
+/// KSP `$ENGINE_PAR_*` rows for the newly-wired live controls in this module:
+/// Inverter (`PHASE_INVERT`, `LR_SWAP`), Saturation (`SHAPE_TYPE`),
+/// Stereo Modeller (`STEREO_PSEUDO`), Lo-Fi (`NOISELEVEL`, `NOISECOLOR`),
+/// and Transparent/Hilbert Limiter (`TRANSLIM_THRESHOLD`, `TRANSLIM_RELEASE`,
+/// `TRANSLIM_CEILING`).
+pub(crate) fn live_rows() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
+    use ir::KnobTarget::Slot;
+    use ir::SlotKnob::Knob;
+    let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
+    let raw = || ir::Law::Linear { lo: 0.0, hi: 1e6 };
+    let cube = ir::Law::Table((0..=64u8).map(|n| (f32::from(n) / 64.0).powi(3)).collect());
+    vec![
+        ("$ENGINE_PAR_PHASE_INVERT", Slot(Knob(0)), raw()),
+        ("$ENGINE_PAR_LR_SWAP", Slot(Knob(1)), raw()),
+        ("$ENGINE_PAR_SHAPE_TYPE", Slot(Knob(0)), raw()),
+        ("$ENGINE_PAR_STEREO_PSEUDO", Slot(Knob(0)), raw()),
+        ("$ENGINE_PAR_NOISELEVEL", Slot(Knob(0)), cube),
+        ("$ENGINE_PAR_NOISECOLOR", Slot(Knob(1)), unit()),
+        ("$ENGINE_PAR_TRANSLIM_THRESHOLD", Slot(Knob(0)), unit()),
+        ("$ENGINE_PAR_TRANSLIM_RELEASE", Slot(Knob(1)), unit()),
+        ("$ENGINE_PAR_TRANSLIM_CEILING", Slot(Knob(2)), unit()),
+    ]
+}
+
+// `parity-board.py` matches `|s|` in `MODULES` rows to identify modelled entries.
+#[allow(clippy::redundant_closure)]
 #[rustfmt::skip]
 const MODULES: &[Fx] = &[
     fx(0x10, "Delay (legacy)", 18, true, Read(legacy_delay)),
     model(&crate::delays::CHORUS, "Chorus (legacy)", true, |s| crate::delays::saved(s.version, s.public).map(|p: [f32; 4]| crate::delays::CHORUS.knob_model(&p))),
     model(&crate::delays::FLANGER, "Flanger (legacy)", true, |s| crate::delays::saved(s.version, s.public).map(|p: [f32; 6]| crate::delays::FLANGER.knob_model(&p))),
-    fx(0x13, "Gainer", 20, false, Read(|s| s.f32_at(0).map(ir::EffectKind::Gain))),
+    model(&crate::effects::GAINER_MODULE, "Gainer", false, |s| gainer_model(s)),
     fx(0x14, "Phaser (legacy)", 14, true, Read(legacy_delay)),
     fx(0x15, "Reverb (legacy)", 17, true, Read(legacy_reverb)),
-    fx(0x16, "Convolution", 19, true, Read(convolution)),
+    model(&crate::effects::CONVOLUTION_MODULE, "Convolution", true, |s| convolution_model(s)),
     fx(0x17, "Send Levels", 11, false, Read(|s| sends(s.public))),
-    fx(0x18, "Filter", 7, false, Read(|s| s.kind_id.and_then(|k| eq(s.public, k, s.at, s.knobs).or_else(|| filter(s.public, k, s.at, s.knobs))))),
+    model(&crate::effects::FILTER_MODULE, "Filter", false, |s| filter_model(s)),
     fx(0x19, "Compressor", 2, false, Read(compressor)),
-    fx(0x1a, "Inverter", 4, false, Read(|s| s.byte(0).zip(s.byte(1)).map(|(phase, swap)| ir::EffectKind::Invert { phase, swap }))),
+    model(&crate::effects::INVERTER_MODULE, "Inverter", false, |s| inverter_model(s)),
     model(&crate::dyx::MODULE, "DYX", false, |s| crate::dyx::saved(s.version, s.public).map(crate::dyx::model)),
-    fx(0x1c, "Limiter", 3, false, Read(limiter)),
-    fx(0x1d, "Saturation", 6, false, Read(saturation)),
+    model(&crate::effects::LIMITER_MODULE, "Limiter", false, |s| limiter_model(s)),
+    model(&crate::effects::SATURATION_MODULE, "Saturation", false, |s| saturation_model(s)),
     fx(0x1e, "Distortion", 10, false, Read(|s| crate::drive::distortion(s.i32_at(0)?, s.f32_at(4)?, s.f32_at(8)?))),
-    fx(0x1f, "Stereo Modeller", 9, false, Read(stereo)),
-    fx(0x20, "Lo-Fi", 8, false, Read(lofi)),
+    model(&crate::effects::STEREO_MODULE, "Stereo Modeller", false, |s| stereo_model(s)),
+    model(&crate::effects::LOFI_MODULE, "Lo-Fi", false, |s| lofi_model(s)),
     model(&crate::skreamer::MODULE, "Skreamer", false, |s| crate::skreamer::model(s.public)),
     model(&crate::rotator::MODULE, "Rotator", false, |s| crate::rotator::saved(s.version, s.public).map(crate::rotator::model)),
     model(&crate::twang::MODULE, "Twang", false, |s| crate::twang::saved(s.version, s.public).map(crate::twang::model)),
     model(&crate::cabinet::MODULE, "Cabinet", false, |s| crate::cabinet::saved(s.version, s.public).map(crate::cabinet::model)),
     model(&crate::tape::MODULE, "Tape Saturator", false, |s| crate::tape::model(s.public)),
     fx(0x43, "Transient Master", 27, false, Read(dynamics)),
-    fx(0x44, "Solid G-EQ", 28, false, Read(|s| solid_eq(s.version, s.public, s.bypass, s.at, s.notes, s.model))),
+    model(&crate::solid_knobs::SOLID_EQ_MODULE, "Solid G-EQ", false, |s| solid_eq(s.version, s.public, s.bypass, s.at, s.notes)),
     fx(0x46, "Solid Bus Comp", 29, false, Read(bus_compressor)),
-    fx(0x4c, "Feedback Compressor", 30, false, Read(dynamics)),
+    model(&crate::dynamics::FEEDBACK_MODULE, "Feedback Compressor", false, |s| feedback_compressor(s)),
     model(&crate::jump::MODULE, "Jump", false, |s| crate::jump::saved(s.version, s.public).map(crate::jump::model)),
     model(&crate::van51::MODULE, "Van51", false, |s| crate::van51::saved(s.version, s.public).map(crate::van51::model)),
     model(&crate::ac_box::MODULE, "AC Box", false, |s| crate::ac_box::saved(s.version, s.public).map(crate::ac_box::model)),
@@ -107,23 +387,15 @@ const MODULES: &[Fx] = &[
     model(&crate::plate_reverb::MODULE, "Plate Reverb", true, |s| crate::plate_reverb::saved(s.version, s.public).map(crate::plate_reverb::model)),
     model(&crate::cry_wah::MODULE, "Cry Wah", false, |s| crate::cry_wah::saved(s.version, s.public).map(crate::cry_wah::model)),
     fx(0x59, "Reverb", 39, true, Read(reverb)),
-    model(&crate::replika::MODULE, "Replika", true, |s| {
-        let r = crate::replika::saved(s.version, s.public)?;
-        crate::replika::lost(r).for_each(|feature| s.lost(feature));
-        Some(crate::replika::model(r))
-    }),
+    model(&crate::replika::MODULE, "Replika", true, |s| replika_model(s)),
     model(&crate::phasis::MODULE, "Phasis", false, |s| crate::phasis::saved(s.version, s.public).map(crate::phasis::model_from)),
     model(&crate::flair::MODULE, "Flair", false, |s| crate::flair::saved(s.version, s.public).map(crate::flair::model_from)),
     model(&crate::choral::MODULE, "Choral", false, |s| crate::choral::saved(s.version, s.public).map(crate::choral::model_from)),
     model(&crate::core_cell::MODULE, "Core Cell", false, |s| crate::core_cell::saved(s.version, s.public).map(crate::core_cell::model)),
-    fx(0x5f, "Hilbert Limiter", -1, false, Read(transparent_limiter)),
+    model(&crate::effects::HILBERT_LIMITER_MODULE, "Hilbert Limiter", false, |s| transparent_limiter_model(s)),
     model(&crate::supergt::MODULE, "Supercharger", false, |s| if s.version == 0x51 { crate::supergt::model(s.public) } else { None }),
     model(&crate::bass_pro::MODULE, "Bass Pro", false, |s| crate::bass_pro::saved(s.version, s.public).map(crate::bass_pro::model)),
-    model(&crate::psyche::MODULE, "Psyche Delay", true, |s| {
-        let p = crate::psyche::saved(s.version, s.public)?;
-        if p.beats.is_some() { s.lost("Psyche Delay tempo sync (unmeasured)") }
-        Some(crate::psyche::model(p))
-    }),
+    model(&crate::psyche::MODULE, "Psyche Delay", true, |s| crate::psyche::saved(s.version, s.public).map(crate::psyche::model)),
     model(&crate::ringmod::MODULE, "Ring Modulator", false, |s| crate::ringmod::saved(s.version, s.public).map(crate::ringmod::model)),
     model(&crate::raum::MODULE, "Raum", true, |s| {
         let (p, mix, lost) = crate::raum::saved(s.version, s.public)?;
@@ -298,7 +570,6 @@ fn group_wet(out: &[Option<ir::Effect>], at: &str, notes: &mut Notes) {
             }
             ir::EffectKind::Phaser(_) => Some("group phaser before a drive"),
             ir::EffectKind::Cascade(_) => Some("group 3x2 Versatile before a drive"),
-            ir::EffectKind::Clocked(_) => Some("group Phaser or Vowel filter before a drive"),
             ir::EffectKind::Transient(_) => Some("group transient master before a drive"),
             ir::EffectKind::RingMod(_) => Some("group Freak before a drive"),
             _ => None,
@@ -326,6 +597,9 @@ struct Slot<'a, 'i> {
     /// Wow/Flutter's or Raum's MIX, which splits the slot's output into
     /// wet and dry; read once by its row.
     mix: Option<f32>,
+    /// Pre-built effect for modules whose state (e.g. an impulse response or
+    /// polymorphic filter/EQ slot) cannot be reconstructed from floats alone.
+    built: Option<ir::EffectKind>,
 }
 
 impl Slot<'_, '_> {
@@ -391,12 +665,13 @@ fn slot_effect(
         knobs,
         model,
         mix: None,
+        built: None,
     };
     let kind = match lookup(effect.id).map(|m| &m.map) {
         None => None,
         Some(Map::Read(read)) => read(&mut slot),
         Some(Map::Model(read)) => read(&mut slot).and_then(|m| {
-            let kind = m.build(&m.saved);
+            let kind = slot.built.take().or_else(|| m.build(&m.saved));
             *slot.model = Some(m);
             kind
         }),
@@ -452,18 +727,41 @@ fn slot_effect(
     Some((effect_out, effect.id, kind_id.unwrap_or(-1)))
 }
 
-/// Pseudo stereo (`BParFXStereoSpread +0x10`, [ref])
-/// adds a short decorrelation delay on the right; reported when enabled
-/// rather than silently playing plain stereo width. Spread is signed (offset
-/// from 100% width), then pan, then the pseudo-stereo byte.
-fn stereo(s: &mut Slot) -> Option<ir::EffectKind> {
+fn gainer_model(s: &mut Slot) -> Option<ir::KnobModel> {
+    let gain = s.f32_at(0)?;
+    Some(GAINER_MODULE.knob_model(&[gain]))
+}
+
+fn inverter_model(s: &mut Slot) -> Option<ir::KnobModel> {
+    let (phase, swap) = s.byte(0).zip(s.byte(1))?;
+    Some(INVERTER_MODULE.knob_model(&[f32::from(u8::from(phase)), f32::from(u8::from(swap))]))
+}
+
+fn convolution_model(s: &mut Slot) -> Option<ir::KnobModel> {
+    s.built = convolution(s);
+    s.built
+        .is_some()
+        .then(|| CONVOLUTION_MODULE.knob_model(&[]))
+}
+
+fn filter_model(s: &mut Slot) -> Option<ir::KnobModel> {
+    s.built = s.kind_id.and_then(|k| {
+        eq(s.public, k, s.at, s.knobs).or_else(|| filter(s.public, k, s.at, s.knobs))
+    });
+    s.built.is_some().then(|| FILTER_MODULE.knob_model(&[]))
+}
+
+/// Stereo Modeller (`0x1f`): spread, pan, and the pseudo-stereo byte (which
+/// runs a right-channel Haas decorrelation delay of `10 * width^3` ms).
+fn stereo_model(s: &mut Slot) -> Option<ir::KnobModel> {
     let (spread, pan) = s.f32_at(0).zip(s.f32_at(4))?;
-    if s.byte(8) == Some(true) {
-        s.lost("Stereo Modeller pseudo stereo");
-    }
-    Some(ir::EffectKind::Stereo {
-        width: (spread.clamp(-1.0, 1.0) + 1.0) * 0.5,
-        pan: pan.clamp(-1.0, 1.0),
+    let pseudo = f32::from(u8::from(s.byte(8).unwrap_or(false)));
+    let width = (spread.clamp(-1.0, 1.0) + 1.0) * 0.5;
+    ir::register_model(ID_STEREO, &STEREO_EFFECT_MODEL);
+    Some(ir::KnobModel {
+        id: ID_STEREO,
+        knobs: STEREO_MODULE.knobs.into(),
+        saved: vec![pseudo, width, pan.clamp(-1.0, 1.0)].into(),
     })
 }
 
@@ -485,7 +783,7 @@ fn compressor(s: &mut Slot) -> Option<ir::EffectKind> {
     Some(ir::EffectKind::Compressor(value))
 }
 
-fn limiter(s: &mut Slot) -> Option<ir::EffectKind> {
+fn limiter_model(s: &mut Slot) -> Option<ir::KnobModel> {
     let (gain, release) = s.f32_at(0).zip(s.f32_at(4))?;
     let value = crate::laws::limiter(gain, release);
     kontra_law::record(|| kontra_law::Application {
@@ -494,10 +792,10 @@ fn limiter(s: &mut Slot) -> Option<ir::EffectKind> {
         input: format!("{:?}", (gain, release)),
         output: format!("{value:?}"),
     });
-    Some(ir::EffectKind::Limiter(value))
+    Some(LIMITER_MODULE.knob_model(&[gain, release]))
 }
 
-fn transparent_limiter(s: &mut Slot) -> Option<ir::EffectKind> {
+fn transparent_limiter_model(s: &mut Slot) -> Option<ir::KnobModel> {
     if s.version != 0x51 {
         return None;
     }
@@ -509,16 +807,20 @@ fn transparent_limiter(s: &mut Slot) -> Option<ir::EffectKind> {
         input: format!("{:?}", (drive, release, ceiling)),
         output: format!("{value:?}"),
     });
-    Some(ir::EffectKind::Limiter(value))
+    Some(HILBERT_LIMITER_MODULE.knob_model(&[drive, release, ceiling]))
 }
 
-/// Six floats, the link byte, then (0x11 on) the side-chain byte.
+/// Six floats, the link byte, then (0x11 on) the side-chain byte and (0x12)
+/// an extra float at offset 26 (KT-23).
 fn bus_compressor(s: &mut Slot) -> Option<ir::EffectKind> {
     if !(0x10..=0x12).contains(&s.version) {
         return None;
     }
     if s.version >= 0x11 && s.byte(25) == Some(true) {
         s.lost("Solid Bus Comp side chain");
+    }
+    if s.version >= 0x12 && s.f32_at(26).is_some_and(|v| v.abs() > 1e-6) {
+        s.lost("Solid Bus Comp extra parameter");
     }
     let (saved, link) = (0..6)
         .map(|i| s.f32_at(4 * i))
@@ -539,11 +841,27 @@ fn bus_compressor(s: &mut Slot) -> Option<ir::EffectKind> {
     Some(ir::EffectKind::Compressor(c))
 }
 
-/// Transient Master and Feedback Compressor.
-fn dynamics(s: &mut Slot) -> Option<ir::EffectKind> {
-    if s.id == 0x4c && s.version == 0x10 {
-        *s.model = crate::dynamics::feedback_model(s.public);
+fn feedback_compressor(s: &mut Slot) -> Option<ir::KnobModel> {
+    if s.version != 0x10 {
+        return None;
     }
+    if let Some(v) = crate::dynamics::feedback_extra_float(s.public)
+        && v.abs() > 1e-6
+    {
+        s.lost("Feedback Compressor extra parameter");
+    }
+    crate::dynamics::feedback_model(s.public)
+}
+
+fn replika_model(s: &mut Slot) -> Option<ir::KnobModel> {
+    let r = crate::replika::saved(s.version, s.public)?;
+    crate::replika::lost(r).for_each(|feature| s.lost(feature));
+    *s.knobs = crate::replika::extra_knobs(r);
+    Some(crate::replika::model(r))
+}
+
+/// Transient Master.
+fn dynamics(s: &mut Slot) -> Option<ir::EffectKind> {
     let (kind, lost) = crate::dynamics::effect(s.id, s.version, s.public)?;
     if let Some(feature) = lost {
         s.lost(feature);
@@ -582,32 +900,35 @@ fn legacy_reverb(s: &mut Slot) -> Option<ir::EffectKind> {
 }
 
 /// Shape −1..=1 and the algorithm (0 Classic, 1 Enhanced, 2 Drums).
-fn saturation(s: &mut Slot) -> Option<ir::EffectKind> {
+fn saturation_model(s: &mut Slot) -> Option<ir::KnobModel> {
     // Version 0x70 of the same id is the Surround Panner.
     if s.version == 0x70 {
         return None;
     }
     let (shape, algorithm) = (s.f32_at(0)?, s.i32_at(4)?);
-    if algorithm != 0 {
-        // ponytail: Enhanced and Drums are a table and a peak follower (v2
-        // sampler-core dsp/color/saturator.rs); none in the corpus yet.
-        s.lost("Saturation Enhanced or Drums");
+    if !(0..=2).contains(&algorithm) {
         return None;
     }
-    Some(crate::drive::saturation(shape))
+    ir::register_model(ID_SATURATION, &SATURATION_EFFECT_MODEL);
+    Some(ir::KnobModel {
+        id: ID_SATURATION,
+        knobs: SATURATION_MODULE.knobs.into(),
+        saved: vec![algorithm as f32, shape].into(),
+    })
 }
 
 /// Bits, frequency, a flag, noise and colour.
-fn lofi(s: &mut Slot) -> Option<ir::EffectKind> {
+fn lofi_model(s: &mut Slot) -> Option<ir::KnobModel> {
     if s.byte(8) == Some(true) {
         s.lost("Lo-Fi flag (law unknown)");
     }
-    Some(crate::drive::lofi(
-        s.f32_at(0)?,
-        s.f32_at(4)?,
-        s.f32_at(9)?,
-        s.f32_at(13)?,
-    ))
+    let (bits, freq, noise, color) = (s.f32_at(0)?, s.f32_at(4)?, s.f32_at(9)?, s.f32_at(13)?);
+    ir::register_model(ID_LOFI, &LOFI_EFFECT_MODEL);
+    Some(ir::KnobModel {
+        id: ID_LOFI,
+        knobs: LOFI_MODULE.knobs.into(),
+        saved: vec![noise, color, bits, freq].into(),
+    })
 }
 
 /// The 1/2/3-band EQ (Filter types 22..=24): the record ends with its bands,
@@ -655,8 +976,7 @@ fn solid_eq(
     bypass: bool,
     at: &str,
     notes: &mut Notes,
-    model: &mut Option<ir::KnobModel>,
-) -> Option<ir::EffectKind> {
+) -> Option<ir::KnobModel> {
     let f = |n: usize| {
         let bytes = public.get(n..n + 4)?.try_into().ok()?;
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
@@ -680,7 +1000,6 @@ fn solid_eq(
         bell(bells[0], ir::Shape::LowShelf),
         bell(bells[1], ir::Shape::HighShelf),
     ];
-    *model = Some(crate::solid_knobs::solid_model(saved, bells));
     let [lg, lh, mg, mh, mq, hg, hh, hq, fg, fh] = saved;
     let [lf, hf] = shapes;
     let bands = crate::laws::solid_eq([lg, lh], lf, [mg, mh, mq], [hg, hh, hq], [fg, fh], hf);
@@ -690,7 +1009,7 @@ fn solid_eq(
         input: format!("saved={saved:?}, shapes={shapes:?}"),
         output: format!("{bands:?}"),
     });
-    Some(ir::EffectKind::Eq(bands))
+    Some(crate::solid_knobs::solid_model(saved, bells))
 }
 
 /// A filter: the kind, repeated (newer records put a flag byte before a
@@ -858,6 +1177,7 @@ pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut No
     let mut racks = 0;
     let mut instrument = [Vec::new(), Vec::new(), Vec::new()];
     let mut buses: Vec<ir::Bus> = Vec::new();
+    let mut bus_invert: Vec<(bool, bool)> = Vec::new();
     let mut laws = Slots::default();
     for child in &program.0.children {
         let (at, array) = match child.id {
@@ -872,9 +1192,13 @@ pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut No
                 let at = format!("bus {}", buses.len());
                 let bus = InsertBus::try_from(child);
                 let params = bus.as_ref().ok().and_then(|b| b.params().ok());
-                // KT-22: a bus routed to its own output skips the instrument
-                // racks; the tail holds phase invert, L/R swap and newer
-                // fields. Neither is modelled yet: every bus plays on main.
+                // KT-22: v0x12 carries two trailing flag bytes: phase invert
+                // (`unknown_tail[0]`) and L/R swap (`unknown_tail[1]`), applied
+                // after the bus's insert rack and before volume/pan. A bus routed
+                // to a host output (`output != -1`) skips instrument racks in the
+                // reference host and is still reported because multi-out stems
+                // route through main here.
+                let (mut phase_invert, mut swap_lr) = (false, false);
                 if let Some(p) = &params {
                     if p.output != -1 {
                         notes.add(
@@ -883,14 +1207,19 @@ pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut No
                             format!("{at} to output {}", p.output),
                         );
                     }
-                    if p.unknown_tail.iter().any(|&b| b != 0) {
+                    phase_invert = p.unknown_tail.first().is_some_and(|&b| b != 0);
+                    swap_lr = p.unknown_tail.get(1).is_some_and(|&b| b != 0);
+                    if let Some(rest) = p.unknown_tail.get(2..)
+                        && rest.iter().any(|&b| b != 0)
+                    {
                         notes.add(
                             ir::Impact::Audible,
-                            "instrument bus phase/swap flags",
-                            format!("{at}: {:02x?}", p.unknown_tail),
+                            "instrument bus extra flags",
+                            format!("{at}: {rest:02x?}"),
                         );
                     }
                 }
+                bus_invert.push((phase_invert, swap_lr));
                 buses.push(ir::Bus {
                     name: params
                         .as_ref()
@@ -927,7 +1256,24 @@ pub(crate) fn program(program: &Program, impulses: &mut Impulses, notes: &mut No
                 let to = to.map(|at| (at, &mut laws));
                 let effects = rack(&array, &at, impulses, notes, to);
                 match (child.id, buses.last_mut()) {
-                    (BUS, Some(bus)) => bus.inserts = effects,
+                    (BUS, Some(bus)) => {
+                        bus.inserts = effects;
+                        if let Some(&(phase, swap)) = bus_invert.last()
+                            && (phase || swap)
+                        {
+                            // Keep Kontakt's 8 script-addressable insert slots (0..8)
+                            // untouched and run the bus's post-rack phase/swap stage after them.
+                            if bus.inserts.len() < 8 {
+                                bus.inserts.resize(8, None);
+                            }
+                            bus.inserts.push(Some(ir::Effect {
+                                kind: ir::EffectKind::Invert { phase, swap },
+                                bypass: false,
+                                output: 1.0,
+                                dry: 0.0,
+                            }));
+                        }
+                    }
                     _ => {
                         if let Some(rack) = instrument.get_mut(racks - 1) {
                             *rack = effects;
@@ -1227,9 +1573,10 @@ mod tests {
         assert_eq!((e.output, e.dry), (0.25, 0.75));
         assert!(model.is_some());
 
-        // Stereo Modeller (0x1f) with pseudo stereo enabled emits an Audible diagnostic.
+        // Stereo Modeller (0x1f) with pseudo stereo enabled builds a live Haas delay
+        // with zero loss diagnostics and a live KnobModel.
         let mut stereo_pub = Vec::new();
-        stereo_pub.extend(0.5f32.to_le_bytes()); // spread
+        stereo_pub.extend(0.5f32.to_le_bytes()); // spread -> width = 0.75
         stereo_pub.extend(0.0f32.to_le_bytes()); // pan
         stereo_pub.push(1); // pseudo = true
         let mut pseudo_notes = Notes::default();
@@ -1242,10 +1589,401 @@ mod tests {
             (&mut knobs, &mut model, &mut held),
         )
         .expect("stereo");
-        assert!(matches!(e.kind, ir::EffectKind::Stereo { .. }));
-        let diags = pseudo_notes.finish();
+        assert!(matches!(e.kind, ir::EffectKind::Delay(d) if d.spread_ms > 2.0));
+        assert!(model.is_some());
+        assert!(pseudo_notes.finish().is_empty());
+    }
+
+    #[test]
+    fn kt22_insert_bus_phase_invert_and_swap_lr_append_invert_effect() {
+        use ni_file::kontakt::StructuredObject;
+        use ni_file::kontakt::objects::Program;
+
+        // Build a minimal Program containing one BInsertBus (chunk 0x4a v0x12)
+        // with an empty 8-slot rack (chunk 0x3a) inside it.
+        let make_program = |output: i32, tail: &[u8]| -> Program {
+            // InsertBusParams wire layout (insert_bus.rs): name_len(u32), utf16, volume(f32),
+            // pan(f32), output(i32), unknown_tail([phase_invert, swap_lr, ...]).
+            let mut bus_pub = Vec::new();
+            bus_pub.extend(4u32.to_le_bytes());
+            for ch in "Bus1".encode_utf16() {
+                bus_pub.extend(ch.to_le_bytes());
+            }
+            bus_pub.extend(1.0f32.to_le_bytes()); // volume
+            bus_pub.extend(0.0f32.to_le_bytes()); // pan
+            bus_pub.extend(output.to_le_bytes());
+            bus_pub.extend_from_slice(tail);
+
+            let empty_rack = Chunk {
+                id: RACK,
+                data: {
+                    let mut d = vec![0u8];
+                    d.extend(0x10u16.to_le_bytes());
+                    d.extend([0u8; 8]); // 8 empty slots
+                    d
+                },
+            };
+            let mut rack_bytes = Vec::new();
+            empty_rack.write(&mut rack_bytes).expect("write rack");
+            let mut bus_data = vec![1u8]; // structured
+            bus_data.extend(0x12u16.to_le_bytes());
+            bus_data.extend(0u32.to_le_bytes()); // private len
+            bus_data.extend((bus_pub.len() as u32).to_le_bytes());
+            bus_data.extend(bus_pub);
+            bus_data.extend((rack_bytes.len() as u32).to_le_bytes());
+            bus_data.extend(rack_bytes);
+            let bus = Chunk {
+                id: BUS,
+                data: bus_data,
+            };
+            Program(StructuredObject {
+                version: 0x10,
+                private_data: Vec::new(),
+                public_data: Vec::new(),
+                children: vec![bus],
+            })
+        };
+
+        let mut resolver =
+            crate::samples::Resolver::new(std::path::Path::new("."), None).expect("resolver");
+        let mut impulses = crate::impulse::Impulses::new(
+            std::collections::HashMap::new(),
+            &mut resolver,
+            std::path::Path::new("."),
+            None,
+        );
+
+        // Phase invert + L/R swap enabled, output = -1 (default): no Audible diagnostic,
+        // slot 8 carries EffectKind::Invert { phase: true, swap: true }.
+        let mut notes = Notes::default();
+        let r = program(&make_program(-1, &[1, 1, 0, 0]), &mut impulses, &mut notes);
+        assert!(
+            notes.finish().is_empty(),
+            "phase/swap should not emit a loss diagnostic"
+        );
+        assert_eq!(r.buses.len(), 1);
+        let inv = r.buses[0]
+            .inserts
+            .get(8)
+            .and_then(Option::as_ref)
+            .expect("invert effect appended at slot 8");
+        assert_eq!(
+            inv.kind,
+            ir::EffectKind::Invert {
+                phase: true,
+                swap: true
+            }
+        );
+
+        // Non-default output routing still diagnoses cleanly.
+        let mut notes2 = Notes::default();
+        let _ = program(&make_program(2, &[0, 0, 0, 0]), &mut impulses, &mut notes2);
+        let diags = notes2.finish();
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].impact, ir::Impact::Audible);
-        assert_eq!(diags[0].feature, "Stereo Modeller pseudo stereo");
+        assert_eq!(diags[0].feature, "instrument bus output routing");
+    }
+
+    fn render_slot(
+        kind: ir::EffectKind,
+        output: f32,
+        dry: f32,
+        input: &[[f32; 2]],
+    ) -> Vec<[f32; 2]> {
+        use kontra_effects::processors::{Dsp, Responses, processor};
+        let slot = ir::Effect {
+            kind,
+            bypass: false,
+            output,
+            dry,
+        };
+        let mut out = input.to_vec();
+        match processor(Some(&slot), 48_000, &Responses(&[], &[])) {
+            Dsp::Wet(mut unit, _) => {
+                for chunk in out.chunks_mut(256) {
+                    let mut wet = chunk.to_vec();
+                    unit.process(&mut wet);
+                    for (dst, w) in chunk.iter_mut().zip(wet.iter()) {
+                        dst[0] = dst[0] * dry + w[0] * output;
+                        dst[1] = dst[1] * dry + w[1] * output;
+                    }
+                }
+            }
+            Dsp::None | Dsp::Eq(_) | Dsp::Bells(_) | Dsp::Filter(_) => {
+                let [[ll, lr], [rl, rr]] = kontra_effects::matrix::matrix(&slot);
+                for f in &mut out {
+                    let (l, r) = (f[0], f[1]);
+                    f[0] = ll * l + lr * r;
+                    f[1] = rl * l + rr * r;
+                }
+            }
+        }
+        out
+    }
+
+    fn sine_48k(hz: f64, amp: f32, frames: usize) -> Vec<[f32; 2]> {
+        (0..frames)
+            .map(|i| {
+                let s = amp * (std::f64::consts::TAU * hz * i as f64 / 48_000.0).sin() as f32;
+                [s, s]
+            })
+            .collect()
+    }
+
+    fn rms_db_from(buf: &[[f32; 2]], start: usize) -> f64 {
+        let s = &buf[start..];
+        let ms = s
+            .iter()
+            .map(|f| f64::from(f[0]) * f64::from(f[0]))
+            .sum::<f64>()
+            / s.len().max(1) as f64;
+        10.0 * ms.max(1e-18).log10()
+    }
+
+    /// Replika (0x5a) audio oracle gate against `docs/re/engine/fx-measured/replika-modes.md`:
+    /// Modern `1.2 * FEEDBACK` echo gains (-18.42, -5.35, -0.35 dB at 0.1, 0.45, 0.8),
+    /// LOWCUT `10 * 100^x` Hz, and Tape/Vintage body rolloff.
+    #[test]
+    fn replika_matches_kontakt_oracle_echo_gains_and_bodies() {
+        let mut imp = vec![[0.0f32; 2]; 16_000];
+        imp[0] = [1.0, 1.0];
+        for (fb, want_db) in [(0.1_f32, -18.42_f64), (0.45, -5.35), (0.8, -0.35)] {
+            let r = crate::replika::Replika {
+                ms: 50.0,
+                feedback: fb,
+                high_cut: 1.0,
+                low_cut: 0.0,
+                offset: 0.0,
+                saturation: 0.0,
+                ..crate::replika::INIT
+            };
+            let out = render_slot(
+                ir::EffectKind::Delay(crate::replika::delay(r).unwrap()),
+                1.0,
+                0.0,
+                &imp,
+            );
+            let peak_near = |c: usize| -> f32 {
+                out[c.saturating_sub(6)..(c + 6).min(out.len())]
+                    .iter()
+                    .map(|f| f[0].abs())
+                    .fold(0.0, f32::max)
+            };
+            let e1 = peak_near(2400);
+            let e2 = peak_near(4800);
+            let ratio_db = 20.0 * (f64::from(e2) / f64::from(e1)).log10();
+            assert!(
+                (ratio_db - want_db).abs() < 0.25,
+                "Replika fb={fb}: got {ratio_db:.2} dB, want {want_db:.2} dB"
+            );
+        }
+        // Tape (TAPEAGE 1) rolls off 8 kHz ~17.5 dB vs Vintage (QUALITY 1) ~3.2 dB.
+        let s8k = sine_48k(8000.0, 0.1, 12_000);
+        let in_db = rms_db_from(&s8k, 6000);
+        let tape = crate::replika::Replika {
+            mode: 2,
+            ms: 20.0,
+            feedback: 0.0,
+            high_cut: 1.0,
+            tape_age: 1.0,
+            flutter: 0.0,
+            offset: 0.0,
+            saturation: 0.0,
+            ..crate::replika::INIT
+        };
+        let vintage = crate::replika::Replika {
+            mode: 3,
+            quality: 1.0,
+            ..tape
+        };
+        let tape_db = rms_db_from(
+            &render_slot(
+                ir::EffectKind::Delay(crate::replika::delay(tape).unwrap()),
+                1.0,
+                0.0,
+                &s8k,
+            ),
+            6000,
+        ) - in_db;
+        let vint_db = rms_db_from(
+            &render_slot(
+                ir::EffectKind::Delay(crate::replika::delay(vintage).unwrap()),
+                1.0,
+                0.0,
+                &s8k,
+            ),
+            6000,
+        ) - in_db;
+        assert!(
+            (tape_db - (-17.5)).abs() < 0.8 && (vint_db - (-3.2)).abs() < 0.8,
+            "Replika 8kHz bodies: tape={tape_db:.2} dB, vintage={vint_db:.2} dB"
+        );
+    }
+
+    /// Distortion (0x1e) against `docs/re/engine/fx-measured/distortion-family.md`:
+    /// Tube static peaks + 36.8 Hz Butterworth DC blocker + Trans drive.
+    #[test]
+    fn distortion_matches_kontakt_oracle_tube_and_dc_blocker() {
+        // 36.8 Hz Butterworth DC blocker: -3.0 dB at 36.8 Hz, ~0 dB at 500 Hz.
+        let low = sine_48k(36.8, 0.05, 16_384);
+        let mid = sine_48k(500.0, 0.05, 16_384);
+        let tube0 = crate::drive::distortion(0, 0.0, 0.0).unwrap();
+        let g_low = rms_db_from(&render_slot(tube0.clone(), 1.0, 0.0, &low), 8192)
+            - rms_db_from(&low, 8192);
+        let g_mid =
+            rms_db_from(&render_slot(tube0, 1.0, 0.0, &mid), 8192) - rms_db_from(&mid, 8192);
+        assert!(
+            (g_low - g_mid - (-3.01)).abs() < 0.35,
+            "Distortion 36.8Hz HPF: {g_low:.2} vs {g_mid:.2}"
+        );
+        // Tube DRIVE 0.5 asymmetric static curve (+0.5 -> +0.509, -0.5 -> -0.496;
+        // DC blocker removes the positive cycle mean, preserving peak-to-peak ~1.005).
+        let s1k = sine_48k(1000.0, 0.5, 8192);
+        let out_t = render_slot(
+            crate::drive::distortion(0, 0.5, 0.0).unwrap(),
+            1.0,
+            0.0,
+            &s1k,
+        );
+        let pk_pos = out_t[4096..]
+            .iter()
+            .map(|f| f[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let pk_neg = out_t[4096..]
+            .iter()
+            .map(|f| f[0])
+            .fold(f32::INFINITY, f32::min);
+        let p2p = pk_pos - pk_neg;
+        assert!(
+            (p2p - 1.005).abs() < 0.05,
+            "Tube DRIVE=0.5 +/-0.5 p2p: {p2p:.3} (pos={pk_pos:.3}, neg={pk_neg:.3}) vs 1.005"
+        );
+    }
+
+    /// Saturation (0x1d) Classic, Enhanced, and Drums against
+    /// `docs/re/kontakt-bindings/saturation-curves.tsv`.
+    #[test]
+    fn saturation_all_three_modes_match_kontakt_oracle_curves() {
+        let s = sine_48k(200.0, 0.696, 8192);
+        let peak = |algo: i32, knob_u: f32| -> f32 {
+            let saved_shape = 2.0 * knob_u - 1.0;
+            let out = render_slot(
+                crate::drive::saturation_mode(algo, saved_shape).unwrap(),
+                1.0,
+                0.0,
+                &s,
+            );
+            out[4096..].iter().map(|f| f[0].abs()).fold(0.0, f32::max)
+        };
+        // Enhanced (1): knob 0 -> 0.696 (identity), 0.75 -> ~0.806, 1.0 -> ~0.735.
+        assert!((peak(1, 0.0) - 0.696).abs() < 0.02);
+        assert!((peak(1, 0.75) - 0.806).abs() < 0.02);
+        assert!((peak(1, 1.0) - 0.735).abs() < 0.02);
+        // Drums (2): knob 0 -> 0.696, 0.75 -> ~0.634, 1.0 -> ~0.578.
+        assert!((peak(2, 0.0) - 0.696).abs() < 0.02);
+        assert!((peak(2, 0.75) - 0.634).abs() < 0.02);
+        assert!((peak(2, 1.0) - 0.578).abs() < 0.02);
+    }
+
+    /// Limiter (0x1c), Hilbert Limiter (0x5f), Lo-Fi (0x20), Raum (0x65),
+    /// Wow/Flutter (0x6a), and Solid Bus Comp (0x46) audio oracle proofs.
+    #[test]
+    fn limiters_lofi_raum_wowflutter_and_bus_comp_match_oracle_laws() {
+        let loud = sine_48k(1000.0, 0.9, 12_000);
+
+        // 1. Legacy Limiter: +12 dB input gain brickwall-limits peak <= 1.0.
+        let lim = render_slot(
+            ir::EffectKind::Limiter(crate::laws::limiter(12.0, 100.0)),
+            1.0,
+            0.0,
+            &loud,
+        );
+        let lim_pk = lim[4096..]
+            .iter()
+            .map(|f| f[0].abs())
+            .fold(0.0f32, f32::max);
+        assert!(lim_pk <= 1.02 && lim_pk > 0.85, "Limiter peak: {lim_pk:.3}");
+
+        // 2. Hilbert / Transparent Limiter: ceiling at 0.5 (-20.15 dB -> ~0.098).
+        let tlim = render_slot(
+            ir::EffectKind::Limiter(crate::laws::transparent_limiter(0.5, 0.5, 0.5)),
+            1.0,
+            0.0,
+            &loud,
+        );
+        let tlim_pk = tlim[4096..]
+            .iter()
+            .map(|f| f[0].abs())
+            .fold(0.0f32, f32::max);
+        let tlim_db = 20.0 * f64::from(tlim_pk).log10();
+        assert!(
+            (tlim_db - (-20.15)).abs() < 0.6,
+            "Hilbert Limiter ceiling @0.5: {tlim_db:.2} dB vs -20.15 dB"
+        );
+
+        // 3. Lo-Fi: noise level raises floor on silence; noise color darkens it.
+        let silence = vec![[0.0f32; 2]; 8192];
+        let lofi_hi = render_slot(crate::drive::lofi(1.0, 1.0, 0.5, 0.0), 1.0, 0.0, &silence);
+        let lofi_lo = render_slot(crate::drive::lofi(1.0, 1.0, 0.5, 1.0), 1.0, 0.0, &silence);
+        assert!(rms_db_from(&lofi_hi, 1024) > rms_db_from(&lofi_lo, 1024) + 3.0);
+
+        // 4. Raum: predelay=0.5 delays impulse by 80 ms (3840 frames), freeze sustains tail.
+        let mut imp = vec![[0.0f32; 2]; 24_000];
+        imp[0] = [1.0, 1.0];
+        let mut rp = crate::raum::INIT;
+        rp[5] = 0.5; // 80 ms predelay
+        let raum_out = render_slot(
+            ir::EffectKind::Reverb(crate::raum::raum(rp)),
+            1.0,
+            0.0,
+            &imp,
+        );
+        let early = raum_out[..3500]
+            .iter()
+            .map(|f| f[0].abs())
+            .fold(0.0f32, f32::max);
+        let after = raum_out[3800..8000]
+            .iter()
+            .map(|f| f[0].abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            early < 1e-4 && after > 1e-2,
+            "Raum 80ms predelay: early={early}, after={after}"
+        );
+
+        // 5. Wow/Flutter: gate=0 injects hiss on silence, gate=1 suppresses it.
+        let mut wf = crate::wowflutter::INIT;
+        wf[2] = 0.8; // scrape
+        wf[7] = 0.0; // gate off
+        let wf_open = render_slot(
+            ir::EffectKind::Delay(crate::wowflutter::wow_flutter(wf)),
+            1.0,
+            0.0,
+            &silence,
+        );
+        wf[7] = 1.0; // gate on
+        let wf_gated = render_slot(
+            ir::EffectKind::Delay(crate::wowflutter::wow_flutter(wf)),
+            1.0,
+            0.0,
+            &silence,
+        );
+        assert!(rms_db_from(&wf_open, 1024) > rms_db_from(&wf_gated, 1024) + 20.0);
+
+        // 6. Solid Bus Comp: 10:1 ratio compresses a 20 dB level step by ~18 dB.
+        let (bc, _) = crate::laws::bus_compressor([0.0, 0.2, 0.0, 0.0, 1.0, 1.0], true);
+        let quiet = sine_48k(1000.0, 0.05, 12_000);
+        let in_step = rms_db_from(&loud, 6000) - rms_db_from(&quiet, 6000);
+        let out_step = rms_db_from(
+            &render_slot(ir::EffectKind::Compressor(bc), 1.0, 0.0, &loud),
+            6000,
+        ) - rms_db_from(
+            &render_slot(ir::EffectKind::Compressor(bc), 1.0, 0.0, &quiet),
+            6000,
+        );
+        assert!(
+            out_step < in_step * 0.35,
+            "Solid Bus Comp 10:1 compression: in={in_step:.1} -> out={out_step:.1} dB"
+        );
     }
 }

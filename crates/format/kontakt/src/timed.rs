@@ -89,6 +89,55 @@ fn step_mod_envelope(
     Some(ir::Source::Shaped(n))
 }
 
+/// Resolves a timed modulator's `raw_source` through either its StepMod table
+/// or its target shaper curve, optionally recording law provenance.
+fn resolve_source(
+    out: &mut ir::Group,
+    modulator: &Modulator,
+    raw_source: ir::Source,
+    t: &ni_file::kontakt::objects::ModTarget,
+    oneshot_step: bool,
+    trace_loc: Option<(usize, u16, usize)>,
+) -> Option<ir::Source> {
+    let signed = crate::external::signed_route(&t.param);
+    let curve = t
+        .shaper
+        .as_ref()
+        .filter(|sh| sh.enabled)
+        .map(|sh| &sh.curve);
+    if let Modulator::StepMod(s) = modulator {
+        return if oneshot_step {
+            step_mod_envelope(out, s, curve, signed)
+        } else {
+            step_mod_transfer(&mut out.shapers, raw_source, s, curve, signed)
+        };
+    }
+    let Some(curve) = curve else {
+        return Some(raw_source);
+    };
+    let result = crate::external::shaped(
+        &mut out.shapers,
+        raw_source,
+        curve,
+        matches!(raw_source, ir::Source::Lfo(_)) && signed,
+    );
+    if let Some((group_index, slot, target)) = trace_loc {
+        kontra_law::record(|| kontra_law::Application {
+            id: kontra_law::LawId("kontakt.mod_shaper.v1"),
+            location: format!("groups/{group_index}/routes/{slot}/targets/{target}/shaper"),
+            input: format!("source={raw_source:?}, curve={curve:?}"),
+            output: format!(
+                "source={result:?}, transfer={:?}",
+                result.and_then(|id| match id {
+                    ir::Source::Shaped(i) => out.shapers.get(usize::from(i)),
+                    _ => None,
+                })
+            ),
+        });
+    }
+    result
+}
+
 /// Records the selected law and its input and output when tracing is enabled.
 fn trace_timed(
     id: &'static str,
@@ -292,148 +341,35 @@ pub(crate) fn timed(
         if knob_route(t) {
             continue;
         }
-        let source = if let Modulator::StepMod(s) = &p.modulator {
-            let signed = crate::external::signed_route(&t.param);
-            let curve = t
-                .shaper
-                .as_ref()
-                .filter(|sh| sh.enabled)
-                .map(|sh| &sh.curve);
-            let built = if step_mod_oneshot_kind {
-                step_mod_envelope(out, s, curve, signed)
-            } else {
-                step_mod_transfer(&mut out.shapers, raw_source, s, curve, signed)
-            };
-            let Some(step_source) = built else {
-                let to = if t.slot.is_some() { "module " } else { "" };
-                let feature = format!("internal modulator {what} -> {to}{}", t.param);
-                notes.add(ir::Impact::Audible, &feature, &p.name);
-                continue;
-            };
-            step_source
-        } else {
-            match t.shaper.as_ref().filter(|s| s.enabled) {
-                Some(shaper) => {
-                    let signed = matches!(raw_source, ir::Source::Lfo(_))
-                        && crate::external::signed_route(&t.param);
-                    let result = crate::external::shaped(
-                        &mut out.shapers,
-                        raw_source,
-                        &shaper.curve,
-                        signed,
-                    );
-                    kontra_law::record(|| kontra_law::Application {
-                        id: kontra_law::LawId("kontakt.mod_shaper.v1"),
-                        location: format!(
-                            "groups/{group_index}/routes/{slot}/targets/{target}/shaper"
-                        ),
-                        input: format!("source={raw_source:?}, curve={:?}", shaper.curve),
-                        output: format!(
-                            "source={result:?}, transfer={:?}",
-                            result.and_then(|id| match id {
-                                ir::Source::Shaped(i) => out.shapers.get(usize::from(i)),
-                                _ => None,
-                            })
-                        ),
-                    });
-                    let Some(shaped_source) = result else {
-                        let to = if t.slot.is_some() { "module " } else { "" };
-                        let feature = format!("internal modulator {what} -> {to}{}", t.param);
-                        notes.add(ir::Impact::Audible, &feature, &p.name);
-                        continue;
-                    };
-                    shaped_source
-                }
-                None => raw_source,
-            }
+        let Some(source) = resolve_source(
+            out,
+            &p.modulator,
+            raw_source,
+            t,
+            step_mod_oneshot_kind,
+            Some((group_index, slot, target)),
+        ) else {
+            let to = if t.slot.is_some() { "module " } else { "" };
+            let feature = format!("internal modulator {what} -> {to}{}", t.param);
+            notes.add(ir::Impact::Audible, &feature, &p.name);
+            continue;
         };
-        let tau_ms = laws::route_tau_ms(t.lag_ms);
-        let kind = match (t.param.as_str(), t.slot) {
-            // An LFO's volume route is linear in its unipolar swing (v2
-            // sampler-core v1_voice_controls volume target; the range conversion is not yet isolated).
-            ("volume", None) => {
-                crate::external::record_lag(
-                    group_index,
-                    usize::from(slot),
-                    target,
-                    t.lag_ms,
-                    tau_ms,
-                );
-                ir::ModRoute::new(source, ir::ParamAddr::Volume, t.signed_intensity())
-                    .law(ir::RouteLaw::Gain(ir::Curve::Depth { power: 1 }))
-                    .smooth(tau_ms)
-            }
-            ("pitch", None) => {
-                crate::external::record_lag(
-                    group_index,
-                    usize::from(slot),
-                    target,
-                    t.lag_ms,
-                    tau_ms,
-                );
-                ir::ModRoute::new(source, ir::ParamAddr::Pitch, t.signed_intensity())
-                    .span(pitch_semitones)
-                    .smooth(tau_ms)
-            }
-            ("pan", None) => ir::ModRoute::new(source, ir::ParamAddr::Pan, t.signed_intensity()),
-            ("filterCutoff", Some(insert)) => ir::ModRoute::new(
-                source,
-                ir::ParamAddr::FilterCutoff { insert },
-                t.signed_intensity(),
-            ),
-            ("filterQ", Some(insert)) => ir::ModRoute::new(
-                source,
-                ir::ParamAddr::FilterResonance { insert },
-                t.signed_intensity(),
-            ),
-            (param, None) if let Some(value) = crate::wavetable::target(param) => {
-                crate::external::record_lag(
-                    group_index,
-                    usize::from(slot),
-                    target,
-                    t.lag_ms,
-                    tau_ms,
-                );
-                ir::ModRoute::new(
-                    source,
-                    ir::ParamAddr::Wavetable(value),
-                    t.signed_intensity(),
-                )
-                .smooth(tau_ms)
-            }
-            (param, Some(insert))
-                if crate::provenance::eq_band_index(
-                    param,
-                    group_index,
-                    usize::from(slot),
-                    target,
-                )
-                .is_some() =>
-            {
-                let result = laws::eq_gain(source, insert, param, t.signed_intensity());
-                kontra_law::record(|| kontra_law::Application {
-                    id: kontra_law::LawId("kontakt.eq_gain_route.v1"),
-                    location: format!("groups/{group_index}/routes/{slot}/targets/{target}"),
-                    input: format!("{:?}", (source, insert, param, t.signed_intensity())),
-                    output: format!("{result:?}"),
-                });
-                match result {
-                    Some(kind) => kind,
-                    None => continue,
-                }
-            }
-            (param, Some(insert))
-                if let Some(kind) =
-                    crate::drive::route(source, insert, param, t.signed_intensity()) =>
-            {
-                kind
-            }
-            _ => {
-                let to = if t.slot.is_some() { "module " } else { "" };
-                let feature = format!("internal modulator {what} -> {to}{}", t.param);
-                notes.add(ir::Impact::Audible, &feature, &p.name);
-                continue;
-            }
+        // An LFO's volume route is linear in its unipolar swing (Depth { power: 1 }).
+        let Some(kind) = crate::external::common_route(
+            source,
+            raw_source,
+            t,
+            ir::Curve::Depth { power: 1 },
+            pitch_semitones,
+            false,
+            group_index,
+            usize::from(slot),
+            target,
+        ) else {
+            let to = if t.slot.is_some() { "module " } else { "" };
+            let feature = format!("internal modulator {what} -> {to}{}", t.param);
+            notes.add(ir::Impact::Audible, &feature, &p.name);
+            continue;
         };
         if t.lag_ms < 0 {
             notes.add(ir::Impact::Audible, "negative modulation lag", &p.name);
@@ -491,53 +427,15 @@ pub(crate) fn knob_routes(
         for (target, t) in p.targets.iter().enumerate().filter(|(_, t)| knob_route(t)) {
             let shapers_before = out.shapers.len();
             let envelopes_before = out.envelopes.len();
-            let source = if let Modulator::StepMod(s) = &p.modulator {
-                let signed = crate::external::signed_route(&t.param);
-                let curve = t
-                    .shaper
-                    .as_ref()
-                    .filter(|sh| sh.enabled)
-                    .map(|sh| &sh.curve);
-                let built = if s.single_trigger {
-                    step_mod_envelope(out, s, curve, signed)
-                } else {
-                    step_mod_transfer(&mut out.shapers, raw_source, s, curve, signed)
-                };
-                match built {
-                    Some(src) => src,
-                    None => {
-                        notes.add(
-                            ir::Impact::Audible,
-                            "internal modulator -> module knob",
-                            &p.name,
-                        );
-                        continue;
-                    }
-                }
-            } else {
-                match t.shaper.as_ref().filter(|s| s.enabled) {
-                    Some(shaper) => {
-                        let signed = matches!(raw_source, ir::Source::Lfo(_))
-                            && crate::external::signed_route(&t.param);
-                        match crate::external::shaped(
-                            &mut out.shapers,
-                            raw_source,
-                            &shaper.curve,
-                            signed,
-                        ) {
-                            Some(s) => s,
-                            None => {
-                                notes.add(
-                                    ir::Impact::Audible,
-                                    "internal modulator -> module knob",
-                                    &p.name,
-                                );
-                                continue;
-                            }
-                        }
-                    }
-                    None => raw_source,
-                }
+            let oneshot = matches!(&p.modulator, Modulator::StepMod(s) if s.single_trigger);
+            let Some(source) = resolve_source(out, &p.modulator, raw_source, t, oneshot, None)
+            else {
+                notes.add(
+                    ir::Impact::Audible,
+                    "internal modulator -> module knob",
+                    &p.name,
+                );
+                continue;
             };
             let at = t.slot.unwrap_or(u8::MAX);
             match crate::external::modulator_route(source, &t.param, at, t, timed_slots) {

@@ -963,10 +963,24 @@ pub(crate) fn compressor(
             release_ms.clamp(10.0, 1000.0) / std::f32::consts::LN_2,
         ),
     };
+    // Enhanced (mode 1) drives its gain-reduction curve from the steeper slope
+    // term `1 / (r + 0.13) - 1 / 1.13` (5.0 below r = 0.04, 0 at r = 1.0),
+    // mapped onto the neutral IR compressor with hard knee (fitted to comp-grid.tsv:
+    // halves RMS error on thr50_ratio50 to 0.62 dB vs 1.68 dB with 1/r).
+    let (ratio, knee_db) = if mode == 1 {
+        let term = if r < 0.04 {
+            5.0
+        } else {
+            (1.0 / (r + 0.13) - 1.0 / 1.13).max(0.0)
+        };
+        (1.0 + 2.8 * term, 0.0)
+    } else {
+        (1.0 / r.max(1e-3), 12.0)
+    };
     ir::Compressor {
         threshold_db: threshold_db * KONTAKT_DB,
-        ratio: 1.0 / r.max(1e-3),
-        knee_db: 12.0,
+        ratio,
+        knee_db,
         attack_ms,
         release_ms,
         makeup_db: 0.0,
@@ -1180,6 +1194,19 @@ mod tests {
         );
         // A knob of 1 leaves the signal alone.
         assert!((compressor(0, -20.0, 1.0, 1.0, 100.0, true).ratio - 1.0).abs() < 1e-6);
+        // KT-06: Enhanced (mode 1) uses the steeper 1/(r + 0.13) - 1/1.13 slope term
+        // with hard knee: 1:1 at r = 1.0, ~5.9:1 at r = 0.25 (vs 4:1 for Pro), and
+        // monotonic limiting (15:1) below r = 0.04.
+        let enh_off = compressor(1, -42.0, 1.0, 15.0, 200.0, false);
+        let enh_mid = compressor(1, -42.0, 0.25, 15.0, 200.0, false);
+        let enh_max = compressor(1, -42.0, 0.02, 15.0, 200.0, false);
+        assert!((enh_off.ratio - 1.0).abs() < 1e-6 && enh_off.knee_db == 0.0);
+        assert!(
+            enh_mid.ratio > 5.5 && enh_mid.ratio < 6.3,
+            "Enhanced r=0.25 ratio: {}",
+            enh_mid.ratio
+        );
+        assert!((enh_max.ratio - 15.0).abs() < 1e-4);
     }
 
     #[test]

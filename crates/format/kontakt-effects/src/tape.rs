@@ -46,7 +46,7 @@ const fn low_pass(hz: f32, inverse_q: f32) -> ir::Section {
     section(hz, [1.0, 0.0, 0.0], [1.0, inverse_q, 1.0])
 }
 
-/// The stages no knob moves.
+/// The stages no knob moves (Quality off: 2x internal rate -> 12.5 Hz input HPF).
 static FIXED: [(ir::Stage, ir::Section); 8] = [
     // 1/Q [ref].
     (In, section(12.5, [0.0, 0.0, 1.0], [1.0, 1.414_427_2, 1.0])),
@@ -70,6 +70,25 @@ static FIXED: [(ir::Stage, ir::Section); 8] = [
     // +1 dB: [ref] (0.122).
     (Out, section(80.0, [1.122_018_5, 1.0, 0.0], [1.0, 1.0, 0.0])),
     // −3 dB: [ref].
+    (Out, section(20.0, [0.0, 0.707_945_8, 0.0], [1.0, 1.0, 0.0])),
+];
+
+/// Quality-on stages: 4x internal rate puts the input Butterworth high-pass at
+/// 25/4 = 6.25 Hz at base rate (see module header).
+static FIXED_HQ: [(ir::Stage, ir::Section); 8] = [
+    (In, section(6.25, [0.0, 0.0, 1.0], [1.0, 1.414_427_2, 1.0])),
+    (In, section(17.0, [1.0, 3.556_558_8, 1.0], [1.0, 2.0, 1.0])),
+    (Pre, low_pass(26_000.0, 0.555_555_6)),
+    (
+        Pre,
+        section(20_000.0, [1.0, 2.876_247_7, 0.0], [1.0, 0.588_790_7, 0.0]),
+    ),
+    (Pre, low_pass(26_000.0, 0.555_555_6)),
+    (
+        Post,
+        section(3_200.0, [0.0, 3.210_602_3, 0.0], [1.0, 2.5, 1.0]),
+    ),
+    (Out, section(80.0, [1.122_018_5, 1.0, 0.0], [1.0, 1.0, 0.0])),
     (Out, section(20.0, [0.0, 0.707_945_8, 0.0], [1.0, 1.0, 0.0])),
 ];
 
@@ -142,10 +161,17 @@ static CURVE: [f32; 65] = [
     1.0,
 ];
 
-/// The record's knobs, each 0..=1, as the engine's waveshaper.
+/// The record's knobs, each 0..=1, as the engine's waveshaper (Quality off).
 pub fn tape(gain: f32, warmth: f32, rolloff: f32) -> ir::EffectKind {
+    tape_hq(gain, warmth, rolloff, false)
+}
+
+/// The record's knobs plus Quality switch (`false` 2x / 12.5 Hz input HPF,
+/// `true` 4x / 6.25 Hz input HPF).
+pub fn tape_hq(gain: f32, warmth: f32, rolloff: f32, quality: bool) -> ir::EffectKind {
     let [gain, warmth, rolloff] = [gain, warmth, rolloff].map(|x| x.clamp(0.0, 1.0));
     let warmth = 10f32.powf((6.0 * warmth - 3.0) / 20.0);
+    let fixed = if quality { &FIXED_HQ } else { &FIXED };
     ir::EffectKind::Shaper(ir::Shaper {
         pre_lowpass_hz: None,
         // The table spans 4096 of the drive's units.
@@ -156,7 +182,7 @@ pub fn tape(gain: f32, warmth: f32, rolloff: f32) -> ir::EffectKind {
         lowpass_hz: None,
         highpass_hz: None,
         sections: ir::Sections::new(
-            &FIXED,
+            fixed,
             [
                 // [ref].
                 Some((Post, low_pass(10_000.0 * (1.0 + rolloff), 1.428_571_4))),
@@ -187,12 +213,18 @@ pub static MODULE: crate::module::Module = crate::module::Module {
         ir::SlotKnob::Knob(3),
     ],
     build: |p| {
-        let [gain, warmth, rolloff, _quality] = *p else {
+        let [gain, warmth, rolloff, q] = *p else {
             return None;
         };
-        Some(tape(gain, warmth, rolloff))
+        Some(tape_hq(gain, warmth, rolloff, q >= 0.5))
     },
 };
+
+/// Whether the saved Tape Saturator record has high-quality mode enabled (byte 12).
+#[must_use]
+pub fn quality(public: &[u8]) -> bool {
+    public.get(12).is_some_and(|&b| b != 0)
+}
 
 /// The saved knobs (gain, warmth, roll-off, quality) as a script moves
 /// them: every move rebuilds the shaper through [`MODULE`].
@@ -201,12 +233,12 @@ pub fn model(public: &[u8]) -> Option<ir::KnobModel> {
         let bytes = public.get(n..n + 4)?.try_into().ok()?;
         Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
     };
-    let quality = f32::from(*public.get(12)? != 0);
-    Some(MODULE.knob_model(&[f(0)?, f(4)?, f(8)?, quality]))
+    let q = f32::from(u8::from(*public.get(12)? != 0));
+    Some(MODULE.knob_model(&[f(0)?, f(4)?, f(8)?, q]))
 }
 
-/// The KSP names of [`model`]'s knobs; each continuous knob is 0..1, and
-/// Quality is a raw boolean switch (`bool: stored=1 when value>=1`).
+/// The KSP names of [`model`]'s active knobs; each continuous knob is 0..1,
+/// quality is a raw bool switch.
 pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 4] {
     use ir::KnobTarget::Slot;
     use ir::SlotKnob::Knob;
