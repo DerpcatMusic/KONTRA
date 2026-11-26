@@ -65,6 +65,37 @@ impl Module {
             saved: saved.into(),
         }
     }
+
+    /// Builds a fresh [`ir::SlotType`] from `model`, deriving the slot dry
+    /// level from [`Self::mix`] (`1.0` for `WetDry`, `0.0` otherwise).
+    #[must_use]
+    pub fn slot_type_model(&'static self, model: ir::KnobModel) -> ir::SlotType {
+        let dry = match self.mix {
+            MixMode::WetDry => 1.0,
+            MixMode::InPlace | MixMode::OwnMix => 0.0,
+        };
+        let effect = (self.build)(&model.saved).map(|kind| ir::Effect {
+            kind,
+            bypass: false,
+            output: 1.0,
+            dry,
+        });
+        ir::SlotType {
+            id: self.script_type,
+            subtype: false,
+            reads: 0,
+            kind: self.script_type,
+            effect,
+            laws: [].into(),
+            model: Some(model),
+        }
+    }
+
+    /// Builds a fresh [`ir::SlotType`] from `saved` knob positions.
+    #[must_use]
+    pub fn slot_type(&'static self, saved: &[f32]) -> ir::SlotType {
+        self.slot_type_model(self.knob_model(saved))
+    }
 }
 
 impl ir::EffectModel for Module {
@@ -116,12 +147,29 @@ pub mod ids {
     pub const LEGACY_CHORUS: ModelId = ModelId(B + 16);
     pub const LEGACY_FLANGER: ModelId = ModelId(B + 17);
     pub const REPLIKA: ModelId = ModelId(B + 18);
+    pub const RINGMOD: ModelId = ModelId(B + 19);
+    pub const STEREO_TUNE: ModelId = ModelId(B + 20);
+    pub const CRY_WAH: ModelId = ModelId(B + 21);
+    pub const TWIN_DELAY: ModelId = ModelId(B + 22);
+    pub const PLATE_REVERB: ModelId = ModelId(B + 23);
     pub const ROTATOR: ModelId = ModelId(B + 24);
     pub const GATER: ModelId = ModelId(B + 25);
     pub const BEAT_MASHER: ModelId = ModelId(B + 26);
     pub const BEAT_SLICER: ModelId = ModelId(B + 27);
     pub const REVERSE_GRAIN: ModelId = ModelId(B + 28);
     pub const TRANSPOSE_STRETCH: ModelId = ModelId(B + 29);
+    pub const TWANG: ModelId = ModelId(B + 30);
+    pub const CABINET: ModelId = ModelId(B + 31);
+    pub const JUMP: ModelId = ModelId(B + 32);
+    pub const VAN51: ModelId = ModelId(B + 33);
+    pub const AC_BOX: ModelId = ModelId(B + 34);
+    pub const HOT_SOLO: ModelId = ModelId(B + 35);
+    pub const CAT: ModelId = ModelId(B + 36);
+    pub const BASS_PRO: ModelId = ModelId(B + 37);
+    pub const SKREAMER_DELUXE: ModelId = ModelId(B + 38);
+    pub const KOLOR: ModelId = ModelId(B + 39);
+    pub const DYX: ModelId = ModelId(B + 40);
+    pub const CORE_CELL: ModelId = ModelId(B + 41);
 }
 
 /// All modules defined in `kontra-kontakt-effects`.
@@ -146,6 +194,23 @@ pub static ALL: &[&Module] = &[
     &crate::mangling::beat_slicer::MODULE,
     &crate::mangling::reverse_grain::MODULE,
     &crate::mangling::transpose_stretch::MODULE,
+    &crate::ringmod::MODULE,
+    &crate::stereo_tune::MODULE,
+    &crate::cry_wah::MODULE,
+    &crate::twin_delay::MODULE,
+    &crate::plate_reverb::MODULE,
+    &crate::amps::twang::MODULE,
+    &crate::cabinet::MODULE,
+    &crate::amps::jump::MODULE,
+    &crate::amps::van51::MODULE,
+    &crate::amps::ac_box::MODULE,
+    &crate::amps::hot_solo::MODULE,
+    &crate::cat::MODULE,
+    &crate::amps::bass_pro::MODULE,
+    &crate::skreamer_deluxe::MODULE,
+    &crate::kolor::MODULE,
+    &crate::dyx::MODULE,
+    &crate::core_cell::MODULE,
 ];
 
 /// Standard `Knob(0..N)` slice helper for static [`Module`] tables.
@@ -181,6 +246,84 @@ pub fn register_all() {
     for module in ALL {
         module.register();
     }
+}
+
+/// `$NI_SYNC_UNIT_*` note values in quarter-note beats (0 = free, < 0 = unused).
+const SYNC_UNIT_BEATS: [f32; 22] = [
+    0.0,
+    -1.0,
+    -1.0,
+    -1.0,
+    -1.0,
+    4.0,
+    8.0 / 3.0,
+    2.0,
+    4.0 / 3.0,
+    1.0,
+    2.0 / 3.0,
+    -1.0,
+    0.5,
+    1.0 / 3.0,
+    -1.0,
+    0.25,
+    1.0 / 6.0,
+    0.125,
+    1.0 / 12.0,
+    0.0625,
+    1.0 / 24.0,
+    1.0 / 64.0,
+];
+
+/// Quarter-note beats for a `$NI_SYNC_UNIT_*` index (`None` when free or invalid).
+#[must_use]
+pub fn sync_beats(unit: i32) -> Option<f32> {
+    let b = *SYNC_UNIT_BEATS.get(usize::try_from(unit).ok()?)?;
+    (b > 0.0).then_some(b)
+}
+
+/// Nearest `$NI_SYNC_UNIT_*` index for a saved quarter-note beat count (0 = free).
+#[must_use]
+pub fn sync_unit(beats: f32) -> i32 {
+    if beats <= 1e-9 {
+        return 0;
+    }
+    SYNC_UNIT_BEATS
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|&(_, b)| b > 0.0)
+        .min_by(|&(_, a), &(_, b)| (a - beats).abs().total_cmp(&(b - beats).abs()))
+        .map_or(0, |(i, _)| i as i32)
+}
+
+/// Reads a finite little-endian `f32` at byte offset `at`.
+#[must_use]
+pub fn f32_le(bytes: &[u8], at: usize) -> Option<f32> {
+    let raw: [u8; 4] = bytes.get(at..at + 4)?.try_into().ok()?;
+    Some(f32::from_le_bytes(raw)).filter(|v| v.is_finite())
+}
+
+/// Reads a little-endian `i32` at byte offset `at`.
+#[must_use]
+pub fn i32_le(bytes: &[u8], at: usize) -> Option<i32> {
+    let raw: [u8; 4] = bytes.get(at..at + 4)?.try_into().ok()?;
+    Some(i32::from_le_bytes(raw))
+}
+
+/// Normalized `0..=1` KSP knob law.
+pub const UNIT_LAW: ir::Law = ir::Law::Linear { lo: 0.0, hi: 1.0 };
+
+/// Raw integer-valued KSP switch/menu knob law (`0..=1e6`).
+pub const RAW_LAW: ir::Law = ir::Law::Linear { lo: 0.0, hi: 1e6 };
+
+/// Declarative KSP knob binding row targeting `Knob(slot)`.
+#[must_use]
+pub const fn knob_row(
+    name: &'static str,
+    slot: u8,
+    law: ir::Law,
+) -> (&'static str, ir::KnobTarget, ir::Law) {
+    (name, ir::KnobTarget::Slot(ir::SlotKnob::Knob(slot)), law)
 }
 
 #[cfg(test)]

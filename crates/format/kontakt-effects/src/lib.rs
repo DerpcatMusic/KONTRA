@@ -2,20 +2,32 @@
 //! model without anything else from the Kontakt translator: each module
 //! gives an effect's model and the knob rows its script parameters move.
 
+pub mod amps;
 pub mod bite;
+pub mod cabinet;
+pub mod cat;
 pub mod choral;
+pub mod core_cell;
+pub mod cry_wah;
 pub mod delays;
 pub mod dstortion;
 pub mod dynamics;
+pub mod dyx;
 pub mod flair;
 pub mod freak;
+pub mod kolor;
 pub mod legacy_reverb;
 pub mod mangling;
 pub mod module;
 pub mod phasis;
+pub mod plate_reverb;
 pub mod psyche;
+pub mod ringmod;
 pub mod rotator;
 pub mod skreamer;
+pub mod skreamer_deluxe;
+pub mod stereo_tune;
 pub mod supergt;
 pub mod tape;
+pub mod twin_delay;
 pub mod vibrato;

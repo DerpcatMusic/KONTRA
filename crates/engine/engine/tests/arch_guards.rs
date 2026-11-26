@@ -416,8 +416,9 @@ fn count_needles(files: &[PathBuf], needles: &[&str]) -> usize {
 fn all_kontakt_effect_modules_register_unique_ids_and_roundtrip_saved() {
     use kontra_ir::EffectModel;
     use kontra_kontakt_effects::{
-        bite, choral, delays, dstortion, dynamics, flair, freak, module, phasis, psyche, skreamer,
-        supergt, tape, vibrato,
+        amps, bite, cabinet, cat, choral, core_cell, cry_wah, delays, dstortion, dynamics, dyx,
+        flair, freak, kolor, mangling, module, phasis, plate_reverb, psyche, ringmod, rotator,
+        skreamer, skreamer_deluxe, stereo_tune, supergt, tape, twin_delay, vibrato,
     };
 
     module::register_all();
@@ -568,6 +569,200 @@ fn all_kontakt_effect_modules_register_unique_ids_and_roundtrip_saved() {
     );
     checked.insert(fl_mod.id);
 
+    // Rotator & Mangling
+    let rotm = rotator::model(rotator::INIT);
+    assert_eq!(
+        rotm.build(&rotm.saved),
+        Some(ir::EffectKind::Rotary(rotator::rotary(rotator::INIT)))
+    );
+    checked.insert(rotm.id);
+
+    let bmm = mangling::beat_masher::model(mangling::beat_masher::INIT);
+    assert_eq!(
+        bmm.build(&bmm.saved),
+        Some(ir::EffectKind::BeatMasher(
+            mangling::beat_masher::ir_effect(mangling::beat_masher::INIT)
+        ))
+    );
+    checked.insert(bmm.id);
+
+    let gtm = mangling::gater::model(mangling::gater::INIT);
+    assert_eq!(
+        gtm.build(&gtm.saved),
+        Some(ir::EffectKind::Gater(mangling::gater::ir_effect(
+            mangling::gater::INIT
+        )))
+    );
+    checked.insert(gtm.id);
+
+    let bsm = mangling::beat_slicer::model(mangling::beat_slicer::INIT);
+    assert_eq!(
+        bsm.build(&bsm.saved),
+        Some(ir::EffectKind::BeatSlicer(
+            mangling::beat_slicer::ir_effect(mangling::beat_slicer::INIT)
+        ))
+    );
+    checked.insert(bsm.id);
+
+    let rgm = mangling::reverse_grain::model(mangling::reverse_grain::INIT);
+    assert_eq!(
+        rgm.build(&rgm.saved),
+        Some(ir::EffectKind::ReverseGrain(
+            mangling::reverse_grain::ir_effect(mangling::reverse_grain::INIT)
+        ))
+    );
+    checked.insert(rgm.id);
+
+    let tsm = mangling::transpose_stretch::model(mangling::transpose_stretch::INIT);
+    assert_eq!(
+        tsm.build(&tsm.saved),
+        Some(ir::EffectKind::TransposeStretch(
+            mangling::transpose_stretch::ir_effect(mangling::transpose_stretch::INIT)
+        ))
+    );
+    checked.insert(tsm.id);
+
+    // Ring Modulator, Stereo Tune, Cry Wah, Twin Delay, Plate Reverb
+    let rmm = ringmod::model(ringmod::INIT);
+    assert_eq!(
+        rmm.build(&rmm.saved),
+        Some(ir::EffectKind::RingMod(ringmod::ringmod(ringmod::INIT)))
+    );
+    checked.insert(rmm.id);
+
+    let stm = stereo_tune::model(stereo_tune::INIT);
+    assert_eq!(
+        stm.build(&stm.saved),
+        Some(ir::EffectKind::StereoDetune(stereo_tune::detune(
+            stereo_tune::INIT
+        )))
+    );
+    checked.insert(stm.id);
+
+    let cwm = cry_wah::model(cry_wah::INIT);
+    assert_eq!(
+        cwm.build(&cwm.saved),
+        Some(ir::EffectKind::Wah(cry_wah::wah(cry_wah::INIT)))
+    );
+    checked.insert(cwm.id);
+
+    let tdm = twin_delay::model(twin_delay::INIT);
+    assert_eq!(
+        tdm.build(&tdm.saved),
+        Some(ir::EffectKind::DualDelay(twin_delay::delay(
+            twin_delay::INIT
+        )))
+    );
+    checked.insert(tdm.id);
+
+    let prm = plate_reverb::model(plate_reverb::INIT);
+    assert_eq!(
+        prm.build(&prm.saved),
+        Some(ir::EffectKind::Reverb(plate_reverb::reverb(
+            plate_reverb::INIT
+        )))
+    );
+    checked.insert(prm.id);
+
+    // Amps, Cabinet, Cat, Skreamer Deluxe, Kolor, DYX, Core Cell
+    let twm = amps::twang::model(amps::twang::INIT);
+    assert_eq!(
+        twm.build(&twm.saved),
+        Some(ir::EffectKind::AmpStack(amps::twang::amp(
+            amps::twang::INIT
+        )))
+    );
+    checked.insert(twm.id);
+
+    let cabm = cabinet::model(cabinet::INIT);
+    assert_eq!(
+        cabm.build(&cabm.saved),
+        Some(ir::EffectKind::Cabinet(cabinet::cabinet(cabinet::INIT)))
+    );
+    checked.insert(cabm.id);
+
+    let jmpm = amps::jump::model(amps::jump::INIT);
+    assert_eq!(
+        jmpm.build(&jmpm.saved),
+        Some(ir::EffectKind::AmpStack(amps::jump::amp(amps::jump::INIT)))
+    );
+    checked.insert(jmpm.id);
+
+    let v5m = amps::van51::model(amps::van51::INIT);
+    assert_eq!(
+        v5m.build(&v5m.saved),
+        Some(ir::EffectKind::AmpStack(amps::van51::amp(
+            amps::van51::INIT
+        )))
+    );
+    checked.insert(v5m.id);
+
+    let acm = amps::ac_box::model(amps::ac_box::INIT);
+    assert_eq!(
+        acm.build(&acm.saved),
+        Some(ir::EffectKind::AmpStack(amps::ac_box::amp(
+            amps::ac_box::INIT
+        )))
+    );
+    checked.insert(acm.id);
+
+    let hsm = amps::hot_solo::model(amps::hot_solo::INIT);
+    assert_eq!(
+        hsm.build(&hsm.saved),
+        Some(ir::EffectKind::AmpStack(amps::hot_solo::amp(
+            amps::hot_solo::INIT
+        )))
+    );
+    checked.insert(hsm.id);
+
+    let catm = cat::model(cat::INIT);
+    assert_eq!(
+        catm.build(&catm.saved),
+        Some(ir::EffectKind::AmpStack(cat::amp(cat::INIT)))
+    );
+    checked.insert(catm.id);
+
+    let bpm = amps::bass_pro::model(amps::bass_pro::INIT);
+    assert_eq!(
+        bpm.build(&bpm.saved),
+        Some(ir::EffectKind::AmpStack(amps::bass_pro::amp(
+            amps::bass_pro::INIT
+        )))
+    );
+    checked.insert(bpm.id);
+
+    let skdm = skreamer_deluxe::model(skreamer_deluxe::INIT);
+    assert_eq!(
+        skdm.build(&skdm.saved),
+        Some(ir::EffectKind::AmpStack(skreamer_deluxe::amp(
+            skreamer_deluxe::INIT
+        )))
+    );
+    checked.insert(skdm.id);
+
+    let kolm = kolor::model(kolor::INIT);
+    assert_eq!(
+        kolm.build(&kolm.saved),
+        Some(ir::EffectKind::ColorSat(kolor::color_sat(kolor::INIT)))
+    );
+    checked.insert(kolm.id);
+
+    let dyxm = dyx::model(dyx::INIT);
+    assert_eq!(
+        dyxm.build(&dyxm.saved),
+        Some(ir::EffectKind::SpectralMorph(dyx::spectral_morph(
+            dyx::INIT
+        )))
+    );
+    checked.insert(dyxm.id);
+
+    let ccm = core_cell::model(core_cell::INIT);
+    assert_eq!(
+        ccm.build(&ccm.saved),
+        Some(core_cell::effect(core_cell::INIT))
+    );
+    checked.insert(ccm.id);
+
     assert_eq!(
         checked, seen_ids,
         "every module in kontakt_effects::module::ALL must be covered by roundtrip verification"
@@ -607,6 +802,85 @@ fn all_kontakt_effect_modules_register_unique_ids_and_roundtrip_saved() {
         (&vibrato::MODULE, &vibrato::rows(), vm.saved.to_vec()),
         (&delays::CHORUS, &ch_rows, ch_mod.saved.to_vec()),
         (&delays::FLANGER, &fl_rows, fl_mod.saved.to_vec()),
+        (&rotator::MODULE, &rotator::rows(), rotm.saved.to_vec()),
+        (
+            &mangling::beat_masher::MODULE,
+            &mangling::beat_masher::rows(),
+            bmm.saved.to_vec(),
+        ),
+        (
+            &mangling::gater::MODULE,
+            &mangling::gater::rows(),
+            gtm.saved.to_vec(),
+        ),
+        (
+            &mangling::beat_slicer::MODULE,
+            &mangling::beat_slicer::rows(),
+            bsm.saved.to_vec(),
+        ),
+        (
+            &mangling::reverse_grain::MODULE,
+            &mangling::reverse_grain::rows(),
+            rgm.saved.to_vec(),
+        ),
+        (
+            &mangling::transpose_stretch::MODULE,
+            &mangling::transpose_stretch::rows(),
+            tsm.saved.to_vec(),
+        ),
+        (&ringmod::MODULE, &ringmod::rows(), rmm.saved.to_vec()),
+        (
+            &stereo_tune::MODULE,
+            &stereo_tune::rows(),
+            stm.saved.to_vec(),
+        ),
+        (&cry_wah::MODULE, &cry_wah::rows(), cwm.saved.to_vec()),
+        (&twin_delay::MODULE, &twin_delay::rows(), tdm.saved.to_vec()),
+        (
+            &plate_reverb::MODULE,
+            &plate_reverb::rows(),
+            prm.saved.to_vec(),
+        ),
+        (
+            &amps::twang::MODULE,
+            &amps::twang::rows(),
+            twm.saved.to_vec(),
+        ),
+        (&cabinet::MODULE, &cabinet::rows(), cabm.saved.to_vec()),
+        (
+            &amps::jump::MODULE,
+            &amps::jump::rows(),
+            jmpm.saved.to_vec(),
+        ),
+        (
+            &amps::van51::MODULE,
+            &amps::van51::rows(),
+            v5m.saved.to_vec(),
+        ),
+        (
+            &amps::ac_box::MODULE,
+            &amps::ac_box::rows(),
+            acm.saved.to_vec(),
+        ),
+        (
+            &amps::hot_solo::MODULE,
+            &amps::hot_solo::rows(),
+            hsm.saved.to_vec(),
+        ),
+        (&cat::MODULE, &cat::rows(), catm.saved.to_vec()),
+        (
+            &amps::bass_pro::MODULE,
+            &amps::bass_pro::rows(),
+            bpm.saved.to_vec(),
+        ),
+        (
+            &skreamer_deluxe::MODULE,
+            &skreamer_deluxe::rows(),
+            skdm.saved.to_vec(),
+        ),
+        (&kolor::MODULE, &kolor::rows(), kolm.saved.to_vec()),
+        (&dyx::MODULE, &dyx::rows(), dyxm.saved.to_vec()),
+        (&core_cell::MODULE, &core_cell::rows(), ccm.saved.to_vec()),
     ];
     let row_checked_ids: HashSet<_> = modules_and_rows.iter().map(|(m, ..)| m.id).collect();
     assert_eq!(
@@ -635,7 +909,7 @@ fn all_kontakt_effect_modules_register_unique_ids_and_roundtrip_saved() {
                 )
             });
             let mut changed = false;
-            for x in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+            for x in [0.0f32, 1e-6, 5e-6, 9e-6, 0.25, 0.5, 0.75, 1.0] {
                 let mut probe = base_params.clone();
                 probe[idx] = law.eval(x);
                 if m.build_effect(&probe, &base_effect)

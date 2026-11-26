@@ -212,6 +212,8 @@ pub struct Group {
     pub shapers: Vec<ir::Transfer>,
     /// Read by `Source::Blend(n)`.
     pub blends: Vec<ir::Blend>,
+    /// Audio-rate envelope followers on this group, by index.
+    pub followers: Vec<ir::EnvelopeFollower>,
     pub routes: Vec<ir::Routes>,
     /// It plays on release (scripts read this).
     pub release_trigger: bool,
@@ -330,6 +332,7 @@ impl Group {
             lfos: Vec::new(),
             shapers: Vec::new(),
             blends: Vec::new(),
+            followers: Vec::new(),
             routes: Vec::new(),
             release_trigger: false,
             held: Vec::new(),

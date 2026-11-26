@@ -246,6 +246,19 @@ pub enum NoteExpr {
     Pan,
 }
 
+/// An audio-rate envelope follower modulator in physical units.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EnvelopeFollower {
+    /// Attack time constant in milliseconds.
+    pub attack_ms: f32,
+    /// Release time constant in milliseconds.
+    pub release_ms: f32,
+    /// Adaptive baseline smoothing time in milliseconds (`0` disables adaption).
+    pub adaption_ms: f32,
+    /// Input gain boost in dB.
+    pub gain_db: f32,
+}
+
 /// A per-note modulation source, 0..=1 unless noted.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Source {
@@ -309,6 +322,9 @@ pub enum Source {
     /// The playing zone's [`Zone::envelopes`](crate::Zone::envelopes) entry
     /// matching this slot, bipolar −1..=1; zones without one skip the route.
     ZoneEnvelope(u8),
+    /// The group's [`Group::followers`](crate::Group::followers) entry,
+    /// tracking audio amplitude in `0..=1`.
+    EnvelopeFollower(u8),
 }
 
 impl Source {

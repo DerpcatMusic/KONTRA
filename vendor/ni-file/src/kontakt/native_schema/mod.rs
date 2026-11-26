@@ -10,11 +10,11 @@ mod curated;
 mod programs;
 mod vm;
 
+pub(crate) use vm::decode_chunk;
 pub use vm::{
     accepts, class_of, decode, decode_prefix, decode_private, decode_unframed, readers, synthesize,
     synthesize_all, Decoded, Field, Opaque, ReaderInfo, Undecoded,
 };
-pub(crate) use vm::decode_chunk;
 
 #[cfg(test)]
 mod tests {

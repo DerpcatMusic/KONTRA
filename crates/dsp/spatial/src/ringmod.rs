@@ -55,6 +55,21 @@ pub enum Source {
         product: f32,
         noise: f32,
     },
+    /// A continuous sine-to-triangle carrier whose rate is modulated by a
+    /// parabolic sine or square LFO, followed by a carrier-driven stereo FM
+    /// delay line.
+    Modulated {
+        /// 0 is parabolic sine, 1 is triangle.
+        edge: f32,
+        /// Peak stereo FM delay swing, ms.
+        fm_ms: f32,
+        /// LFO frequency, Hz.
+        lfo_hz: f32,
+        /// Peak upward carrier-rate modulation multiplier above base.
+        lfo_depth: f32,
+        /// `true` selects a square LFO; `false` selects a parabolic sine LFO.
+        lfo_square: bool,
+    },
 }
 
 /// The two branches' allpass coefficients `a`; each stage is
@@ -262,6 +277,14 @@ struct Coefs {
     demod: f32,
     agc_attack: f32,
     agc_release: f32,
+    /// Modulated carrier: phase increments (in [-1, 1) cycles), carrier shape
+    /// weights, and peak FM delay in frames.
+    mod_inc: f32,
+    lfo_inc: f32,
+    edge_sin: f32,
+    edge_tri: f32,
+    fm_frames: f32,
+    mod_smooth: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -269,25 +292,46 @@ pub struct Ring {
     s: RingMod,
     c: Coefs,
     phase: f32,
+    mod_phase: f32,
+    lfo_phase: f32,
+    /// Smoothed `[dry, wet, fm_frames, mod_inc]` for click-free live drags.
+    mod_live: [f32; 4],
+    mod_init: bool,
     envelope: f32,
     side: f32,
     demod: f32,
     agc: f32,
     channels: [Channel; 2],
+    fm_ring: Box<[[f32; 2]]>,
+    fm_write: usize,
 }
 
 impl Ring {
     #[must_use]
     pub fn new(s: RingMod, rate: u32) -> Self {
+        let fm_ring = if matches!(s.source, Source::Modulated { .. }) {
+            let cap = ((0.002 * rate.max(1) as f32).ceil() as usize)
+                .next_power_of_two()
+                .max(16);
+            vec![[0.0; 2]; cap].into_boxed_slice()
+        } else {
+            Box::default()
+        };
         let mut r = Self {
             s,
             c: Coefs::default(),
             phase: 0.0,
+            mod_phase: 0.0,
+            lfo_phase: 0.0,
+            mod_live: [0.0; 4],
+            mod_init: false,
             envelope: 0.0,
             side: 0.0,
             demod: 0.0,
             agc: 0.0,
             channels: [Channel::default(); 2],
+            fm_ring,
+            fm_write: 0,
         };
         r.set(s, rate);
         r
@@ -320,7 +364,28 @@ impl Ring {
                 let q = s.quadrature.clamp(0.0, 1.0);
                 c.makeup = q * (1.0 - fb * fb).sqrt() + (1.0 - q);
             }
-            Source::Radio { .. } => {}
+            Source::Radio { .. } | Source::Modulated { .. } => {}
+        }
+        if let Source::Modulated {
+            edge,
+            fm_ms,
+            lfo_hz,
+            ..
+        } = s.source
+        {
+            let e = edge.clamp(0.0, 1.0);
+            let e2 = e * e;
+            c.mod_inc = (2.0 * s.hz.max(0.0) / rate).min(1.98);
+            c.lfo_inc = (2.0 * lfo_hz.max(0.0) / rate).min(1.98);
+            c.edge_sin = 2.0 * (1.0 - e2);
+            c.edge_tri = e2;
+            let max_delay = self.fm_ring.len().saturating_sub(2) as f32;
+            c.fm_frames = (fm_ms.max(0.0) * 0.001 * rate).min(max_delay.max(0.0));
+            c.mod_smooth = 1.0 - (-1.0 / (0.005 * rate)).exp();
+            if !self.mod_init {
+                self.mod_live = [s.dry, s.wet, c.fm_frames, c.mod_inc];
+                self.mod_init = true;
+            }
         }
         if let Source::Sidechain {
             attack,
@@ -351,8 +416,19 @@ impl Ring {
     }
 
     pub fn reset(&mut self) {
-        (self.phase, self.envelope, self.side, self.demod, self.agc) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        (
+            self.phase,
+            self.mod_phase,
+            self.lfo_phase,
+            self.envelope,
+            self.side,
+            self.demod,
+            self.agc,
+        ) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         self.channels = [Channel::default(); 2];
+        self.fm_ring.fill([0.0; 2]);
+        self.fm_write = 0;
+        self.mod_live = [self.s.dry, self.s.wet, self.c.fm_frames, self.c.mod_inc];
     }
 
     /// The feedback taken off the input for a wet output `w`.
@@ -363,11 +439,80 @@ impl Ring {
 
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
         let (s, c) = (self.s, self.c);
+        if let Source::Modulated {
+            lfo_depth,
+            lfo_square,
+            ..
+        } = s.source
+        {
+            let depth = lfo_depth.max(0.0);
+            let mask = self.fm_ring.len().saturating_sub(1);
+            let max_idx = mask.saturating_sub(1) as f32;
+            let targets = [s.dry, s.wet, c.fm_frames, c.mod_inc];
+            let alpha = c.mod_smooth;
+            for frame in io {
+                for (cur, tgt) in self.mod_live.iter_mut().zip(targets) {
+                    *cur += alpha * (tgt - *cur);
+                }
+                let [dry_g, wet_g, fm_frames, base_inc] = self.mod_live;
+                self.lfo_phase += c.lfo_inc;
+                if self.lfo_phase >= 1.0 {
+                    self.lfo_phase -= 2.0;
+                }
+                let lfo_abs = self.lfo_phase.abs();
+                let lfo_val = if lfo_square {
+                    if self.lfo_phase >= 0.0 { 0.5 } else { 0.0 }
+                } else if lfo_abs >= 0.5 {
+                    let u = lfo_abs - 1.0;
+                    0.5 - u * u
+                } else {
+                    lfo_abs * lfo_abs
+                };
+                let inst_inc = (base_inc * (1.0 + lfo_val * depth)).min(1.98);
+                self.mod_phase += inst_inc;
+                if self.mod_phase >= 1.0 {
+                    self.mod_phase -= 2.0;
+                }
+                let abs_p = self.mod_phase.abs();
+                let parabolic = if abs_p >= 0.5 {
+                    let u = abs_p - 1.0;
+                    0.5 - u * u
+                } else {
+                    abs_p * abs_p
+                };
+                let carrier_val = c.edge_sin * parabolic + c.edge_tri * abs_p;
+                let gain = dry_g + wet_g * carrier_val;
+                let mixed = [frame[0] * gain, frame[1] * gain];
+                if !self.fm_ring.is_empty() {
+                    self.fm_write = self.fm_write.wrapping_sub(1) & mask;
+                    if let Some(slot) = self.fm_ring.get_mut(self.fm_write) {
+                        *slot = mixed;
+                    }
+                    let delay = (fm_frames * carrier_val).clamp(0.0, max_idx);
+                    let i0 = delay as usize;
+                    let frac = delay - i0 as f32;
+                    let a = self
+                        .fm_ring
+                        .get((self.fm_write + i0) & mask)
+                        .copied()
+                        .unwrap_or([0.0; 2]);
+                    let b = self
+                        .fm_ring
+                        .get((self.fm_write + i0 + 1) & mask)
+                        .copied()
+                        .unwrap_or([0.0; 2]);
+                    *frame = [a[0] + frac * (b[0] - a[0]), a[1] + frac * (b[1] - a[1])];
+                } else {
+                    *frame = mixed;
+                }
+            }
+            return;
+        }
         let fb = s.feedback.clamp(0.0, 0.99);
         let (weight, offset, scale) = match s.source {
             Source::Oscillator => (s.quadrature, s.bias, 1.0 - s.bias * 0.5),
             Source::Sidechain { .. } => (-s.quadrature, 0.0, 1.0 - s.bias * 0.5),
-            Source::Radio { .. } => (s.quadrature, 0.0, 1.0),
+            Source::Radio { .. } | Source::Modulated { .. } => (s.quadrature, 0.0, 1.0),
         };
         for frame in io {
             let input = *frame;
@@ -602,5 +747,61 @@ mod tests {
         };
         let (played, other) = (level_of(radio, 500.0, 500.0), level_of(radio, 500.0, 730.0));
         assert!(played > 0.02 && played > 10.0 * other, "{played} {other}");
+    }
+
+    #[test]
+    fn modulated_ring_makes_sidebands_fm_and_lfo_and_is_block_invariant() {
+        let s = RingMod {
+            hz: 500.0,
+            spread: 0.0,
+            bias: 0.0,
+            quadrature: 0.0,
+            drive: 1.0,
+            highpass_hz: 0.0,
+            gate: false,
+            feedback: 0.0,
+            source: Source::Modulated {
+                edge: 0.0,
+                fm_ms: 0.0,
+                lfo_hz: 1.0,
+                lfo_depth: 0.0,
+                lfo_square: false,
+            },
+            wet: 3.2,
+            dry: -1.6,
+        };
+        let (up, down, carrier_leak) = (
+            level_of(s, 2_000.0, 2_500.0),
+            level_of(s, 2_000.0, 1_500.0),
+            level_of(s, 2_000.0, 2_000.0),
+        );
+        // Pure ring modulation (ring=1.0): strong ±500 Hz sidebands (~0.08), zero carrier leak.
+        assert!(up > 0.06 && down > 0.06, "sidebands {up} {down}");
+        assert!(carrier_leak < 0.005, "carrier leak {carrier_leak}");
+
+        // FM + LFO + triangle edge: block-size invariant and finite after reset.
+        let s_fm = RingMod {
+            source: Source::Modulated {
+                edge: 0.8,
+                fm_ms: 1.0,
+                lfo_hz: 5.0,
+                lfo_depth: 1.5,
+                lfo_square: true,
+            },
+            ..s
+        };
+        let input: Vec<[f32; 2]> = (0..2048)
+            .map(|n| [(std::f32::consts::TAU * 440.0 * n as f32 / 48_000.0).sin() * 0.4; 2])
+            .collect();
+        let mut r = Ring::new(s_fm, 48_000);
+        let mut whole = input.clone();
+        r.process(&mut whole);
+        assert!(whole.iter().flatten().all(|v| v.is_finite()));
+        r.reset();
+        let mut chunked = input;
+        for c in chunked.chunks_mut(19) {
+            r.process(c);
+        }
+        assert_eq!(whole, chunked, "block-size invariance after reset");
     }
 }

@@ -538,6 +538,11 @@ impl Engine {
                 };
                 Some(kontra_plan::modulation::zone_envelope(env, pos))
             }),
+            ir::Source::EnvelopeFollower(idx) => self
+                .followers
+                .get(zone.group as usize)
+                .and_then(|fs| fs.get(usize::from(idx)))
+                .map(kontra_dsp::dynamics::EnvelopeFollower::value),
         }
     }
 

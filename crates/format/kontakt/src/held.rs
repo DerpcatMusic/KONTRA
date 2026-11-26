@@ -73,21 +73,21 @@ pub(crate) fn fresh() -> Vec<(i32, u32, i32)> {
 
 #[cfg(test)]
 mod tests {
-    /// Jump's record (no processor): PREAMP 0.25 at byte 0, MONO on at 25.
+    /// Raum's held-only controls: FEEDBACK 0.25 at byte 8, FREEZE on at byte 52.
     #[test]
     fn a_saved_held_only_module_reads_back_as_scripts_see_it() {
-        let mut public = vec![0u8; 26];
-        public[..4].copy_from_slice(&0.25f32.to_le_bytes());
-        public[25] = 1;
-        let got = super::saved(0x4d, 0x10, &public);
+        let mut public = vec![0u8; 58];
+        public[8..12].copy_from_slice(&0.25f32.to_le_bytes());
+        public[52] = 1;
+        let got = super::saved(0x65, 0x10, &public);
         let key = kontra_ir::held_key;
         assert!(
-            got.contains(&(key("$ENGINE_PAR_JMP_PREAMP"), 250_000)),
+            got.contains(&(key("$ENGINE_PAR_RAUM_FEEDBACK"), 250_000)),
             "{got:?}"
         );
-        assert!(got.contains(&(key("$ENGINE_PAR_JMP_MONO"), 1)));
+        assert!(got.contains(&(key("$ENGINE_PAR_RAUM_FREEZE"), 1)));
         assert!(
-            super::saved(0x4d, 0x11, &public).is_empty(),
+            super::saved(0x65, 0x11, &public).is_empty(),
             "another version"
         );
     }

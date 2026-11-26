@@ -1,6 +1,6 @@
 //! Effects folded into each voice's stereo matrix: every carried kind is
-//! linear and stateless, so a rack of them is one 2×2 matrix (Kontakt runs
-//! group inserts per voice; a linear instrument insert commutes with the sum).
+//! linear and stateless, so a rack of them is one 2×2 matrix (group inserts
+//! run per voice; a linear instrument insert commutes with the sum).
 
 use kontra_ir as ir;
 use kontra_voice::Gain;
@@ -57,6 +57,13 @@ pub fn rack_only(kind: &ir::EffectKind) -> bool {
             | ir::EffectKind::BeatSlicer(_)
             | ir::EffectKind::ReverseGrain(_)
             | ir::EffectKind::TransposeStretch(_)
+            | ir::EffectKind::DualDelay(_)
+            | ir::EffectKind::StereoDetune(_)
+            | ir::EffectKind::Wah(_)
+            | ir::EffectKind::AmpStack(_)
+            | ir::EffectKind::Cabinet(_)
+            | ir::EffectKind::ColorSat(_)
+            | ir::EffectKind::SpectralMorph(_)
     )
 }
 
@@ -139,7 +146,14 @@ pub fn matrix(e: &ir::Effect) -> Gain {
             | ir::EffectKind::BeatMasher(_)
             | ir::EffectKind::BeatSlicer(_)
             | ir::EffectKind::ReverseGrain(_)
-            | ir::EffectKind::TransposeStretch(_) => [[0.0; 2]; 2],
+            | ir::EffectKind::TransposeStretch(_)
+            | ir::EffectKind::DualDelay(_)
+            | ir::EffectKind::StereoDetune(_)
+            | ir::EffectKind::Wah(_)
+            | ir::EffectKind::AmpStack(_)
+            | ir::EffectKind::Cabinet(_)
+            | ir::EffectKind::ColorSat(_)
+            | ir::EffectKind::SpectralMorph(_) => [[0.0; 2]; 2],
             // Handled above by `utility_matrix`.
             ir::EffectKind::Gain(_)
             | ir::EffectKind::Matrix(_)

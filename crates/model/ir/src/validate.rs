@@ -201,6 +201,7 @@ pub fn validate(instrument: &Instrument) -> Vec<Diagnostic> {
             envelopes: g.envelopes.len(),
             shapers: g.shapers.len(),
             blends: g.blends.len(),
+            followers: g.followers.len(),
         };
         for (mi, m) in g.mods.iter().enumerate() {
             check_route(
@@ -258,6 +259,7 @@ pub fn validate(instrument: &Instrument) -> Vec<Diagnostic> {
             envelopes: 0,
             shapers: 0,
             blends: bus.blends.len(),
+            followers: 0,
         };
         for (mi, kind) in bus.mods.iter().enumerate() {
             check_route(kind, limits, 0, &format!("bus {bi} mod {mi}"), &mut out);
@@ -283,6 +285,7 @@ pub fn validate(instrument: &Instrument) -> Vec<Diagnostic> {
         envelopes: 0,
         shapers: 0,
         blends: instrument.knob_blends.len(),
+        followers: 0,
     };
     for (ki, km) in instrument.knob_mods.iter().enumerate() {
         check_source(km.source, knob_limits, &format!("knob_mod {ki}"), &mut out);
@@ -326,6 +329,7 @@ struct SourceLimits {
     envelopes: usize,
     shapers: usize,
     blends: usize,
+    followers: usize,
 }
 
 fn check_source(source: Source, limits: SourceLimits, where_: &str, out: &mut Vec<Diagnostic>) {
@@ -355,6 +359,14 @@ fn check_source(source: Source, limits: SourceLimits, where_: &str, out: &mut Ve
             impact: Impact::Broken,
             feature: "ir.mod.blend_out_of_bounds".into(),
             detail: format!("{where_} references blend {n} (blends: {})", limits.blends),
+        }),
+        Source::EnvelopeFollower(n) if usize::from(n) >= limits.followers => out.push(Diagnostic {
+            impact: Impact::Broken,
+            feature: "ir.mod.follower_out_of_bounds".into(),
+            detail: format!(
+                "{where_} references envelope follower {n} (followers: {})",
+                limits.followers
+            ),
         }),
         _ => {}
     }

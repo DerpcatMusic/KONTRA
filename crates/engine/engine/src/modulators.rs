@@ -209,10 +209,9 @@ impl Engine {
             let timed = ramping
                 || gliding
                 || !zone.envelopes.is_empty()
-                || self
-                    .groups
-                    .get(zone.group as usize)
-                    .is_some_and(|g| !g.envelopes.is_empty() || !g.lfos.is_empty());
+                || self.groups.get(zone.group as usize).is_some_and(|g| {
+                    !g.envelopes.is_empty() || !g.lfos.is_empty() || !g.followers.is_empty()
+                });
             #[cfg(feature = "trace")]
             let pending = slot.pending_trace_cc.replace(0);
             let n = slot.note.and_then(|n| self.notes.get(n).copied());

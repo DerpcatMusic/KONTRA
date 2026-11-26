@@ -4587,8 +4587,9 @@ fn an_uncarried_modules_controls_hold_what_a_script_sets() {
 }
 
 /// A control the reference 8.13's setter takes in its own units refuses a
-/// value outside them and keeps what it held (Ring Mod's LFO wave: 0 or 1;
-/// "Phasis notch count must be between 2 and 12!" is the same check).
+/// value outside them and keeps what it held (Supercharger's channel link
+/// mode: 0..=2; "Phasis notch count must be between 2 and 12!" is the same
+/// check).
 #[test]
 fn a_set_outside_what_a_control_takes_is_refused() {
     use kontra_engine::ir;
@@ -4600,18 +4601,18 @@ fn a_set_outside_what_a_control_takes_is_refused() {
         output: 1.0,
         dry: 0.0,
     })];
-    plan.slot_shapes.saved_types = vec![(ir::RackAt::Inserts, 0, 50)];
-    let wave = ir::held_key("$ENGINE_PAR_RINGMOD_LFO_WAVE");
-    plan.slot_shapes.held = vec![(ir::RackAt::Inserts, 0, wave, 1)];
+    plan.slot_shapes.saved_types = vec![(ir::RackAt::Inserts, 0, 46)];
+    let link = ir::held_key("$ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE");
+    plan.slot_shapes.held = vec![(ir::RackAt::Inserts, 0, link, 1)];
     let script = kontra_ksp::compile(
         "on init
             declare @t
-            set_engine_par($ENGINE_PAR_RINGMOD_LFO_WAVE, 500000, -1, 0, 1)
-            @t := get_engine_par($ENGINE_PAR_RINGMOD_LFO_WAVE, -1, 0, 1)
-            set_engine_par($ENGINE_PAR_RINGMOD_LFO_WAVE, 0, -1, 0, 1)
-            @t := @t & \" \" & get_engine_par($ENGINE_PAR_RINGMOD_LFO_WAVE, -1, 0, 1)
-            set_engine_par($ENGINE_PAR_RINGMOD_LFO_WAVE, -1, -1, 0, 1)
-            message(@t & \" \" & get_engine_par($ENGINE_PAR_RINGMOD_LFO_WAVE, -1, 0, 1))
+            set_engine_par($ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE, 500000, -1, 0, 1)
+            @t := get_engine_par($ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE, -1, 0, 1)
+            set_engine_par($ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE, 0, -1, 0, 1)
+            @t := @t & \" \" & get_engine_par($ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE, -1, 0, 1)
+            set_engine_par($ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE, -1, -1, 0, 1)
+            message(@t & \" \" & get_engine_par($ENGINE_PAR_SUPERGT_CHANNEL_LINK_MODE, -1, 0, 1))
         end on",
         &[],
     )

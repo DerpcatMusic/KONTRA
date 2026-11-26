@@ -284,12 +284,22 @@ impl Engine {
             let Some(mix) = mix else {
                 continue;
             };
+            let group = self.plan.zones.get(slot.zone).map(|z| z.group as usize);
+            let has_followers = group
+                .and_then(|g| self.followers.get(g))
+                .is_some_and(|fs| !fs.is_empty());
+            let target: &mut [[f32; 2]] =
+                if has_followers && let Some(buf) = self.follower_scratch.get_mut(..len) {
+                    buf.fill([0.0; 2]);
+                    buf
+                } else {
+                    mix
+                };
             let before = slot.voice.missing_frames();
             if slot.rack.is_empty() {
                 slot.voice
-                    .render(&mut self.voice_scratch, &self.stream, self.now.0, mix);
+                    .render(&mut self.voice_scratch, &self.stream, self.now.0, target);
             } else {
-                let group = self.plan.zones.get(slot.zone).map(|z| z.group as usize);
                 let (inserts, amp_split) = group
                     .and_then(|g| self.groups.get(g))
                     .map_or((&[][..], u8::MAX), |g| (&g.inserts[..], g.amp_split));
@@ -302,7 +312,7 @@ impl Engine {
                         &mut self.voice_scratch,
                         &self.stream,
                         self.now.0,
-                        mix,
+                        target,
                         |io| {
                             crate::voice_rack::process(pre_rack, inserts, io, spare, lines, rate);
                         },
@@ -312,7 +322,7 @@ impl Engine {
                         &mut self.voice_scratch,
                         &self.stream,
                         self.now.0,
-                        mix,
+                        target,
                         |stage, io| match stage {
                             kontra_voice::VoiceStage::PreAmp if !pre_rack.is_empty() => {
                                 crate::voice_rack::process(
@@ -327,6 +337,20 @@ impl Engine {
                             _ => {}
                         },
                     );
+                }
+            }
+            if has_followers
+                && let Some(g) = group
+                && let Some(tap) = self.follower_scratch.get(..len)
+            {
+                if let Some(fs) = self.followers.get_mut(g) {
+                    for ef in fs.iter_mut() {
+                        ef.process(tap);
+                    }
+                }
+                for (dst, src) in mix.iter_mut().zip(tap) {
+                    dst[0] += src[0];
+                    dst[1] += src[1];
                 }
             }
             self.stats.missing_frames += slot.voice.missing_frames() - before;

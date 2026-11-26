@@ -37,6 +37,13 @@ fn wet(kind: &ir::EffectKind) -> bool {
             | ir::EffectKind::BeatSlicer(_)
             | ir::EffectKind::ReverseGrain(_)
             | ir::EffectKind::TransposeStretch(_)
+            | ir::EffectKind::DualDelay(_)
+            | ir::EffectKind::StereoDetune(_)
+            | ir::EffectKind::Wah(_)
+            | ir::EffectKind::AmpStack(_)
+            | ir::EffectKind::Cabinet(_)
+            | ir::EffectKind::ColorSat(_)
+            | ir::EffectKind::SpectralMorph(_)
     )
 }
 

@@ -359,7 +359,7 @@ fn next_prime(n: usize) -> usize {
 
 /// The unnormalised fast Walsh–Hadamard transform of `y`, a power of two
 /// long.
-fn fwht(y: &mut [f32]) {
+pub(crate) fn fwht(y: &mut [f32]) {
     let mut h = 1;
     while h < y.len() {
         for pair in y.chunks_exact_mut(2 * h) {

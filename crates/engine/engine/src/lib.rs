@@ -342,6 +342,10 @@ pub struct Engine {
     /// the order asked.
     /// The plan's groups as scripts have changed them.
     groups: Box<[Group]>,
+    /// Pre-allocated per-group envelope followers, indexed by `[group][idx]`.
+    followers: Box<[Box<[kontra_dsp::dynamics::EnvelopeFollower]>]>,
+    /// Pre-allocated scratch buffer for tapping voice audio into group followers.
+    follower_scratch: Box<[[f32; 2]]>,
     /// Each portamento scope's latest note ([`glide`]).
     glides: [glide::Latest; glide::SCOPES],
     /// The last two notes to arrive (played keys and script notes) and their keys, newest first
@@ -556,6 +560,27 @@ impl Engine {
         } else {
             Box::new([])
         };
+        let followers: Box<[Box<[kontra_dsp::dynamics::EnvelopeFollower]>]> = shared
+            .iter()
+            .map(|g| {
+                g.followers
+                    .iter()
+                    .map(|f| {
+                        kontra_dsp::dynamics::EnvelopeFollower::new(
+                            kontra_dsp::dynamics::EnvelopeFollowerSettings {
+                                attack_ms: f.attack_ms,
+                                release_ms: f.release_ms,
+                                adaption_ms: f.adaption_ms,
+                                gain_db: f.gain_db,
+                            },
+                            rate.max(1),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice()
+            })
+            .collect();
+        let follower_scratch = vec![[0.0; 2]; MAX_SPAN as usize].into_boxed_slice();
         let mut engine = Self {
             #[cfg(feature = "trace")]
             trace: _trace_capacity.map(trace::Trace::new),
@@ -598,6 +623,8 @@ impl Engine {
             route_tags: route_tags::RouteTags::of_groups(&shared),
             reshaped: shared.iter().map(reshaped::Reshaped::of).collect(),
             groups: shared,
+            followers,
+            follower_scratch,
             glides: [glide::Latest::default(); glide::SCOPES],
             heard: [None; 2],
             lines: vec![mono::Line::default(); mono::LINES].into(),

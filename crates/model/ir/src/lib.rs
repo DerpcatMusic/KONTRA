@@ -24,14 +24,16 @@ mod wavetable;
 pub use address::{EnvStage, LfoParam, ModRoute, ParamAddr, RouteLaw, Scope};
 pub use bus::{Bus, BusSend};
 pub use drive::{
-    Clipper, Converter, Crush, DriveCurve, EffectParam, KnobModel, KnobTarget, Overdrive, RackAt,
-    RingMod, RingSource, Shaper, SlotKnob, SlotLaw, SlotShape, SlotShapes, SlotType,
+    AmpStack, AmpVoicing, Cabinet, Clipper, ColorSat, Converter, Crush, DriveCurve, EffectParam,
+    KnobModel, KnobTarget, Overdrive, RackAt, RingMod, RingSource, Shaper, SlotKnob, SlotLaw,
+    SlotShape, SlotShapes, SlotType,
 };
 pub use effects::{
     COMB_LOWEST_HZ, Cascade, CascadeStage, Clocked, ClockedShape, Comb, CombBank, CombMode,
-    Compressor, Delay, DelayTime, Detector, ENSEMBLE_VOICES, Ensemble, EnsembleVoices, Formant,
-    IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Notches, Phaser, Polarity, Reverb,
-    ScanShape, Scanner, Shifter, Strip, Transient, VowelSet,
+    Compressor, Delay, DelayTime, Detector, DualDelay, ENSEMBLE_VOICES, Ensemble, EnsembleVoices,
+    Formant, IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Notches, Phaser, Polarity,
+    Reverb, ScanShape, Scanner, Shifter, SpectralMorph, StereoDetune, Strip, Transient, VowelSet,
+    Wah,
 };
 pub use engine_par::{
     Drives, EnginePar, HeldSet, ParRole, ScriptPar, ZonePar, held_key, unit_read,
@@ -44,8 +46,8 @@ pub use model::{
     EffectModel, ModelId, eval_model, eval_model_effect, model, register_model, register_test_model,
 };
 pub use mods::{
-    Attractor, Blend, Exp2, Factor, GainCurve, GainCurve as Curve, NoteExpr, Source, Term,
-    TimeScale, Transfer, Wave,
+    Attractor, Blend, EnvelopeFollower, Exp2, Factor, GainCurve, GainCurve as Curve, NoteExpr,
+    Source, Term, TimeScale, Transfer, Wave,
 };
 pub use output::{Balance, Output, OutputControllers};
 pub use readout::{Form, Readout};
@@ -373,6 +375,8 @@ pub struct Group {
     pub shapers: Vec<Transfer>,
     /// Sums [`Source::Blend`] reads, by index.
     pub blends: Vec<Blend>,
+    /// Audio-rate envelope followers on this group, by index.
+    pub followers: Vec<EnvelopeFollower>,
     /// Each modulator's route names, in route order, carried or not: what
     /// scripts find routes by.
     pub routes: Vec<Routes>,
@@ -424,6 +428,7 @@ impl Group {
         lfos: Vec::new(),
         shapers: Vec::new(),
         blends: Vec::new(),
+        followers: Vec::new(),
         routes: Vec::new(),
         zones: Vec::new(),
     };
@@ -1064,6 +1069,20 @@ pub enum EffectKind {
     ReverseGrain(ReverseGrain),
     /// An overlap-add pitch shifter and time stretcher.
     TransposeStretch(TransposeStretch),
+    /// A dual independent stereo delay (the wet path; `dry` mixes the input back).
+    DualDelay(DualDelay),
+    /// A stereo pitch-detuning widener, its own dry mixed in.
+    StereoDetune(StereoDetune),
+    /// A resonant multi-stage wah filter, in place.
+    Wah(Wah),
+    /// A multi-stage amplifier or distortion/overdrive pedal, in place.
+    AmpStack(AmpStack),
+    /// A speaker cabinet and room early-reflection simulator, in place.
+    Cabinet(Cabinet),
+    /// A ten-character harmonic saturator with bass crossover and 3-band EQ.
+    ColorSat(ColorSat),
+    /// A dynamic four-band spectral/formant morphing filter, in place.
+    SpectralMorph(SpectralMorph),
     /// Not carried, an insert: audio passes unchanged (its output gain trims
     /// processing that does not run); the translator reports it.
     Other,

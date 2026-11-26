@@ -18,8 +18,8 @@ const BUS: u16 = 0x45;
 /// One line per Kontakt `BParFX*` module: chunk id, display name,
 /// `$EFFECT_TYPE_*` readback (−1 when unnamed), whether the slot mixes its
 /// dry level in parallel (`OtherWet` when uncarried), and how its saved
-/// record maps to an effect. A module not listed, or listed with
-/// [`Map::Unread`], passes at its output gain and is reported.
+/// record maps to an effect. Any unlisted module passes at its output gain
+/// and is reported.
 struct Fx {
     id: u16,
     name: &'static str,
@@ -29,8 +29,6 @@ struct Fx {
 }
 
 enum Map {
-    /// Not carried yet.
-    Unread,
     /// A hand-read record.
     Read(fn(&mut Slot) -> Option<ir::EffectKind>),
     /// A modelled module (06-FORMATS.md §2): the row reads its saved knob
@@ -65,7 +63,7 @@ const fn model(
     )
 }
 
-use Map::{Read, Unread};
+use Map::Read;
 use kontra_kontakt_effects::module::Module;
 
 #[rustfmt::skip]
@@ -81,7 +79,7 @@ const MODULES: &[Fx] = &[
     fx(0x18, "Filter", 7, false, Read(|s| s.kind_id.and_then(|k| eq(s.public, k, s.at, s.knobs).or_else(|| filter(s.public, k, s.at, s.knobs))))),
     fx(0x19, "Compressor", 2, false, Read(compressor)),
     fx(0x1a, "Inverter", 4, false, Read(|s| s.byte(0).zip(s.byte(1)).map(|(phase, swap)| ir::EffectKind::Invert { phase, swap }))),
-    fx(0x1b, "DYX", -1, false, Unread),
+    model(&crate::dyx::MODULE, "DYX", false, |s| crate::dyx::saved(s.version, s.public).map(crate::dyx::model)),
     fx(0x1c, "Limiter", 3, false, Read(limiter)),
     fx(0x1d, "Saturation", 6, false, Read(saturation)),
     fx(0x1e, "Distortion", 10, false, Read(|s| crate::drive::distortion(s.i32_at(0)?, s.f32_at(4)?, s.f32_at(8)?))),
@@ -89,25 +87,25 @@ const MODULES: &[Fx] = &[
     fx(0x20, "Lo-Fi", 8, false, Read(lofi)),
     model(&crate::skreamer::MODULE, "Skreamer", false, |s| crate::skreamer::model(s.public)),
     model(&crate::rotator::MODULE, "Rotator", false, |s| crate::rotator::saved(s.version, s.public).map(crate::rotator::model)),
-    fx(0x23, "Twang", 23, false, Unread),
-    fx(0x24, "Cabinet", 24, false, Unread),
+    model(&crate::twang::MODULE, "Twang", false, |s| crate::twang::saved(s.version, s.public).map(crate::twang::model)),
+    model(&crate::cabinet::MODULE, "Cabinet", false, |s| crate::cabinet::saved(s.version, s.public).map(crate::cabinet::model)),
     model(&crate::tape::MODULE, "Tape Saturator", false, |s| crate::tape::model(s.public)),
     fx(0x43, "Transient Master", 27, false, Read(dynamics)),
     fx(0x44, "Solid G-EQ", 28, false, Read(|s| solid_eq(s.version, s.public, s.bypass, s.at, s.notes, s.model))),
     fx(0x46, "Solid Bus Comp", 29, false, Read(bus_compressor)),
     fx(0x4c, "Feedback Compressor", 30, false, Read(dynamics)),
-    fx(0x4d, "Jump", 31, false, Unread),
-    fx(0x52, "Van51", 32, false, Unread),
-    fx(0x53, "AC Box", 33, false, Unread),
-    fx(0x54, "Hot Solo", 34, false, Unread),
-    fx(0x55, "Cat", 35, false, Unread),
+    model(&crate::jump::MODULE, "Jump", false, |s| crate::jump::saved(s.version, s.public).map(crate::jump::model)),
+    model(&crate::van51::MODULE, "Van51", false, |s| crate::van51::saved(s.version, s.public).map(crate::van51::model)),
+    model(&crate::ac_box::MODULE, "AC Box", false, |s| crate::ac_box::saved(s.version, s.public).map(crate::ac_box::model)),
+    model(&crate::hot_solo::MODULE, "Hot Solo", false, |s| crate::hot_solo::saved(s.version, s.public).map(crate::hot_solo::model)),
+    model(&crate::cat::MODULE, "Cat", false, |s| crate::cat::saved(s.version, s.public).map(crate::cat::model)),
     model(&crate::dstortion::MODULE, "DStortion", false, |s| {
         if s.version != 0x10 { return None }
         if crate::dstortion::mono(s.public) { s.lost("DStortion mono") }
         crate::dstortion::model(s.public)
     }),
-    fx(0x57, "Plate Reverb", 38, true, Unread),
-    fx(0x58, "Cry Wah", 37, false, Unread),
+    model(&crate::plate_reverb::MODULE, "Plate Reverb", true, |s| crate::plate_reverb::saved(s.version, s.public).map(crate::plate_reverb::model)),
+    model(&crate::cry_wah::MODULE, "Cry Wah", false, |s| crate::cry_wah::saved(s.version, s.public).map(crate::cry_wah::model)),
     fx(0x59, "Reverb", 39, true, Read(reverb)),
     model(&crate::replika::MODULE, "Replika", true, |s| {
         let r = crate::replika::saved(s.version, s.public)?;
@@ -117,16 +115,16 @@ const MODULES: &[Fx] = &[
     model(&crate::phasis::MODULE, "Phasis", false, |s| crate::phasis::saved(s.version, s.public).map(crate::phasis::model_from)),
     model(&crate::flair::MODULE, "Flair", false, |s| crate::flair::saved(s.version, s.public).map(crate::flair::model_from)),
     model(&crate::choral::MODULE, "Choral", false, |s| crate::choral::saved(s.version, s.public).map(crate::choral::model_from)),
-    fx(0x5e, "Core Cell", -1, false, Unread),
+    model(&crate::core_cell::MODULE, "Core Cell", false, |s| crate::core_cell::saved(s.version, s.public).map(crate::core_cell::model)),
     fx(0x5f, "Hilbert Limiter", -1, false, Read(transparent_limiter)),
     model(&crate::supergt::MODULE, "Supercharger", false, |s| if s.version == 0x51 { crate::supergt::model(s.public) } else { None }),
-    fx(0x61, "Bass Pro", 47, false, Unread),
+    model(&crate::bass_pro::MODULE, "Bass Pro", false, |s| crate::bass_pro::saved(s.version, s.public).map(crate::bass_pro::model)),
     model(&crate::psyche::MODULE, "Psyche Delay", true, |s| {
         let p = crate::psyche::saved(s.version, s.public)?;
         if p.beats.is_some() { s.lost("Psyche Delay tempo sync (unmeasured)") }
         Some(crate::psyche::model(p))
     }),
-    fx(0x64, "Ring Modulator", 50, false, Unread),
+    model(&crate::ringmod::MODULE, "Ring Modulator", false, |s| crate::ringmod::saved(s.version, s.public).map(crate::ringmod::model)),
     model(&crate::raum::MODULE, "Raum", true, |s| {
         let (p, mix, lost) = crate::raum::saved(s.version, s.public)?;
         s.mix = Some(mix);
@@ -141,15 +139,15 @@ const MODULES: &[Fx] = &[
         s.mix = Some(mix.clamp(0.0, 1.0));
         Some(crate::wowflutter::model_from(p))
     }),
-    fx(0x6b, "Twin Delay", 57, true, Unread),
-    fx(0x70, "Stereo Tune", 61, false, Unread),
+    model(&crate::twin_delay::MODULE, "Twin Delay", true, |s| crate::twin_delay::saved(s.version, s.public).map(crate::twin_delay::model)),
+    model(&crate::stereo_tune::MODULE, "Stereo Tune", false, |s| crate::stereo_tune::saved(s.version, s.public).map(crate::stereo_tune::model)),
     model(&crate::mangling::beat_masher::MODULE, "Beat Masher", false, |s| crate::mangling::beat_masher::saved(s.version, s.public).map(crate::mangling::beat_masher::model)),
     model(&crate::mangling::gater::MODULE, "Gater", false, |s| crate::mangling::gater::saved(s.version, s.public).map(crate::mangling::gater::model)),
     model(&crate::mangling::beat_slicer::MODULE, "Beat Slicer", false, |s| crate::mangling::beat_slicer::saved(s.version, s.public).map(crate::mangling::beat_slicer::model)),
     model(&crate::mangling::reverse_grain::MODULE, "Reverse Grain", false, |s| crate::mangling::reverse_grain::saved(s.version, s.public).map(crate::mangling::reverse_grain::model)),
     model(&crate::mangling::transpose_stretch::MODULE, "Transpose Stretch", false, |s| crate::mangling::transpose_stretch::saved(s.version, s.public).map(crate::mangling::transpose_stretch::model)),
-    fx(0x78, "Skreamer Deluxe", 69, false, Unread),
-    fx(0x79, "Kolor", 70, false, Unread),
+    model(&crate::skreamer_deluxe::MODULE, "Skreamer Deluxe", false, |s| crate::skreamer_deluxe::saved(s.version, s.public).map(crate::skreamer_deluxe::model)),
+    model(&crate::kolor::MODULE, "Kolor", false, |s| crate::kolor::saved(s.version, s.public).map(crate::kolor::model)),
 ];
 
 fn lookup(id: u16) -> Option<&'static Fx> {
@@ -395,7 +393,7 @@ fn slot_effect(
         mix: None,
     };
     let kind = match lookup(effect.id).map(|m| &m.map) {
-        None | Some(Map::Unread) => None,
+        None => None,
         Some(Map::Read(read)) => read(&mut slot),
         Some(Map::Model(read)) => read(&mut slot).and_then(|m| {
             let kind = m.build(&m.saved);

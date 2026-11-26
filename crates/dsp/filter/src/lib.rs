@@ -13,6 +13,8 @@ mod huovilainen;
 mod ladder;
 mod notches;
 mod sallen_key;
+mod spectral_morph;
+mod wah;
 
 pub use cascade::{Cascade, CascadeSettings, CascadeStage};
 pub use clocked::{Clocked, ClockedShape};
@@ -23,6 +25,8 @@ use kontra_dsp_core::flush;
 pub use ladder::Ladder;
 pub use notches::{MAX_STAGES, NotchSettings, Notches};
 pub use sallen_key::SallenKey;
+pub use spectral_morph::{SpectralMorph, SpectralMorphSettings};
+pub use wah::{Wah, WahSettings};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pass {

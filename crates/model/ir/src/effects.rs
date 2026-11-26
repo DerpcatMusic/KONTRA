@@ -702,3 +702,68 @@ pub struct TransposeStretch {
     /// Capture length in 4/4 bars (`1` or `2`).
     pub bars: u8,
 }
+
+/// A dual independent stereo delay in physical units: per-channel pre-delay
+/// lines feeding independent main delay lines with self-feedback,
+/// cross-channel feedback, independent wet output levels, and stereo width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DualDelay {
+    pub predelay_l: DelayTime,
+    pub predelay_r: DelayTime,
+    pub time_l: DelayTime,
+    pub time_r: DelayTime,
+    pub feedback_l: f32,
+    pub feedback_r: f32,
+    pub cross_feedback: f32,
+    pub level_l: f32,
+    pub level_r: f32,
+    /// Stereo image: 0 swaps channels, 0.5 sums to mono, 1 is normal stereo.
+    pub width: f32,
+}
+
+/// A stereo pitch-detuning widener in physical units: a crossover splits the
+/// low band (passed unchanged) from the high band, which is pitch-shifted up
+/// and down across two windowed stereo channels, delayed, spread, and blended
+/// with the dry input.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StereoDetune {
+    /// Crossover frequency between dry low band and detuned high band, Hz.
+    pub split_hz: f32,
+    /// Pitch ratio (`>= 1.0`): one side shifts by `1/ratio`, the other by `ratio`.
+    pub ratio: f32,
+    /// Stereo cross-spread, 0..=1.
+    pub spread: f32,
+    /// Wet/dry blend, 0..=1.
+    pub mix: f32,
+}
+
+/// A four-stage resonant wah filter in physical units: a swept band-pass peak,
+/// a low-mid contour stage, a mid vocal stage, and a high presence stage, with
+/// optional mono summing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Wah {
+    pub peak_hz: f32,
+    pub peak_q: f32,
+    pub peak_gain: f32,
+    pub low_hz: f32,
+    pub low_gain: f32,
+    pub mid_hz: f32,
+    pub mid_gain: f32,
+    pub high_hz: f32,
+    pub high_gain: f32,
+    pub mono: bool,
+}
+
+/// A dynamic four-band spectral/formant morphing filter in physical units
+/// (the engine's `filter::SpectralMorph`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpectralMorph {
+    /// Position across the active bank's spectral profiles (`0..=1`).
+    pub morph: f32,
+    /// Wet spectral morphing depth (`0..=1`).
+    pub amount: f32,
+    /// Acoustic profile bank index (`0..=3`).
+    pub bank: u8,
+    /// Enables stereo formant tracking offset.
+    pub tracking: bool,
+}

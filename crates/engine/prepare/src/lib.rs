@@ -190,6 +190,7 @@ pub fn prepare(
         lfos: g.lfos.clone(),
         shapers: g.shapers.clone(),
         blends: g.blends.clone(),
+        followers: g.followers.clone(),
         routes: g.routes.clone(),
         release_trigger: g.trigger == ir::Trigger::Release,
         held: g.held.clone(),

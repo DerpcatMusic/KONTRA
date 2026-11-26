@@ -2,9 +2,11 @@
 //! model (06-FORMATS.md). Sample files are located here and decoded by the
 //! store; everything this cannot carry over is an [`ir::Diagnostic`].
 
+use kontra_kontakt_effects::amps::{ac_box, bass_pro, hot_solo, jump, twang, van51};
 use kontra_kontakt_effects::{
-    bite, choral, delays, dstortion, dynamics, flair, freak, legacy_reverb, mangling, phasis,
-    psyche, rotator, skreamer, supergt, tape, vibrato,
+    amps, bite, cabinet, cat, choral, core_cell, cry_wah, delays, dstortion, dynamics, dyx, flair,
+    freak, kolor, legacy_reverb, mangling, phasis, plate_reverb, psyche, ringmod, rotator,
+    skreamer, skreamer_deluxe, stereo_tune, supergt, tape, twin_delay, vibrato,
 };
 
 mod access;
@@ -54,6 +56,7 @@ pub use engine_pars::{accepts, engine_pars, held, lfo_units, owner};
 pub use resources::LIMIT as RESOURCE_LIMIT;
 pub use resources::Resources;
 pub use reverb::{reverb, reverb_laws, reverb_networks};
+pub use script_knobs::slot_types;
 pub use wavetable::{mod_kinds, warp_modes};
 
 use std::collections::BTreeSet;

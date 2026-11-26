@@ -3,10 +3,12 @@
 //! classes.
 
 mod compressor;
+mod follower;
 mod limiter;
 mod transient;
 
 pub use compressor::{Compressor, Detector, Settings as CompressorSettings};
+pub use follower::{EnvelopeFollower, Settings as EnvelopeFollowerSettings};
 pub use limiter::{Limiter, Settings as LimiterSettings};
 pub use transient::{Settings as TransientSettings, Transient};
 

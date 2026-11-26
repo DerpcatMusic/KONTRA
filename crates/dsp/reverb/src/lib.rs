@@ -8,6 +8,7 @@ mod fade;
 mod fdn;
 mod hadamard;
 mod network;
+mod plate;
 mod resample;
 pub mod shape;
 
@@ -16,3 +17,4 @@ pub use convolver::Convolver;
 pub use fdn::{Fdn, Settings};
 pub use hadamard::Hadamard;
 pub use network::Network;
+pub use plate::Plate;

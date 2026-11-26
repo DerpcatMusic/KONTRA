@@ -195,6 +195,21 @@ pub enum RingSource {
         /// The noise level.
         noise: f32,
     },
+    /// A continuous sine-to-triangle carrier whose rate is modulated by a
+    /// parabolic sine or square LFO, followed by a carrier-driven stereo FM
+    /// delay line.
+    Modulated {
+        /// Carrier waveshape: 0 is parabolic sine, 1 is triangle.
+        edge: f32,
+        /// Peak stereo FM delay swing, ms.
+        fm_ms: f32,
+        /// LFO rate in Hz or quarter-note beats.
+        lfo_rate: crate::Rate,
+        /// Peak upward carrier-rate modulation multiplier above base (0 is none).
+        lfo_depth: f32,
+        /// `true` selects a square LFO; `false` selects a parabolic sine LFO.
+        lfo_square: bool,
+    },
 }
 
 /// An overdrive pedal (the engine's `drive::Overdrive`): one-pole splits
@@ -232,6 +247,113 @@ pub struct Clipper {
     pub slope: f32,
     pub asymmetry: f32,
     pub dc_hz: f32,
+}
+
+/// Circuit voicing topology for [`AmpStack`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AmpVoicing {
+    /// Clean combo with bright shelf and warm asymmetric tube breakup.
+    CleanCombo,
+    /// British high-gain cascaded triodes with strong upper-mid bite.
+    BritishHighGain,
+    /// Modern high-gain dual-channel preamp with tight low-end resonance.
+    ModernHighGain,
+    /// Class-A chimey combo with interactive tone stack and power-amp cut.
+    ClassACombo,
+    /// Lead high-gain preamp with smooth singing sustain and depth control.
+    LeadHighGain,
+    /// Hard-clipping op-amp distortion pedal with reverse low-pass filter.
+    HardClipPedal,
+    /// Tube bass amplifier with sweepable mid frequency and 9-band graphic EQ.
+    BassTube,
+    /// Mid-humped soft-clipping overdrive pedal with 3 clipping modes (`0..=2`).
+    MidOverdrive(u8),
+}
+
+/// A multi-stage guitar/bass amplifier or distortion/overdrive pedal in
+/// physical units (the engine's `drive::AmpStack`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AmpStack {
+    pub voicing: AmpVoicing,
+    /// Active channel preamp gain, linear (`>= 0`).
+    pub preamp_gain: f32,
+    /// Inactive alternate channel preamp gain stored for dual-channel amps.
+    pub alt_preamp_gain: f32,
+    /// Saturation/power-stage drive, `0..=1`.
+    pub drive: f32,
+    /// Master output level, linear (`>= 0`).
+    pub master: f32,
+    /// Engages high-gain / lead / overdrive voicing.
+    pub high_gain: bool,
+    /// Engages upper-treble bright boost.
+    pub bright: bool,
+    /// Engages sub-bass boost (crunch / ultra-low).
+    pub low_boost: bool,
+    /// Engages upper-presence boost (ultra-high).
+    pub high_boost: bool,
+    pub bass_db: f32,
+    pub mid_db: f32,
+    pub mid_hz: f32,
+    pub treble_db: f32,
+    pub presence_db: f32,
+    pub resonance_db: f32,
+    /// Post-stage tone-cut low-pass corner in Hz.
+    pub tone_cut_hz: f32,
+    /// Built-in tremolo LFO rate in Hz.
+    pub tremolo_hz: f32,
+    /// Built-in tremolo modulation depth, `0..=1`.
+    pub tremolo_depth: f32,
+    /// Engages the 9-band graphic equalizer.
+    pub geq_enabled: bool,
+    /// 9-band graphic equalizer gains in dB (`40..10k` Hz).
+    pub geq_db: [f32; 9],
+    /// Graphic equalizer makeup gain in dB.
+    pub geq_gain_db: f32,
+    /// Sums stereo input to mono before nonlinear processing.
+    pub mono: bool,
+}
+
+/// A speaker cabinet and room early-reflection simulator in physical units
+/// (the engine's `drive::Cabinet`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cabinet {
+    /// Enclosure acoustic profile index (`0..=11`).
+    pub model: u8,
+    /// Enclosure size scale (`0..=1`).
+    pub size: f32,
+    /// Room early-reflection mix (`0..=1`).
+    pub air: f32,
+    /// Low-shelf tone control in dB.
+    pub bass_db: f32,
+    /// High-shelf tone control in dB.
+    pub treble_db: f32,
+}
+
+/// A ten-character harmonic saturator with bass-preserving crossover and
+/// 3-band parametric EQ in physical units (the engine's `drive::ColorSat`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColorSat {
+    /// Saturation character mode (`0..=9`).
+    pub character: u8,
+    /// Input drive (`0..=1`).
+    pub drive: f32,
+    /// Engages pre-drive boost.
+    pub boost: bool,
+    /// Pre-drive boost level in dB (`0..=24`).
+    pub boost_db: f32,
+    /// Clean sub-bass bypass blend (`0..=1`).
+    pub bass_saver: f32,
+    /// Post low-pass cutoff in Hz.
+    pub lpf_hz: f32,
+    /// Pre high-pass cutoff in Hz.
+    pub hpf_hz: f32,
+    pub bass_db: f32,
+    pub mid_db: f32,
+    pub mid_hz: f32,
+    pub mid_q: f32,
+    pub treble_db: f32,
+    /// Wet/dry blend (`0..=1`).
+    pub mix: f32,
 }
 
 /// An effect control a route or a script moves, in the effect's own units:

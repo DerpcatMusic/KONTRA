@@ -1319,7 +1319,8 @@ const fn unmap_source(s: ir::Source) -> Option<SourceSpec> {
         | ir::Source::Script(_)
         | ir::Source::ScriptBipolar(_)
         | ir::Source::Macro(_)
-        | ir::Source::ZoneEnvelope(_) => return None,
+        | ir::Source::ZoneEnvelope(_)
+        | ir::Source::EnvelopeFollower(_) => return None,
     })
 }
 

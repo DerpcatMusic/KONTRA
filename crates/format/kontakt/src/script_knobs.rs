@@ -131,6 +131,17 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
     rows.extend(crate::delays::rows());
     rows.extend(crate::rotator::rows());
     rows.extend(crate::mangling::rows());
+    rows.extend(crate::ringmod::rows());
+    rows.extend(crate::stereo_tune::rows());
+    rows.extend(crate::cry_wah::rows());
+    rows.extend(crate::twin_delay::rows());
+    rows.extend(crate::plate_reverb::rows());
+    rows.extend(crate::amps::rows());
+    rows.extend(crate::cabinet::rows());
+    rows.extend(crate::cat::rows());
+    rows.extend(crate::skreamer_deluxe::rows());
+    rows.extend(crate::kolor::rows());
+    rows.extend(crate::dyx::rows());
     rows
 }
 
@@ -308,7 +319,7 @@ pub(crate) fn init_records() -> [(i32, u16, u16, &'static [u8]); 3] {
 /// The INIT Compressor: mode 0, −3 dB, ratio 1, 50 ms, 299.9 ms, linked.
 const COMPRESSOR_INIT: [f32; 4] = [-3.0, 1.0, 50.0, 299.9];
 
-pub(crate) fn slot_types() -> Vec<ir::SlotType> {
+pub fn slot_types() -> Vec<ir::SlotType> {
     let unit = |kind| ir::Effect {
         kind,
         bypass: false,
@@ -447,40 +458,71 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
         })
     });
     types.push(ty(19, false, 0, irc, [].into()));
-    // Bite and Freak (Oscillator mode), fresh as a script loads them.
-    let bite = unit(crate::bite::bite(crate::bite::FRESH));
-    types.push(ir::SlotType {
-        model: Some(crate::bite::model(crate::bite::FRESH)),
-        ..ty(52, false, 0, Some(bite), [].into())
-    });
-    let freak = unit(crate::freak::freak(crate::freak::FRESH));
-    types.push(ir::SlotType {
-        model: Some(crate::freak::model(crate::freak::FRESH)),
-        ..ty(54, false, 0, Some(freak), [].into())
-    });
-    // A fresh Psyche Delay plays its dry signal at unity (Kontakt 8.13.1
-    // reads SEND_EFFECT_DRY_LEVEL 396850 back), as Replika.
-    let psyche = ir::Effect {
-        dry: 1.0,
-        ..unit(ir::EffectKind::Shifter(crate::psyche::shifter(
-            crate::psyche::INIT,
-        )))
-    };
-    types.push(ir::SlotType {
-        model: Some(crate::psyche::model(crate::psyche::INIT)),
-        ..ty(49, false, 0, Some(psyche), [].into())
-    });
-    // A fresh Vibrato/Chorus: no dry level (Kontakt 8.13.1 reads 0 back);
-    // its MIX and BLEND carry the input inside the scanner.
-    let vibrato = unit(ir::EffectKind::Scanner(crate::vibrato::scanner(
-        crate::vibrato::INIT,
-    )));
-    types.push(ir::SlotType {
-        model: Some(crate::vibrato::model(crate::vibrato::INIT)),
-        ..ty(55, false, 0, Some(vibrato), [].into())
-    });
+    // Bite, Freak (Oscillator mode), Psyche Delay, and Vibrato/Chorus fresh as scripts load them.
+    for (module, model) in [
+        (&crate::bite::MODULE, crate::bite::model(crate::bite::FRESH)),
+        (
+            &crate::freak::MODULE,
+            crate::freak::model(crate::freak::FRESH),
+        ),
+        (
+            &crate::psyche::MODULE,
+            crate::psyche::model(crate::psyche::INIT),
+        ),
+        (
+            &crate::vibrato::MODULE,
+            crate::vibrato::model(crate::vibrato::INIT),
+        ),
+    ] {
+        types.push(module.slot_type_model(model));
+    }
     types.push(crate::rotator::slot_type());
     types.extend(crate::mangling::slot_types());
+    // Ring Mod, Stereo Tune, Cry Wah, Twin Delay, and Plate Reverb.
+    for (module, model) in [
+        (
+            &crate::ringmod::MODULE,
+            crate::ringmod::model(crate::ringmod::INIT),
+        ),
+        (
+            &crate::stereo_tune::MODULE,
+            crate::stereo_tune::model(crate::stereo_tune::INIT),
+        ),
+        (
+            &crate::cry_wah::MODULE,
+            crate::cry_wah::model(crate::cry_wah::INIT),
+        ),
+        (
+            &crate::twin_delay::MODULE,
+            crate::twin_delay::model(crate::twin_delay::INIT),
+        ),
+        (
+            &crate::plate_reverb::MODULE,
+            crate::plate_reverb::model(crate::plate_reverb::INIT),
+        ),
+    ] {
+        types.push(module.slot_type_model(model));
+    }
+    // Amplifiers, Cabinet, Cat, Skreamer Deluxe, Kolor, and AET Filter (DYX).
+    types.extend(crate::amps::slot_types());
+    for (module, model) in [
+        (
+            &crate::cabinet::MODULE,
+            crate::cabinet::model(crate::cabinet::INIT),
+        ),
+        (&crate::cat::MODULE, crate::cat::model(crate::cat::INIT)),
+        (
+            &crate::skreamer_deluxe::MODULE,
+            crate::skreamer_deluxe::model(crate::skreamer_deluxe::INIT),
+        ),
+        (
+            &crate::kolor::MODULE,
+            crate::kolor::model(crate::kolor::INIT),
+        ),
+        (&crate::dyx::MODULE, crate::dyx::model(crate::dyx::INIT)),
+    ] {
+        types.push(module.slot_type_model(model));
+    }
     types
 }
 
@@ -796,6 +838,25 @@ mod tests {
             (64, false),
             (65, false),
             (66, false),
+            // Ring Modulator, Stereo Tune, Cry Wah, Twin Delay, Plate Reverb.
+            (50, false),
+            (61, false),
+            (37, false),
+            (57, false),
+            (38, false),
+            // Twang, Jump, Van51, AC Box, Hot Solo, Bass Pro, Cabinet, Cat,
+            // Skreamer Deluxe, Kolor, AET Filter (DYX).
+            (23, false),
+            (31, false),
+            (32, false),
+            (33, false),
+            (34, false),
+            (47, false),
+            (24, false),
+            (35, false),
+            (69, false),
+            (70, false),
+            (25, false),
         ];
         let types: Vec<_> = slot_types().iter().map(|t| (t.id, t.subtype)).collect();
         assert_eq!(types, PINNED);

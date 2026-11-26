@@ -243,6 +243,32 @@ pub(crate) fn timed(
                 )
             }
         }
+        Modulator::Follower(ef) => {
+            let [attack, release, adaption, gain_boost] = ef.values;
+            let follower = ir::EnvelopeFollower {
+                attack_ms: attack.clamp(0.0, 2_000.0),
+                release_ms: release.clamp(0.0, 5_000.0),
+                adaption_ms: adaption.clamp(0.0, 5_000.0),
+                gain_db: gain_boost.clamp(-24.0, 24.0),
+            };
+            trace_timed(
+                "kontakt.envelope_follower.v1",
+                group_index,
+                slot,
+                "follower",
+                ef,
+                &follower,
+            );
+            let Ok(n) = u8::try_from(out.followers.len()) else {
+                return report(notes, "envelope follower");
+            };
+            out.followers.push(follower);
+            (
+                Some(ir::Source::EnvelopeFollower(n)),
+                "envelope follower",
+                laws::PITCH_SEMITONES,
+            )
+        }
         _ => return None,
     };
     let Some(raw_source) = raw_source else {
@@ -1020,5 +1046,46 @@ mod tests {
                 "expected lag smoothing on {want:?}"
             );
         }
+    }
+
+    #[test]
+    fn timed_translates_envelope_follower_with_clamped_params_and_no_diagnostics() {
+        let mut group = ir::Group::DEFAULT;
+        let mut notes = Notes::default();
+        let p = InternalModParams {
+            name: "ENV_FOLLOW".into(),
+            targets: vec![
+                target("volume", None, 0, None),
+                target("filterCutoff", Some(0), 0, None),
+            ],
+            modulator: Modulator::Follower(ni_file::kontakt::objects::EnvelopeFollower {
+                values: [10.0, 100.0, 20.0, 6.0],
+            }),
+            unknown_flags: [0; 4],
+            unknown_id: 0,
+        };
+        assert_eq!(
+            timed(&mut group, &p, 0, 0, None, &mut notes),
+            Some(ir::Source::EnvelopeFollower(0))
+        );
+        assert!(notes.finish().is_empty());
+        assert_eq!(group.followers.len(), 1);
+        assert_eq!(
+            group.followers[0],
+            ir::EnvelopeFollower {
+                attack_ms: 10.0,
+                release_ms: 100.0,
+                adaption_ms: 20.0,
+                gain_db: 6.0,
+            }
+        );
+        assert_eq!(group.mods.len(), 2);
+        assert_eq!(group.mods[0].route.source, ir::Source::EnvelopeFollower(0));
+        assert_eq!(group.mods[0].route.target, ir::ParamAddr::Volume);
+        assert_eq!(group.mods[1].route.source, ir::Source::EnvelopeFollower(0));
+        assert_eq!(
+            group.mods[1].route.target,
+            ir::ParamAddr::FilterCutoff { insert: 0 }
+        );
     }
 }

@@ -15,6 +15,9 @@ pub enum Network {
     Combs(Shared<CombNetwork>),
     /// Geometric lines through a Hadamard transform.
     Hadamard(HadamardNetwork),
+    /// Sixteen-line Walsh-Hadamard plate network with input allpass diffusion
+    /// and early-reflection taps.
+    Plate,
 }
 
 pub use kontra_params::{ReverbControls, ReverbPar};
