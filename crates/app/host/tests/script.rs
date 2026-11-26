@@ -3768,6 +3768,143 @@ fn every_measured_engine_par_text_reads_as_kontakt_shows_it() {
     );
 }
 
+/// Every filter family's `$ENGINE_PAR_CUTOFF` display dispatches on the slot's
+/// active subtype (saved or switched) and matches Kontakt 8.13.1 (`disp_sweep.py`,
+/// 2026-11-26) at all 10 sweep points (KT-10).
+#[test]
+fn cutoff_display_dispatches_by_filter_subtype() {
+    let pts = [
+        0, 50_000, 100_000, 250_000, 333_333, 500_000, 666_667, 750_000, 900_000, 1_000_000,
+    ];
+    let cases: &[(i32, [&str; 10])] = &[
+        (
+            100,
+            [
+                "  8.2", " 12.4", " 18.9", " 66.4", "133.4", "538.6", "  2.2k", "  4.4k", " 15.4k",
+                " 35.5k",
+            ],
+        ),
+        (
+            52,
+            [
+                " 26.0", " 36.2", " 50.4", "136.6", "237.6", "718.9", "  2.2k", "  3.8k", " 10.2k",
+                " 19.9k",
+            ],
+        ),
+        (
+            31,
+            [
+                " 26.0", " 36.2", " 50.4", "136.6", "237.6", "718.9", "  2.2k", "  3.8k", " 10.2k",
+                " 19.9k",
+            ],
+        ),
+        (
+            70,
+            [
+                " 26.0", " 37.2", " 53.4", "157.8", "288.1", "959.7", "  3.2k", "  5.8k", " 17.2k",
+                " 35.5k",
+            ],
+        ),
+        (
+            16,
+            [
+                " 26.0", " 34.6", " 46.2", "110.0", "178.0", "466.2", "  1.2k", "  2.0k", "  4.7k",
+                "  8.4k",
+            ],
+        ),
+        (
+            17,
+            [
+                " 26.0", " 34.6", " 46.2", "110.0", "178.0", "466.2", "  1.2k", "  2.0k", "  4.7k",
+                "  8.4k",
+            ],
+        ),
+        (
+            19,
+            [
+                " 26.0", " 35.8", " 49.3", "128.9", "220.0", "640.5", "  1.9k", "  3.2k", "  8.3k",
+                " 15.8k",
+            ],
+        ),
+        (
+            8,
+            [
+                " 43.6", " 63.8", " 91.2", "248.3", "422.8", "  1.2k", "  3.3k", "  5.4k",
+                " 12.6k", " 21.8k",
+            ],
+        ),
+        (
+            2,
+            [
+                " 43.6", " 63.8", " 91.2", "248.3", "422.8", "  1.2k", "  3.3k", "  5.4k",
+                " 12.6k", " 21.8k",
+            ],
+        ),
+        (
+            3,
+            [
+                " 36.1", " 52.8", " 75.5", "205.7", "350.2", "990.3", "  2.7k", "  4.5k", " 10.5k",
+                " 18.1k",
+            ],
+        ),
+        (
+            13,
+            [
+                " 0.00", "  5.0", " 10.0", " 25.0", " 33.3", " 50.0", " 66.7", " 75.0", " 90.0",
+                "100.0",
+            ],
+        ),
+        (
+            14,
+            [
+                " 0.00", "  5.0", " 10.0", " 25.0", " 33.3", " 50.0", " 66.7", " 75.0", " 90.0",
+                "100.0",
+            ],
+        ),
+        (
+            15,
+            [
+                " 0.00", "  5.0", " 10.0", " 25.0", " 33.3", " 50.0", " 66.7", " 75.0", " 90.0",
+                "100.0",
+            ],
+        ),
+        (
+            63,
+            [
+                "  2.6", "  4.3", "  7.3", " 34.6", " 82.4", "466.2", "  2.6k", "  6.3k", " 29.8k",
+                " 84.4k",
+            ],
+        ),
+    ];
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    for (i, &(sub, want)) in cases.iter().enumerate() {
+        let mut lines = String::from("on init\n  declare @out\n");
+        for raw in pts {
+            lines.push_str(&format!(
+                "  @out := @out & get_engine_par_disp_ext($ENGINE_PAR_CUTOFF, {raw}, -1, {i}, 1) & \"|\"\n"
+            ));
+        }
+        lines.push_str("  message(@out)\nend on\n");
+        let script = kontra_ksp::compile(&lines, &[]).unwrap();
+        let mut plan = Plan::new(Vec::new(), 16);
+        plan.slot_shapes.subtypes = vec![(kontra_engine::ir::RackAt::Inserts, i as u8, sub)];
+        plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+        let e = Engine::new(Arc::new(plan), store.client(), RATE);
+        let expected: String = want.iter().map(|t| format!("{t}|")).collect();
+        assert_eq!(e.last_message(), expected, "subtype {sub}");
+    }
+    // Generic/empty slot (-1, -1, -1) still uses AR LP2 default (538.6 at 500000).
+    let script = kontra_ksp::compile(
+        "on init\n  message(get_engine_par_disp_ext($ENGINE_PAR_CUTOFF, 500000, -1, -1, -1))\nend on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(Vec::new(), 16);
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    let e = Engine::new(Arc::new(plan), store.client(), RATE);
+    assert_eq!(e.last_message(), "538.6");
+}
+
 /// A fresh knob, slider or value edit holds its minimum, as Kontakt 8.13.1
 /// read it back in on init (oracle 2026-10-29, scratch/laneB/vedit). CHORUS's
 /// legato velocity split divided by its (2, 4) value edit, 0 before.
@@ -4842,8 +4979,10 @@ fn a_wavetable_modulator_wave_and_unit_are_set_and_read_back() {
     .unwrap();
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
     let e = Engine::new(Arc::new(plan), store.client(), RATE);
-    // Only the two sets that name nothing (wave 9, unit 3) are refused.
-    assert_eq!(e.unhandled_actions().iter().map(|a| a.1).sum::<u32>(), 2);
+    // `$ENGINE_PAR_WT_MOD_TUNE_UNIT = 3` is range-refused by `ACCEPTS` (0..=2);
+    // `$ENGINE_PAR_WT_MOD_WAVE = 9` is in `ACCEPTS` (0..=12) but beyond implemented
+    // waves 0..=8, so only that one write is reported unhandled.
+    assert_eq!(e.unhandled_actions().iter().map(|a| a.1).sum::<u32>(), 1);
     assert_eq!(e.last_message(), "3|2|250000|3|2|3");
 }
 
@@ -7088,6 +7227,144 @@ fn event_status_and_get_event_ids_see_the_live_notes() {
     level(&mut e, &[on(60)]);
     level(&mut e, &[on(62)]);
     assert_eq!(e.last_message(), "2,0,1,1");
+}
+
+/// `event_status()` returns `$EVENT_STATUS_INACTIVE` (0) for ignored notes and
+/// `$EVENT_STATUS_MIDI_QUEUE` (4) for active MIDI events inside `on midi_in`
+/// (becoming 0 once ignored via `ignore_midi` or `ignore_event($EVENT_ID)`).
+#[test]
+fn event_status_reports_midi_queue_and_inactive_on_ignored() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare @log
+        end on
+        on midi_in
+            if ($MIDI_COMMAND = $MIDI_COMMAND_NOTE_ON and $MIDI_BYTE_2 > 0)
+                @log := @log & \"m:\" & event_status($EVENT_ID)
+                if ($MIDI_BYTE_1 = 61)
+                    ignore_event($EVENT_ID)
+                    @log := @log & \",ign:\" & event_status($EVENT_ID)
+                end if
+                @log := @log & \"|\"
+                message(@log)
+            end if
+        end on
+        on note
+            @log := @log & \"n:\" & event_status($EVENT_ID)
+            if ($EVENT_NOTE = 60)
+                ignore_event($EVENT_ID)
+                @log := @log & \",ign:\" & event_status($EVENT_ID)
+            end if
+            @log := @log & \"|\"
+            message(@log)
+        end on",
+    );
+    level(&mut e, &[on(60)]);
+    level(&mut e, &[on(61)]);
+    assert_eq!(e.last_message(), "m:4|n:1,ign:0|m:4,ign:0|");
+    assert_eq!(e.active_voices(), 0);
+}
+
+/// `change_vol` / `change_tune` / `change_pan` distinguish mode 0 (absolute
+/// across all slots), mode 1 (relative accumulation), and mode 2 (per-slot
+/// absolute preserving earlier slots), and clamp out-of-range offsets.
+#[test]
+fn change_vol_tune_pan_mode_two_and_clamps_across_slots() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let slot0 = kontra_ksp::compile(
+        "on note
+            change_vol($EVENT_ID, -6000, 0)
+            change_tune($EVENT_ID, 100000, 0)
+            change_pan($EVENT_ID, -400, 0)
+        end on",
+        &[],
+    )
+    .unwrap();
+    let slot1 = kontra_ksp::compile(
+        "on note
+            change_vol($EVENT_ID, -3000, 2)
+            change_vol($EVENT_ID, -1000, 2)
+            change_tune($EVENT_ID, 50000, 2)
+            change_tune($EVENT_ID, 25000, 2)
+            change_pan($EVENT_ID, 200, 2)
+            change_pan($EVENT_ID, 100, 2)
+            declare $v1 := get_event_par($EVENT_ID, $EVENT_PAR_VOLUME)
+            declare $t1 := get_event_par($EVENT_ID, $EVENT_PAR_TUNE)
+            declare $p1 := get_event_par($EVENT_ID, $EVENT_PAR_PAN)
+            change_vol($EVENT_ID, 9999999, 0)
+            change_tune($EVENT_ID, -99999999, 0)
+            change_pan($EVENT_ID, 5000, 0)
+            message($v1 & \",\" & $t1 & \",\" & $p1 & \"|\" & get_event_par($EVENT_ID, $EVENT_PAR_VOLUME) & \",\" & get_event_par($EVENT_ID, $EVENT_PAR_TUNE) & \",\" & get_event_par($EVENT_ID, $EVENT_PAR_PAN))
+        end on",
+        &[],
+    )
+    .unwrap();
+    let mut plan = Plan::new(vec![z], 16);
+    plan.scripts = vec![
+        kontra_host::script::plan(&slot0, &[], &[]),
+        kontra_host::script::plan(&slot1, &[], &[]),
+    ];
+    let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+    level(&mut e, &[on(60)]);
+    assert_eq!(e.last_message(), "-7000,125000,-300|200000,-12000000,1000");
+}
+
+/// RPN/NRPN address latches, data entry values, and CC 121 Reset All Controllers
+/// are isolated per MIDI channel so interleaved channels never clobber each other.
+#[test]
+fn rpn_nrpn_and_cc_state_are_isolated_per_midi_channel() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let zones = vec![zone(&mut store, 0.5, 0)];
+    let mut e = engine(
+        &store,
+        zones,
+        "on init
+            declare @log
+        end on
+        on rpn
+            @log := @log & \"rpn \" & $RPN_ADDRESS & \" \" & $RPN_VALUE & \"|\"
+            message(@log)
+        end on
+        on nrpn
+            @log := @log & \"nrpn \" & $RPN_ADDRESS & \" \" & $RPN_VALUE & \"|\"
+            message(@log)
+        end on
+        on controller
+            if ($CC_NUM = 74)
+                @log := @log & \"cc74:\" & %CC[74] & \"|\"
+                message(@log)
+            end if
+        end on",
+    );
+    let ch_cc = |ch: u8, c: u8, v: u8| Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xB0 | (ch & 0x0F), c, v),
+    };
+    let steps = [
+        // Channel 0 sets CC 74 and selects RPN 0/1 with MSB 64.
+        ch_cc(0, 74, 90),
+        ch_cc(0, 101, 0),
+        ch_cc(0, 100, 1),
+        ch_cc(0, 6, 64),
+        // Channel 1 sets CC 74, selects NRPN 1/5 with MSB 3, and sends CC 121 reset.
+        ch_cc(1, 74, 20),
+        ch_cc(1, 99, 1),
+        ch_cc(1, 98, 5),
+        ch_cc(1, 6, 3),
+        ch_cc(1, 38, 7),
+        ch_cc(1, 121, 0),
+        // Channel 0 finishes its RPN with LSB 10 — must still see RPN 1 and MSB 64!
+        ch_cc(0, 38, 10),
+    ];
+    level(&mut e, &steps);
+    assert_eq!(e.last_message(), "cc74:90|cc74:20|nrpn 133 391|rpn 1 8202|");
+    // Channel 0's CC 74 survived Channel 1's CC 121 reset.
+    assert_eq!(e.controller(74), Some(90));
 }
 
 /// A UVI note its script delays (`wait` then `postEvent`, as humanize and

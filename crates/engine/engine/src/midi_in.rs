@@ -129,6 +129,8 @@ impl Engine {
             return Some(event);
         };
         let heard = m;
+        let id = i32::from(self.next_midi_id);
+        self.next_midi_id = self.next_midi_id.wrapping_add(1).max(1);
         let plan = std::sync::Arc::clone(&self.plan);
         let mut ignored = false;
         for (slot, script) in (0u8..).zip(&plan.scripts) {
@@ -136,7 +138,7 @@ impl Engine {
                 continue;
             };
             let base = self.midi_made.0;
-            let running = Running::new(CallbackContext::MidiIn { bytes: m });
+            let running = Running::new(CallbackContext::MidiIn { bytes: m, id });
             let ran = self.run_callback(slot, entry, running);
             m = ran.midi();
             ignored |= Heard::of(&ran) != Heard::Passed;
@@ -202,10 +204,24 @@ impl Engine {
         }
     }
 
+    /// Drives MIDI-learned UI controls on a multi-script engine when an
+    /// incoming CC arrives (instrument engines handle links in `controller`).
+    fn apply_multi_cc_links(&mut self, event: &Event) {
+        if let Some([0xB0, _, controller, value]) = Self::midi_bytes(event) {
+            let plan = std::sync::Arc::clone(&self.plan);
+            for (slot, script) in (0u8..).zip(&plan.scripts) {
+                for link in script.links.iter().filter(|l| l.cc == controller) {
+                    self.set_control(slot, link.id, link.value(value));
+                }
+            }
+        }
+    }
+
     /// A multi script's turn at `event`: its `on midi_in` runs, and what it
     /// lets through or sends (`set_midi`) goes to `out`, for the rack's
     /// parts. The engine itself plays none of it.
     pub fn midi_in(&mut self, event: Event, out: &mut dyn FnMut(Event)) {
+        self.apply_multi_cc_links(&event);
         let mut made = |_: &mut Self, e: Event| out(e);
         if let Some(e) = self.through_midi_in(event, &mut made) {
             out(e);
@@ -271,6 +287,7 @@ impl Engine {
                 let offset = u32::try_from(self.now.0.saturating_sub(start.0)).unwrap_or(u32::MAX);
                 match work {
                     Work::Input(event) => {
+                        self.apply_multi_cc_links(&event);
                         let mut emit = |engine: &mut Self, e: Event| {
                             if out.len() < out.capacity() {
                                 out.push((offset, e));

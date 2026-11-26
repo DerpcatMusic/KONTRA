@@ -11,8 +11,7 @@ use crate::script_knobs::{
 
 /// The readouts of `$ENGINE_PAR_*` names, by name.
 // A control of a module KONTRA has no processor for (the JMP amp knobs) is held by its slot and shows this text (engine_pars).
-// ponytail: the cutoff law is the one filter measured (ANALOG's); measure
-// each filter kind when a library shows another.
+// Default `$ENGINE_PAR_CUTOFF` is AR LP2; per-subtype filter readouts live in [`subtype_readouts`].
 pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
     use ir::Form::{
         Blank, Bpm, Decimal, Hundredths, Menu, NarrowWhole, Note, Padded, Pan, Rate, Ratio, Times,
@@ -455,10 +454,18 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
         ),
         ("$ENGINE_PAR_LFO_PHASE", lin(0.0, 360.0), WideWhole, none),
         // An LFO's waveform mixes, bipolar percents ([ref] on −1..1).
+        ("$ENGINE_PAR_LFO_SINE", lin(-100.0, 100.0), Decimal, none),
         ("$ENGINE_PAR_LFO_RECT", lin(-100.0, 100.0), Decimal, none),
         ("$ENGINE_PAR_LFO_TRI", lin(-100.0, 100.0), Decimal, none),
         ("$ENGINE_PAR_LFO_SAW", lin(-100.0, 100.0), Decimal, none),
         ("$ENGINE_PAR_LFO_RAND", lin(-100.0, 100.0), Decimal, none),
+        // Convolution predelay (2·(151^x − 1) ms, 0..300 ms; impulse.rs).
+        (
+            "$ENGINE_PAR_IRC_PREDELAY",
+            kontra_law::kontakt::CONVOLUTION_PREDELAY,
+            Padded,
+            none,
+        ),
         ("$ENGINE_PAR_WT_PHASE_RAND", lin(0.0, 100.0), Decimal, none),
         // Una Corda's Solid G-EQ, bus 0 slot 7 (Kontakt 8.13.1, 2026-11-12,
         // scratch/lane-scripts/probes/b2): every band's gain ±20 dB; the
@@ -476,7 +483,9 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
     // Psyche Delay's time 5 ms at 0.
     let blank = [
         // Group controls the reference 8.13 shows no text for (KSP:
-        // get_engine_par only).
+        // get_engine_par only), and effect bypass switches.
+        "$ENGINE_PAR_EFFECT_BYPASS",
+        "$ENGINE_PAR_SEND_EFFECT_BYPASS",
         "$ENGINE_PAR_START_CRITERIA_MODE",
         "$ENGINE_PAR_START_CRITERIA_NEXT_CRIT",
         "$ENGINE_PAR_START_CRITERIA_KEY_MIN",
@@ -1084,7 +1093,118 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
                 }
             }),
     );
+    let cutoff_subtypes = cutoff_subtype_readouts();
+    let empty: std::sync::Arc<[(i32, ir::Readout)]> = std::sync::Arc::from([]);
     rows.into_iter()
-        .map(|(name, law, form, ends)| (name, ir::Readout { law, form, ends }))
+        .map(|(name, law, form, ends)| {
+            let by_subtype = if name == "$ENGINE_PAR_CUTOFF" {
+                std::sync::Arc::clone(&cutoff_subtypes)
+            } else {
+                std::sync::Arc::clone(&empty)
+            };
+            (
+                name,
+                ir::Readout {
+                    law,
+                    form,
+                    ends,
+                    by_subtype,
+                },
+            )
+        })
         .collect()
+}
+
+/// Filter-subtype `$ENGINE_PAR_CUTOFF` readouts, measured across every filter
+/// family on Kontakt 8.13.1 (`disp_sweep.py`, 2026-11-26):
+/// - AR (100..=108): note `0..145` (8.176..35485 Hz)
+/// - SV (50..=62) & Ladder (30..=41): note `20..135` (25.96..19912 Hz)
+/// - SV Par/Ser (63..=65): note `-20..160` (2.58..84390 Hz)
+/// - Daft (70..=71): note `20..145` (25.96..35485 Hz)
+/// - Pro-53 (16) & Legacy Ladder (17): note `20..120` (25.96..8372 Hz)
+/// - 3x2 Versatile (19): note `20..131` (25.96..15804 Hz)
+/// - Legacy LP/HP/BP/BR (2, 4, 6..=12): 8-term Taylor `exp(6.15x)-1` (43.6..21830 Hz)
+/// - Legacy HP1 (3): `0.82825` of Legacy LP (36.1..18080 Hz)
+/// - Phaser (13), Vowel A (14), Vowel B (15): linear `0..100`
+fn cutoff_subtype_readouts() -> std::sync::Arc<[(i32, ir::Readout)]> {
+    use ir::Form::Padded;
+    use kontra_law::FormulaId::{LegacyCutoffHz, LegacyHp1CutoffHz};
+    let empty: std::sync::Arc<[(i32, ir::Readout)]> = std::sync::Arc::from([]);
+    let note_hz = |n: f32| 440.0 * ((n - 69.0) / 12.0).exp2();
+    let exp_notes = |lo, hi| ir::Law::Exp {
+        lo: note_hz(lo),
+        hi: note_hz(hi),
+    };
+    let families: &[(&[i32], ir::Law)] = &[
+        (
+            &[100, 101, 102, 103, 104, 105, 106, 107, 108],
+            ir::Law::Exp {
+                lo: 8.176,
+                hi: 35_485.0,
+            },
+        ),
+        (
+            &[
+                30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 50, 51, 52, 53, 54, 55, 56, 57, 58,
+                59, 60, 61, 62,
+            ],
+            exp_notes(20.0, 135.0),
+        ),
+        (&[63, 64, 65], exp_notes(-20.0, 160.0)),
+        (
+            &[70, 71],
+            ir::Law::Exp {
+                lo: 25.958,
+                hi: 35_485.0,
+            },
+        ),
+        (&[16, 17], exp_notes(20.0, 120.0)),
+        (&[19], exp_notes(20.0, 131.0)),
+        (
+            &[2, 4, 6, 7, 8, 9, 10, 11, 12],
+            ir::Law::Formula(LegacyCutoffHz),
+        ),
+        (&[3], ir::Law::Formula(LegacyHp1CutoffHz)),
+        (&[13, 14, 15], ir::Law::Linear { lo: 0.0, hi: 100.0 }),
+    ];
+    families
+        .iter()
+        .flat_map(|(ids, law)| {
+            let r = ir::Readout {
+                law: law.clone(),
+                form: Padded,
+                ends: [None; 2],
+                by_subtype: std::sync::Arc::clone(&empty),
+            };
+            ids.iter().map(move |&id| (id, r.clone()))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::readouts;
+
+    /// Every filter family's `$ENGINE_PAR_CUTOFF` readout resolves to its
+    /// family's law (KT-10); end-to-end string checks run in `kontra-host`.
+    #[test]
+    fn filter_subtype_cutoff_readouts_cover_all_families() {
+        let (_, cutoff) = readouts()
+            .into_iter()
+            .find(|(name, _)| *name == "$ENGINE_PAR_CUTOFF")
+            .expect("cutoff readout");
+        let mid = |sub| cutoff.for_subtype(sub).law.eval(0.5);
+        assert!((mid(None) - 538.6).abs() < 0.2);
+        assert!((mid(Some(100)) - 538.6).abs() < 0.2); // AR
+        assert!((mid(Some(52)) - 718.9).abs() < 0.2); // SV
+        assert!((mid(Some(31)) - 718.9).abs() < 0.2); // Ladder
+        assert!((mid(Some(70)) - 959.7).abs() < 0.2); // Daft
+        assert!((mid(Some(16)) - 466.2).abs() < 0.2); // Pro-53
+        assert!((mid(Some(17)) - 466.2).abs() < 0.2); // Legacy Ladder
+        assert!((mid(Some(19)) - 640.5).abs() < 0.2); // 3x2 Versatile
+        assert!((mid(Some(8)) - 1195.6).abs() < 1.0); // Legacy LP4
+        assert!((mid(Some(3)) - 990.3).abs() < 0.5); // Legacy HP1
+        assert!((mid(Some(13)) - 50.0).abs() < 1e-4); // Phaser
+        assert!((mid(Some(63)) - 466.2).abs() < 0.2); // SV Par LP/HP
+    }
 }

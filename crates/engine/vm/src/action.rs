@@ -532,4 +532,12 @@ actions! {
     // A modelled effect's live knob: ints `(where, index, slot, knob_index, value_f32_bits)`,
     // placed as for `EffectBypass`. Rebuilds the slot through its registered `ModelId`.
     EffectKnob,
+    // Zone slice queries: slice count, start/length in microseconds, and loop
+    // start/end slice indices and repeat counts.
+    NumSlicesZone,
+    ZoneSliceStart,
+    ZoneSliceLength,
+    ZoneSliceIdxLoopStart,
+    ZoneSliceIdxLoopEnd,
+    ZoneSliceLoopCount,
 }

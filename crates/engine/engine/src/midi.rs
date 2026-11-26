@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::{CallbackContext, Engine, Kind, Running, SustainPedal};
 
 /// The controller numbers scripts hear pitch bend and channel pressure as
-/// (Kontakt's `$VCC_PITCH_BEND` and `$VCC_MONO_AT`).
+/// (`$VCC_PITCH_BEND` and `$VCC_MONO_AT`).
 pub(crate) const VCC_PITCH_BEND: u8 = 128;
 pub(crate) const VCC_MONO_AT: u8 = 129;
 
@@ -54,16 +54,28 @@ impl Engine {
         // Channel pressure: every note on the channel (MPE: its one note).
         if status & 0xF0 == 0xD0 {
             let value = (word >> 8) as u8 & 0x7F;
-            let before = self.cc_values.get(usize::from(VCC_MONO_AT)).copied();
-            if let Some(v) = self.cc_values.get_mut(usize::from(VCC_MONO_AT)) {
+            let ch = usize::from(channel);
+            let before = self
+                .cc_values
+                .get(ch)
+                .and_then(|c| c.get(usize::from(VCC_MONO_AT)))
+                .copied();
+            if let Some(v) = self
+                .cc_values
+                .get_mut(ch)
+                .and_then(|c| c.get_mut(usize::from(VCC_MONO_AT)))
+            {
                 *v = value;
             }
             // Controller 129 (`$VCC_MONO_AT`, UVI's `onAfterTouch`).
             match self.run_controllers(VCC_MONO_AT) {
                 Heard::Ignored => {
-                    if let (Some(v), Some(before)) =
-                        (self.cc_values.get_mut(usize::from(VCC_MONO_AT)), before)
-                    {
+                    if let (Some(v), Some(before)) = (
+                        self.cc_values
+                            .get_mut(ch)
+                            .and_then(|c| c.get_mut(usize::from(VCC_MONO_AT))),
+                        before,
+                    ) {
                         *v = before;
                     }
                     return;
@@ -83,7 +95,12 @@ impl Engine {
             return;
         }
         let (controller, value) = ((word >> 8) as u8 & 0x7F, word as u8 & 0x7F);
-        if let Some(v) = self.cc_values.get_mut(usize::from(controller)) {
+        let ch = usize::from(channel);
+        if let Some(v) = self
+            .cc_values
+            .get_mut(ch)
+            .and_then(|c| c.get_mut(usize::from(controller)))
+        {
             *v = value;
         }
         let plan = Arc::clone(&self.plan);
@@ -93,30 +110,34 @@ impl Engine {
                 self.set_control(slot, link.id, link.value(value));
             }
         }
-        // The reference 8.13 runs on rpn / on nrpn as the data entry LSB arrives,
-        // before that CC's on controller (probes/rpn_audio.py). RPN/NRPN Null
-        // (127/127) deselects the active parameter per MIDI 1.0.
-        match controller {
-            101 | 100 => {
-                self.rpn_nrpn = if self.cc_values[101] == 127 && self.cc_values[100] == 127 {
-                    None
-                } else {
-                    Some(false)
-                };
-            }
-            99 | 98 => {
-                self.rpn_nrpn = if self.cc_values[99] == 127 && self.cc_values[98] == 127 {
-                    None
-                } else {
-                    Some(true)
-                };
-            }
-            38 => {
-                if let Some(nrpn) = self.rpn_nrpn {
-                    self.run_rpns(nrpn);
+        // The reference 8.13 runs on rpn / on nrpn as the data entry LSB (CC 38)
+        // arrives (CC 6 MSB alone runs only on controller; probes/rpn_audio.py,
+        // measured 2026-11-25), before that CC's on controller. RPN/NRPN Null
+        // (127/127) deselects the active parameter per MIDI 1.0. Tracked per
+        // port-channel so interleaved MIDI channels never clobber one another.
+        if let (Some(ccs), Some(active)) = (self.cc_values.get(ch), self.rpn_nrpn.get_mut(ch)) {
+            match controller {
+                101 | 100 => {
+                    *active = if ccs[101] == 127 && ccs[100] == 127 {
+                        None
+                    } else {
+                        Some(false)
+                    };
                 }
+                99 | 98 => {
+                    *active = if ccs[99] == 127 && ccs[98] == 127 {
+                        None
+                    } else {
+                        Some(true)
+                    };
+                }
+                38 => {
+                    if let Some(nrpn) = *active {
+                        self.run_rpns(channel, nrpn);
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
         if self.run_controllers(controller) != Heard::Passed {
             return;
@@ -238,13 +259,18 @@ impl Engine {
                     | (1u128 << 32)
                     | (1u128 << 39)
                     | (1u128 << 42);
-                for (cc, slot) in self.cc_values.iter_mut().enumerate().take(128) {
-                    if (KEEP_MASK >> cc) & 1 == 0 {
-                        *slot = if cc == 11 { 127 } else { 0 };
+                if let Some(ccs) = self.cc_values.get_mut(ch) {
+                    for (cc, slot) in ccs.iter_mut().enumerate().take(128) {
+                        if (KEEP_MASK >> cc) & 1 == 0 {
+                            *slot = if cc == 11 { 127 } else { 0 };
+                        }
+                    }
+                    if let Some(v) = ccs.get_mut(usize::from(VCC_MONO_AT)) {
+                        *v = 0;
                     }
                 }
-                if let Some(v) = self.cc_values.get_mut(usize::from(VCC_MONO_AT)) {
-                    *v = 0;
+                if let Some(rpn) = self.rpn_nrpn.get_mut(ch) {
+                    *rpn = None;
                 }
                 if let Some(p) = self.pedal.get_mut(usize::from(channel)) {
                     *p = false;
@@ -322,9 +348,18 @@ impl Engine {
 
     /// Each script's `on rpn` (or `on nrpn`), capturing the 14-bit address and
     /// value on the callback frame so they survive `wait(...)` intact.
-    fn run_rpns(&mut self, nrpn: bool) {
+    fn run_rpns(&mut self, channel: u8, nrpn: bool) {
+        let ch = usize::from(channel);
         let pair = |hi: usize, lo: usize| -> u16 {
-            let cc = |n: usize| u16::from(self.cc_values.get(n).copied().unwrap_or(0));
+            let cc = |n: usize| {
+                u16::from(
+                    self.cc_values
+                        .get(ch)
+                        .and_then(|c| c.get(n))
+                        .copied()
+                        .unwrap_or(0),
+                )
+            };
             cc(hi) * 128 + cc(lo)
         };
         let value = pair(6, 38);

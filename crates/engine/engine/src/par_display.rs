@@ -2,7 +2,7 @@
 
 use crate::Engine;
 use kontra_ir as ir;
-use kontra_plan::par_laws::text;
+use kontra_plan::par_laws::text_for;
 use kontra_script_ui::readout::{Readout, write};
 use kontra_vm::Text;
 
@@ -20,11 +20,15 @@ impl Engine {
             true => Some(n(1)),
             false => self.get_engine_par(n(0), n(1), n(2), n(3)),
         };
+        let (group, slot, generic) = if ext {
+            (n(2), n(3), n(4))
+        } else {
+            (n(1), n(2), n(3))
+        };
         // A stepped LFO's rate shows its count, one decimal (ANALOG, Kontakt
         // 8.13.1: 0 .. 1 read 4609.0 .. 1.0); a free one its Hz, padded
         // (0, .5, 1 read " 0.01", "  1.5", "213.1").
         if let (Some(crate::EnginePar::Knob(k)), Some(raw)) = (par, raw) {
-            let (group, slot) = if ext { (n(2), n(3)) } else { (n(1), n(2)) };
             let row = self.row(k, group, slot);
             let knob = self.script().and_then(|s| s.knobs.get(usize::from(row)));
             let x = raw.clamp(0, 1_000_000) as f32 / 1e6;
@@ -50,7 +54,6 @@ impl Engine {
         // (the Hz/ratio print forms are unmeasured, ponytail).
         if let (Some(crate::EnginePar::Wavetable(ir::TableValue::ModTune)), Some(raw)) = (par, raw)
         {
-            let group = if ext { n(2) } else { n(1) };
             let mut osc = usize::try_from(group)
                 .ok()
                 .and_then(|g| self.groups.get(g))
@@ -74,8 +77,9 @@ impl Engine {
         {
             return write(Readout::Padded(1000.0 * f64::from(s)), 0.0, out);
         }
+        let subtype = self.subtype(group, slot, generic);
         self.script()
             .zip(raw)
-            .is_some_and(|(s, raw)| text(&s.module_pars, n(0), raw, out))
+            .is_some_and(|(s, raw)| text_for(&s.module_pars, n(0), raw, subtype, out))
     }
 }

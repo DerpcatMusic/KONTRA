@@ -90,9 +90,11 @@ pub enum CallbackContext {
         note: u8,
         value: i32,
     },
-    /// `on midi_in`: `[status nibble (0x80..0xE0), channel (0..=63), data 1, data 2]`.
+    /// `on midi_in`: `[status nibble (0x80..0xE0), channel (0..=63), data 1, data 2]`
+    /// and its MIDI-queue event id (`1..=0xFFFF`, disjoint from `NoteRef` ids).
     MidiIn {
         bytes: [u8; 4],
+        id: i32,
     },
     Listener {
         signal: u8,
@@ -271,14 +273,23 @@ impl Running {
     #[must_use]
     pub const fn midi(&self) -> [u8; 4] {
         match self.context {
-            Some(CallbackContext::MidiIn { bytes }) => bytes,
+            Some(CallbackContext::MidiIn { bytes, .. }) => bytes,
             _ => [0; 4],
         }
     }
 
     pub fn midi_mut(&mut self) -> Option<&mut [u8; 4]> {
         match &mut self.context {
-            Some(CallbackContext::MidiIn { bytes }) => Some(bytes),
+            Some(CallbackContext::MidiIn { bytes, .. }) => Some(bytes),
+            _ => None,
+        }
+    }
+
+    /// The active MIDI-queue event id while `on midi_in` runs.
+    #[must_use]
+    pub const fn midi_id(&self) -> Option<i32> {
+        match self.context {
+            Some(CallbackContext::MidiIn { id, .. }) => Some(id),
             _ => None,
         }
     }
@@ -353,6 +364,7 @@ mod tests {
             },
             CallbackContext::MidiIn {
                 bytes: [0x90, 17, 60, 100],
+                id: 7,
             },
             CallbackContext::Listener { signal: 3 },
             CallbackContext::Pgs,

@@ -312,6 +312,119 @@ impl crate::Plan {
         Some(i32::try_from(frames * 1_000_000 / u64::from(u.rate.max(1))).unwrap_or(i32::MAX))
     }
 
+    /// Attaches strictly increasing slice boundary frames to saved zone `id`.
+    pub fn set_zone_slices(&mut self, id: u32, markers: &[u32]) {
+        if let Some(row) = self.zone_table.row_of(id) {
+            Arc::make_mut(&mut self.zone_table).set_slices(row, markers);
+        }
+    }
+
+    /// Number of slices in zone `id`: `markers.len() - 1`, or 0 for an
+    /// unsliced or absent zone. Zero allocation.
+    #[must_use]
+    pub fn zone_num_slices(&self, id: u32) -> i32 {
+        let Some(row) = self.zone_table.row_of(id) else {
+            return 0;
+        };
+        let markers = self.zone_table.slices_at(row);
+        i32::try_from(markers.len().saturating_sub(1)).unwrap_or(i32::MAX)
+    }
+
+    /// Start of slice `index` in microseconds, rounded from frames to nearest µs.
+    /// Includes the final boundary (`index == num_slices`); out-of-range or
+    /// unsliced zones answer 0. Zero allocation.
+    #[must_use]
+    pub fn zone_slice_start_us(&self, id: u32, index: i32) -> i32 {
+        let (Ok(idx), Some(row)) = (usize::try_from(index), self.zone_table.row_of(id)) else {
+            return 0;
+        };
+        let markers = self.zone_table.slices_at(row);
+        if markers.len() < 2 {
+            return 0;
+        }
+        let (Some(&frame), Some(play)) = (markers.get(idx), self.zone_table.play.get(row)) else {
+            return 0;
+        };
+        frames_to_us(frame, play.sample_rate)
+    }
+
+    /// Length of slice `index` in microseconds: difference between adjacent
+    /// marker timestamps; out-of-range or unsliced zones answer 0. Zero allocation.
+    #[must_use]
+    pub fn zone_slice_length_us(&self, id: u32, index: i32) -> i32 {
+        let (Ok(idx), Some(row)) = (usize::try_from(index), self.zone_table.row_of(id)) else {
+            return 0;
+        };
+        let markers = self.zone_table.slices_at(row);
+        let (Some(&a), Some(&b), Some(play)) = (
+            markers.get(idx),
+            markers.get(idx.saturating_add(1)),
+            self.zone_table.play.get(row),
+        ) else {
+            return 0;
+        };
+        let rate = play.sample_rate;
+        frames_to_us(b, rate).saturating_sub(frames_to_us(a, rate))
+    }
+
+    /// First slice index of loop `loop_idx`. Unsliced or absent zones answer 0;
+    /// sliced zones answer -1 for unused or out-of-range loop slots. Zero allocation.
+    #[must_use]
+    pub fn zone_slice_loop_start(&self, id: u32, loop_idx: i32) -> i32 {
+        self.zone_slice_loop(id, loop_idx, |markers, l| {
+            let i = markers
+                .partition_point(|&m| u64::from(m) <= l.start)
+                .saturating_sub(1);
+            i32::try_from(i).unwrap_or(-1)
+        })
+    }
+
+    /// End slice boundary index of loop `loop_idx`. Unsliced or absent zones
+    /// answer 0; sliced zones answer -1 for unused or out-of-range loop slots. Zero allocation.
+    #[must_use]
+    pub fn zone_slice_loop_end(&self, id: u32, loop_idx: i32) -> i32 {
+        self.zone_slice_loop(id, loop_idx, |markers, l| {
+            let i = markers
+                .partition_point(|&m| u64::from(m) < l.end)
+                .min(markers.len().saturating_sub(1));
+            i32::try_from(i).unwrap_or(-1)
+        })
+    }
+
+    /// Repeat count of loop `loop_idx` on a sliced zone. Unsliced or absent
+    /// zones answer 0; sliced zones answer -1 for unused or out-of-range loop slots. Zero allocation.
+    #[must_use]
+    pub fn zone_slice_loop_count(&self, id: u32, loop_idx: i32) -> i32 {
+        self.zone_slice_loop(id, loop_idx, |_, l| {
+            i32::try_from(l.count).unwrap_or(i32::MAX)
+        })
+    }
+
+    fn zone_slice_loop(
+        &self,
+        id: u32,
+        loop_idx: i32,
+        f: impl FnOnce(&[u32], &ir::Loop) -> i32,
+    ) -> i32 {
+        let Some(row) = self.zone_table.row_of(id) else {
+            return 0;
+        };
+        let markers = self.zone_table.slices_at(row);
+        if markers.len() < 2 {
+            return 0;
+        }
+        let Ok(i) = usize::try_from(loop_idx) else {
+            return -1;
+        };
+        if i >= 8 {
+            return -1;
+        }
+        let Some(l) = self.zone_table.loops_at(row).get(i) else {
+            return -1;
+        };
+        f(markers, l)
+    }
+
     /// Whether `id` is a user zone.
     #[must_use]
     pub fn is_user_zone(&self, id: u32) -> bool {
@@ -714,6 +827,13 @@ mod bpm_tests {
             assert_eq!(secs(len), bpm, "{len} s");
         }
     }
+}
+
+/// Converts a sample frame offset to microseconds, rounded to nearest µs.
+fn frames_to_us(frame: u32, rate: u32) -> i32 {
+    let rate = u64::from(rate.max(1));
+    let us = (u64::from(frame) * 1_000_000 + rate / 2) / rate;
+    i32::try_from(us).unwrap_or(i32::MAX)
 }
 
 /// Sets fade `i` of `fades` (low key, high key, low velocity, high velocity)

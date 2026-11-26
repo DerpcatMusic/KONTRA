@@ -346,26 +346,140 @@ pub fn scripts(path: &Path) -> Result<Vec<ir::Script>, Error> {
 
 fn scripts_from_bank(path: &Path, bank: &Bank) -> Result<Vec<ir::Script>, Error> {
     let mut out = Vec::new();
+    let mut resources = None;
+    let (links, _) = crate::links::links(&bank.0.private_data);
     for (slot, chunk) in (bank.0.children.iter().filter(|c| c.id == SCRIPT)).enumerate() {
         let script = ni_file::kontakt::objects::BParScript::try_from(chunk)
             .and_then(|s| s.params())
             .map_err(|e| Error::new(path, "multi script", e))?;
-        match script.text {
-            Some(text) if !script.bypass && !text.trim().is_empty() => out.push(ir::Script {
+        if script.bypass {
+            continue;
+        }
+        let inline = script.text.filter(|t| !t.trim().is_empty());
+        let linked = if inline.is_none() {
+            script
+                .textfile_name
+                .as_deref()
+                .filter(|n| !n.is_empty())
+                .and_then(|file| {
+                    let res =
+                        resources.get_or_insert_with(|| crate::resources::Resources::open(path));
+                    let clean = file.replace('\\', "/");
+                    let clean = clean.trim_start_matches('/');
+                    let bytes = res
+                        .read(&format!("scripts/{clean}"))
+                        .or_else(|| res.read(&format!("scripts/{clean}.txt")))
+                        .or_else(|| res.read(clean))?;
+                    Some(ni_file::kontakt::objects::BParScript::decode_source(bytes))
+                })
+        } else {
+            None
+        };
+        if let Some(text) = inline.or(linked).filter(|t| !t.trim().is_empty()) {
+            let data = multi_script_data(&text, path, &mut resources);
+            out.push(ir::Script {
                 name: script.description.unwrap_or_default(),
                 slot,
                 dialect: ir::Dialect::Ksp,
                 source: text,
                 saved: script.persistent,
-                data: Vec::new(),
-                links: Vec::new(),
+                data,
+                links: links
+                    .iter()
+                    .filter(|(s, _)| usize::from(*s) == slot)
+                    .map(|&(_, l)| l)
+                    .collect(),
                 container: None,
                 player: false,
-            }),
-            _ => {}
+            });
         }
     }
     Ok(out)
+}
+
+/// ASCII case-insensitive split returning slices immediately after each match of `needle`.
+fn split_ascii_ci<'a>(source: &'a str, needle: &str) -> Vec<&'a str> {
+    let lower = source.to_ascii_lowercase();
+    let pat = needle.to_ascii_lowercase();
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(rel) = lower[from..].find(&pat) {
+        let after = from + rel + pat.len();
+        if let Some(rest) = source.get(after..) {
+            out.push(rest);
+        }
+        from = after;
+    }
+    out
+}
+
+/// Loads literal library data arrays, performance views, and native UI modules
+/// referenced by a multi script from the resource container beside `path` (KT-28).
+fn multi_script_data(
+    source: &str,
+    path: &Path,
+    resources: &mut Option<crate::resources::Resources>,
+) -> Vec<(String, Vec<u8>)> {
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    for call in split_ascii_ci(source, "load_array(") {
+        let Some((array, mode)) = call.split_once(')').and_then(|(a, _)| a.split_once(',')) else {
+            continue;
+        };
+        let stem = array.trim().get(1..).unwrap_or_default().to_lowercase();
+        if mode.trim() != "2" || stem.is_empty() || files.iter().any(|(s, _)| *s == stem) {
+            continue;
+        }
+        if let Some(bytes) = resources
+            .get_or_insert_with(|| crate::resources::Resources::open(path))
+            .read(&format!("data/{stem}.nka"))
+        {
+            files.push((stem, bytes));
+        }
+    }
+    for call in split_ascii_ci(source, "load_performance_view(") {
+        let Some(name) = call
+            .split_once(')')
+            .map(|(a, _)| a.trim().trim_matches('"'))
+        else {
+            continue;
+        };
+        let file = format!("{name}.nckp");
+        if name.is_empty()
+            || name.contains(['"', '/', '\\'])
+            || files.iter().any(|(s, _)| *s == file)
+        {
+            continue;
+        }
+        if let Some(bytes) = resources
+            .get_or_insert_with(|| crate::resources::Resources::open(path))
+            .read(&format!("performance_view/{file}"))
+        {
+            files.push((file, bytes));
+        }
+    }
+    if let Some(entry) = split_ascii_ci(source, "load_native_ui(")
+        .into_iter()
+        .next()
+        .and_then(|call| call.split_once(')'))
+        .map(|(a, _)| a.trim().trim_matches('"').to_owned())
+        .filter(|e| !e.is_empty() && !e.contains(['"', '\\']))
+    {
+        let res = resources.get_or_insert_with(|| crate::resources::Resources::open(path));
+        for module in res.under("native_ui") {
+            if !module
+                .rsplit('.')
+                .next()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("nui"))
+            {
+                continue;
+            }
+            if let Some(bytes) = res.read(&format!("native_ui/{module}")) {
+                files.push((format!("native_ui/{module}"), bytes));
+            }
+        }
+        files.push(("native_ui.entry".into(), entry.into_bytes()));
+    }
+    files
 }
 
 /// Whether `path` names a multi.
@@ -571,5 +685,78 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(sixteen);
         assert!(!eight);
+    }
+
+    /// `scripts_from_bank` resolves linked script files, loads literal
+    /// `load_array(..., 2)` data from `Resources/data/`, and preserves MIDI CC
+    /// automation links from the bank's private data (KT-28).
+    #[test]
+    fn scripts_from_bank_preserves_linked_source_data_and_links() {
+        let dir = std::env::temp_dir().join(format!("kontra-multi-script-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Resources/scripts")).unwrap();
+        std::fs::create_dir_all(dir.join("Resources/data")).unwrap();
+        std::fs::write(
+            dir.join("Resources/scripts/arp.txt"),
+            "on init\n  declare %tbl[2]\n  load_array(%tbl, 2)\nend on\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("Resources/data/tbl.nka"), b"%tbl\n1\n2\n").unwrap();
+
+        // Build a v0x60 BParScript chunk with absent inline text (-1) and linked textfile "arp".
+        let mut pub_data = Vec::new();
+        pub_data.extend_from_slice(&(-1i32).to_le_bytes()); // text: None
+        pub_data.extend_from_slice(&[0, 0, 0]); // editor_open, touched, bypass
+        pub_data.extend_from_slice(&0u32.to_le_bytes()); // password_hash len
+        let desc = b"MultiArp";
+        pub_data.extend_from_slice(&(desc.len() as u32).to_le_bytes());
+        pub_data.extend_from_slice(desc);
+        let file = b"arp";
+        pub_data.extend_from_slice(&(file.len() as u32).to_le_bytes());
+        pub_data.extend_from_slice(file);
+        pub_data.extend_from_slice(&0u32.to_le_bytes()); // persistent count
+
+        // Wrap as unstructured StructuredObject chunk: flag(0) + version(u16) + public_data.
+        let mut chunk_bytes = Vec::new();
+        chunk_bytes.push(0); // unstructured
+        chunk_bytes.extend_from_slice(&0x60u16.to_le_bytes());
+        chunk_bytes.extend_from_slice(&pub_data);
+
+        // Build a BAutomationObject (v0x70, kind=1 MIDI, cc=74, 0.0..1.0, pts_script_slider_0_2).
+        let mut private = Vec::new();
+        private.push(0);
+        private.extend_from_slice(&0x70u16.to_le_bytes());
+        private.extend_from_slice(&1i32.to_le_bytes()); // MIDI
+        private.extend_from_slice(&[0, 0]); // flags
+        private.extend_from_slice(&74u16.to_le_bytes()); // CC 74
+        private.extend_from_slice(&0i32.to_le_bytes());
+        private.extend_from_slice(&0.0f32.to_le_bytes());
+        private.extend_from_slice(&1.0f32.to_le_bytes());
+        let target = b"pts_script_slider_0_2";
+        private.extend_from_slice(&(target.len() as u32).to_le_bytes());
+        private.extend_from_slice(target);
+
+        let bank = Bank(StructuredObject {
+            version: 0x51,
+            public_data: Vec::new(),
+            private_data: private,
+            children: vec![Chunk {
+                id: SCRIPT,
+                data: chunk_bytes,
+            }],
+        });
+        let multi_path = dir.join("Test.nkm");
+        let scripts = scripts_from_bank(&multi_path, &bank).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(scripts[0].name, "MultiArp");
+        assert!(scripts[0].source.contains("load_array(%tbl, 2)"));
+        assert_eq!(scripts[0].data.len(), 1);
+        assert_eq!(scripts[0].data[0].0, "tbl");
+        assert_eq!(scripts[0].data[0].1, b"%tbl\n1\n2\n");
+        assert_eq!(scripts[0].links.len(), 1);
+        assert_eq!(scripts[0].links[0].cc, 74);
+        assert_eq!(scripts[0].links[0].control, ir::Linked::Slider(2));
     }
 }

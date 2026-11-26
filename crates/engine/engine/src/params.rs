@@ -4,13 +4,22 @@
 
 use kontra_ir as ir;
 
-use crate::plan::{Group, Holder, addressed};
+use crate::plan::{Group, Holder, addressed, is_dbd};
 use crate::{Engine, EnginePar, Kind, Level};
 use kontra_plan::par_laws::{
     CUBE, SIGNED_CUBE, SQUARE, STAGE_10S, STAGE_15S, STAGE_25S, attack_shape, attack_x,
     routed_envelope, routed_index, setting, stage_point, stage_setting,
 };
 use kontra_plan::route_depth::{has_depth, set_signed, signed};
+
+/// Glide portamento time knob: `2·(1251^x − 1)` ms (`0.00` .. `2.5k` ms).
+const GLIDE_MS: ir::Law = ir::Law::ExpAffine {
+    base: 1_251.0,
+    offset: 0.0,
+    factor: 1.0,
+    shift: -1.0,
+    scale: 2.0,
+};
 
 pub(crate) use kontra_plan::par_values::{BUS_OFFSET, LevelPar, RackScheme, effect_par, level_par};
 
@@ -487,7 +496,7 @@ impl Engine {
             EnginePar::Release => stage_setting(&STAGE_25S, ms(e.release)),
             EnginePar::Sustain => setting(&CUBE, f64::from(e.sustain)),
             EnginePar::AttackCurve => attack_x(e.attack_shape),
-            _ => return None,
+            _ => return get_mod_par(g, par, slot, generic),
         };
         Some((x * 1e6).round() as i32)
     }
@@ -603,9 +612,11 @@ impl Engine {
             return true;
         }
         let x = f64::from(value.clamp(0, 1_000_000)) / 1e6;
-        let unit = (par == EnginePar::LfoUnit)
-            .then(|| self.lfo_unit(value))
-            .flatten();
+        let needs_unit = matches!(
+            par,
+            EnginePar::LfoUnit | EnginePar::LfoDelayUnit | EnginePar::GlideCoefUnit
+        ) || par.env_unit_index().is_some();
+        let unit = needs_unit.then(|| self.lfo_unit(value)).flatten();
         let mode = matches!(par, EnginePar::WarpMode(_))
             .then(|| {
                 self.script()?
@@ -750,7 +761,42 @@ impl Engine {
                 l.fade_ms = STAGE_10S.eval_f64(x) as f32;
                 true
             }),
-            _ => return self.set_envelope(par, x, group, slot),
+            EnginePar::LfoDelayUnit => {
+                let Some(l) = g.lfo_mut(slot) else {
+                    return false;
+                };
+                if let Some(u) = unit {
+                    if let Some(ms) = sync_ms(u, tempo) {
+                        l.fade_ms = ms.min(10_002.0);
+                    }
+                    if let Some(sync) = g.mod_sync.slot_mut(slot) {
+                        sync.lfo_delay_unit = value as u8;
+                    }
+                }
+                true
+            }
+            EnginePar::LfoNormalize => g.lfo_mut(slot).is_some_and(|l| {
+                if let ir::Wave::Multi { normalize, .. } = &mut l.wave {
+                    *normalize = value != 0;
+                }
+                true
+            }),
+            EnginePar::GlideCoef => g.glide.as_mut().is_some_and(|gl| {
+                gl.seconds = (GLIDE_MS.eval_f64(x) / 1000.0) as f32;
+                true
+            }),
+            EnginePar::GlideCoefUnit => g.glide.as_mut().is_some_and(|gl| {
+                if let Some(u) = unit {
+                    g.mod_sync.glide_unit = value as u8;
+                    if let Some(ms) = sync_ms(u, tempo) {
+                        gl.seconds = ms / 1000.0;
+                    }
+                }
+                true
+            }),
+            EnginePar::IntModType => true,
+            EnginePar::IntModSubtype => set_mod_subtype(g, slot, value),
+            _ => return self.set_mod_or_envelope(par, value, x, unit, group, slot, generic),
         };
         // A route or LFO belongs to its group: only that group's voices read it.
         if set && let Ok(g) = u32::try_from(group) {
@@ -795,15 +841,32 @@ impl Engine {
         }
     }
 
-    /// Sets a stage of the envelope at modulator `slot`: the group's
-    /// amplitude envelope, or breakpoints with an AHDSR's shape. Script
-    /// values are knobs: times through the stage law, sustain level x³
-    /// (docs/re/engine/k-mod-envelopes.md, reader [ref]).
-    fn set_envelope(&mut self, par: EnginePar, x: f64, group: i32, slot: i32) -> bool {
-        let rate = self.rate;
+    /// Sets an envelope, DBD, Flex, StepMod, or sync-unit parameter on `group`/`slot`.
+    #[allow(clippy::too_many_arguments)]
+    fn set_mod_or_envelope(
+        &mut self,
+        par: EnginePar,
+        value: i32,
+        x: f64,
+        unit: Option<ir::Rate>,
+        group: i32,
+        slot: i32,
+        generic: i32,
+    ) -> bool {
+        let (rate, tempo) = (self.rate, self.tempo);
         let Some(g) = self.group_mut(group) else {
             return false;
         };
+        if let Some(handled) = set_mod_par(g, par, value, x, unit, rate, tempo, slot, generic) {
+            if handled && let Ok(gid) = u32::try_from(group) {
+                if par == EnginePar::EnvAhd || par.env_unit_index().is_some() {
+                    self.refresh_group_envelopes(gid);
+                } else {
+                    self.refresh_voices(None, |_, zone| zone.group == gid);
+                }
+            }
+            return handled;
+        }
         let mut updated = false;
         let routed = routed_envelope(g, slot).map(|e| e.stages);
         if let (Some((i, stage)), Some(stages)) = (stage_point(par), routed) {
@@ -841,25 +904,29 @@ impl Engine {
             _ => return updated,
         }
         if let Ok(group_id) = u32::try_from(group) {
-            let plan = std::sync::Arc::clone(&self.plan);
-            for i in 0..self.voices.len() {
-                let target = self.voices.get(i).and_then(|slot| {
-                    if !slot.voice.is_active() {
-                        return None;
-                    }
-                    let zone = plan.zones.get(slot.zone)?;
-                    if zone.group != group_id {
-                        return None;
-                    }
-                    let n = slot.note.and_then(|note| self.notes.get(note))?;
-                    Some(self.envelope(zone, n, crate::modulators::Age::at_start(slot.start_frame)))
-                });
-                if let (Some(env), Some(slot)) = (target, self.voices.get_mut(i)) {
-                    slot.voice.update_envelope(env);
-                }
-            }
+            self.refresh_group_envelopes(group_id);
         }
         true
+    }
+
+    fn refresh_group_envelopes(&mut self, group_id: u32) {
+        let plan = std::sync::Arc::clone(&self.plan);
+        for i in 0..self.voices.len() {
+            let target = self.voices.get(i).and_then(|slot| {
+                if !slot.voice.is_active() {
+                    return None;
+                }
+                let zone = plan.zones.get(slot.zone)?;
+                if zone.group != group_id {
+                    return None;
+                }
+                let n = slot.note.and_then(|note| self.notes.get(note))?;
+                Some(self.envelope(zone, n, crate::modulators::Age::at_start(slot.start_frame)))
+            });
+            if let (Some(env), Some(slot)) = (target, self.voices.get_mut(i)) {
+                slot.voice.update_envelope(env);
+            }
+        }
     }
 
     /// A group's amplitude envelope in seconds, level and shapes, as a
@@ -968,8 +1035,10 @@ impl Engine {
         let Ok(value) = u8::try_from(value.clamp(0, 127)) else {
             return;
         };
-        if let Some(v) = self.cc_values.get_mut(usize::from(cc)) {
-            *v = value;
+        for ch in self.cc_values.iter_mut() {
+            if let Some(v) = ch.get_mut(usize::from(cc)) {
+                *v = value;
+            }
         }
         // A control learned to this controller moves as it would for MIDI in
         // (Conflux selects a sample layer by sending CC 122, which its MIDI
@@ -1067,6 +1136,513 @@ pub(crate) fn placed(at: i32, index: i32) -> (i32, i32) {
         1 => (-1, (BUS_OFFSET - 1).saturating_add(index)),
         _ => (-1, 1),
     }
+}
+
+/// Duration in milliseconds of a synced [`ir::Rate`] at `tempo` BPM; `None` for free `Hz`.
+fn sync_ms(unit: ir::Rate, tempo: f32) -> Option<f32> {
+    let ms_per_beat = 60_000.0 / tempo.clamp(1.0, 999.0);
+    match unit {
+        ir::Rate::Steps { beats, count } => Some(beats * count * ms_per_beat),
+        ir::Rate::Beats(beats) => Some(beats * ms_per_beat),
+        ir::Rate::Hz(_) => None,
+    }
+}
+
+/// Exact inverse of `FormulaId::FlexShape` (`ln(((1/f) - 1)^2)`).
+fn flex_slope_x(k: f32) -> f64 {
+    let f = 1.0 / (1.0 + (f64::from(k) * 0.5).exp());
+    if f <= 0.5 {
+        (f * 0.5).sqrt()
+    } else {
+        1.0 - ((1.0 - f) * 0.5).sqrt()
+    }
+}
+
+fn is_amp_slot(g: &Group, slot: i32) -> bool {
+    g.mods
+        .iter()
+        .any(|m| i32::from(m.slot) == slot && m.route.target == ir::ParamAddr::AmpEnvelope)
+}
+
+fn step_signed(g: &Group, slot: i32) -> bool {
+    !g.mods
+        .iter()
+        .any(|m| i32::from(m.slot) == slot && m.route.target == ir::ParamAddr::Volume)
+}
+
+/// Reads the modulator engine parameters backed by live group state.
+fn get_mod_par(g: &Group, par: EnginePar, slot: i32, generic: i32) -> Option<i32> {
+    if let Some(idx) = par.env_unit_index() {
+        return Some(i32::from(*g.mod_sync.slot(slot)?.env_units.get(idx)?));
+    }
+    match par {
+        EnginePar::IntModType => Some(g.mod_type_and_subtype(slot).0),
+        EnginePar::IntModSubtype => Some(g.mod_type_and_subtype(slot).1),
+        EnginePar::LfoDelayUnit => Some(i32::from(g.mod_sync.slot(slot)?.lfo_delay_unit)),
+        EnginePar::LfoNormalize => Some(match g.lfo(slot)?.wave {
+            ir::Wave::Multi { normalize, .. } => i32::from(normalize),
+            _ => 0,
+        }),
+        EnginePar::GlideCoef => Some(
+            (stage_setting(&GLIDE_MS, f64::from(g.glide?.seconds * 1000.0)) * 1e6).round() as i32,
+        ),
+        EnginePar::GlideCoefUnit => g.glide.map(|_| i32::from(g.mod_sync.glide_unit)),
+        EnginePar::EnvAhd => Some(if is_amp_slot(g, slot) {
+            i32::from(g.envelope.one_shot)
+        } else {
+            routed_envelope(g, slot).map_or(0, |e| i32::from(e.stages && e.sustain.is_none()))
+        }),
+        EnginePar::Decay1 | EnginePar::BreakLevel | EnginePar::Decay2 | EnginePar::DbdEasy => {
+            let sync = g.mod_sync.slot(slot)?;
+            let e = routed_envelope(g, slot)?;
+            if !is_dbd(e, sync.dbd_easy) {
+                return Some(0);
+            }
+            if par == EnginePar::DbdEasy {
+                return Some(i32::from(sync.dbd_easy));
+            }
+            let [d1, brk, d2] = if sync.dbd_easy {
+                sync.dbd_saved
+            } else if let [p0, p1] = e.points.as_slice() {
+                [p0.ms, p0.level, p1.ms]
+            } else {
+                return Some(0);
+            };
+            let x = match par {
+                EnginePar::Decay1 => stage_setting(&STAGE_25S, f64::from(d1)),
+                EnginePar::BreakLevel => (f64::from(brk) / 3.0 + 1.0) * 0.5,
+                _ => stage_setting(&STAGE_25S, f64::from(d2)),
+            };
+            Some((x.clamp(0.0, 1.0) * 1e6).round() as i32)
+        }
+        EnginePar::FlexNumStages
+        | EnginePar::FlexOneshot
+        | EnginePar::FlexLoop
+        | EnginePar::FlexLoopStart
+        | EnginePar::FlexLoopEnd
+        | EnginePar::FlexStageTime
+        | EnginePar::FlexStageLevel
+        | EnginePar::FlexStageSlope => {
+            let sync = g.mod_sync.slot(slot)?;
+            let e = routed_envelope(g, slot)?;
+            if e.stages || is_dbd(e, sync.dbd_easy) {
+                return Some(0);
+            }
+            let pt = usize::try_from(generic).ok().and_then(|i| e.points.get(i));
+            Some(match par {
+                EnginePar::FlexNumStages => e.points.len() as i32,
+                EnginePar::FlexOneshot => i32::from(e.sustain.is_none()),
+                EnginePar::FlexLoop => i32::from(sync.flex_loop || e.loop_from.is_some()),
+                EnginePar::FlexLoopStart => {
+                    e.loop_from
+                        .unwrap_or_else(|| usize::from(sync.flex_loop_start))
+                        as i32
+                        + 1
+                }
+                EnginePar::FlexLoopEnd => {
+                    e.sustain.unwrap_or_else(|| usize::from(sync.flex_sustain)) as i32 + 1
+                }
+                EnginePar::FlexStageTime => {
+                    pt.map_or(0, |p| (f64::from(p.ms) * 1000.0).round() as i32)
+                }
+                EnginePar::FlexStageLevel => {
+                    pt.map_or(0, |p| (f64::from(p.level) * 1e6).round() as i32)
+                }
+                _ => pt.map_or(0, |p| (flex_slope_x(p.curve) * 1e6).round() as i32),
+            })
+        }
+        EnginePar::StepSeqNumSteps | EnginePar::StepSeqOneshot | EnginePar::StepSeqStepValue => {
+            let sync = g.mod_sync.slot(slot)?;
+            let (_, shaper_idx) = g.step_mod_indices(slot)?;
+            let t = g.shapers.get(shaper_idx)?;
+            let n = t.table.len().saturating_sub(1);
+            Some(match par {
+                EnginePar::StepSeqNumSteps => n as i32,
+                EnginePar::StepSeqOneshot => i32::from(sync.step_oneshot),
+                _ => usize::try_from(generic)
+                    .ok()
+                    .filter(|&i| i < n)
+                    .and_then(|i| t.table.get(i))
+                    .map_or(0, |&v| {
+                        let u = if step_signed(g, slot) {
+                            (f64::from(v) + 1.0) * 0.5
+                        } else {
+                            f64::from(v)
+                        };
+                        (u.clamp(0.0, 1.0) * 1e6).round() as i32
+                    }),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Applies modulator parameters handled in `set_mod_or_envelope`; `None` falls through to AHDSR stages.
+#[allow(clippy::too_many_arguments)]
+fn set_mod_par(
+    g: &mut Group,
+    par: EnginePar,
+    value: i32,
+    x: f64,
+    unit: Option<ir::Rate>,
+    rate: u32,
+    tempo: f32,
+    slot: i32,
+    generic: i32,
+) -> Option<bool> {
+    if let Some(idx) = par.env_unit_index() {
+        let sync = g.mod_sync.slot_mut(slot)?;
+        if let Some(u) = unit {
+            if let Some(cell) = sync.env_units.get_mut(idx) {
+                *cell = value as u8;
+            }
+            let easy = sync.dbd_easy;
+            if let Some(ms) = sync_ms(u, tempo) {
+                let clamped = ms.min(if idx <= 1 { 15_000.0 } else { 25_000.0 });
+                if is_amp_slot(g, slot) {
+                    let frames = (f64::from(clamped) * f64::from(rate) / 1000.0).round() as u32;
+                    match idx {
+                        0 => g.envelope.attack = frames,
+                        1 => g.envelope.hold = frames,
+                        2 => g.envelope.decay = frames,
+                        _ => g.envelope.release = frames,
+                    }
+                }
+                if let Some(e) = routed_index(g, slot).and_then(|n| g.envelopes.get_mut(n)) {
+                    let pt = if e.stages {
+                        Some(idx)
+                    } else if is_dbd(e, easy) {
+                        match par {
+                            EnginePar::Decay1Unit => Some(0),
+                            EnginePar::Decay2Unit => Some(1),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(p) = pt.and_then(|i| e.points.get_mut(i)) {
+                        p.ms = clamped;
+                    }
+                }
+            }
+        }
+        return Some(true);
+    }
+    match par {
+        EnginePar::EnvAhd => {
+            let on = value != 0;
+            let mut any = false;
+            if is_amp_slot(g, slot) {
+                g.envelope.one_shot = on;
+                any = true;
+            }
+            if let Some(e) = routed_index(g, slot).and_then(|n| g.envelopes.get_mut(n))
+                && e.stages
+            {
+                e.sustain = (!on).then_some(2);
+                any = true;
+            }
+            Some(any)
+        }
+        EnginePar::Decay1 | EnginePar::BreakLevel | EnginePar::Decay2 | EnginePar::DbdEasy => {
+            let idx = routed_index(g, slot)?;
+            let sync = g.mod_sync.slot_mut(slot)?;
+            let e = g.envelopes.get_mut(idx)?;
+            if !is_dbd(e, sync.dbd_easy) {
+                return Some(true);
+            }
+            if par == EnginePar::DbdEasy {
+                let on = value != 0;
+                if on
+                    && !sync.dbd_easy
+                    && let [p0, p1] = e.points.as_slice()
+                {
+                    sync.dbd_saved = [p0.ms, p0.level, p1.ms];
+                    sync.dbd_easy = true;
+                    e.start = 0.0;
+                    e.points.clear();
+                } else if !on && sync.dbd_easy && e.points.capacity() >= 2 {
+                    let [d1, brk, d2] = sync.dbd_saved;
+                    sync.dbd_easy = false;
+                    e.start = 1.0;
+                    e.points.clear();
+                    e.points.extend([
+                        ir::Breakpoint {
+                            ms: d1,
+                            level: brk,
+                            curve: 0.0,
+                        },
+                        ir::Breakpoint {
+                            ms: d2,
+                            level: 0.0,
+                            curve: 0.0,
+                        },
+                    ]);
+                }
+                return Some(true);
+            }
+            // Negative writes to DECAY1, BREAK, DECAY2 are ignored (value unchanged).
+            if value < 0 {
+                return Some(true);
+            }
+            let (field, val) = match par {
+                EnginePar::Decay1 => (0, STAGE_25S.eval_f64(x) as f32),
+                EnginePar::BreakLevel => (1, ((2.0 * x - 1.0) * 3.0) as f32),
+                _ => (2, STAGE_25S.eval_f64(x) as f32),
+            };
+            if sync.dbd_easy {
+                if let Some(cell) = sync.dbd_saved.get_mut(field) {
+                    *cell = val;
+                }
+            } else if let [p0, p1] = e.points.as_mut_slice() {
+                match field {
+                    0 => p0.ms = val,
+                    1 => p0.level = val,
+                    _ => p1.ms = val,
+                }
+            }
+            Some(true)
+        }
+        EnginePar::FlexNumStages
+        | EnginePar::FlexOneshot
+        | EnginePar::FlexLoop
+        | EnginePar::FlexLoopStart
+        | EnginePar::FlexLoopEnd
+        | EnginePar::FlexStageTime
+        | EnginePar::FlexStageLevel
+        | EnginePar::FlexStageSlope => {
+            let idx = routed_index(g, slot)?;
+            let sync = g.mod_sync.slot_mut(slot)?;
+            let e = g.envelopes.get_mut(idx)?;
+            if e.stages || is_dbd(e, sync.dbd_easy) {
+                return Some(true);
+            }
+            match par {
+                EnginePar::FlexNumStages => {
+                    let n = usize::try_from(value)
+                        .ok()?
+                        .clamp(3, 31)
+                        .min(e.points.capacity());
+                    e.points.resize(
+                        n,
+                        ir::Breakpoint {
+                            ms: 100.0,
+                            level: 0.0,
+                            curve: 0.0,
+                        },
+                    );
+                    let max_idx = e.points.len().saturating_sub(1);
+                    let sus = usize::from(sync.flex_sustain).min(max_idx);
+                    let ls = usize::from(sync.flex_loop_start).min(sus);
+                    (sync.flex_sustain, sync.flex_loop_start) = (sus as u8, ls as u8);
+                    if e.sustain.is_some() {
+                        e.sustain = Some(sus);
+                        e.loop_from = sync.flex_loop.then_some(ls);
+                    }
+                }
+                EnginePar::FlexOneshot => {
+                    if value != 0 {
+                        if let Some(sus) = e.sustain.take() {
+                            sync.flex_sustain = sus as u8;
+                        }
+                        if let Some(ls) = e.loop_from.take() {
+                            sync.flex_loop_start = ls as u8;
+                            sync.flex_loop = true;
+                        }
+                    } else {
+                        let sus =
+                            usize::from(sync.flex_sustain).min(e.points.len().saturating_sub(1));
+                        e.sustain = Some(sus);
+                        e.loop_from = sync
+                            .flex_loop
+                            .then(|| usize::from(sync.flex_loop_start).min(sus));
+                    }
+                }
+                EnginePar::FlexLoop => {
+                    sync.flex_loop = value != 0;
+                    if let Some(sus) = e.sustain {
+                        e.loop_from = sync
+                            .flex_loop
+                            .then(|| usize::from(sync.flex_loop_start).min(sus));
+                    }
+                }
+                EnginePar::FlexLoopStart => {
+                    let ls = usize::try_from(value - 1).ok()?;
+                    let le = e.sustain.unwrap_or_else(|| usize::from(sync.flex_sustain));
+                    if ls < e.points.len() && ls < le {
+                        sync.flex_loop_start = ls as u8;
+                        if e.loop_from.is_some() {
+                            e.loop_from = Some(ls);
+                        }
+                    }
+                }
+                EnginePar::FlexLoopEnd => {
+                    let le = usize::try_from(value - 1).ok()?;
+                    let ls = e
+                        .loop_from
+                        .unwrap_or_else(|| usize::from(sync.flex_loop_start));
+                    if le < e.points.len() && le > ls {
+                        sync.flex_sustain = le as u8;
+                        if e.sustain.is_some() {
+                            e.sustain = Some(le);
+                        }
+                    }
+                }
+                _ => {
+                    let len = e.points.len();
+                    if let Some(i) = usize::try_from(generic).ok()
+                        && let Some(p) = e.points.get_mut(i)
+                    {
+                        match par {
+                            EnginePar::FlexStageTime => {
+                                p.ms = (f64::from(value.max(1_000)) / 1000.0) as f32;
+                            }
+                            EnginePar::FlexStageLevel => {
+                                p.level = x as f32;
+                                if i + 1 == len {
+                                    e.start = p.level;
+                                }
+                            }
+                            _ => {
+                                p.curve = ir::Law::Formula(ir::FormulaId::FlexShape)
+                                    .eval_unclamped(x as f32);
+                            }
+                        }
+                    }
+                }
+            }
+            Some(true)
+        }
+        EnginePar::StepSeqNumSteps | EnginePar::StepSeqOneshot | EnginePar::StepSeqStepValue => {
+            let (lfo_idx, shaper_idx) = g.step_mod_indices(slot)?;
+            let signed = step_signed(g, slot);
+            let sync = g.mod_sync.slot_mut(slot)?;
+            let t = g.shapers.get_mut(shaper_idx)?;
+            match par {
+                EnginePar::StepSeqNumSteps => {
+                    let n = usize::try_from(value).ok()?.clamp(2, 32);
+                    let old_n = t.table.len().saturating_sub(1).max(1);
+                    if n != old_n && n < t.table.capacity() {
+                        if n > old_n
+                            && let Some(last) = t.table.get_mut(old_n)
+                        {
+                            *last = 0.0;
+                        }
+                        t.table.resize(n + 1, 0.0);
+                        if let Some(&prev) = t.table.get(n - 1)
+                            && let Some(sentinel) = t.table.get_mut(n)
+                        {
+                            *sentinel = prev;
+                        }
+                        if let Some(l) = g.lfos.get_mut(lfo_idx) {
+                            let ratio = old_n as f32 / n as f32;
+                            l.rate = match l.rate {
+                                ir::Rate::Hz(f) => ir::Rate::Hz(f * ratio),
+                                ir::Rate::Beats(b) => ir::Rate::Beats(b / ratio),
+                                ir::Rate::Steps { beats, count } => ir::Rate::Steps {
+                                    beats: beats / ratio,
+                                    count,
+                                },
+                            };
+                        }
+                    }
+                }
+                EnginePar::StepSeqOneshot => {
+                    sync.step_oneshot = value != 0;
+                    if sync.step_oneshot
+                        && let Some(l) = g.lfos.get_mut(lfo_idx)
+                    {
+                        l.clock = ir::Clock::Voice;
+                    }
+                }
+                _ => {
+                    let n = t.table.len().saturating_sub(1);
+                    if let Some(i) = usize::try_from(generic).ok().filter(|&i| i < n) {
+                        let val = if signed {
+                            (2.0 * x - 1.0) as f32
+                        } else {
+                            x as f32
+                        };
+                        if let Some(cell) = t.table.get_mut(i) {
+                            *cell = val;
+                        }
+                        if i + 1 == n
+                            && let Some(sentinel) = t.table.get_mut(n)
+                        {
+                            *sentinel = val;
+                        }
+                    }
+                }
+            }
+            Some(true)
+        }
+        _ => None,
+    }
+}
+
+/// Switches an LFO's waveform (`0..=5`) or routed envelope's subtype (`0` AHDSR / `1` Flex / `2` DBD)
+/// in place without allocating on the audio thread.
+fn set_mod_subtype(g: &mut Group, slot: i32, value: i32) -> bool {
+    if let Some(l) = g.lfo_mut(slot) {
+        let width = match l.wave {
+            ir::Wave::Square { width } | ir::Wave::Multi { width, .. } => width,
+            _ => 0.5,
+        };
+        l.wave = match value {
+            0 => ir::Wave::Sine,
+            1 => ir::Wave::Square { width },
+            2 => ir::Wave::Triangle,
+            3 => ir::Wave::Saw,
+            4 => ir::Wave::Random,
+            5 => match l.wave {
+                w @ ir::Wave::Multi { .. } => w,
+                _ => ir::Wave::Multi {
+                    weights: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    width,
+                    normalize: false,
+                },
+            },
+            _ => return true,
+        };
+        return true;
+    }
+    let Some(idx) = routed_index(g, slot) else {
+        return is_amp_slot(g, slot);
+    };
+    let (Some(sync), Some(e)) = (g.mod_sync.slot_mut(slot), g.envelopes.get_mut(idx)) else {
+        return false;
+    };
+    const PT: fn(f32, f32) -> ir::Breakpoint = |ms, level| ir::Breakpoint {
+        ms,
+        level,
+        curve: 0.0,
+    };
+    let (stages, start, sustain, pts): (bool, f32, Option<usize>, &[ir::Breakpoint]) = match value {
+        0 => (
+            true,
+            0.0,
+            Some(2),
+            &[PT(0.0, 1.0), PT(0.0, 1.0), PT(250.0, 1.0), PT(100.0, 0.0)],
+        ),
+        1 => (
+            false,
+            0.0,
+            Some(1),
+            &[PT(100.0, 1.0), PT(100.0, 0.5), PT(100.0, 0.0)],
+        ),
+        2 => (false, 1.0, None, &[PT(250.0, 0.0), PT(500.0, 0.0)]),
+        _ => return true,
+    };
+    if e.points.capacity() >= pts.len() {
+        sync.dbd_easy = false;
+        (e.stages, e.start, e.sustain, e.loop_from) = (stages, start, sustain, None);
+        e.points.clear();
+        e.points.extend_from_slice(pts);
+        if value == 1 {
+            (sync.flex_sustain, sync.flex_loop_start, sync.flex_loop) = (1, 0, false);
+        }
+    }
+    true
 }
 
 #[cfg(test)]

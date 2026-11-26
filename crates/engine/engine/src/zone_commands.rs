@@ -130,6 +130,40 @@ impl Engine {
                     .and_then(|id| self.plan.zone_sample_length_us(id))
                     .unwrap_or(-1),
             ),
+            // Zone slice queries (microseconds and slice indices):
+            // - slice start and length are in microseconds (rounded from frames).
+            // - an unsliced or absent zone answers 0 for all six commands; a
+            //   sliced zone answers -1 for an unused or out-of-range loop slot.
+            NumSlicesZone => HostValue::Int(
+                u32::try_from(int(0))
+                    .ok()
+                    .map_or(0, |id| self.plan.zone_num_slices(id)),
+            ),
+            ZoneSliceStart => HostValue::Int(
+                u32::try_from(int(0))
+                    .ok()
+                    .map_or(0, |id| self.plan.zone_slice_start_us(id, int(1))),
+            ),
+            ZoneSliceLength => HostValue::Int(
+                u32::try_from(int(0))
+                    .ok()
+                    .map_or(0, |id| self.plan.zone_slice_length_us(id, int(1))),
+            ),
+            ZoneSliceIdxLoopStart => HostValue::Int(
+                u32::try_from(int(0))
+                    .ok()
+                    .map_or(0, |id| self.plan.zone_slice_loop_start(id, int(1))),
+            ),
+            ZoneSliceIdxLoopEnd => HostValue::Int(
+                u32::try_from(int(0))
+                    .ok()
+                    .map_or(0, |id| self.plan.zone_slice_loop_end(id, int(1))),
+            ),
+            ZoneSliceLoopCount => HostValue::Int(
+                u32::try_from(int(0))
+                    .ok()
+                    .map_or(0, |id| self.plan.zone_slice_loop_count(id, int(1))),
+            ),
             GetZoneStatus => {
                 let id = u32::try_from(int(0)).ok();
                 let group = id.and_then(|z| self.plan.zone_group(z)).map(|g| g as usize);

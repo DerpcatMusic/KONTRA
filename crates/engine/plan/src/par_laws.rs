@@ -43,10 +43,27 @@ pub fn attack_x(shape: f32) -> f64 {
 /// Writes the text of parameter id `id` at `raw` (0..=1000000): its
 /// translator readout, else the engine's own law; false when unknown.
 pub fn text(pars: &EnginePars, id: i32, raw: i32, out: &mut Text) -> bool {
-    let x = raw.clamp(0, 1_000_000);
+    text_for(pars, id, raw, None, out)
+}
+
+/// Writes the text of parameter id `id` at `raw` (0..=1000000), dispatching
+/// subtype-specific readout laws when `subtype` is known.
+pub fn text_for(
+    pars: &EnginePars,
+    id: i32,
+    raw: i32,
+    subtype: Option<i32>,
+    out: &mut Text,
+) -> bool {
     let Some(r) = pars.readout(id) else {
         return pars.get(id).is_some_and(|par| display(par, raw, out));
     };
+    format_readout(r.for_subtype(subtype), raw, out)
+}
+
+/// Writes `raw` (0..=1000000) through readout `r`.
+pub fn format_readout(r: &ir::Readout, raw: i32, out: &mut Text) -> bool {
+    let x = raw.clamp(0, 1_000_000);
     if let Some(end) = [0, 1_000_000]
         .iter()
         .zip(r.ends)
@@ -119,8 +136,8 @@ pub fn display(par: EnginePar, raw: i32, out: &mut Text) -> bool {
         // A Send Levels knob sets its level by the volume law
         // (`EffectPar::Send`), so it reads as a volume does.
         EnginePar::Volume | EnginePar::SendLevel(_) => Readout::Db(12.0),
-        // The Gainer's gain reads as an output level (oracle 2026-10-29).
-        EnginePar::EffectOutput | EnginePar::GainerGain => Readout::Db(24.0),
+        // The Gainer's gain and send dry level read as an output level (16·x³; oracle 2026-10-29, KE154).
+        EnginePar::EffectOutput | EnginePar::EffectDry | EnginePar::GainerGain => Readout::Db(24.0),
         EnginePar::Sustain => Readout::Db(0.0),
         EnginePar::Tune => Readout::Tune,
         EnginePar::Attack | EnginePar::Hold => Readout::Padded(STAGE_15S.eval_f64(x)),

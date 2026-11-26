@@ -173,34 +173,59 @@ pub fn prepare(
         .zip(group_rules)
         .zip(group_oscs)
         .zip(group_granulars))
-    .map(|(((g, zones), oscillator), granular)| Group {
-        name: g.name.clone(),
-        level: Level {
-            gain: gain(g.volume_db),
-            pan: g.pan,
-            tune: g.tune,
-        },
-        purged: g.purged,
-        muted: g.muted,
-        inserts: Vec::new(),
-        amp_split: g.amp_split,
-        mods: g.mods.clone(),
-        envelope: envelope(g.envelope, rate),
-        envelopes: g.envelopes.clone(),
-        lfos: g.lfos.clone(),
-        shapers: g.shapers.clone(),
-        blends: g.blends.clone(),
-        followers: g.followers.clone(),
-        routes: g.routes.clone(),
-        release_trigger: g.trigger == ir::Trigger::Release,
-        held: g.held.clone(),
-        bus: g.bus,
-        wavetable: g.effective_wavetable().copied().map(read),
-        oscillator,
-        granular,
-        speed: g.speed,
-        glide: g.glide,
-        zones,
+    .map(|(((g, zones), oscillator), granular)| {
+        let envelopes = g.envelopes.clone();
+        let shapers = g.shapers.clone();
+        let mut mod_sync = kontra_engine::ModSync::default();
+        for m in &g.mods {
+            let Some(slot) = mod_sync.slot_mut(i32::from(m.slot)) else {
+                continue;
+            };
+            if let Some(ir::Source::Envelope(idx)) = m.route.driver()
+                && let Some(e) = envelopes.get(usize::from(idx))
+            {
+                if let Some(s) = e.sustain {
+                    slot.flex_sustain = u8::try_from(s).unwrap_or(1);
+                }
+                if let Some(l) = e.loop_from {
+                    slot.flex_loop_start = u8::try_from(l).unwrap_or(0);
+                    slot.flex_loop = true;
+                }
+                if !e.stages && e.points.is_empty() && e.start == 0.0 {
+                    slot.dbd_easy = true;
+                }
+            }
+        }
+        Group {
+            name: g.name.clone(),
+            level: Level {
+                gain: gain(g.volume_db),
+                pan: g.pan,
+                tune: g.tune,
+            },
+            purged: g.purged,
+            muted: g.muted,
+            inserts: Vec::new(),
+            amp_split: g.amp_split,
+            mods: g.mods.clone(),
+            envelope: envelope(g.envelope, rate),
+            envelopes,
+            lfos: g.lfos.clone(),
+            shapers,
+            blends: g.blends.clone(),
+            followers: g.followers.clone(),
+            routes: g.routes.clone(),
+            release_trigger: g.trigger == ir::Trigger::Release,
+            held: g.held.clone(),
+            bus: g.bus,
+            wavetable: g.effective_wavetable().copied().map(read),
+            oscillator,
+            granular,
+            speed: g.speed,
+            glide: g.glide,
+            mod_sync,
+            zones,
+        }
     })
     .collect();
     if !instrument.buses.is_empty() {

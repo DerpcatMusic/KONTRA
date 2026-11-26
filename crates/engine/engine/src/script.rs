@@ -183,6 +183,10 @@ impl Engine {
     }
 
     fn ignore_event(&mut self, id: i32) {
+        if self.running.is(Kind::MidiIn) && (id == 0 || self.running.midi_id() == Some(id)) {
+            self.running.ignore_controller = true;
+            return;
+        }
         if self.running.is(Kind::Release) && self.running.event().map(NoteRef::event_id) == Some(id)
         {
             self.running.ignore_release = true;
@@ -263,11 +267,11 @@ impl Engine {
             }
             event::VOLUME => {
                 n.slot_volume.fill(0);
-                n.script_volume = value;
+                n.script_volume = value.clamp(-200_000, 200_000);
             }
             event::TUNE => {
                 n.slot_tune.fill(0);
-                n.script_tune = value;
+                n.script_tune = value.clamp(-12_000_000, 12_000_000);
             }
             event::PAN => {
                 n.slot_pan.fill(0);
@@ -352,7 +356,10 @@ impl HostApi for Engine {
                 match action {
                     Action::EventNote => current.map_or(0, |n| i32::from(n.key)),
                     Action::EventVelocity => current.map_or(0, |n| i32::from(n.velocity_byte)),
-                    _ => running.map_or(0, NoteRef::event_id),
+                    _ => running
+                        .map(NoteRef::event_id)
+                        .or_else(|| self.running.midi_id())
+                        .unwrap_or(0),
                 }
             }
             _ => return None,
@@ -421,7 +428,12 @@ impl HostApi for Engine {
         let current = running.and_then(|r| self.notes.get(r));
         let flag = |b: bool| HostValue::Int(i32::from(b));
         match call.action {
-            Action::EventId => HostValue::Int(running.map_or(0, NoteRef::event_id)),
+            Action::EventId => HostValue::Int(
+                running
+                    .map(NoteRef::event_id)
+                    .or_else(|| self.running.midi_id())
+                    .unwrap_or(0),
+            ),
             Action::EventNote => HostValue::Int(current.map_or(0, |n| i32::from(n.key))),
             Action::EventVelocity => {
                 HostValue::Int(current.map_or(0, |n| i32::from(n.velocity_byte)))
@@ -441,7 +453,11 @@ impl HostApi for Engine {
             Action::Cc => HostValue::Int(
                 usize::try_from(int(0))
                     .ok()
-                    .and_then(|i| self.cc_values.get(i))
+                    .and_then(|i| {
+                        self.cc_values
+                            .get(usize::from(self.behaviour.channel))
+                            .and_then(|ch| ch.get(i))
+                    })
                     .map_or(0, |&v| i32::from(v)),
             ),
             Action::KeyDown => flag(self.key_down(int(0))),
@@ -519,8 +535,12 @@ impl HostApi for Engine {
                 self.note_controller(from, int(0), int(1), int(2));
                 HostValue::Nothing
             }
-            // In `on midi_in` the message's own fields.
-            Action::SetEventPar if self.running.is(Kind::MidiIn) && midi_par(int(1)).is_some() => {
+            // In `on midi_in` the message's own fields (accepting `$EVENT_ID` or 0).
+            Action::SetEventPar
+                if self.running.is(Kind::MidiIn)
+                    && (int(0) == 0 || self.running.midi_id() == Some(int(0)))
+                    && midi_par(int(1)).is_some() =>
+            {
                 if let Some(at) = midi_par(int(1)) {
                     let max = if at == 3 || at == 2 { 127 } else { 255 };
                     let v = int(2).clamp(0, max) as u8;
@@ -530,7 +550,11 @@ impl HostApi for Engine {
                 }
                 HostValue::Nothing
             }
-            Action::GetEventPar if self.running.is(Kind::MidiIn) && midi_par(int(1)).is_some() => {
+            Action::GetEventPar
+                if self.running.is(Kind::MidiIn)
+                    && (int(0) == 0 || self.running.midi_id() == Some(int(0)))
+                    && midi_par(int(1)).is_some() =>
+            {
                 HostValue::Int(
                     midi_par(int(1))
                         .and_then(|at| self.running.midi().get(at).copied())
@@ -607,6 +631,8 @@ impl HostApi for Engine {
                             *field = value;
                         }
                     }
+                    n.script_volume = n.script_volume.clamp(-200_000, 200_000);
+                    n.script_tune = n.script_tune.clamp(-12_000_000, 12_000_000);
                     n.script_pan = n.script_pan.clamp(-1000, 1000);
                 });
                 HostValue::Nothing
@@ -895,7 +921,14 @@ impl HostApi for Engine {
                 let loaded = (swap && !set)
                     .then(|| self.load_type(int(1), subtype, int(2), int(3), int(4)))
                     .flatten();
-                if !set && loaded.is_none() && !self.absent(int(0), int(2), int(3), int(4)) {
+                let refused = self
+                    .script()
+                    .is_some_and(|s| !s.module_pars.takes(int(0), int(1)));
+                if !set
+                    && !refused
+                    && loaded.is_none()
+                    && !self.absent(int(0), int(2), int(3), int(4))
+                {
                     self.count_unhandled(Action::SetEnginePar);
                     self.count_par([int(0), int(2), int(3), int(4)]);
                 } else if set && par.is_some_and(|p| p.role() == crate::ir::ParRole::HeldOnly) {
@@ -1024,10 +1057,10 @@ impl HostApi for Engine {
                 let name = call.texts.first().map_or("", Text::as_str);
                 match self.load_ir_sample(name, int(0), int(1)) {
                     Some(answer) => HostValue::Int(answer),
-                    None => {
-                        self.count_unhandled(Action::LoadIrSample);
-                        HostValue::Nothing
-                    }
+                    // Missing response or non-convolution slot: return -1 in
+                    // `on init` and fail the async after init.
+                    None if self.building || self.running.is(Kind::Init) => HostValue::Int(-1),
+                    None => HostValue::Int(self.start_async(Exit::Failed)),
                 }
             }
             // A polyphonic aftertouch message on the channel of the note running.
@@ -1157,10 +1190,15 @@ impl HostApi for Engine {
                 HostValue::Nothing
             }
             Action::EventStatus => {
-                // `$EVENT_STATUS_NOTE_QUEUE` (1) only while the note is active
-                // (not ignored, and still pending/held or sounding at least one
-                // active voice); otherwise `$EVENT_STATUS_INACTIVE` (0).
-                let active = NoteRef::from_event_id(int(0))
+                // `$EVENT_STATUS_MIDI_QUEUE` (4) for the active non-ignored
+                // MIDI event inside `on midi_in`; `$EVENT_STATUS_NOTE_QUEUE` (1)
+                // for an active non-ignored note (still pending/held or sounding
+                // at least one active voice); otherwise `$EVENT_STATUS_INACTIVE` (0).
+                let id = int(0);
+                if self.running.is(Kind::MidiIn) && self.running.midi_id() == Some(id) {
+                    return HostValue::Int(if self.running.ignore_controller { 0 } else { 4 });
+                }
+                let active = NoteRef::from_event_id(id)
                     .and_then(|r| self.notes.get(r).map(|n| (r, n)))
                     .is_some_and(|(r, n)| {
                         !n.ignored

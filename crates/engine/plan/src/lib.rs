@@ -236,8 +236,68 @@ pub struct Group {
     pub speed: Option<f32>,
     /// Its notes' portamento ([`kontra_ir::Group::glide`]).
     pub glide: Option<ir::Glide>,
+    /// Inline zero-allocation live script state for modulator sync units,
+    /// DBD easy/saved shape, flex loop bounds, and step-modulator one-shot.
+    pub mod_sync: ModSync,
     /// What it gives each of its zones.
     pub zones: ZoneRules,
+}
+
+/// Inline live script state for one internal modulator slot (`0..16`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SlotSync {
+    /// `[attack/decay1, hold, decay/decay2, release]` sync-unit codes (`0` = ABS ms).
+    pub env_units: [u8; 4],
+    /// LFO fade-in/delay sync-unit code (`0` = ABS ms).
+    pub lfo_delay_unit: u8,
+    /// Whether this slot's DBD envelope is in Easy mode.
+    pub dbd_easy: bool,
+    /// Saved `[decay1_ms, break_level, decay2_ms]` while DBD Easy is on.
+    pub dbd_saved: [f32; 3],
+    /// Saved 0-based sustain index for a flex envelope (preserved across oneshot toggles).
+    pub flex_sustain: u8,
+    /// Saved 0-based loop-start index for a flex envelope (preserved across loop toggles).
+    pub flex_loop_start: u8,
+    /// Whether this slot's flex envelope has loop enabled (preserved across oneshot toggles).
+    pub flex_loop: bool,
+    /// Whether this slot's step modulator is in one-shot mode.
+    pub step_oneshot: bool,
+}
+
+impl Default for SlotSync {
+    fn default() -> Self {
+        Self {
+            env_units: [0; 4],
+            lfo_delay_unit: 0,
+            dbd_easy: false,
+            dbd_saved: [0.0; 3],
+            flex_sustain: 1,
+            flex_loop_start: 0,
+            flex_loop: false,
+            step_oneshot: false,
+        }
+    }
+}
+
+/// Fixed-capacity inline script state for a group's 16 internal modulator
+/// slots, kept out of per-zone tables so script writes never allocate on the
+/// audio thread.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ModSync {
+    pub slots: [SlotSync; 16],
+    /// Glide portamento sync-unit code (`0` = ABS ms, `5..=21` = synced).
+    pub glide_unit: u8,
+}
+
+impl ModSync {
+    #[must_use]
+    pub fn slot(&self, slot: i32) -> Option<&SlotSync> {
+        self.slots.get(usize::try_from(slot).ok()?)
+    }
+
+    pub fn slot_mut(&mut self, slot: i32) -> Option<&mut SlotSync> {
+        self.slots.get_mut(usize::try_from(slot).ok()?)
+    }
 }
 
 /// The bus `zone`'s group plays into now.
@@ -342,6 +402,7 @@ impl Group {
             granular: None,
             speed: None,
             glide: None,
+            mod_sync: ModSync::default(),
             zones: ZoneRules::PLAIN,
         }
     }
@@ -368,7 +429,9 @@ impl Group {
                     })
             }
             Holder::Mod => {
-                !self.mods.iter().any(|m| i32::from(m.slot) == slot) && routed().is_none()
+                !self.mods.iter().any(|m| i32::from(m.slot) == slot)
+                    && routed().is_none()
+                    && self.glide.is_none()
             }
             _ => false,
         }
@@ -393,6 +456,89 @@ impl Group {
                 _ => None,
             })
     }
+
+    /// The stepped transfer table + ramp LFO index of a looping StepMod at `slot`.
+    #[must_use]
+    pub fn step_mod_indices(&self, slot: i32) -> Option<(usize, usize)> {
+        self.mods
+            .iter()
+            .filter(|m| i32::from(m.slot) == slot)
+            .find_map(|m| match m.route.driver() {
+                Some(ir::Source::Shaped(s)) => {
+                    let t = self.shapers.get(usize::from(s))?;
+                    if !t.stepped {
+                        return None;
+                    }
+                    match t.source {
+                        ir::Source::Lfo(l) => Some((usize::from(l), usize::from(s))),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+    }
+
+    /// Internal modulator `(type, subtype)` at `slot`.
+    #[must_use]
+    pub fn mod_type_and_subtype(&self, slot: i32) -> (i32, i32) {
+        let Ok(s) = usize::try_from(slot) else {
+            return (0, 0);
+        };
+        if s >= 16 {
+            return (0, 0);
+        }
+        if self
+            .mods
+            .iter()
+            .any(|m| i32::from(m.slot) == slot && m.route.target == ir::ParamAddr::AmpEnvelope)
+        {
+            return (2, 0);
+        }
+        if self.step_mod_indices(slot).is_some() {
+            return (3, -1);
+        }
+        if let Some(l) = self.lfo(slot) {
+            let sub = match l.wave {
+                ir::Wave::Sine => 0,
+                ir::Wave::Square { .. } => 1,
+                ir::Wave::Triangle => 2,
+                ir::Wave::Saw | ir::Wave::Ramp => 3,
+                ir::Wave::Random => 4,
+                ir::Wave::Multi { .. } => 5,
+                ir::Wave::Chaos { .. } => 0,
+            };
+            return (1, sub);
+        }
+        if let Some(e) = crate::par_laws::routed_envelope(self, slot) {
+            let Some(sync) = self.mod_sync.slot(slot) else {
+                return (0, 0);
+            };
+            if sync.step_oneshot {
+                return (3, -1);
+            }
+            let sub = if e.stages {
+                0
+            } else if is_dbd(e, sync.dbd_easy) {
+                2
+            } else {
+                1
+            };
+            return (2, sub);
+        }
+        if self.glide.is_some() && self.routes.iter().any(|r| i32::from(r.slot) == slot) {
+            return (5, -1);
+        }
+        (0, 0)
+    }
+}
+
+/// Whether breakpoint envelope `e` is a DBD (Decay-Break-Decay) envelope.
+#[must_use]
+pub fn is_dbd(e: &ir::Breakpoints, easy: bool) -> bool {
+    !e.stages
+        && e.sustain.is_none()
+        && e.loop_from.is_none()
+        && ((e.points.len() == 2 && (e.start - 1.0).abs() < 1e-4) || (easy && e.points.is_empty()))
 }
 
 /// One playable zone, resolved: no format knowledge is left here.

@@ -145,7 +145,7 @@ fn	get_event_ids	answered
 fn	get_event_mark	answered
 fn	get_event_par	answered
 fn	get_event_par_arr	answered
-fn	get_folder	missing
+fn	get_folder	answered
 fn	get_font_id	answered
 fn	get_group_idx	answered
 fn	get_key_color	answered
@@ -186,11 +186,11 @@ fn	int	vm
 fn	int_to_real	vm
 fn	load_array	answered
 fn	load_array_str	answered
-fn	load_ir_sample	missing
+fn	load_ir_sample	answered
 fn	load_komplete_ui	answered
 fn	load_midi_file	answered
 fn	load_native_ui	answered
-fn	load_performance_view	missing
+fn	load_performance_view	answered
 fn	log	vm
 fn	log10	vm
 fn	log2	vm
@@ -241,6 +241,7 @@ fn	ms_to_ticks	answered
 fn	msb	vm
 fn	note_off	answered
 fn	num_elements	vm
+fn	num_slices_zone	answered
 fn	output_channel_name	answered
 fn	pgs_create_key	answered
 fn	pgs_create_str_key	answered
@@ -317,7 +318,7 @@ fn	set_ui_height_px	answered
 fn	set_ui_wf_property	answered
 fn	set_ui_width_px	answered
 fn	set_voice_limit	answered
-fn	set_zone_par	missing
+fn	set_zone_par	answered
 fn	sgn	vm
 fn	sh_left	vm
 fn	sh_right	vm
@@ -336,6 +337,11 @@ fn	wait_ticks	vm
 fn	watch_array_idx	vm
 fn	watch_var	vm
 fn	will_never_terminate	answered
+fn	zone_slice_idx_loop_end	answered
+fn	zone_slice_idx_loop_start	answered
+fn	zone_slice_length	answered
+fn	zone_slice_loop_count	answered
+fn	zone_slice_start	answered
 par	$ENGINE_PAR_AC_BASS	carried
 par	$ENGINE_PAR_AC_BRILLIANTVOLUME	carried
 par	$ENGINE_PAR_AC_MONO	carried
@@ -346,6 +352,7 @@ par	$ENGINE_PAR_AC_TREMOLODEPTH	carried
 par	$ENGINE_PAR_AC_TREMOLOSPEED	carried
 par	$ENGINE_PAR_ATK_CURVE	carried
 par	$ENGINE_PAR_ATTACK	carried
+par	$ENGINE_PAR_ATTACK_UNIT	carried
 par	$ENGINE_PAR_BASSINVADER_BASS	held
 par	$ENGINE_PAR_BASSINVADER_BOOST	held
 par	$ENGINE_PAR_BASSINVADER_HI_BOOST	held
@@ -411,6 +418,7 @@ par	$ENGINE_PAR_BITE_POSTFILTER	carried
 par	$ENGINE_PAR_BITE_PREFILTER	carried
 par	$ENGINE_PAR_BITE_SATURATE	carried
 par	$ENGINE_PAR_BITS	carried
+par	$ENGINE_PAR_BREAK	carried
 par	$ENGINE_PAR_BW1	carried
 par	$ENGINE_PAR_BW2	carried
 par	$ENGINE_PAR_BW3	carried
@@ -454,6 +462,11 @@ par	$ENGINE_PAR_CW_MONO	carried
 par	$ENGINE_PAR_CW_PEDAL	carried
 par	$ENGINE_PAR_DAMPING	carried
 par	$ENGINE_PAR_DECAY	carried
+par	$ENGINE_PAR_DECAY1	carried
+par	$ENGINE_PAR_DECAY1_UNIT	carried
+par	$ENGINE_PAR_DECAY2	carried
+par	$ENGINE_PAR_DECAY2_UNIT	carried
+par	$ENGINE_PAR_DECAY_UNIT	carried
 par	$ENGINE_PAR_DIRT_AMOUNTA	held
 par	$ENGINE_PAR_DIRT_AMOUNTB	held
 par	$ENGINE_PAR_DIRT_BIASA	held
@@ -486,6 +499,12 @@ par	$ENGINE_PAR_EFFECT_BYPASS	carried
 par	$ENGINE_PAR_EFFECT_SUBTYPE	carried
 par	$ENGINE_PAR_EFFECT_TYPE	carried
 par	$ENGINE_PAR_ENVELOPE_ORDER	held
+par	$ENGINE_PAR_ENVF_ADAPTION	held
+par	$ENGINE_PAR_ENVF_ATTACK	held
+par	$ENGINE_PAR_ENVF_GAIN_BOOST	held
+par	$ENGINE_PAR_ENVF_RELEASE	held
+par	$ENGINE_PAR_ENV_AHD	carried
+par	$ENGINE_PAR_ENV_DBD_EASY	carried
 par	$ENGINE_PAR_EPP_DRIVE	held
 par	$ENGINE_PAR_EPP_DRIVE_MODE	held
 par	$ENGINE_PAR_EPP_EQ_BASS	held
@@ -536,6 +555,14 @@ par	$ENGINE_PAR_FLAIR_RATE_UNIT	held
 par	$ENGINE_PAR_FLAIR_SCANMODE	carried
 par	$ENGINE_PAR_FLAIR_VOICES	carried
 par	$ENGINE_PAR_FLAIR_WIDTH	carried
+par	$ENGINE_PAR_FLEXENV_LOOP	carried
+par	$ENGINE_PAR_FLEXENV_LOOP_END	carried
+par	$ENGINE_PAR_FLEXENV_LOOP_START	carried
+par	$ENGINE_PAR_FLEXENV_NUM_STAGES	carried
+par	$ENGINE_PAR_FLEXENV_ONESHOT	carried
+par	$ENGINE_PAR_FLEXENV_STAGE_LEVEL	carried
+par	$ENGINE_PAR_FLEXENV_STAGE_SLOPE	carried
+par	$ENGINE_PAR_FLEXENV_STAGE_TIME	carried
 par	$ENGINE_PAR_FL_COLOR	carried
 par	$ENGINE_PAR_FL_DEPTH	carried
 par	$ENGINE_PAR_FL_FEEDBACK	carried
@@ -583,9 +610,12 @@ par	$ENGINE_PAR_GATER_RATE	carried
 par	$ENGINE_PAR_GATER_RATE_SYNC	carried
 par	$ENGINE_PAR_GATER_SHAPE	carried
 par	$ENGINE_PAR_GATER_STUTTER	carried
+par	$ENGINE_PAR_GLIDE_COEF	carried
+par	$ENGINE_PAR_GLIDE_COEF_UNIT	carried
 par	$ENGINE_PAR_GN_GAIN	carried
 par	$ENGINE_PAR_GRAIN_LENGTH	held
 par	$ENGINE_PAR_HOLD	carried
+par	$ENGINE_PAR_HOLD_UNIT	carried
 par	$ENGINE_PAR_HP_CUTOFF	held
 par	$ENGINE_PAR_HQI_MODE	held
 par	$ENGINE_PAR_HS_BASS	carried
@@ -605,6 +635,8 @@ par	$ENGINE_PAR_INTMOD_FREQUENCY_UNIT	carried
 par	$ENGINE_PAR_INTMOD_INTENSITY	carried
 par	$ENGINE_PAR_INTMOD_PULSEWIDTH	carried
 par	$ENGINE_PAR_INTMOD_RETRIGGER	carried
+par	$ENGINE_PAR_INTMOD_SUBTYPE	carried
+par	$ENGINE_PAR_INTMOD_TYPE	carried
 par	$ENGINE_PAR_IRC_AUTO_GAIN	held
 par	$ENGINE_PAR_IRC_ER_LR_BOUNDARY	held
 par	$ENGINE_PAR_IRC_FREQ_HIGHPASS_ER	carried
@@ -614,6 +646,7 @@ par	$ENGINE_PAR_IRC_FREQ_LOWPASS_LR	carried
 par	$ENGINE_PAR_IRC_LENGTH_RATIO_ER	carried
 par	$ENGINE_PAR_IRC_LENGTH_RATIO_LR	carried
 par	$ENGINE_PAR_IRC_PREDELAY	carried
+par	$ENGINE_PAR_IRC_PREDELAY	held
 par	$ENGINE_PAR_IRC_REVERSE	held
 par	$ENGINE_PAR_JMP_BASS	carried
 par	$ENGINE_PAR_JMP_HIGAIN	carried
@@ -637,6 +670,8 @@ par	$ENGINE_PAR_KOLOR_MIX	carried
 par	$ENGINE_PAR_KOLOR_MODE	carried
 par	$ENGINE_PAR_KOLOR_TREBLE	carried
 par	$ENGINE_PAR_LFO_DELAY	carried
+par	$ENGINE_PAR_LFO_DELAY_UNIT	carried
+par	$ENGINE_PAR_LFO_NORMALIZE	carried
 par	$ENGINE_PAR_LFO_PHASE	carried
 par	$ENGINE_PAR_LFO_RAND	carried
 par	$ENGINE_PAR_LFO_RECT	carried
@@ -735,6 +770,7 @@ par	$ENGINE_PAR_RDL_TYPE	carried
 par	$ENGINE_PAR_RDL_WIDTH	carried
 par	$ENGINE_PAR_RELEASE	carried
 par	$ENGINE_PAR_RELEASE_TRIGGER	carried
+par	$ENGINE_PAR_RELEASE_UNIT	carried
 par	$ENGINE_PAR_RESONANCE	carried
 par	$ENGINE_PAR_RG_FORWARD	carried
 par	$ENGINE_PAR_RG_GRAIN	carried
@@ -857,6 +893,9 @@ par	$ENGINE_PAR_START_CRITERIA_NEXT_CRIT	held
 par	$ENGINE_PAR_START_CRITERIA_SEQ_ONLY	held
 par	$ENGINE_PAR_START_CRITERIA_SLICE_IDX	held
 par	$ENGINE_PAR_START_CRITERIA_ZONE_IDX	held
+par	$ENGINE_PAR_STEPSEQ_NUM_STEPS	carried
+par	$ENGINE_PAR_STEPSEQ_ONESHOT	carried
+par	$ENGINE_PAR_STEPSEQ_STEP_VALUE	carried
 par	$ENGINE_PAR_STEREO	carried
 par	$ENGINE_PAR_STEREOTUNE_DRIFT	carried
 par	$ENGINE_PAR_STEREOTUNE_MIX	carried
@@ -898,6 +937,7 @@ par	$ENGINE_PAR_TP_HF_ROLLOFF	carried
 par	$ENGINE_PAR_TP_QUALITY	carried
 par	$ENGINE_PAR_TP_WARMTH	carried
 par	$ENGINE_PAR_TRACKING	held
+par	$ENGINE_PAR_TRANSIENT_SIZE	held
 par	$ENGINE_PAR_TRANSLIM_CEILING	held
 par	$ENGINE_PAR_TRANSLIM_RELEASE	held
 par	$ENGINE_PAR_TRANSLIM_THRESHOLD	held

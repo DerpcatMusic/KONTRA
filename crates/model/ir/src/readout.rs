@@ -3,13 +3,28 @@
 use crate::Law;
 
 /// A parameter's text: `law` of its 0..=1 setting written as `form`, with
-/// fixed texts at the setting's two ends where the format has them.
+/// fixed texts at the setting's two ends where the format has them, and
+/// optional overrides when the target slot carries a specific subtype id.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Readout {
     pub law: Law,
     pub form: Form,
     /// The text at setting 0 and at setting 1, when it is not the law's.
     pub ends: [Option<&'static str>; 2],
+    /// Subtype-specific overrides `(subtype_id, readout)` (e.g. filter cutoff
+    /// ranges per filter family). Empty for subtype-independent parameters.
+    pub by_subtype: std::sync::Arc<[(i32, Readout)]>,
+}
+
+impl Readout {
+    /// Returns the subtype-specific readout when `subtype` matches an entry in
+    /// [`Self::by_subtype`], otherwise `self`.
+    #[must_use]
+    pub fn for_subtype(&self, subtype: Option<i32>) -> &Self {
+        subtype
+            .and_then(|sub| self.by_subtype.iter().find(|(id, _)| *id == sub))
+            .map_or(self, |(_, r)| r)
+    }
 }
 
 /// How a readout writes its value.

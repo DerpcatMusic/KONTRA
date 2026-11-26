@@ -1,7 +1,6 @@
 id	reason
 kontakt.dsp.delay.measured	no passing oracle test in dsp-oracle.tsv; the trailer marked the row kept missing
 kontakt.dsp.reverb.measured	no passing oracle test in dsp-oracle.tsv; the trailer marked the row kept missing
-kontakt.ksp.cmd.load_performance_view	ksp_status probes it as missing: the engine answers no bare call; the view is built at load
 kontakt.par.CONTROL_PAR_CUSTOM_ID	no verified law: acts alone grades partial, not done
 kontakt.par.ENGINE_PAR_ENVELOPE_ORDER	no verified law: acts alone grades partial, not done
 kontakt.par.ENGINE_PAR_FORMANT	no verified law: acts alone grades partial, not done
@@ -9,7 +8,6 @@ kontakt.par.ENGINE_PAR_FORMANT_SHIFT	no verified law: acts alone grades partial,
 kontakt.par.ENGINE_PAR_GRAIN_LENGTH	no verified law: acts alone grades partial, not done
 kontakt.par.ENGINE_PAR_HQI_MODE	no verified law: acts alone grades partial, not done
 kontakt.par.ENGINE_PAR_POST_FX_SLOT	no verified law: acts alone grades partial, not done
-kontakt.par.ENGINE_PAR_RV2_MOD	no verified law: acts alone grades partial, not done
 kontakt.par.ENGINE_PAR_SLICE_ATTACK	no verified law: acts alone grades partial, not done
 kontakt.par.ENGINE_PAR_SLICE_RELEASE	no verified law: acts alone grades partial, not done
 kontakt.par.ENGINE_PAR_SMOOTH	no verified law: acts alone grades partial, not done

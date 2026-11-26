@@ -42,15 +42,20 @@ pub fn engine_pars() -> Vec<ir::ScriptPar> {
         .map(|(name, drives)| ir::ScriptPar {
             name,
             drives,
-            readout: readout(name),
+            readout: readout(name).or_else(|| mod_readout(name)),
         })
         .collect();
     // A module control KONTRA has no processor for still shows Kontakt's
-    // text: its slot holds the value.
+    // text: its slot holds the value (`Opaque` -> honestly marked `held`).
     pars.extend(
         texts
             .into_iter()
             .filter(|(n, _)| held(n))
+            .chain(
+                UNPLAYED_HELD
+                    .iter()
+                    .map(|(name, law, form)| (*name, make_readout(law.clone(), *form))),
+            )
             .map(|(name, r)| ir::ScriptPar {
                 name,
                 drives: ir::Drives::Engine(ir::EnginePar::Opaque(ir::held_key(name))),
@@ -284,8 +289,36 @@ const FIXED: &[(&str, ir::EnginePar)] = {
         ("$ENGINE_PAR_INTMOD_INTENSITY", P::RouteDepth),
         ("$ENGINE_PAR_INTMOD_BYPASS", P::ModBypass),
         ("$ENGINE_PAR_LFO_DELAY", P::LfoFade),
+        ("$ENGINE_PAR_LFO_DELAY_UNIT", P::LfoDelayUnit),
+        ("$ENGINE_PAR_LFO_NORMALIZE", P::LfoNormalize),
         ("$ENGINE_PAR_INTMOD_RETRIGGER", P::LfoRetrigger),
         ("$ENGINE_PAR_INTMOD_FREQUENCY_UNIT", P::LfoUnit),
+        ("$ENGINE_PAR_INTMOD_TYPE", P::IntModType),
+        ("$ENGINE_PAR_INTMOD_SUBTYPE", P::IntModSubtype),
+        ("$ENGINE_PAR_ENV_AHD", P::EnvAhd),
+        ("$ENGINE_PAR_ATTACK_UNIT", P::AttackUnit),
+        ("$ENGINE_PAR_HOLD_UNIT", P::HoldUnit),
+        ("$ENGINE_PAR_DECAY_UNIT", P::DecayUnit),
+        ("$ENGINE_PAR_RELEASE_UNIT", P::ReleaseUnit),
+        ("$ENGINE_PAR_DECAY1", P::Decay1),
+        ("$ENGINE_PAR_DECAY1_UNIT", P::Decay1Unit),
+        ("$ENGINE_PAR_BREAK", P::BreakLevel),
+        ("$ENGINE_PAR_DECAY2", P::Decay2),
+        ("$ENGINE_PAR_DECAY2_UNIT", P::Decay2Unit),
+        ("$ENGINE_PAR_ENV_DBD_EASY", P::DbdEasy),
+        ("$ENGINE_PAR_FLEXENV_NUM_STAGES", P::FlexNumStages),
+        ("$ENGINE_PAR_FLEXENV_ONESHOT", P::FlexOneshot),
+        ("$ENGINE_PAR_FLEXENV_LOOP", P::FlexLoop),
+        ("$ENGINE_PAR_FLEXENV_LOOP_START", P::FlexLoopStart),
+        ("$ENGINE_PAR_FLEXENV_LOOP_END", P::FlexLoopEnd),
+        ("$ENGINE_PAR_FLEXENV_STAGE_TIME", P::FlexStageTime),
+        ("$ENGINE_PAR_FLEXENV_STAGE_LEVEL", P::FlexStageLevel),
+        ("$ENGINE_PAR_FLEXENV_STAGE_SLOPE", P::FlexStageSlope),
+        ("$ENGINE_PAR_STEPSEQ_NUM_STEPS", P::StepSeqNumSteps),
+        ("$ENGINE_PAR_STEPSEQ_ONESHOT", P::StepSeqOneshot),
+        ("$ENGINE_PAR_STEPSEQ_STEP_VALUE", P::StepSeqStepValue),
+        ("$ENGINE_PAR_GLIDE_COEF", P::GlideCoef),
+        ("$ENGINE_PAR_GLIDE_COEF_UNIT", P::GlideCoefUnit),
         // Position, the form amounts and Inharm are 0..=1 linear (readouts.rs
         // shows 0..100); the voice clamps each with its routes to 0..=1
         //. The modulator is not carried yet: its text answers,
@@ -380,6 +413,123 @@ const FIXED: &[(&str, ir::EnginePar)] = {
         ("$ZONE_PAR_BPM", P::Zone(Z::Bpm)),
     ]
 };
+
+fn make_readout(law: ir::Law, form: ir::Form) -> ir::Readout {
+    ir::Readout {
+        law,
+        form,
+        ends: [None, None],
+        by_subtype: std::sync::Arc::from([]),
+    }
+}
+
+const fn shifted_exp(lo: f32, hi: f32) -> ir::Law {
+    ir::Law::ExpAffine {
+        base: (hi + 2.0) / (lo + 2.0),
+        offset: 0.0,
+        factor: 1.0,
+        shift: -2.0 / (lo + 2.0),
+        scale: lo + 2.0,
+    }
+}
+
+/// Verified Kontakt 8.13.1 display laws (`get_engine_par_disp_ext`) for the 28
+/// carried modulator parameters.
+const MOD_NUMERIC_READOUTS: &[(&str, ir::Law, ir::Form)] = &[
+    (
+        "$ENGINE_PAR_DECAY1",
+        ir::common::STAGE_25S,
+        ir::Form::Padded,
+    ),
+    (
+        "$ENGINE_PAR_DECAY2",
+        ir::common::STAGE_25S,
+        ir::Form::Padded,
+    ),
+    (
+        "$ENGINE_PAR_BREAK",
+        ir::Law::Linear {
+            lo: -300.0,
+            hi: 300.0,
+        },
+        ir::Form::Wide,
+    ),
+    (
+        "$ENGINE_PAR_GLIDE_COEF",
+        shifted_exp(0.0, 2_500.0),
+        ir::Form::Padded,
+    ),
+];
+
+const MOD_BLANK_READOUTS: &[&str] = &[
+    "$ENGINE_PAR_ATTACK_UNIT",
+    "$ENGINE_PAR_HOLD_UNIT",
+    "$ENGINE_PAR_DECAY_UNIT",
+    "$ENGINE_PAR_RELEASE_UNIT",
+    "$ENGINE_PAR_DECAY1_UNIT",
+    "$ENGINE_PAR_DECAY2_UNIT",
+    "$ENGINE_PAR_ENV_AHD",
+    "$ENGINE_PAR_ENV_DBD_EASY",
+    "$ENGINE_PAR_FLEXENV_NUM_STAGES",
+    "$ENGINE_PAR_FLEXENV_ONESHOT",
+    "$ENGINE_PAR_FLEXENV_LOOP",
+    "$ENGINE_PAR_FLEXENV_LOOP_START",
+    "$ENGINE_PAR_FLEXENV_LOOP_END",
+    "$ENGINE_PAR_FLEXENV_STAGE_TIME",
+    "$ENGINE_PAR_FLEXENV_STAGE_LEVEL",
+    "$ENGINE_PAR_FLEXENV_STAGE_SLOPE",
+    "$ENGINE_PAR_STEPSEQ_NUM_STEPS",
+    "$ENGINE_PAR_STEPSEQ_ONESHOT",
+    "$ENGINE_PAR_STEPSEQ_STEP_VALUE",
+    "$ENGINE_PAR_GLIDE_COEF_UNIT",
+    "$ENGINE_PAR_LFO_DELAY_UNIT",
+    "$ENGINE_PAR_LFO_NORMALIZE",
+    "$ENGINE_PAR_INTMOD_TYPE",
+    "$ENGINE_PAR_INTMOD_SUBTYPE",
+];
+
+/// Controls whose DSP processor (Envelope Follower / TM2 Transient Size) is not
+/// yet implemented in the engine: stored as `EnginePar::Opaque` (`held`, `acts ✗`)
+/// while carrying their verified Kontakt 8.13.1 display laws (`disp ✓`).
+const UNPLAYED_HELD: &[(&str, ir::Law, ir::Form)] = &[
+    (
+        "$ENGINE_PAR_TRANSIENT_SIZE",
+        shifted_exp(100.0, 5_000.0),
+        ir::Form::Padded,
+    ),
+    (
+        "$ENGINE_PAR_ENVF_ATTACK",
+        shifted_exp(5.0, 2_500.0),
+        ir::Form::Padded,
+    ),
+    (
+        "$ENGINE_PAR_ENVF_RELEASE",
+        shifted_exp(40.0, 2_500.0),
+        ir::Form::Padded,
+    ),
+    (
+        "$ENGINE_PAR_ENVF_ADAPTION",
+        ir::Law::Linear {
+            lo: -54.0,
+            hi: -6.0,
+        },
+        ir::Form::Padded,
+    ),
+    (
+        "$ENGINE_PAR_ENVF_GAIN_BOOST",
+        ir::Law::Linear { lo: 0.0, hi: 24.0 },
+        ir::Form::Padded,
+    ),
+];
+
+fn mod_readout(name: &str) -> Option<ir::Readout> {
+    if let Some((_, law, form)) = MOD_NUMERIC_READOUTS.iter().find(|(n, ..)| *n == name) {
+        return Some(make_readout(law.clone(), *form));
+    }
+    MOD_BLANK_READOUTS
+        .contains(&name)
+        .then(|| make_readout(ir::Law::Linear { lo: 0.0, hi: 1.0 }, ir::Form::Blank))
+}
 
 #[cfg(test)]
 mod tests {

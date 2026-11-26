@@ -83,8 +83,8 @@ pub use kontra_voice::{Ahdsr, Envelope, Loop, Region, RenderMode};
 pub use ledger::NoteRef;
 pub use pgs::PgsBudget;
 pub use plan::{
-    Atom, Bus, Control, Crossfade, Dormant, Group, Level, Plan, ReleaseZones, Response, RoundRobin,
-    RrCounter, SustainPedal, Trigger, Zone,
+    Atom, Bus, Control, Crossfade, Dormant, Group, Level, ModSync, Plan, ReleaseZones, Response,
+    RoundRobin, RrCounter, SustainPedal, Trigger, Zone,
 };
 pub use queue::Timed;
 pub use script::{
@@ -273,11 +273,15 @@ pub struct Engine {
     stretch_scratch: Box<[modulators::EnvScale]>,
     /// Notes a running callback changed; their voices refresh when it ends.
     refresh_later: Vec<NoteRef>,
-    /// Latest controller values on any channel, as scripts read them.
-    cc_values: [u8; 130],
-    /// Which address a data entry LSB answers: RPN (false) or NRPN (true),
-    /// whichever pair arrived last; none before one did.
-    rpn_nrpn: Option<bool>,
+    /// Latest controller values per port and MIDI channel (64 channels × 130 entries),
+    /// as scripts read them (`%CC`).
+    cc_values: Box<[[u8; 130]; kontra_behaviour::CHANNELS]>,
+    /// Which address a data entry LSB answers per port and MIDI channel:
+    /// RPN (`false`) or NRPN (`true`), whichever pair arrived last; none before one did.
+    rpn_nrpn: [Option<bool>; kontra_behaviour::CHANNELS],
+    /// Monotonic MIDI-queue event id (`1..=0xFFFF`, disjoint from `NoteRef` ids)
+    /// assigned to each incoming `on midi_in` message.
+    next_midi_id: u16,
     /// Each key's last polyphonic aftertouch (`%POLY_AT`).
     poly_at: [u8; 128],
     /// Time Machine Pro voice limits: standard, high quality.
@@ -440,7 +444,22 @@ impl Engine {
         _trace_capacity: Option<usize>,
     ) -> Self {
         let out = plan.output;
-        let shared: Box<[Group]> = plan.groups.clone().into();
+        let mut shared: Box<[Group]> = plan.groups.clone().into();
+        // Pre-reserve envelope breakpoints (max 31 stages) and stepped tables
+        // (max 32 steps + sentinel) at engine construction so live script edits
+        // never allocate on the audio thread.
+        for g in &mut shared {
+            for e in &mut g.envelopes {
+                if e.points.capacity() < 32 {
+                    e.points.reserve(32 - e.points.len());
+                }
+            }
+            for s in &mut g.shapers {
+                if s.stepped && s.table.capacity() < 33 {
+                    s.table.reserve(33 - s.table.len());
+                }
+            }
+        }
         let voice_groups: Box<[ir::VoiceGroup]> = plan.voice_groups.clone().into();
         let rack = racks::Rack::new(&plan.inserts, rate, &[]);
         let sends: Box<[racks::Rack]> = plan
@@ -645,8 +664,9 @@ impl Engine {
             lfo_phase_scratch: vec![0.0; lfos].into(),
             stretch_scratch: vec![modulators::EnvScale::UNITY; envelopes].into(),
             refresh_later: Vec::with_capacity(64),
-            cc_values: [0; 130],
-            rpn_nrpn: None,
+            cc_values: Box::new([[0; 130]; kontra_behaviour::CHANNELS]),
+            rpn_nrpn: [None; kontra_behaviour::CHANNELS],
+            next_midi_id: 1,
             poly_at: [0; 128],
             voice_limits: kontra_vm::midi::VL_DEFAULT,
             midi_made: (0, [[0; 4]; midi_in::MADE]),
@@ -695,8 +715,10 @@ impl Engine {
             group_mix,
             graph_redirected: false,
         };
-        engine.cc_values[7] = 100;
-        engine.cc_values[11] = 127;
+        for ch in engine.cc_values.iter_mut() {
+            ch[7] = 100;
+            ch[11] = 127;
+        }
         let plan = Arc::clone(&engine.plan);
         for (slot, script) in (0u8..).zip(&plan.scripts) {
             if let Some(init) = script.callbacks.init {
@@ -756,10 +778,13 @@ impl Engine {
             .count()
     }
 
-    /// The controller's current value (129 is channel pressure).
+    /// The controller's current value on the active channel (129 is channel pressure).
     #[must_use]
     pub fn controller(&self, cc: usize) -> Option<u8> {
-        self.cc_values.get(cc).copied()
+        self.cc_values
+            .get(usize::from(self.behaviour.channel))
+            .and_then(|ch| ch.get(cc))
+            .copied()
     }
 
     /// The current articulation keyswitch.

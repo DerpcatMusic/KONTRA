@@ -83,6 +83,44 @@ pub enum EnginePar {
         key: u32,
         set: HeldSet,
     },
+    /// AHDSR AHD-only one-shot switch (`0` off, nonzero on).
+    EnvAhd,
+    /// Envelope stage time sync units (`0` ms, `5..=21` note values).
+    AttackUnit,
+    HoldUnit,
+    DecayUnit,
+    ReleaseUnit,
+    Decay1Unit,
+    Decay2Unit,
+    /// DBD (Decay-Break-Decay) envelope controls.
+    Decay1,
+    BreakLevel,
+    Decay2,
+    DbdEasy,
+    /// Flexible breakpoint envelope controls.
+    FlexNumStages,
+    FlexOneshot,
+    FlexLoop,
+    FlexLoopStart,
+    FlexLoopEnd,
+    FlexStageTime,
+    FlexStageLevel,
+    FlexStageSlope,
+    /// Step modulator controls.
+    StepSeqNumSteps,
+    StepSeqOneshot,
+    StepSeqStepValue,
+    /// Glide portamento modulator controls.
+    GlideCoef,
+    GlideCoefUnit,
+    /// LFO fade-in / delay sync unit (`0` ms, `5..=21` note values).
+    LfoDelayUnit,
+    /// Multi-LFO waveform mix normalization switch (`0` off, nonzero on).
+    LfoNormalize,
+    /// Read-only internal modulator type (`0` none, `1` LFO, `2` Env, `3` StepMod, `4` EnvF, `5` Glide).
+    IntModType,
+    /// Internal modulator subtype (`Env`: `0` AHDSR / `1` Flex / `2` DBD; `LFO`: `0..=5`; `Glide`: `-1`).
+    IntModSubtype,
 }
 
 /// What a set keeps of a held group control ([`EnginePar::GroupHeld`]).
@@ -189,8 +227,49 @@ impl EnginePar {
             | Self::ModOscKind
             | Self::TableModWave
             | Self::ModOscUnit
-            | Self::TableQuality => ParRole::Active,
+            | Self::TableQuality
+            | Self::EnvAhd
+            | Self::AttackUnit
+            | Self::HoldUnit
+            | Self::DecayUnit
+            | Self::ReleaseUnit
+            | Self::Decay1Unit
+            | Self::Decay2Unit
+            | Self::Decay1
+            | Self::BreakLevel
+            | Self::Decay2
+            | Self::DbdEasy
+            | Self::FlexNumStages
+            | Self::FlexOneshot
+            | Self::FlexLoop
+            | Self::FlexLoopStart
+            | Self::FlexLoopEnd
+            | Self::FlexStageTime
+            | Self::FlexStageLevel
+            | Self::FlexStageSlope
+            | Self::StepSeqNumSteps
+            | Self::StepSeqOneshot
+            | Self::StepSeqStepValue
+            | Self::GlideCoef
+            | Self::GlideCoefUnit
+            | Self::LfoDelayUnit
+            | Self::LfoNormalize
+            | Self::IntModType
+            | Self::IntModSubtype => ParRole::Active,
         }
+    }
+
+    /// Stage sync-unit index `0..4` (`Attack/Decay1` -> 0, `Hold` -> 1,
+    /// `Decay/Decay2` -> 2, `Release` -> 3).
+    #[must_use]
+    pub const fn env_unit_index(self) -> Option<usize> {
+        Some(match self {
+            Self::AttackUnit | Self::Decay1Unit => 0,
+            Self::HoldUnit => 1,
+            Self::DecayUnit | Self::Decay2Unit => 2,
+            Self::ReleaseUnit => 3,
+            _ => return None,
+        })
     }
 }
 

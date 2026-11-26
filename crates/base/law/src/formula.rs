@@ -130,6 +130,12 @@ pub enum FormulaId {
     RotatorMixDb,
     /// Rotator's speed: 1 ("fast") above 0.5, else 0 ("slow").
     RotatorFast,
+    /// Legacy filter cutoff display in Hz (LP1/2/4/6, HP2/4, BP2/4, BR4):
+    /// 8-term Taylor series of `exp(6.15x) - 1`, scaled by `0.0025728317`,
+    /// clamped to 1, plus `0.002`, over `44011.976 * 0.495` Hz.
+    LegacyCutoffHz,
+    /// Legacy 1-pole high-pass (HP1) cutoff display in Hz (`0.82825 * LegacyCutoffHz`).
+    LegacyHp1CutoffHz,
 }
 
 impl FormulaId {
@@ -262,6 +268,8 @@ impl FormulaId {
                 let x = x.to_f32();
                 T::of(x * 2002.0 * x - x * 3.0 + 1.0)
             }
+            Self::LegacyCutoffHz => T::of(legacy_cutoff_hz(x.to_f32())),
+            Self::LegacyHp1CutoffHz => T::of(legacy_cutoff_hz(x.to_f32()) * 0.828_25),
         }
     }
 
@@ -317,7 +325,9 @@ impl FormulaId {
             | Self::PhasisCenterHz
             | Self::FreakFrequencyHz
             | Self::RotatorMixDb
-            | Self::RotatorFast => None,
+            | Self::RotatorFast
+            | Self::LegacyCutoffHz
+            | Self::LegacyHp1CutoffHz => None,
         }
     }
 }
@@ -478,6 +488,20 @@ fn object(lo: f64, hi: f64, log: bool, x: f32) -> f32 {
     } else {
         (lo + (hi - lo) * x) as f32
     }
+}
+
+/// Legacy filter cutoff readout in Hz: 8-term Taylor series of `exp(6.15x) - 1`,
+/// clamped to 1 after scaling by `0.0025728317`, plus `0.002`, over `44011.976 * 0.495` Hz.
+fn legacy_cutoff_hz(x: f32) -> f32 {
+    let z = 6.15_f64 * f64::from(x.clamp(0.0, 1.0));
+    let mut sum = 0.0_f64;
+    let mut term = 1.0_f64;
+    for k in 1..=8 {
+        term *= z / f64::from(k);
+        sum += term;
+    }
+    let v = (sum * 0.002_572_831_7).min(1.0) + 0.002;
+    (44_011.976 * 0.495 * v) as f32
 }
 
 #[cfg(test)]

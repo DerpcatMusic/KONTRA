@@ -90,6 +90,8 @@ fn main() -> std::io::Result<()> {
         ("set_script_title", "set_script_title(\"a\")"),
         // Zone, event and file commands.
         ("set_num_user_zones", "set_num_user_zones(4)"),
+        ("set_zone_par", "set_zone_par(0, $ZONE_PAR_LOW_KEY, 60)"),
+        ("load_performance_view", "load_performance_view(\"Main\")"),
         (
             "get_event_par_arr",
             "$x := get_event_par_arr(0, $EVENT_PAR_CUSTOM, 0)",
@@ -110,6 +112,10 @@ fn main() -> std::io::Result<()> {
             "$x := get_voice_limit($NI_VL_TMPRO_STANDARD)",
         ),
     ];
+    let view = [(
+        "performance_view/Main.nckp".to_owned(),
+        br#"{"value":{"performanceView":{}}}"#.to_vec(),
+    )];
     let answered_by_script = |call: &str| -> bool {
         let src = format!("on init\n declare $x\n declare @t\n {call}\nend on");
         let Ok(script) = kontra_ksp::compile(&src, &[]) else {
@@ -120,7 +126,7 @@ fn main() -> std::io::Result<()> {
         };
         let mut plan =
             kontra_host::instrument::build(ir::Instrument::DEFAULT, RATE, &mut store).plan;
-        plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+        plan.scripts = vec![kontra_host::script::plan(&script, &[], &view)];
         Engine::new(Arc::new(plan), store.client(), RATE)
             .unhandled_actions()
             .is_empty()

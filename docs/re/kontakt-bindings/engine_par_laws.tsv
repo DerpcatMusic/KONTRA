@@ -1,0 +1,520 @@
+# Verified Kontakt 8.13.1 $ENGINE_PAR_* parameter laws consolidated from fx_*.tsv, filters_eq.tsv, and oracle measurements.
+par	module	domain	law	source
+$ENGINE_PAR_AC_BASS	ACBox	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_AC_BRILLIANTVOLUME	ACBox	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_AC_NORMALVOLUME	ACBox	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_AC_TONECUT	ACBox	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_AC_TREBLE	ACBox	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_AC_TREMOLODEPTH	ACBox	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_AC_TREMOLOSPEED	ACBox	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_ATK_CURVE	AHDSR	0..=1_000_000	ATTACK_CURVE(2*x - 1) exponential segment shape (-100..+100)	mod_par_laws.lua / par_laws.rs
+$ENGINE_PAR_ATTACK	AHDSR	0..=1_000_000	2 * (7501^x - 1) ms (STAGE_15S, 0..15000 ms)	mod_par_laws.lua / par_laws.rs
+$ENGINE_PAR_BASSINVADER_BASS	Bass Invader	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSINVADER_BOOST	Bass Invader	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSINVADER_HI_BOOST	Bass Invader	switch (0 or 1)	bool: stored=1 when value>=1	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSINVADER_HI_MID	Bass Invader	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSINVADER_LO_CUT	Bass Invader	switch (0 or 1)	bool: stored=1 when value>=1	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSINVADER_LO_MID	Bass Invader	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSINVADER_MASTER	Bass Invader	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSINVADER_MID_CONTOUR	Bass Invader	switch (0 or 1)	bool: stored=1 when value>=1	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSINVADER_TREBLE	Bass Invader	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSINVADER_VOLUME	Bass Invader	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_BASS	Bass Pro	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_BRIGHT	Bass Pro	switch (0 or 1)	bool: stored=1 when value>=1	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_DRIVE	Bass Pro	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_GAIN	Bass Pro	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_GEQ	Bass Pro	switch (0 or 1)	bool: stored=1 when value>=1	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_GEQ_10K	Bass Pro	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_GEQ_180	Bass Pro	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_GEQ_1K	Bass Pro	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_GEQ_2K	Bass Pro	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_GEQ_300	Bass Pro	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_GEQ_40	Bass Pro	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_GEQ_4K	Bass Pro	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_GEQ_500	Bass Pro	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_GEQ_90	Bass Pro	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_GEQ_VOLUME	Bass Pro	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_MASTER	Bass Pro	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_MID	Bass Pro	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_MIDFREQ	Bass Pro	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_MONO	Bass Pro	switch (0 or 1)	bool: stored=1 when value>=1	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_TREBLE	Bass Pro	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_ULTRAHI	Bass Pro	switch (0 or 1)	bool: stored=1 when value>=1	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BASSPRO_ULTRALO	Bass Pro	switch (0 or 1)	bool: stored=1 when value>=1	fx_other.tsv (max_error=0)
+$ENGINE_PAR_BEATMASHER_GATE	Beat Masher	0..=1_000_000	identity 0..1 mapped to -1..+1 gate (-100..+100%)	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_BEATMASHER_LENGTH	Beat Masher	0..=8 (refused outside)	selects beat length (1 bar..1/32 note)	mangling.rs / engine_pars.rs::ACCEPTS
+$ENGINE_PAR_BEATMASHER_MASH	Beat Masher	switch (0 or 1)	engages buffer freeze/mash when nonzero	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_BEATMASHER_MIX	Beat Masher	0..=1_000_000	identity 0..1 wet/dry mix (0..100%)	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_BEATMASHER_REVERSE	Beat Masher	switch (0 or 1)	reverses mashed slice playback when nonzero	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_BEATMASHER_ROTATE	Beat Masher	0..=1_000_000	identity 0..1 loop rotation	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_BEATMASHER_WRAP	Beat Masher	switch (0 or 1)	wraps rotated buffer when nonzero	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_BEATSLICER_BUZZ	Beat Slicer	0..=1_000_000	identity 0..1 buzz/repeat probability	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_BEATSLICER_GATE	Beat Slicer	0..=1_000_000	identity 0..1 slice gate (-100..+100%)	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_BEATSLICER_MIX	Beat Slicer	0..=1_000_000	identity 0..1 wet/dry mix	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_BEATSLICER_PATTERN	Beat Slicer	0..=4 (refused outside)	selects slice reorder pattern (0..=4)	mangling.rs / engine_pars.rs::ACCEPTS
+$ENGINE_PAR_BEATSLICER_SLICE	Beat Slicer	0..=1_000_000	identity 0..1 slice density	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_BEATSLICER_STYLE	Beat Slicer	0..=4 (refused outside)	selects slicer rhythmic style (0..=4)	mangling.rs / engine_pars.rs::ACCEPTS
+$ENGINE_PAR_BEATSLICER_TWOBARS	Beat Slicer	switch (0 or 1)	toggles 2-bar vs 1-bar capture	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_BITE_BITS	Bite	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_BITE_CRUNCH	Bite	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_BITE_DC_QUANT	Bite	switch (0 or 1)	bool: stored=1 when value>=1	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_BITE_DITHER	Bite	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_BITE_EXPAND	Bite	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_BITE_FREQUENCY	Bite	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_BITE_HPF	Bite	0..=1_000_000	table	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_BITE_JITTER	Bite	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_BITE_MIX	Bite	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_BITE_POSTFILTER	Bite	0..=1_000_000	table	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_BITE_PREFILTER	Bite	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_BITE_SATURATE	Bite	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_BITS	Lofi	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_BW1	EQ	0..=1_000_000	linear a=0.333333 b=2.66667	filters_eq.tsv (max_error=1.6e-07)
+$ENGINE_PAR_BW2	EQ	0..=1_000_000	linear 1/3 + (8/3)*x octaves (0.333..3.0)	filters_eq.tsv / script_knobs.rs
+$ENGINE_PAR_BW3	EQ	0..=1_000_000	linear 1/3 + (8/3)*x octaves (0.333..3.0)	filters_eq.tsv / script_knobs.rs
+$ENGINE_PAR_CABINET_TYPE	Cabinet	0..=1_000_000	linear a=0 b=1e+06	fx_other.tsv (max_error=0)
+$ENGINE_PAR_CB_AIR	Cabinet	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_CB_BASS	Cabinet	0..=1_000_000	linear a=-1 b=2	fx_other.tsv (max_error=5e-08)
+$ENGINE_PAR_CB_SIZE	Cabinet	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_CB_TREBLE	Cabinet	0..=1_000_000	linear a=-1 b=2	fx_other.tsv (max_error=5e-08)
+$ENGINE_PAR_CHORAL_AMOUNT	Choral	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_CHORAL_DELAY	Choral	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_CHORAL_FEEDBACK	Choral	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_CHORAL_INVERT_PHASE	Choral	switch (0 or 1)	bool: stored=1 when value>=1	fx_other.tsv (max_error=0)
+$ENGINE_PAR_CHORAL_MIX	Choral	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_CHORAL_MODE	Choral	0..=3 (refused outside)	selects Synth/Ensemble/Dimension/Universal mode	engine_pars.rs::ACCEPTS / engine-par-disp.tsv
+$ENGINE_PAR_CHORAL_RATE	Choral	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_CHORAL_SCATTER	Choral	switch (0 or 1)	bool: stored=1 when value>=1	fx_other.tsv (max_error=0)
+$ENGINE_PAR_CHORAL_VOICES	Choral	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_CHORAL_WIDTH	Choral	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_CH_DEPTH	Chorus	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_CH_PHASE	Chorus	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_CH_SPEED	Chorus	0..=1_000_000	exp a=0.05 r=160	fx_legacy_delay_reverb_mod.tsv (max_error=1.9e-07)
+$ENGINE_PAR_COMP_ATTACK	Compressor	0..=1_000_000	table	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_COMP_DECAY	Compressor	0..=1_000_000	table	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_CT_BALLS	Cat	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_CT_BASS	Cat	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_CT_DISTORTION	Cat	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_CT_FILTER	Cat	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_CT_TONE	Cat	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_CT_TREBLE	Cat	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_CT_VOLUME	Cat	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_CUTOFF	BandPass	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_DAMPING	Distortion	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_DECAY	AHDSR	0..=1_000_000	2 * (12501^x - 1) ms (STAGE_25S, 0..25000 ms)	mod_par_laws.lua / par_laws.rs
+$ENGINE_PAR_DIRT_AMOUNTA	Dirt	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_DIRT_AMOUNTB	Dirt	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_DIRT_BIASA	Dirt	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_DIRT_BIASB	Dirt	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_DIRT_BLEND	Dirt	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_DIRT_DRIVEA	Dirt	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_DIRT_DRIVEB	Dirt	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_DIRT_MIX	Dirt	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_DIRT_MODEA	Dirt	0..=1_000_000	table	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_DIRT_MODEB	Dirt	0..=1_000_000	table	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_DIRT_ROUTING	Dirt	0..=1_000_000	table	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_DIRT_SAFETYA	Dirt	switch (0 or 1)	bool: stored=1 when value>=1	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_DIRT_SAFETYB	Dirt	switch (0 or 1)	bool: stored=1 when value>=1	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_DIRT_TILTA	Dirt	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_DIRT_TILTB	Dirt	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_DL_DAMPING	Delay	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_DL_FEEDBACK	Delay	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_DL_PAN	Delay	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_DL_TIME	Delay	0..=1_000_000	table	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_DRIVE	Distortion	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_DS_BASS	DStortion	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_DS_DRIVE	DStortion	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_DS_MID	DStortion	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_DS_TONE	DStortion	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_DS_TREBLE	DStortion	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_DS_VOLUME	DStortion	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_EFFECT_BYPASS	BandPass	switch (0 or 1)	bool: stored=1 when value>=1	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_EFFECT_SUBTYPE	Filter	$FILTER_TYPE_*	switches filter slot subtype shape	filter-type-ids.tsv / filter_subtypes.tsv
+$ENGINE_PAR_EFFECT_TYPE	Rack	$EFFECT_TYPE_*	switches insert effect module type (async outside on init)	effect-type-ids.tsv / limiter-dynamics.tsv
+$ENGINE_PAR_FCOMP_ATTACK	Feedback Compressor	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_FCOMP_HQ_MODE	Feedback Compressor	switch (0 or 1)	bool: stored=1 when value>=1	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_FCOMP_INPUT	Feedback Compressor	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_FCOMP_LINK	Feedback Compressor	switch (0 or 1)	stereo channel link switch	dynamics.rs / engine-par-disp.tsv
+$ENGINE_PAR_FCOMP_MAKEUP	Feedback Compressor	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_FCOMP_MIX	Feedback Compressor	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_FCOMP_RATIO	Feedback Compressor	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_FCOMP_RELEASE	Feedback Compressor	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_FILTER_BYPA	Multi	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_FILTER_BYPB	Multi	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_FILTER_BYPC	Multi	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_FILTER_GAIN	Multi	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_FILTER_RESB	Multi	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_FILTER_RESC	Multi	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_FILTER_SHIFTB	Multi	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_FILTER_SHIFTC	Multi	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_FILTER_TYPEA	Multi	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_FILTER_TYPEB	Multi	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_FILTER_TYPEC	Multi	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_FLAIR_AMOUNT	Flair	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_FLAIR_CHORD	Flair	0..=23 (refused outside)	selects chord scale index (0..=23)	engine_pars.rs::ACCEPTS / engine-par-disp.tsv
+$ENGINE_PAR_FLAIR_DAMPING	Flair	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_FLAIR_DETUNE	Flair	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_FLAIR_FEEDBACK	Flair	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_FLAIR_INVERT_PHASE	Flair	switch (0 or 1)	bool: stored=1 when value>=1	fx_other.tsv (max_error=0)
+$ENGINE_PAR_FLAIR_MIX	Flair	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_FLAIR_MODE	Flair	0..=2 (refused outside)	selects Standard/Throaty/Vowels mode	engine_pars.rs::ACCEPTS / engine-par-disp.tsv
+$ENGINE_PAR_FLAIR_OFFSET	Flair	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_FLAIR_PITCH	Flair	0..=96 (refused outside)	integer MIDI pitch stored as n/96	engine_pars.rs::ACCEPTS / engine-par-disp.tsv
+$ENGINE_PAR_FLAIR_RATE	Flair	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_FLAIR_SCANMODE	Flair	0..=2 (refused outside)	selects Harmonic/Inharmonic/Scan mode	engine_pars.rs::ACCEPTS / engine-par-disp.tsv
+$ENGINE_PAR_FLAIR_VOICES	Flair	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_FLAIR_WIDTH	Flair	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_FL_COLOR	Flanger	0..=1_000_000	linear a=0 b=5	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_FL_DEPTH	Flanger	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_FL_FEEDBACK	Flanger	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_FL_PHASE	Flanger	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_FL_SPEED	Flanger	0..=1_000_000	exp a=0.05 r=160	fx_legacy_delay_reverb_mod.tsv (max_error=1.9e-07)
+$ENGINE_PAR_FORMANT_SHARP	Formant	0..=1_000_000	identity 0..1 formant sharpness	filter-laws.tsv / script_knobs.rs
+$ENGINE_PAR_FORMANT_SIZE	Formant	0..=1_000_000	identity 0..1 formant size	filter-laws.tsv / script_knobs.rs
+$ENGINE_PAR_FORMANT_TALK	Formant	0..=1_000_000	identity 0..1 vowel morph	filter-laws.tsv / script_knobs.rs
+$ENGINE_PAR_FREAK_ANTIFOLD	Freak	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_FREAK_BP_FILTER	Freak	switch (0 or 1)	bool: stored=1 when value>=1	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_FREAK_BP_FREQ	Freak	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_FREAK_CARRIER	Freak	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_FREAK_CONTOUR	Freak	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_FREAK_DEMOD	Freak	switch (0 or 1)	bool: stored=1 when value>=1	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_FREAK_FEEDBACK	Freak	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_FREAK_FREQUENCY	Freak	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_FREAK_GATE	Freak	switch (0 or 1)	bool: stored=1 when value>=1	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_FREAK_HARMONICS	Freak	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_FREAK_MIX	Freak	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_FREAK_MODE	Freak	0..=1_000_000	table	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_FREAK_RELEASE	Freak	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_FREAK_STEREO	Freak	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_FREAK_TUNING	Freak	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_FREAK_TYPE	Freak	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_FREAK_WIDE_RANGE	Freak	switch (0 or 1)	bool: stored=1 when value>=1	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_FREAK_WIDTH	Freak	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_FREQ1	EQ	0..=1_000_000	exp a=20 r=1000	filters_eq.tsv (max_error=1.7e-07)
+$ENGINE_PAR_FREQ2	EQ	0..=1_000_000	exp 20 * 1000^x Hz (20..20000 Hz)	filters_eq.tsv / script_knobs.rs
+$ENGINE_PAR_FREQ3	EQ	0..=1_000_000	exp 20 * 1000^x Hz (20..20000 Hz)	filters_eq.tsv / script_knobs.rs
+$ENGINE_PAR_FREQUENCY	Lofi	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_GAIN1	EQ	0..=1_000_000	linear a=-18 b=36	filters_eq.tsv (max_error=2e-06)
+$ENGINE_PAR_GAIN2	EQ	0..=1_000_000	linear 36*x - 18 dB (-18..+18 dB)	filters_eq.tsv / script_knobs.rs
+$ENGINE_PAR_GAIN3	EQ	0..=1_000_000	linear 36*x - 18 dB (-18..+18 dB)	filters_eq.tsv / script_knobs.rs
+$ENGINE_PAR_GATER_GATE	Gater	switch (0 or 1)	engages gating when nonzero	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_GATER_MIX	Gater	0..=1_000_000	identity 0..1 wet/dry mix	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_GATER_MUTE_INPUT	Gater	switch (0 or 1)	mutes dry input signal when nonzero	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_GATER_NOISE	Gater	0..=1_000_000	identity 0..1 white noise injection level	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_GATER_RATE	Gater	0..=1_000_000	identity 0..1 gate rate (Hz or synced beat grid)	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_GATER_RATE_SYNC	Gater	switch (0 or 1)	syncs gate rate to host tempo when nonzero	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_GATER_SHAPE	Gater	0..=1_000_000	identity 0..1 gate envelope smoothness	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_GATER_STUTTER	Gater	switch (0 or 1)	doubles gate stutter rate when nonzero	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_GN_GAIN	Gainer	0..=1_000_000	cubic gain 16 * x^3 (-inf..+24 dB)	par_laws.rs / Kontakt 8.13.1 oracle
+$ENGINE_PAR_HOLD	AHDSR	0..=1_000_000	2 * (7501^x - 1) ms (STAGE_15S, 0..15000 ms)	mod_par_laws.lua / par_laws.rs
+$ENGINE_PAR_HS_BASS	HotSolo	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_HS_DEPTH	HotSolo	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_HS_MASTER	HotSolo	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_HS_MID	HotSolo	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_HS_PRENORMAL	HotSolo	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_HS_PREOVERDRIVE	HotSolo	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_HS_PRESENCE	HotSolo	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_HS_TREBLE	HotSolo	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN	BandPass	0..=1_000_000	pow a=16 p=3	filters_eq.tsv (max_error=6.3e-08)
+$ENGINE_PAR_INTMOD_BYPASS	Modulator	switch (0 or 1)	bypasses internal modulator when nonzero	engine-par-disp.tsv / params.rs
+$ENGINE_PAR_INTMOD_FREQUENCY	LFO	0..=1_000_000	exp(0.01, 213.1) Hz when free; exp(48/0.01, 48/213.1) steps when synced	script_knobs.rs / par_display.rs
+$ENGINE_PAR_INTMOD_FREQUENCY_UNIT	LFO	$NI_SYNC_UNIT_* (0 or 5..=21)	selects free Hz (0) or tempo-synced note value (5..=21)	engine_pars.rs::lfo_units
+$ENGINE_PAR_INTMOD_INTENSITY	ModRoute	0..=1_000_000	signed cubic (2*x - 1)^3 (-100..+100%)	mod_par_laws.lua / par_laws.rs
+$ENGINE_PAR_INTMOD_PULSEWIDTH	LFO	0..=1_000_000	linear 0.05..=0.95 duty cycle	script_knobs.rs
+$ENGINE_PAR_INTMOD_RETRIGGER	LFO	switch (0 or 1)	retriggers LFO per voice when nonzero, free-running when 0	engine_pars.rs / params.rs
+$ENGINE_PAR_IRC_FREQ_HIGHPASS_ER	Convolution	0..=1_000_000	exp 20 * 1000^x Hz (20..20000 Hz)	impulse.rs / engine-par-disp.tsv
+$ENGINE_PAR_IRC_FREQ_HIGHPASS_LR	Convolution	0..=1_000_000	exp 20 * 1000^x Hz (20..20000 Hz)	impulse.rs / engine-par-disp.tsv
+$ENGINE_PAR_IRC_FREQ_LOWPASS_ER	Convolution	0..=1_000_000	exp 20 * 1000^x Hz (20..20000 Hz)	impulse.rs / engine-par-disp.tsv
+$ENGINE_PAR_IRC_FREQ_LOWPASS_LR	Convolution	0..=1_000_000	exp 20 * 1000^x Hz (20..20000 Hz)	impulse.rs / engine-par-disp.tsv
+$ENGINE_PAR_IRC_LENGTH_RATIO_ER	Convolution	0..=1_000_000	linear 0.5..=1.5 size ratio (50..150%)	impulse.rs / engine-par-disp.tsv
+$ENGINE_PAR_IRC_LENGTH_RATIO_LR	Convolution	0..=1_000_000	linear 0.5..=1.5 size ratio (50..150%)	impulse.rs / engine-par-disp.tsv
+$ENGINE_PAR_IRC_PREDELAY	Convolution	0..=1_000_000	2 * (151^x - 1) ms (0..300 ms)	impulse.rs / Kontakt 8.13.1 oracle
+$ENGINE_PAR_JMP_BASS	Jump	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_JMP_MASTER	Jump	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_JMP_MID	Jump	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_JMP_MONO	Jump	switch (0 or 1)	bool: stored=1 when value>=1	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_JMP_PREAMP	Jump	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_JMP_PRESENCE	Jump	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_JMP_TREBLE	Jump	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_LFO_DELAY	LFO	0..=1_000_000	2 * (5002^x - 1) ms (STAGE_10S, 0..10002 ms)	mod_par_laws.lua / par_laws.rs
+$ENGINE_PAR_LFO_PHASE	LFO	0..=1_000_000	linear 0..1 cycle (0..360 deg)	mod_par_laws.lua / script_knobs.rs
+$ENGINE_PAR_LFO_RAND	LFO	0..=1_000_000	linear bipolar 2*x - 1 (-100..+100%)	script_knobs.rs / engine-par-disp.tsv
+$ENGINE_PAR_LFO_RECT	LFO	0..=1_000_000	linear bipolar 2*x - 1 (-100..+100%)	script_knobs.rs / engine-par-disp.tsv
+$ENGINE_PAR_LFO_SAW	LFO	0..=1_000_000	linear bipolar 2*x - 1 (-100..+100%)	script_knobs.rs / engine-par-disp.tsv
+$ENGINE_PAR_LFO_SINE	LFO	0..=1_000_000	linear bipolar 2*x - 1 (-100..+100%)	script_knobs.rs / engine-par-disp.tsv
+$ENGINE_PAR_LFO_TRI	LFO	0..=1_000_000	linear bipolar 2*x - 1 (-100..+100%)	script_knobs.rs / engine-par-disp.tsv
+$ENGINE_PAR_LIM_IN_GAIN	Limiter	0..=1_000_000	linear -24..+24 dB input gain	limiter-dynamics.tsv / script_knobs.rs
+$ENGINE_PAR_LIM_RELEASE	Limiter	0..=1_000_000	piecewise exponential 10..1000 ms release	limiter-dynamics.tsv / script_knobs.rs
+$ENGINE_PAR_MOD_TARGET_INTENSITY	ModRoute	0..=1_000_000	quadratic x^2 keeping route sign (0..100%)	mod_par_laws.lua / par_laws.rs
+$ENGINE_PAR_MOD_TARGET_MP_INTENSITY	ModRoute	0..=1_000_000	signed cubic (2*x - 1)^3 (-100..+100%)	mod_par_laws.lua / par_laws.rs
+$ENGINE_PAR_NOISECOLOR	Lofi	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_NOISELEVEL	Lofi	0..=1_000_000	pow a=1 p=3	fx_dynamics_dist_tape.tsv (max_error=1e-07)
+$ENGINE_PAR_OUTPUT_CHANNEL	Routing	bus index / -1 main	routes group to bus n (BUS_OFFSET + n) or main (-1)	engine_pars.rs / Kontakt 8.13.1
+$ENGINE_PAR_PAN	Level	0..=1_000_000	linear bipolar 2*x - 1 (-100 L..100 R)	par_laws.rs / Kontakt 8.13.1 oracle
+$ENGINE_PAR_PHASIS_AMOUNT	Phasis	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PHASIS_CENTER	Phasis	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PHASIS_FEEDBACK	Phasis	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PHASIS_INVERT_MOD_MIX	Phasis	switch (0 or 1)	bool: stored=1 when value>=1	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PHASIS_INVERT_PHASE	Phasis	switch (0 or 1)	bool: stored=1 when value>=1	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PHASIS_MIX	Phasis	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PHASIS_MOD_MIX	Phasis	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PHASIS_NOTCHES	Phasis	0..=1_000_000	table	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PHASIS_RATE	Phasis	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PHASIS_RATE_UNIT	Phasis	0..=1_000_000	table	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PHASIS_SPREAD	Phasis	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PHASIS_STEREO	Phasis	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PHASIS_ULTRA	Phasis	switch (0 or 1)	bool: stored=1 when value>=1	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PH_DEPTH	Phaser	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_PH_FEEDBACK	Phaser	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_PH_PHASE	Phaser	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_PH_SPEED	Phaser	0..=1_000_000	exp a=0.05 r=160	fx_legacy_delay_reverb_mod.tsv (max_error=1.9e-07)
+$ENGINE_PAR_PR_DECAY	Plate Reverb	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_PR_HIDAMP	Plate Reverb	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_PR_LOWSHELF	Plate Reverb	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_PR_PREDELAY	Plate Reverb	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_PR_STEREO	Plate Reverb	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_PSYDL_CROSS_FEEDBACK	PsycheDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PSYDL_DETUNE	PsycheDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PSYDL_DETUNE_STEREO	PsycheDelay	switch (0 or 1)	bool: stored=1 when value>=1	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PSYDL_FEEDBACK	PsycheDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PSYDL_LR_OFFSET	PsycheDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PSYDL_PITCH	PsycheDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PSYDL_REVERSE	PsycheDelay	switch (0 or 1)	bool: stored=1 when value>=1	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PSYDL_REVERSE_STEREO	PsycheDelay	switch (0 or 1)	bool: stored=1 when value>=1	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PSYDL_TIME	PsycheDelay	0..=1_000_000	table	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_PSYDL_TIME_UNIT	PsycheDelay	0..=1_000_000	table	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RATIO	Compressor	0..=1_000_000	exp a=1 r=0.04	fx_dynamics_dist_tape.tsv (max_error=1.6e-07)
+$ENGINE_PAR_RAUM_DAMPING	Raum	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RAUM_DECAY	Raum	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RAUM_DIFFUSION	Raum	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RAUM_FEEDBACK	Raum	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RAUM_FREEZE	Raum	switch (0 or 1)	bool: stored=1 when value>=1	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RAUM_HIGHCUT	Raum	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RAUM_LOWSHELF	Raum	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RAUM_MOD	Raum	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RAUM_PREDELAY	Raum	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RAUM_PREDELAY_UNIT	Raum	switch (0 or 1)	bool: stored=1 when value>=5	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RAUM_RATE	Raum	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RAUM_REVERB	Raum	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RAUM_SIZE	Raum	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RAUM_SPARSE	Raum	switch (0 or 1)	bool: stored=1 when value>=1	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RAUM_TIME_UNIT	Raum	switch (0 or 1)	bool: stored=1 when value>=5	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RAUM_TYPE	Raum	0..=1_000_000	table	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_ACCENT	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_AMOUNT	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_BBDTYPE	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_DENSE	RDelay	switch (0 or 1)	bool: stored=1 when value>=1	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_DEPTH	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_DUCKING_AMOUNT	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_DUCKING_RELEASE	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_DUCKING_SENSE	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_FEEDBACK	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_FEEL	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_FLUTTER	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_HIGHCUT	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_LOWCUT	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_LR_OFFSET	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_MODULATION	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_NOISE	RDelay	switch (0 or 1)	bool: stored=1 when value>=1	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_PAN	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_PINGPONG	RDelay	switch (0 or 1)	bool: stored=1 when value>=1	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_PINGPONG_FLIP	RDelay	switch (0 or 1)	bool: stored=1 when value>=1	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_QUALITY	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_RATE	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_SATURATION	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_SHUFFLE	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_SIZE	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_STEREO	RDelay	switch (0 or 1)	bool: stored=1 when value>=1	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_TAPEAGE	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_TIME	RDelay	0..=1_000_000	linear a=0 b=2000	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_TIME_UNIT	RDelay	0..=1_000_000	table	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_TYPE	RDelay	0..=1_000_000	table	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RDL_WIDTH	RDelay	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RELEASE	AHDSR	0..=1_000_000	2 * (12501^x - 1) ms (STAGE_25S, 0..25000 ms)	mod_par_laws.lua / par_laws.rs
+$ENGINE_PAR_RELEASE_TRIGGER	Group	read-only switch (0 or 1)	1 when group triggers on note release	engine_pars.rs / Kontakt 8.13.1
+$ENGINE_PAR_RESONANCE	BandPass	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_REVERBDELIGHT_BASS	ReverbDelight	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_REVERBDELIGHT_BRIGHT	ReverbDelight	switch (0 or 1)	bool: stored=1 when value>=1	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_REVERBDELIGHT_MONO	ReverbDelight	0..=1_000_000	table	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_REVERBDELIGHT_TREBLE	ReverbDelight	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_REVERBDELIGHT_TREM_DEPTH	ReverbDelight	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_REVERBDELIGHT_TREM_ON	ReverbDelight	switch (0 or 1)	bool: stored=1 when value>=1	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_REVERBDELIGHT_TREM_SAG	ReverbDelight	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_REVERBDELIGHT_TREM_SPEED	ReverbDelight	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_REVERBDELIGHT_TREM_SPEED_UNIT	ReverbDelight	0..=1_000_000	table	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_REVERBDELIGHT_VERB_ON	ReverbDelight	switch (0 or 1)	bool: stored=1 when value>=1	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_REVERBDELIGHT_VERB_TYPE	ReverbDelight	switch (0 or 1)	bool: stored=1 when value>=1	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_REVERBDELIGHT_VERB_VOLUME	ReverbDelight	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_REVERBDELIGHT_VOLUME	ReverbDelight	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_RG_FORWARD	Reverse Grain	switch (0 or 1)	enables forward grain playback	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_RG_GRAIN	Reverse Grain	0..=1_000_000	identity 0..1 grain size	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_RG_INVERT_GRAINS	Reverse Grain	switch (0 or 1)	inverts grain polarity	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_RG_MIX	Reverse Grain	0..=1_000_000	identity 0..1 wet/dry mix	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_RG_PITCH	Reverse Grain	0..=1_000_000	identity 0..1 grain pitch (-12..+12 st)	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_RG_REVERSE	Reverse Grain	switch (0 or 1)	enables reverse grain playback	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_RG_SPEED	Reverse Grain	0..=1_000_000	identity 0..1 grain playback speed	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_RINGMOD_EDGE	RingModulator	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_RINGMOD_FAST_MODE	RingModulator	switch (0 or 1)	bool: stored=1 when value>=1	fx_other.tsv (max_error=0)
+$ENGINE_PAR_RINGMOD_FM	RingModulator	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_RINGMOD_FREQUENCY	RingModulator	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_RINGMOD_LFO_AMOUNT	RingModulator	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_RINGMOD_LFO_RATE	RingModulator	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_RINGMOD_RING	RingModulator	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_RT_ACCEL_HI	Rotator	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_RT_ACCEL_LO	Rotator	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_RT_BALANCE	Rotator	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_RT_DISTANCE	Rotator	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_RT_MIX	Rotator	0..=1_000_000	pow a=1 p=3	fx_other.tsv (max_error=1e-07)
+$ENGINE_PAR_RT_SPEED	Rotator	switch (0 or 1)	bool: stored=1 when value>=600000	fx_other.tsv (max_error=0)
+$ENGINE_PAR_RV2_DAMPING	GaloisReverb	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_RV2_DIFF	GaloisReverb	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_RV2_HIGHCUT	GaloisReverb	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_RV2_LOWSHELF	GaloisReverb	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_RV2_MOD	GaloisReverb	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_RV2_PREDELAY	GaloisReverb	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_RV2_SIZE	GaloisReverb	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_RV2_STEREO	GaloisReverb	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_RV2_TIME	GaloisReverb	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_RV2_TYPE	Reverb2	0..=1 (Hall/Room)	selects Algorithmic Reverb network topology	engine_pars.rs / params.rs
+$ENGINE_PAR_RV_COLOUR	Reverb	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_RV_DAMPING	Reverb	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_RV_PREDELAY	Reverb	0..=1_000_000	table	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_RV_SIZE	Reverb	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_RV_STEREO	Reverb	0..=1_000_000	identity	fx_legacy_delay_reverb_mod.tsv (max_error=0)
+$ENGINE_PAR_SCOMP_ATTACK	Solid Bus Comp	0..=1_000_000	table	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_SCOMP_MAKEUP	Solid Bus Comp	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_SCOMP_MIX	Solid Bus Comp	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_SCOMP_RATIO	Solid Bus Comp	0..=1_000_000	table	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_SCOMP_RELEASE	Solid Bus Comp	0..=1_000_000	table	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_SCOMP_THRESHOLD	Solid Bus Comp	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_SENDLEVEL_0	Send Levels	0..=1_000_000	pow a=4 p=3	fx_other.tsv (max_error=7.5e-08)
+$ENGINE_PAR_SENDLEVEL_1	Send Levels	0..=1_000_000	pow a=4 p=3	fx_other.tsv (max_error=7.5e-08)
+$ENGINE_PAR_SENDLEVEL_2	Send Levels	0..=1_000_000	pow a=4 p=3	fx_other.tsv (max_error=7.5e-08)
+$ENGINE_PAR_SENDLEVEL_3	Send Levels	0..=1_000_000	pow a=4 p=3	fx_other.tsv (max_error=7.5e-08)
+$ENGINE_PAR_SENDLEVEL_4	Send Levels	0..=1_000_000	pow a=4 p=3	fx_other.tsv (max_error=7.5e-08)
+$ENGINE_PAR_SENDLEVEL_5	Send Levels	0..=1_000_000	pow a=4 p=3	fx_other.tsv (max_error=7.5e-08)
+$ENGINE_PAR_SENDLEVEL_6	Send Levels	0..=1_000_000	pow a=4 p=3	fx_other.tsv (max_error=7.5e-08)
+$ENGINE_PAR_SENDLEVEL_7	Send Levels	0..=1_000_000	pow a=4 p=3	fx_other.tsv (max_error=7.5e-08)
+$ENGINE_PAR_SEND_EFFECT_BYPASS	Bite	switch (0 or 1)	bool: stored=1 when value>=1	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_SEND_EFFECT_DRY_LEVEL	Bite	0..=1_000_000	pow a=16 p=3	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=6.3e-08)
+$ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN	Bite	0..=1_000_000	pow a=16 p=3	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=6.3e-08)
+$ENGINE_PAR_SEND_EFFECT_TYPE	Rack	$EFFECT_TYPE_*	switches send effect module type (async outside on init)	effect-type-ids.tsv / engine_pars.rs
+$ENGINE_PAR_SEQ_HF_BELL	Solid G-EQ	switch (0 or 1)	bool: stored=1 when value>=1	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_SEQ_HF_FREQ	Solid G-EQ	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_SEQ_HF_GAIN	Solid G-EQ	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_SEQ_HMF_FREQ	Solid G-EQ	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_SEQ_HMF_GAIN	Solid G-EQ	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_SEQ_HMF_Q	Solid G-EQ	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_SEQ_HP	Solid G-EQ	switch (0 or 1)	bool: stored=1 when value>=1	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_SEQ_HP_FREQ	Solid G-EQ	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_SEQ_LF_BELL	Solid G-EQ	switch (0 or 1)	bool: stored=1 when value>=1	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_SEQ_LF_FREQ	Solid G-EQ	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_SEQ_LF_GAIN	Solid G-EQ	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_SEQ_LMF_FREQ	Solid G-EQ	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_SEQ_LMF_GAIN	Solid G-EQ	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_SEQ_LMF_Q	Solid G-EQ	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_SEQ_LP	Solid G-EQ	switch (0 or 1)	bool: stored=1 when value>=1	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_SEQ_LP_FREQ	Solid G-EQ	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_SHAPE	Shaper	0..=1_000_000	linear a=-1 b=2	fx_dynamics_dist_tape.tsv (max_error=5e-08)
+$ENGINE_PAR_SK_BASS	Skreamer	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_SK_BRIGHT	Skreamer	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_SK_DRIVE	Skreamer	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_SK_MIX	Skreamer	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_SK_TONE	Skreamer	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_SPEED	TimeMachine	0..=1_000_000	time-stretch speed ratio (0..800%)	tm_source_sweep.tsv / script_knobs.rs
+$ENGINE_PAR_SP_DIVERGENCE	Surround Panner	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_SP_LFE_VOLUME	Surround Panner	0..=1_000_000	linear a=-36 b=72	fx_other.tsv (max_error=5e-06)
+$ENGINE_PAR_SP_OFFSET_AZIMUTH	Surround Panner	0..=1_000_000	linear a=-1 b=2	fx_other.tsv (max_error=5e-08)
+$ENGINE_PAR_SP_OFFSET_DISTANCE	Surround Panner	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_SP_OFFSET_X	Surround Panner	0..=1_000_000	linear a=-1 b=2	fx_other.tsv (max_error=5e-08)
+$ENGINE_PAR_SP_OFFSET_Y	Surround Panner	0..=1_000_000	linear a=-1 b=2	fx_other.tsv (max_error=5e-08)
+$ENGINE_PAR_SP_SIZE	Surround Panner	0..=1_000_000	linear a=0.1 b=0.9	fx_other.tsv (max_error=5e-08)
+$ENGINE_PAR_STEREO	Stereo	0..=1_000_000	linear a=-1 b=2	fx_other.tsv (max_error=5e-08)
+$ENGINE_PAR_STEREO_PAN	Stereo	0..=1_000_000	linear a=-1 b=2	fx_other.tsv (max_error=5e-08)
+$ENGINE_PAR_STEREO_PSEUDO	Stereo	switch (0 or 1)	bool: stored=1 when value>=1	fx_other.tsv (max_error=0)
+$ENGINE_PAR_SUPERGT_ATTACK	Supercharger GT	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_SUPERGT_CHARACTER	Supercharger GT	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_SUPERGT_CHAR_MODE	Supercharger GT	0..=2 (refused outside)	selects Fat/Warm/Bright character mode	engine_pars.rs::ACCEPTS / engine-par-disp.tsv
+$ENGINE_PAR_SUPERGT_COMPRESS	Supercharger GT	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_SUPERGT_HPF_MODE	Supercharger GT	0..=2 (refused outside)	selects Off/Low/High sidechain HPF mode	engine_pars.rs::ACCEPTS / engine-par-disp.tsv
+$ENGINE_PAR_SUPERGT_MIX	Supercharger GT	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_SUPERGT_RELEASE	Supercharger GT	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_SUPERGT_SATURATION	Supercharger GT	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_SUPERGT_SAT_MODE	Supercharger GT	0..=2 (refused outside)	selects Mild/Moderate/Hot saturation mode	engine_pars.rs::ACCEPTS / engine-par-disp.tsv
+$ENGINE_PAR_SUPERGT_TRIM	Supercharger GT	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_SUSTAIN	AHDSR	0..=1_000_000	cubic gain x^3 (-inf..0 dB)	mod_par_laws.lua / par_laws.rs
+$ENGINE_PAR_TDL_CROSS_FEEDBACK	TwinDelay	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_TDL_FEEDBACK_L	TwinDelay	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_TDL_FEEDBACK_R	TwinDelay	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_TDL_LEVEL_L	TwinDelay	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_TDL_LEVEL_R	TwinDelay	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_TDL_PREDELAY_L	TwinDelay	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_TDL_PREDELAY_R	TwinDelay	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_TDL_TIME_L	TwinDelay	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_TDL_TIME_L_UNIT	TwinDelay	0..=1_000_000	table	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_TDL_TIME_R	TwinDelay	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_TDL_TIME_R_UNIT	TwinDelay	0..=1_000_000	table	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_TDL_WIDTH	TwinDelay	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_THRESHOLD	Compressor	0..=1_000_000	linear a=-68 b=65	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_TP_GAIN	Tape Saturator	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_TP_HF_ROLLOFF	Tape Saturator	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_TP_QUALITY	Tape Saturator	switch (0 or 1)	bool: stored=1 when value>=1	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_TP_WARMTH	Tape Saturator	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_TRANSLIM_CEILING	Transparent Limiter	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_TRANSLIM_RELEASE	Transparent Limiter	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_TRANSLIM_THRESHOLD	Transparent Limiter	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_TR_ATTACK	Transient Master	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_TR_INPUT	Transient Master	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_TR_SUSTAIN	Transient Master	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_TS_AMOUNT	Transpose Stretch	0..=1_000_000	identity 0..1 transpose amount	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_TS_GRAIN	Transpose Stretch	0..=1_000_000	identity 0..1 stretch grain size	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_TS_KEY	Transpose Stretch	0..=1_000_000	identity 0..1 transpose pitch shift	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_TS_MIX	Transpose Stretch	0..=1_000_000	identity 0..1 wet/dry mix	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_TS_SIZE	Transpose Stretch	0..=1_000_000	identity 0..1 loop buffer size	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_TS_STRETCH	Transpose Stretch	switch (0 or 1)	engages time stretch when nonzero	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_TS_TWOBARS	Transpose Stretch	switch (0 or 1)	toggles 2-bar vs 1-bar buffer	mangling.rs / engine-par-disp.tsv
+$ENGINE_PAR_TUNE	Level	0..=1_000_000	linear 72*x - 36 semitones (-36..+36 st)	par_laws.rs / Kontakt 8.13.1 oracle
+$ENGINE_PAR_TW_BASS	Twang	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_TW_MID	Twang	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_TW_TREBLE	Twang	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_TW_VOLUME	Twang	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_V5_BASS	Van51	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_V5_HIGAIN	Van51	switch (0 or 1)	bool: stored=1 when value>=1	fx_other.tsv (max_error=0)
+$ENGINE_PAR_V5_LEADCHANNEL	Van51	switch (0 or 1)	bool: stored=1 when value>=1	fx_other.tsv (max_error=0)
+$ENGINE_PAR_V5_MID	Van51	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_V5_POSTGAIN	Van51	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_V5_PREGAINLEAD	Van51	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_V5_PREGAINRHYTHM	Van51	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_V5_PRESENCE	Van51	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_V5_RESONANCE	Van51	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_V5_TREBLE	Van51	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_VC_BLEND	VibratoChorus	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_VC_COLOR	VibratoChorus	0..=1_000_000	table	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_VC_DEPTH	VibratoChorus	0..=1_000_000	table	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_VC_MIX	VibratoChorus	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_VC_RATE	VibratoChorus	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_VC_WIDTH	VibratoChorus	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_VOLUME	Level	0..=1_000_000	cubic gain 4 * x^3 (unity at 629961; -inf..+12 dB)	par_laws.rs / Kontakt 8.13.1 oracle
+$ENGINE_PAR_WOWFLUTTER_AGE	WowFlutter	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_WOWFLUTTER_FLUTTER	WowFlutter	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_WOWFLUTTER_GATE	WowFlutter	switch (0 or 1)	bool: stored=1 when value>=1	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_WOWFLUTTER_MIX	WowFlutter	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_WOWFLUTTER_SATURATION	WowFlutter	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_WOWFLUTTER_SCRAPE	WowFlutter	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_WOWFLUTTER_SPEED	WowFlutter	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_WOWFLUTTER_STEREO	WowFlutter	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_WOWFLUTTER_WOW	WowFlutter	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
+$ENGINE_PAR_WT_FORM	Wavetable	0..=1_000_000	identity 0..1 form 1 warp amount (0..100%)	engine_pars.rs / engine-par-disp.tsv
+$ENGINE_PAR_WT_FORM2	Wavetable	0..=1_000_000	identity 0..1 form 2 warp amount (0..100%)	engine_pars.rs / engine-par-disp.tsv
+$ENGINE_PAR_WT_FORM2_MODE	Wavetable	$NI_WT_FORM_*	selects form 2 phase warp/shaper mode	engine_pars.rs / params.rs
+$ENGINE_PAR_WT_FORM_MODE	Wavetable	$NI_WT_FORM_*	selects form 1 phase warp/shaper mode	engine_pars.rs / params.rs
+$ENGINE_PAR_WT_INHARMONIC	Wavetable	0..=1_000_000	identity 0..1 partial stretch (-100..+100%)	engine_pars.rs / readouts.rs
+$ENGINE_PAR_WT_INHARMONIC_MODE	Wavetable	switch (0 or 1)	enables partial stretching when nonzero	engine_pars.rs / engine-par-disp.tsv
+$ENGINE_PAR_WT_MOD_AMOUNT	Wavetable	0..=1_000_000	identity 0..1 mod oscillator amount (0..100%)	engine_pars.rs / engine-par-disp.tsv
+$ENGINE_PAR_WT_MOD_TUNE	Wavetable	0..=1_000_000	linear -36..+36 st (or Hz/ratio by tune unit)	engine_pars.rs / par_display.rs
+$ENGINE_PAR_WT_MOD_TUNE_UNIT	Wavetable	0..=2 (refused outside)	selects Semitones (0), Hz (1), or Ratio (2)	engine_pars.rs::ACCEPTS
+$ENGINE_PAR_WT_MOD_TYPE	Wavetable	0..=9 (refused outside)	selects wavetable modulation oscillator type	engine_pars.rs::ACCEPTS / engine-par-disp.tsv
+$ENGINE_PAR_WT_MOD_WAVE	Wavetable	0..=12 (refused outside)	selects wavetable modulation oscillator waveform	engine_pars.rs::ACCEPTS
+$ENGINE_PAR_WT_PHASE	Wavetable	0..=1_000_000	identity 0..1 start phase	engine_pars.rs
+$ENGINE_PAR_WT_PHASE_RAND	Wavetable	0..=1_000_000	identity 0..1 phase randomization (0..100%)	engine_pars.rs / engine-par-disp.tsv
+$ENGINE_PAR_WT_POSITION	Wavetable	0..=1_000_000	identity 0..1 wavetable frame position (0..100%)	engine_pars.rs / engine-par-disp.tsv
+$ENGINE_PAR_WT_QUALITY	Wavetable	$NI_WT_QUALITY_* (0..=3)	selects wavetable oversampling quality	engine_pars.rs / params.rs

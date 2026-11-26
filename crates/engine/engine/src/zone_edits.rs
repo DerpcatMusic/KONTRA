@@ -11,7 +11,7 @@ use kontra_ir::ZonePar;
 use crate::queue::Exit;
 use kontra_vm::Text;
 
-use crate::{Action, Engine, Plan};
+use crate::{Engine, Plan};
 
 /// Edits waiting for the host, at most (Conflux sets 297 per selection).
 pub(crate) const ZONE_EDITS: usize = 1024;
@@ -148,26 +148,24 @@ impl Engine {
     }
 
     pub(crate) fn set_zone_par(&mut self, zone: u32, par: ZonePar, value: i32) -> i32 {
-        // Not settable: where a sample plays at, its tempo, the editor's selection.
-        let carried = !matches!(
+        // Read-only zone parameters: writes to sample start mod range, sample
+        // rate, editor selection, and BPM leave the zone unchanged and return -1.
+        let writable = !matches!(
             par,
             ZonePar::StartRange | ZonePar::SampleRate | ZonePar::Selected | ZonePar::Bpm
         );
-        if !carried {
-            self.count_unhandled(Action::SetZonePar);
-        }
         if self.building {
             // The engine under construction (`on init`, its first
             // `persistence_changed`) runs on the control thread, before it
             // plays: the edit lands at once. A zone the instrument lacks is
             // the script's no-op, not a gap. Every other run queues, a
             // recall's too (it runs on the audio thread).
-            if carried && Arc::make_mut(&mut self.plan).edit_zone(zone, par, value) {
+            if writable && Arc::make_mut(&mut self.plan).edit_zone(zone, par, value) {
                 self.zones_edited = true;
             }
             return -1;
         }
-        if !carried {
+        if !writable {
             return self.start_async(Exit::Done);
         }
         self.queue_zone_edit(zone, Edit::Par(par, value))

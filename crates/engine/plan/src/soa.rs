@@ -172,6 +172,10 @@ pub struct ZoneTable {
     pub loops: Vec<ir::Loop>,
     /// Sparse `(zone_row, offset, len)` sorted by `zone_row` (0 B for unlooped zones).
     pub loop_spans: Vec<(u32, u32, u16)>,
+    /// Flat slice-marker frame arena shared across all saved zones (0 B for unsliced zones).
+    pub slices: Vec<u32>,
+    /// Sparse `(zone_row, offset, len)` sorted by `zone_row` (0 B for unsliced zones).
+    pub slice_spans: Vec<(u32, u32, u16)>,
     /// Sparse `(zone_row, name)` sorted by `zone_row` for sampleless zones only.
     pub custom_names: Vec<(u32, Box<str>)>,
     pub crossfades: Vec<Crossfade>,
@@ -191,6 +195,8 @@ impl ZoneTable {
             samples,
             loops: Vec::new(),
             loop_spans: Vec::new(),
+            slices: Vec::new(),
+            slice_spans: Vec::new(),
             custom_names: Vec::new(),
             crossfades: Vec::new(),
             envelopes: Vec::new(),
@@ -313,6 +319,8 @@ impl ZoneTable {
             samples: Arc::from([]),
             loops: Vec::new(),
             loop_spans: Vec::new(),
+            slices: Vec::new(),
+            slice_spans: Vec::new(),
             custom_names: Vec::new(),
             crossfades,
             envelopes,
@@ -379,6 +387,49 @@ impl ZoneTable {
         let start = off as usize;
         let end = start.saturating_add(usize::from(len));
         self.loops.get(start..end).unwrap_or_default()
+    }
+
+    /// Appends or replaces slice boundary frames for saved zone `row` in the
+    /// sparse slice arena (sorted by `row`; 0 B for unsliced zones).
+    pub fn set_slices(&mut self, row: usize, markers: &[u32]) {
+        let Ok(key) = u32::try_from(row) else {
+            return;
+        };
+        if markers.is_empty() {
+            if let Ok(pos) = self.slice_spans.binary_search_by_key(&key, |(r, _, _)| *r) {
+                self.slice_spans.remove(pos);
+            }
+            return;
+        }
+        let offset = u32::try_from(self.slices.len()).unwrap_or(u32::MAX);
+        let len = u16::try_from(markers.len()).unwrap_or(u16::MAX);
+        self.slices
+            .extend_from_slice(markers.get(..usize::from(len)).unwrap_or(markers));
+        match self.slice_spans.binary_search_by_key(&key, |(r, _, _)| *r) {
+            Ok(pos) => {
+                if let Some(entry) = self.slice_spans.get_mut(pos) {
+                    *entry = (key, offset, len);
+                }
+            }
+            Err(pos) => self.slice_spans.insert(pos, (key, offset, len)),
+        }
+    }
+
+    /// Saved zone's slice boundary frames in the flat slice arena (zero allocation).
+    #[must_use]
+    pub fn slices_at(&self, row: usize) -> &[u32] {
+        let Ok(key) = u32::try_from(row) else {
+            return &[];
+        };
+        let Ok(pos) = self.slice_spans.binary_search_by_key(&key, |(r, _, _)| *r) else {
+            return &[];
+        };
+        let Some(&(_, off, len)) = self.slice_spans.get(pos) else {
+            return &[];
+        };
+        let start = off as usize;
+        let end = start.saturating_add(usize::from(len));
+        self.slices.get(start..end).unwrap_or_default()
     }
 
     /// Finds the first saved zone whose name matches `name` exactly.
@@ -517,6 +568,8 @@ impl ZoneTable {
             + self.sample_idx.len() * std::mem::size_of::<u32>()
             + self.loops.len() * std::mem::size_of::<ir::Loop>()
             + self.loop_spans.len() * std::mem::size_of::<(u32, u32, u16)>()
+            + self.slices.len() * std::mem::size_of::<u32>()
+            + self.slice_spans.len() * std::mem::size_of::<(u32, u32, u16)>()
             + self.custom_names.len() * std::mem::size_of::<(u32, Box<str>)>()
             + self
                 .custom_names

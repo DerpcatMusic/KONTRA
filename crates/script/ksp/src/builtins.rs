@@ -253,6 +253,12 @@ builtins! {
         GetNumZones "get_num_zones" [] 0 Int;
         GetZoneId "get_zone_id" [I] 0 Int;
         GetSampleLength "get_sample_length" [I] 0 Int;
+        NumSlicesZone "num_slices_zone" [I] 0 Int;
+        ZoneSliceStart "zone_slice_start" [I I] 0 Int;
+        ZoneSliceLength "zone_slice_length" [I I] 0 Int;
+        ZoneSliceIdxLoopStart "zone_slice_idx_loop_start" [I I] 0 Int;
+        ZoneSliceIdxLoopEnd "zone_slice_idx_loop_end" [I I] 0 Int;
+        ZoneSliceLoopCount "zone_slice_loop_count" [I I] 0 Int;
         GetZonePar "get_zone_par" [I I] 0 Int;
         SetZonePar "set_zone_par" [I I I] 0 Int;
         PurgeGroup "purge_group" [I I] 0 Int;

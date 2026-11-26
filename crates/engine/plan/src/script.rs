@@ -70,14 +70,15 @@ pub struct ScriptPlan {
 }
 
 impl ScriptPlan {
-    /// A prepared folder by script path kind.
+    /// A prepared folder by script path kind. Unset library/patch/factory/rc
+    /// folders answer an empty path.
     #[must_use]
     pub fn folder(&self, kind: i32) -> Option<Text> {
         match kind {
-            1 => self.library_folder,
-            2 => self.source_folder,
-            // No installation: scripts read an empty path, as the manual allows.
-            3 => Some(self.factory_folder.unwrap_or(Text::EMPTY)),
+            // `$GET_FOLDER_INSTALL_DIR` (0): installation root (same as factory dir when known).
+            0 | 3 => Some(self.factory_folder.unwrap_or(Text::EMPTY)),
+            1 => Some(self.library_folder.unwrap_or(Text::EMPTY)),
+            2 => Some(self.source_folder.unwrap_or(Text::EMPTY)),
             4 => Some(self.rc_folder.unwrap_or(Text::EMPTY)),
             _ => None,
         }
@@ -117,7 +118,11 @@ impl ScriptPlan {
             | EnginePar::StereoPan
             | EnginePar::Opaque(_) => Holder::Slot,
             EnginePar::SlotKind | EnginePar::EffectSubtype => Holder::SlotKind,
-            EnginePar::LfoFade | EnginePar::LfoRetrigger | EnginePar::LfoUnit => Holder::Lfo,
+            EnginePar::LfoFade
+            | EnginePar::LfoRetrigger
+            | EnginePar::LfoUnit
+            | EnginePar::LfoDelayUnit
+            | EnginePar::LfoNormalize => Holder::Lfo,
             EnginePar::RouteDepth | EnginePar::RouteIntensity => Holder::Route,
             // An envelope's stages live on its modulator: a group without
             // one is a missing target, as for its bypass.
@@ -127,7 +132,33 @@ impl ScriptPlan {
             | EnginePar::Decay
             | EnginePar::Sustain
             | EnginePar::Release
-            | EnginePar::AttackCurve => Holder::Mod,
+            | EnginePar::AttackCurve
+            | EnginePar::EnvAhd
+            | EnginePar::AttackUnit
+            | EnginePar::HoldUnit
+            | EnginePar::DecayUnit
+            | EnginePar::ReleaseUnit
+            | EnginePar::Decay1Unit
+            | EnginePar::Decay2Unit
+            | EnginePar::Decay1
+            | EnginePar::BreakLevel
+            | EnginePar::Decay2
+            | EnginePar::DbdEasy
+            | EnginePar::FlexNumStages
+            | EnginePar::FlexOneshot
+            | EnginePar::FlexLoop
+            | EnginePar::FlexLoopStart
+            | EnginePar::FlexLoopEnd
+            | EnginePar::FlexStageTime
+            | EnginePar::FlexStageLevel
+            | EnginePar::FlexStageSlope
+            | EnginePar::StepSeqNumSteps
+            | EnginePar::StepSeqOneshot
+            | EnginePar::StepSeqStepValue
+            | EnginePar::GlideCoef
+            | EnginePar::GlideCoefUnit
+            | EnginePar::IntModType
+            | EnginePar::IntModSubtype => Holder::Mod,
             EnginePar::Volume | EnginePar::Pan | EnginePar::Tune | EnginePar::OutputChannel => {
                 Holder::Level
             }
