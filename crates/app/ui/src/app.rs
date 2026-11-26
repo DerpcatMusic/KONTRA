@@ -188,8 +188,8 @@ pub struct Part {
     pub articulation: usize,
     /// The one it starts on.
     pub default_articulation: usize,
-    /// The keys it plays.
-    pub keys: (u8, u8),
+    /// The keys its zones play, as sorted, disjoint inclusive ranges.
+    pub keys: Vec<(u8, u8)>,
     /// What it needs to play fully (a missing file, a host feature).
     pub needs: Vec<String>,
     /// What the Info tab lists, as (label, value).
@@ -1001,11 +1001,20 @@ fn keys(ui: &mut Ui, app: &mut App, width: f64, out: &mut Vec<Action>) -> El {
     ]
     .w(CONTROL * 3.)
     .shrink(0);
-    let script: Vec<_> = focused
-        .and_then(|p| p.face.as_ref())
-        .map(|f| (f.tree.keybed.iter()).map(|&(n, c)| (n, crate::view::color(c))))
-        .into_iter()
-        .flatten()
+    let keybed = (focused.and_then(|p| p.face.as_ref())).map_or(&[][..], |f| &f.tree.keybed[..]);
+    // A transparent colour says only whether the key plays: a light one
+    // that it does.
+    let (coloured, declared): (Vec<_>, Vec<_>) = keybed.iter().partition(|(_, c)| c.a > 0);
+    let script: Vec<_> = (coloured.into_iter())
+        .map(|&(n, c)| (n, crate::view::color(c)))
+        .collect();
+    let declared = (declared.into_iter())
+        .map(|&(n, c)| {
+            (
+                n,
+                u16::from(c.r) + u16::from(c.g) + u16::from(c.b) > 3 * 127,
+            )
+        })
         .collect();
     let shown = Keys {
         range,
@@ -1017,7 +1026,7 @@ fn keys(ui: &mut Ui, app: &mut App, width: f64, out: &mut Vec<Action>) -> El {
             .parts
             .iter()
             .enumerate()
-            .map(|(n, p)| (p.keys.0, p.keys.1, crate::theme::part_color(n)))
+            .map(|(n, p)| (p.keys.clone(), crate::theme::part_color(n)))
             .collect(),
         // A script that colours its keys shows its own keyswitches.
         switches: focused
@@ -1031,6 +1040,7 @@ fn keys(ui: &mut Ui, app: &mut App, width: f64, out: &mut Vec<Action>) -> El {
             })
             .unwrap_or_default(),
         script,
+        declared,
         names: focused
             .and_then(|p| p.face.as_ref())
             .map(|f| f.tree.key_names.clone())

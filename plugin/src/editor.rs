@@ -51,6 +51,9 @@ struct PartView {
     /// Each group's sound, copied when an edit moves it
     /// ([`kontra_host::sound::Sounds::revision`]).
     sounds: (u64, Arc<Vec<app::Sound>>),
+    /// The keys its zones play, read again when its plan changes (a load,
+    /// a zone edit, a sound swap).
+    keys: PlayedKeys,
     name: String,
     /// Its library's name in the browser, if the browser lists it.
     library: String,
@@ -388,6 +391,13 @@ impl Snapshot {
                     Some(v) if v.sounds.0 == p.sounds.revision => v.sounds.clone(),
                     _ => (p.sounds.revision, Arc::new(sounds(&p.sounds))),
                 };
+                let keys = match same.as_ref() {
+                    Some(v) if same_plan(v.keys.0.as_ref(), p.plan.as_ref()) => v.keys.clone(),
+                    _ => (
+                        p.plan.as_ref().map(Arc::downgrade),
+                        Arc::new(p.played_keys()),
+                    ),
+                };
                 // A recall changes the path, not the load.
                 let (library, preset) = match same.as_ref() {
                     Some(v) if !rescanned && v.path == p.path => (v.library.clone(), v.preset),
@@ -421,6 +431,7 @@ impl Snapshot {
                     revision,
                     applied_seq,
                     sounds,
+                    keys,
                     name: p.name.clone(),
                     library,
                     preset,
@@ -657,7 +668,7 @@ impl Snapshot {
                 level: p.level.iter().map(|l| l.map(f64::from)).collect(),
                 solo,
                 mute,
-                keys: (0, 127),
+                keys: p.keys.1.as_ref().clone(),
                 needs: p.needs.as_ref().clone(),
                 open,
                 tab,
@@ -708,6 +719,15 @@ impl Snapshot {
         );
         app.pick.clone_from(&self.pick);
         app.scan.clone_from(&self.scan);
+    }
+}
+
+/// Whether `a` and `b` are the same plan, or both none (a weak one keeps
+/// its allocation, so no new plan takes its address).
+fn same_plan<T>(a: Option<&std::sync::Weak<T>>, b: Option<&Arc<T>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => std::ptr::eq(a.as_ptr(), Arc::as_ptr(b)),
+        (a, b) => a.is_none() && b.is_none(),
     }
 }
 
@@ -832,6 +852,12 @@ pub(crate) fn libraries(browser: &Browser) -> Vec<app::Library> {
 /// Pictures the library holds inside a resource container, best first:
 /// its library-browser banner (stored with the dot), then its artwork.
 const HELD: [&str; 2] = [".LibBrowser.png", "MST_artwork.png"];
+
+/// A part's played key ranges and the plan they were read from.
+type PlayedKeys = (
+    Option<std::sync::Weak<kontra_host::rack::Plan>>,
+    Arc<Vec<(u8, u8)>>,
+);
 
 /// The cover keys of a library's ranked pictures and containers: a PNG's
 /// path, or a container's path, a NUL, and the picture's name inside it
@@ -1954,6 +1980,7 @@ mod tests {
             revision: 0,
             applied_seq: 0,
             sounds: Default::default(),
+            keys: Default::default(),
             name: String::new(),
             library: String::new(),
             preset: None,
@@ -2012,6 +2039,7 @@ mod tests {
             revision,
             applied_seq,
             sounds: Default::default(),
+            keys: Default::default(),
             name: String::new(),
             library: String::new(),
             preset: None,
@@ -2269,6 +2297,7 @@ mod tests {
                 revision: 0,
                 applied_seq: 0,
                 sounds: Default::default(),
+                keys: Default::default(),
                 name: name.to_owned(),
                 library: String::new(),
                 preset: None,

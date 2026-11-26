@@ -16,13 +16,18 @@ pub struct Keys {
     pub range: (u8, u8),
     /// Notes sounding now.
     pub held: Vec<u8>,
-    /// Each part's key span and colour: a light tint over the keys it plays.
-    pub spans: Vec<(u8, u8, Color)>,
+    /// Each part's key ranges and colour: a light tint over the keys it
+    /// plays. With any part, a key none plays shows as unavailable.
+    pub spans: Vec<(Vec<(u8, u8)>, Color)>,
     /// The focused part's keyswitches, each in its articulation's colour.
     pub switches: Vec<(u8, Color)>,
     /// The keys the focused part's script coloured, drawn in that colour
-    /// (Kontakt's keyboard); with any, they stand in for the switches.
+    /// over the key (Kontakt's and UVI's keyboards); with any, they stand
+    /// in for the switches.
     pub script: Vec<(u8, Color)>,
+    /// The keys the focused part's script says play (true) or not, over
+    /// what its mapping says (UVI's transparent key colours).
+    pub declared: Vec<(u8, bool)>,
     /// The keys the focused part's script named, shown under the pointer.
     pub names: Vec<(u8, String)>,
 }
@@ -37,7 +42,30 @@ fn black(note: u8) -> bool {
 
 pub use kontra_ui_view::note_name;
 
+/// Whether `ranges` (inclusive) hold `note`.
+fn plays(ranges: &[(u8, u8)], note: u8) -> bool {
+    ranges.iter().any(|r| (r.0..=r.1).contains(&note))
+}
+
 /// Where each key of `range` sits in a keybed `w` wide: (note, x, width).
+/// Where a part's band over keys `lo..=hi` runs. White keys abut, so a
+/// range ending or starting beside an unplayed black key stops at that black
+/// key's edge: two ranges either side of it keep a visible gap.
+fn band_span(all: &[(u8, f64, f64)], lo: u8, hi: u8) -> Option<(f64, f64)> {
+    let key = |n: u8| all.iter().find(|k| k.0 == n);
+    let first = all.iter().find(|k| k.0 >= lo)?;
+    let last = all.iter().rev().find(|k| k.0 <= hi)?;
+    let x0 = match lo.checked_sub(1).filter(|&n| black(n)).and_then(key) {
+        Some(b) => first.1.max(b.1 + b.2),
+        None => first.1,
+    };
+    let x1 = match hi.checked_add(1).filter(|&n| black(n)).and_then(key) {
+        Some(b) => (last.1 + last.2).min(b.1),
+        None => last.1 + last.2,
+    };
+    Some((x0, x1))
+}
+
 fn layout(range: (u8, u8), w: f64) -> Vec<(u8, f64, f64)> {
     let whites = (range.0..=range.1).filter(|&n| !black(n)).count().max(1);
     let kw = w / whites as f64;
@@ -118,17 +146,17 @@ pub fn keyboard(
         // is tinted lightly, the first part listed winning.
         let switch = |n: u8| keys.switches.iter().find(|s| s.0 == n).map(|s| s.1);
         let script = |n: u8| keys.script.iter().find(|s| s.0 == n).map(|s| s.1);
-        let tint = |n: u8| {
-            keys.spans
-                .iter()
-                .find(|&&(lo, hi, _)| (lo..=hi).contains(&n))
-                .map(|s| s.2)
+        let tint = |n: u8| keys.spans.iter().find(|s| plays(&s.0, n)).map(|s| s.1);
+        // A key no part's zones play, unless the script says it plays.
+        let dead = |n: u8| match keys.declared.iter().find(|d| d.0 == n) {
+            Some(&(_, on)) => !on,
+            None => !keys.spans.is_empty() && tint(n).is_none(),
         };
-        // Above the keys, stacked: the keyswitches, then each part's span.
-        let switches = (!keys.switches.is_empty()).then_some((0u8, 0u8, accent()));
-        let rows: Vec<(u8, u8, Color)> = switches
+        // Above the keys, stacked: the keyswitches, then each part's ranges.
+        let switches = (!keys.switches.is_empty()).then(|| (Vec::new(), accent()));
+        let rows: Vec<(Vec<(u8, u8)>, Color)> = switches
             .into_iter()
-            .chain(keys.spans.iter().copied())
+            .chain(keys.spans.iter().cloned())
             .take(4)
             .collect();
         let band = rows.len() as f64 * BAND;
@@ -142,14 +170,17 @@ pub fn keyboard(
             }
         }
         let skip = usize::from(!keys.switches.is_empty());
-        for (row, &(lo, hi, color)) in rows.iter().enumerate().skip(skip) {
-            let x0 = all.iter().find(|k| k.0 >= lo).map(|k| k.1);
-            let x1 = all.iter().rev().find(|k| k.0 <= hi).map(|k| k.1 + k.2);
-            if let (Some(x0), Some(x1)) = (x0, x1) {
-                draw.push(Draw::fill(
-                    rect(x0, row as f64 * BAND, x1 - x0, BAND - 1.),
-                    Fill::from(color),
-                ));
+        for (row, (ranges, color)) in rows.iter().enumerate().skip(skip) {
+            for &(lo, hi) in ranges {
+                let (x0, x1) = band_span(&all, lo, hi).unzip();
+                if let (Some(x0), Some(x1)) = (x0, x1)
+                    && x1 > x0
+                {
+                    draw.push(Draw::fill(
+                        rect(x0, row as f64 * BAND, x1 - x0, BAND - 1.),
+                        Fill::from(*color),
+                    ));
+                }
             }
         }
         let h = s.height - top;
@@ -157,23 +188,32 @@ pub fn keyboard(
             let grey = Color::oklch(0.64, 0., 0.);
             let face = match (held(n), switch(n), tint(n)) {
                 (true, ..) => accent(),
-                _ if let Some(c) = script(n) => c,
                 (_, Some(c), _) => c.with_lightness(0.9).scale_chroma(0.5),
+                _ if dead(n) => Color::oklch(0.4, 0., 0.),
                 (.., Some(c)) => c.with_lightness(0.68).scale_chroma(0.25),
                 _ => grey,
             };
-            draw.push(Draw::fill(rect(x + 0.5, top, w - 1., h), Fill::from(face)));
+            let key = rect(x + 0.5, top, w - 1., h);
+            draw.push(Draw::fill(key.clone(), Fill::from(face)));
+            // The script's colour goes over the key, as translucent as it is.
+            if let Some(c) = script(n).filter(|_| !held(n)) {
+                draw.push(Draw::fill(key, Fill::from(c)));
+            }
         }
         for &(n, x, w) in all.iter().filter(|k| black(k.0)) {
             let grey = Color::oklch(0.2, 0., 0.);
             let face = match (held(n), switch(n), tint(n)) {
                 (true, ..) => Color::oklch(0.6, 0., 0.),
-                _ if let Some(c) = script(n) => c,
                 (_, Some(c), _) => c.with_lightness(0.32).scale_chroma(0.7),
+                _ if dead(n) => Color::oklch(0.12, 0., 0.),
                 (.., Some(c)) => c.with_lightness(0.22).scale_chroma(0.25),
                 _ => grey,
             };
-            draw.push(Draw::fill(rect(x, top, w, h * 0.62), Fill::from(face)));
+            let key = rect(x, top, w, h * 0.62);
+            draw.push(Draw::fill(key.clone(), Fill::from(face)));
+            if let Some(c) = script(n).filter(|_| !held(n)) {
+                draw.push(Draw::fill(key, Fill::from(c)));
+            }
         }
         draw
     })
@@ -202,6 +242,20 @@ pub fn keyboard(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ranges_either_side_of_an_unplayed_black_key_keep_a_gap() {
+        let all = layout((21, 108), 880.);
+        for gap in (22..108).filter(|&n| black(n)) {
+            let (_, left) = band_span(&all, 21, gap - 1).unwrap();
+            let (right, _) = band_span(&all, gap + 1, 108).unwrap();
+            let b = all.iter().find(|k| k.0 == gap).unwrap();
+            assert!(
+                left <= b.1 && right >= b.1 + b.2 && right > left,
+                "gap at {gap}"
+            );
+        }
+    }
 
     #[test]
     fn keys_are_named_with_middle_c_as_c3_and_hit_where_drawn() {

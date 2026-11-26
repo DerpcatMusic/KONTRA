@@ -2182,7 +2182,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 |---|---|---|---|---|---|---|
 | done | `kontakt.dsp.delay.ir` | Delay (legacy): in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | done | `kontakt.dsp.delay.driven` | Delay (legacy): driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| tested | `kontakt.dsp.delay.measured` | Delay (legacy): output vs oracle | [legacy_delay_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/legacy_delay_measured.rs) | #288 |  | max 0.25 dB (the_legacy_delay_matches_the_reference_render) |
+| tested | `kontakt.dsp.delay.measured` | Delay (legacy): output vs oracle | [legacy_delay_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/legacy_delay_measured.rs) | #288 | 2026-11-26 | max 0.25 dB (the_legacy_delay_matches_the_reference_render) |
 | done | `kontakt.dsp.replika.ir` | Replika: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #362 | 2026-11-26 |  |
 | done | `kontakt.dsp.replika.driven` | Replika: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #362 | 2026-11-26 |  |
 | tested | `kontakt.dsp.replika.measured` | Replika: output vs oracle | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #362 | 2026-11-26 | max 0.8 dB (replika_matches_kontakt_oracle_echo_gains_and_bodies) |
@@ -2351,7 +2351,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| done | `kontakt.dsp.arp.ir` | BParArp: in IR | [timed.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/timed.rs) |  |  |  |
+| done | `kontakt.dsp.arp.ir` | BParArp: in IR | [timed.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/timed.rs) |  | 2026-11-26 |  |
 | done | `kontakt.dsp.arp.driven` | BParArp: driven | [voice_gain.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/engine/src/voice_gain.rs) | #362 | 2026-11-26 |  |
 | tested | `kontakt.dsp.arp.measured` | BParArp: output vs oracle | [timed.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/timed.rs) | #144 | 2026-11-24 | max 0.01 dB (step_mod_looping_free_synced_shaper_and_polarity) |
 | done | `kontakt.dsp.glide.ir` | BParGlide: in IR | [translate.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/translate.rs) | #115 | 2026-11-22 |  |
@@ -2821,7 +2821,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | tested | `uvi.ui.Knob.setLottieAnimation` | Knob.setLottieAnimation | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_knob.html |
 | tested | `uvi.ui.Knob.setRange` | Knob.setRange | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_knob.html |
 | tested | `uvi.ui.Knob.setStripImage` | Knob.setStripImage | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_knob.html |
-| tested | `uvi.ui.Knob.setValue` | Knob.setValue | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_knob.html |
+| tested | `uvi.ui.Knob.setValue` | Knob.setValue | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #361 | 2026-11-26 | https://lua.uvi.net/class_knob.html |
 ### Label (7 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
@@ -2903,7 +2903,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.ui.ParamKnob.ParamKnob` | ParamKnob.ParamKnob | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_param_knob.html |
+| tested | `uvi.ui.ParamKnob.ParamKnob` | ParamKnob.ParamKnob | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #361 | 2026-11-26 | https://lua.uvi.net/class_param_knob.html |
 | tested | `uvi.ui.ParamKnob.bind` | ParamKnob.bind | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_knob.html |
 | tested | `uvi.ui.ParamKnob.setLottieAnimation` | ParamKnob.setLottieAnimation | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_knob.html |
 | tested | `uvi.ui.ParamKnob.setRange` | ParamKnob.setRange | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_knob.html |
@@ -2912,19 +2912,19 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.ui.ParamMenu.ParamMenu` | ParamMenu.ParamMenu | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_param_menu.html |
+| tested | `uvi.ui.ParamMenu.ParamMenu` | ParamMenu.ParamMenu | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #361 | 2026-11-26 | https://lua.uvi.net/class_param_menu.html |
 | tested | `uvi.ui.ParamMenu.bind` | ParamMenu.bind | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_menu.html |
 ### ParamNumBox (2 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.ui.ParamNumBox.ParamNumBox` | ParamNumBox.ParamNumBox | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_param_num_box.html |
+| tested | `uvi.ui.ParamNumBox.ParamNumBox` | ParamNumBox.ParamNumBox | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #361 | 2026-11-26 | https://lua.uvi.net/class_param_num_box.html |
 | tested | `uvi.ui.ParamNumBox.bind` | ParamNumBox.bind | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_num_box.html |
 ### ParamOnOffButton (5 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.ui.ParamOnOffButton.ParamOnOffButton` | ParamOnOffButton.ParamOnOffButton | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_param_on_off_button.html |
+| tested | `uvi.ui.ParamOnOffButton.ParamOnOffButton` | ParamOnOffButton.ParamOnOffButton | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #361 | 2026-11-26 | https://lua.uvi.net/class_param_on_off_button.html |
 | tested | `uvi.ui.ParamOnOffButton.bind` | ParamOnOffButton.bind | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_on_off_button.html |
 | tested | `uvi.ui.ParamOnOffButton.setLottieAnimation` | ParamOnOffButton.setLottieAnimation | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_on_off_button.html |
 | tested | `uvi.ui.ParamOnOffButton.setStripImage` | ParamOnOffButton.setStripImage | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_on_off_button.html |
@@ -2933,7 +2933,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.ui.ParamSlider.ParamSlider` | ParamSlider.ParamSlider | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_param_slider.html |
+| tested | `uvi.ui.ParamSlider.ParamSlider` | ParamSlider.ParamSlider | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #361 | 2026-11-26 | https://lua.uvi.net/class_param_slider.html |
 | tested | `uvi.ui.ParamSlider.bind` | ParamSlider.bind | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_slider.html |
 | tested | `uvi.ui.ParamSlider.setLottieAnimation` | ParamSlider.setLottieAnimation | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_slider.html |
 | tested | `uvi.ui.ParamSlider.setRange` | ParamSlider.setRange | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_slider.html |

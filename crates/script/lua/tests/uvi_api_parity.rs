@@ -398,41 +398,50 @@ fn element_oscillator_keygroup_and_sampled_reverb_members_work() {
 }
 
 #[test]
-fn set_key_colour_marks_playable_out_of_range_and_keyswitch_keys_accurately() {
-    // Models VWinds Contrabass Clarinet / Piccolo key-colouring pattern:
-    // playable keys get transparent default colour, out-of-range keys get "grey",
-    // keyswitches get "red".
-    let source = r##"
-        for k = 0, 127 do
-            if k >= 74 and k <= 108 then
-                setKeyColour(k, (k % 12 == 1) and "#00000000" or "#00FFFFFF")
-            else
-                setKeyColour(k, "grey")
-            end
-        end
-        setKeyColour(36, "red")
-        setKeyType(40, 2)
-        setKeyPressed(74, true)
-        resetKeyColour(108)
-    "##;
-    let mut m = compile(source, &[], &[]).unwrap().machine();
+fn set_key_colour_keeps_each_keys_argb_and_marks_it_set_until_reset() {
+    // VWinds' pattern: transparent white / black over the playable range,
+    // "grey" outside it, "red" keyswitches; Augmented Orchestra's bare
+    // "RRGGBB" / "AARRGGBB" zone colours.
+    let colours: [(i64, &str, u32); 7] = [
+        (60, "#00FFFFFF", 0x00FF_FFFF),
+        (61, "#00000000", 0),
+        (20, "grey", 0xFF80_8080),
+        (36, "red", 0xFFFF_0000),
+        (70, "c6cf69", 0xFFC6_CF69),
+        (71, "00FFFFFF", 0x00FF_FFFF),
+        (72, "#3C00FECD", 0x3C00_FECD),
+    ];
+    let calls: String = (colours.iter())
+        .map(|(k, c, _)| format!("setKeyColour({k}, \"{c}\")\n"))
+        .collect();
+    let source = format!("{calls}resetKeyColour(72)\n");
+    let mut m = compile(&source, &[], &[]).unwrap().machine();
     let mut host = MockHost::new();
     let co = m.start(Callbacks::INIT, 0).expect("init");
     run_to_done(&mut m, co, &mut host);
     assert_eq!(m.faults().bad_code, 0, "{}", m.faults().last_error.as_str());
-    let mut types = [0i64; 128];
-    for ints in host.actions(Action::SetKeyType) {
-        if let &[k, kind] = ints {
-            types[usize::try_from(k).unwrap()] = kind;
+    let last = |action: Action| {
+        let mut by_key = [None; 128];
+        for ints in host.actions(action) {
+            if let &[k, v] = ints {
+                by_key[usize::try_from(k).unwrap()] = Some(v);
+            }
+        }
+        by_key
+    };
+    let (argb, set) = (last(Action::SetKeyColor), last(Action::SetKeyType));
+    let reset = 72;
+    for &(k, colour, want) in &colours {
+        let k = usize::try_from(k).unwrap();
+        let (got_argb, got_set) = (argb[k].unwrap(), set[k].unwrap());
+        if k == reset {
+            assert_eq!((got_argb, got_set), (0, 0), "{colour}: reset");
+        } else {
+            // The host keeps the low 32 bits.
+            assert_eq!(got_argb as u32, want, "{colour}");
+            assert_eq!(got_set, 1, "{colour}: set");
         }
     }
-    assert_eq!(types[60], 0, "C3 is grey/unplayable on Piccolo");
-    assert_eq!(types[36], 2, "keyswitch is red -> control key");
-    assert_eq!(types[40], 2, "explicit setKeyType(40, 2)");
-    assert_eq!(types[74], 1, "D5 is playable");
-    assert_eq!(types[107], 1, "B7 is playable");
-    assert_eq!(types[108], 0, "resetKeyColour clears key type");
-    assert_eq!(host.actions(Action::SetKeyPressed), [vec![74, 1]]);
 }
 
 #[test]

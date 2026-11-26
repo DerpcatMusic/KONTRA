@@ -150,6 +150,30 @@ pub struct Part {
 }
 
 impl Part {
+    /// The keys its zones play now, as sorted, disjoint inclusive ranges:
+    /// every zone of every group (a UVI program's every layer and
+    /// keygroup), from the plan the live zone edits and sound swaps keep
+    /// current. Every key when there is no plan to read.
+    #[must_use]
+    pub fn played_keys(&self) -> Vec<(u8, u8)> {
+        let Some(plan) = self.plan.as_deref() else {
+            return vec![(0, 127)];
+        };
+        let mut keys: Vec<(u8, u8)> = (plan.zones.iter())
+            .filter(|z| !z.keys.is_empty())
+            .map(|z| (*z.keys.start(), (*z.keys.end()).min(127)))
+            .collect();
+        keys.sort_unstable();
+        let mut out: Vec<(u8, u8)> = Vec::with_capacity(keys.len());
+        for (lo, hi) in keys {
+            match out.last_mut() {
+                Some(last) if lo <= last.1.saturating_add(1) => last.1 = last.1.max(hi),
+                _ => out.push((lo, hi)),
+            }
+        }
+        out
+    }
+
     /// Actionable user-facing items this part needs to play fully
     /// (`Broken` and `Audible` diagnostics, first line each).
     #[must_use]

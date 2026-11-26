@@ -5,9 +5,25 @@
 
 use std::collections::HashMap;
 
-use kontra_engine::{Engine, Text, WidgetLook};
+use kontra_engine::{Engine, Key, Text, WidgetLook};
 use kontra_lua::{Ui, Widget};
 use kontra_ui_model as ui;
+
+/// The keys a UVI script coloured (`setKeyColour`, which marks a key's
+/// type 1 until `resetKeyColour`), each as its ARGB. A transparent one
+/// draws nothing and only says whether the key plays, over the mapping:
+/// UVI's #00FFFFFF a valid key, #00000000 one that is not.
+#[must_use]
+pub fn keybed(keys: &[Key]) -> Vec<(u8, ui::Rgba)> {
+    (0u8..)
+        .zip(keys)
+        .filter(|(_, k)| k.kind != 0)
+        .map(|(note, k)| {
+            let [a, r, g, b] = k.color.to_be_bytes();
+            (note, ui::Rgba { r, g, b, a })
+        })
+        .collect()
+}
 
 /// The tree of `page`; `picture` gives the layout of a script picture path.
 #[must_use]

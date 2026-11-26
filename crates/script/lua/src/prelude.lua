@@ -2813,10 +2813,12 @@ function setSampleOffset(id, ms)
 	host_call("SetEventPar", id, START_OFFSET, math.floor(math.max(0, ms or 0) * 1000))
 end
 
--- Keyboard colouring and key types forwarded to the host (`SetKeyColor` /
--- `SetKeyType` / `SetKeyPressed`): grey/gray marks out-of-range keys (type 0),
--- red marks keyswitches (type 2), transparent/default or zone colours mark
--- playable keys (type 1) so the host and keyboard display know the real range.
+-- UVI's keyboard colours (`setKeyColour`): the key's ARGB goes to the host
+-- as `SetKeyColor`, and `SetKeyType` 1 marks it as the script's (0 after
+-- `resetKeyColour`), so a transparent colour still says something: UVI's
+-- api has transparent white (#00FFFFFF) mark a valid key and transparent
+-- black (#00000000) one that is not. A colour is a name, "RRGGBB" or
+-- "AARRGGBB", with or without "#".
 local KEY_COLOURS = {
 	grey = 0xFF808080, gray = 0xFF808080, darkgrey = 0xFF404040, darkgray = 0xFF404040,
 	red = 0xFFFF0000, darkred = 0xFF8B0000,
@@ -2828,72 +2830,48 @@ local KEY_COLOURS = {
 
 local function parse_key_colour(colour)
 	if type(colour) == "number" then
-		return math.floor(colour), 1
+		return math.floor(colour)
 	end
 	if type(colour) ~= "string" then
-		return 0, 1
+		return 0
 	end
 	local s = string.lower(colour):gsub("^%s+", ""):gsub("%s+$", "")
-	if s == "" or s == "none" or s == "transparent" then
-		return 0, 1
-	end
-	if s == "grey" or s == "gray" or s == "darkgrey" or s == "darkgray" then
-		return KEY_COLOURS[s], 0
-	end
-	if s == "red" or s == "darkred" then
-		return KEY_COLOURS[s], 2
-	end
 	if KEY_COLOURS[s] then
-		return KEY_COLOURS[s], 1
+		return KEY_COLOURS[s]
 	end
 	local hex = s:gsub("^#", ""):gsub("^0x", "")
 	local n = tonumber(hex, 16)
 	if not n then
-		return 0, 1
+		return 0
 	end
-	if #hex == 8 then
-		local alpha = math.floor(n / 0x1000000) % 256
-		if alpha == 0 then
-			return 0, 1
-		end
-	elseif #hex == 6 then
+	if #hex == 6 then
 		n = 0xFF000000 + n
 	end
-	return n, 1
+	return n
+end
+
+local function key_of(key)
+	local k = tonumber(key)
+	if not k then return nil end
+	k = math.floor(k)
+	if k < 0 or k > 127 then return nil end
+	return k
 end
 
 function setKeyColour(key, colour)
-	local k = tonumber(key)
+	local k = key_of(key)
 	if not k then return end
-	k = math.floor(k)
-	if k < 0 or k > 127 then return end
-	local argb, kind = parse_key_colour(colour)
-	host_call("SetKeyColor", k, argb)
-	host_call("SetKeyType", k, kind)
+	host_call("SetKeyColor", k, parse_key_colour(colour))
+	host_call("SetKeyType", k, 1)
 end
 
 function resetKeyColour(key)
-	if key == nil then
-		for k = 0, 127 do
-			host_call("SetKeyColor", k, 0)
-			host_call("SetKeyType", k, 0)
-		end
-		return
+	local k = key_of(key)
+	if key ~= nil and not k then return end
+	for n = k or 0, k or 127 do
+		host_call("SetKeyColor", n, 0)
+		host_call("SetKeyType", n, 0)
 	end
-	local k = tonumber(key)
-	if not k then return end
-	k = math.floor(k)
-	if k < 0 or k > 127 then return end
-	host_call("SetKeyColor", k, 0)
-	host_call("SetKeyType", k, 0)
-end
-
-function setKeyType(key, kind)
-	local k = tonumber(key)
-	if not k then return end
-	k = math.floor(k)
-	if k < 0 or k > 127 then return end
-	host_call("SetKeyType", k, math.floor(tonumber(kind) or 0))
 end
 
 function setKeyPressed(key, pressed)

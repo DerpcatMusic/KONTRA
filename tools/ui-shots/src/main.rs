@@ -275,7 +275,7 @@ fn in_rack(
             library: name.to_owned(),
             channel: 1,
             output: 1,
-            keys: (21, 108),
+            keys: vec![(21, 108)],
             face: Some(Face {
                 tree,
                 pictures,

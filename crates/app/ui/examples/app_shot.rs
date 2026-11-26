@@ -284,7 +284,7 @@ fn parts() -> Vec<Part> {
                 .zip(24..)
                 .map(|(a, k)| ((*a).to_owned(), Some(k)))
                 .collect(),
-            keys: (36, 84),
+            keys: vec![(36, 84)],
             needs: vec!["A convolution impulse, Hall.wav, the library does not ship.".into()],
             info: vec![
                 ("File".into(), "/data/main/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2 Horns KS.nki".into()),
@@ -342,14 +342,14 @@ fn parts() -> Vec<Part> {
             output: 2,
             volume: -3.5,
             pan: -0.3,
-            keys: (55, 100),
+            keys: vec![(55, 100)],
             ..Part::default()
         },
         Part {
             name: "Una Corda Cotton".into(),
             library: "Una Corda".into(),
             output: 3,
-            keys: (21, 108),
+            keys: vec![(21, 108)],
             solo: true,
             ..Part::default()
         },

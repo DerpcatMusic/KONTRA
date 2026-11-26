@@ -947,3 +947,99 @@ fn live_empty_chain_effect_growth_remove_and_reorder_on_keygroup_bus_and_program
     verify_empty_chain_live_effect_growth("empty-bus", "Program.layers[1]");
     verify_empty_chain_live_effect_growth("empty-prog", "Program");
 }
+
+/// Which of the 128 keys `ranges` cover.
+fn covered(ranges: &[(u8, u8)]) -> Vec<bool> {
+    (0..=127u8)
+        .map(|k| ranges.iter().any(|&(lo, hi)| (lo..=hi).contains(&k)))
+        .collect()
+}
+
+#[test]
+fn the_keyboard_plays_exactly_the_keygroups_of_every_layer_and_follows_a_mapping_swap() {
+    let root = make_temp_dir("keyboard-zones");
+    write_sine_wav(&root.join("Samples/s.wav"), 220.0, 0.8, 4_096, &[], None);
+    // Two layers, with a gap between their keygroups and one inside the
+    // first; the mapping the script loads covers other keys.
+    let layers: [&[(u8, u8)]; 2] = [&[(24, 35), (40, 47)], &[(60, 72), (70, 84)]];
+    let swapped: &[(u8, u8)] = &[(48, 59), (90, 96)];
+    let keygroups = |ranges: &[(u8, u8)]| -> String {
+        (ranges.iter())
+            .map(|(lo, hi)| {
+                format!(
+                    r#"<Keygroup LowKey="{lo}" HighKey="{hi}"><Oscillators>
+                    <SamplePlayer SamplePath="Samples/s.wav" BaseNote="60"/></Oscillators></Keygroup>"#
+                )
+            })
+            .collect()
+    };
+    let map = format!(
+        "<Program><Layers><Layer><Keygroups>{}</Keygroups></Layer></Layers></Program>",
+        keygroups(swapped)
+    );
+    std::fs::write(root.join("map.xml"), map).expect("write mapping");
+    let layer_xml: String = (layers.iter().enumerate())
+        .map(|(n, r)| {
+            format!(
+                r#"<Layer Name="L{n}"><Keygroups>{}</Keygroups></Layer>"#,
+                keygroups(r)
+            )
+        })
+        .collect();
+    let xml = format!(
+        r##"<UVI4><Program Name="Zones">
+      <Scripts><ScriptProcessor Name="Main" Bypass="0"><script><![CDATA[
+        local osc = Program.layers[1].keygroups[1].oscillators[1]
+        local done = Label("Done")
+        setKeyColour(30, "red")
+        setKeyColour(50, "#00FFFFFF")
+        setKeyColour(40, "#00000000")
+        Button("LoadMap").changed = function()
+            osc:loadMapping("map.xml", function(t) done.text = tostring(t.success) end)
+        end
+      ]]></script></ScriptProcessor></Scripts>
+      <Layers>{layer_xml}</Layers>
+    </Program></UVI4>"##
+    );
+    let uvip = root.join("Zones.uvip");
+    std::fs::write(&uvip, xml).expect("write uvip");
+
+    let (mut rack, mut audio) = new_rack();
+    rack.load(0, &uvip).expect("load uvip");
+    pump(&mut rack, &mut audio, 4);
+    let part = |rack: &Rack| rack.parts()[0].as_ref().expect("part").played_keys();
+    let all: Vec<(u8, u8)> = layers.concat();
+    assert_eq!(
+        covered(&part(&rack)),
+        covered(&all),
+        "every key a keygroup covers plays, no other"
+    );
+
+    // The script's colours reach the keyboard as it gave them.
+    let tree = rack.parts()[0]
+        .as_ref()
+        .and_then(|p| p.view.as_ref())
+        .expect("view")
+        .tree();
+    let colour = |k: u8| tree.keybed.iter().find(|e| e.0 == k).map(|e| e.1);
+    let rgba = |r, g, b, a| Some(kontra_ui_model::Rgba { r, g, b, a });
+    assert_eq!(colour(30), rgba(255, 0, 0, 255));
+    assert_eq!(colour(50), rgba(255, 255, 255, 0));
+    assert_eq!(colour(40), rgba(0, 0, 0, 0));
+    assert_eq!(tree.keybed.len(), 3, "only the keys the script coloured");
+
+    // A live mapping swap replaces the first layer's first keygroup's zones.
+    let w = widget_index(&rack, "LoadMap");
+    rack.control(0, w, None, 1.0, UiModifiers::default());
+    pump(&mut rack, &mut audio, 10);
+    let now: Vec<(u8, u8)> = (swapped.iter().chain(&layers[0][1..]).chain(layers[1]))
+        .copied()
+        .collect();
+    assert_eq!(
+        covered(&part(&rack)),
+        covered(&now),
+        "the keyboard follows the swap"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}

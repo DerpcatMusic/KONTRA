@@ -248,6 +248,7 @@ impl View {
             let words = label && engine.widget_text(at, n, &mut text);
             crate::ui::lua::apply(&mut tree, w, look, words.then(|| text.as_str()));
         }
+        tree.keybed = crate::ui::lua::keybed(engine.keys());
         let frame = LookFrame::lua(at, &tree);
         Some(Self::new(at, Shown::Lua(Box::new(tree)), frame))
     }
@@ -349,7 +350,17 @@ impl View {
                     let old_assets = tree.assets.len();
                     let old_styles = tree.styles.len();
                     let changed = frame.apply(tree);
-                    if !changed.is_empty() {
+                    let keybed = crate::ui::lua::keybed(&frame.keys);
+                    let keys = (keybed != tree.keybed).then(|| {
+                        tree.keybed = keybed;
+                        KeyState {
+                            keybed: tree.keybed.clone(),
+                            key_names: tree.key_names.clone(),
+                            key_pressed: tree.key_pressed.clone(),
+                            message: tree.message.clone(),
+                        }
+                    });
+                    if !changed.is_empty() || keys.is_some() {
                         let from = self.revision;
                         self.revision += 1;
                         let to = self.revision;
@@ -370,7 +381,7 @@ impl View {
                             to_revision: to,
                             page: None,
                             paint_order: None,
-                            keys: None,
+                            keys,
                             assets,
                             styles,
                             widgets,
