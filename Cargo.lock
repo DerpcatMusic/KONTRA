@@ -1957,6 +1957,7 @@ dependencies = [
  "kontra-format-sf2",
  "kontra-format-sfz",
  "kontra-format-uvi",
+ "kontra-kontakt-effects",
  "kontra-ksp",
  "kontra-library",
  "kontra-lua",

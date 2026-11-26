@@ -192,13 +192,39 @@ impl Pictures {
     /// A store whose worker reads files through `read`.
     #[must_use]
     pub fn new(read: Box<Read>) -> Self {
-        Self::with_look(read, |_| None)
+        Self::spawn(read, |_| None, None)
+    }
+
+    /// A store whose worker reads files through `read` and wakes `on_arrive`
+    /// whenever a decoded picture finishes.
+    #[must_use]
+    pub fn with_wake(read: Box<Read>, on_arrive: Arc<dyn Fn() + Send + Sync>) -> Self {
+        Self::spawn(read, |_| None, Some(on_arrive))
     }
 
     /// A store whose worker reads files through `read` and draws each
     /// picture as `look` makes it (`None` keeps it as it is).
     #[must_use]
     pub fn with_look(read: Box<Read>, look: fn(&Image) -> Option<Image>) -> Self {
+        Self::spawn(read, look, None)
+    }
+
+    /// Like [`Self::with_look`], also invoking `on_arrive` on the decode
+    /// worker whenever a picture finishes so the editor redraws immediately.
+    #[must_use]
+    pub fn with_look_and_wake(
+        read: Box<Read>,
+        look: fn(&Image) -> Option<Image>,
+        on_arrive: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        Self::spawn(read, look, Some(on_arrive))
+    }
+
+    fn spawn(
+        read: Box<Read>,
+        look: fn(&Image) -> Option<Image>,
+        on_arrive: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Self {
         let (jobs, inbox) = mpsc::channel::<Job>();
         let (outbox, done) = mpsc::channel::<Done>();
         std::thread::spawn(move || {
@@ -232,6 +258,9 @@ impl Pictures {
                         break;
                     }
                     ARRIVED.store(true, Ordering::Release);
+                    if let Some(wake) = &on_arrive {
+                        wake();
+                    }
                     continue;
                 }
                 // Decoded at its own pixels, `got` of them a picture pixel,
@@ -282,6 +311,9 @@ impl Pictures {
                     break;
                 }
                 ARRIVED.store(true, Ordering::Release);
+                if let Some(wake) = &on_arrive {
+                    wake();
+                }
             }
         });
         Self {

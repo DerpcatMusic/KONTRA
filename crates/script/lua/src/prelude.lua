@@ -152,6 +152,7 @@ Event = {
 	MidiAftertouch = 208,
 	PolyAftertouch = 160,
 }
+Event.Type = Event
 
 -- The controller-type event a handler is hearing, and what it posted of
 -- it: UVI keeps an event its handler does not post from the instrument,
@@ -697,13 +698,17 @@ local function enum(names)
 	return t
 end
 Mapper = enum({ "Linear", "Exponential", "QuinticRoot", "QuarticRoot", "CubeRoot", "SquareRoot", "Quadratic", "Cubic", "Quartic", "Quintic" })
+Mapper.Type = Mapper
 Unit = enum({ "Generic", "Percent", "PercentNormalized", "Seconds", "MilliSeconds", "Hertz", "Decibels", "LinearGain", "UviFilter", "Pan", "Megabyte", "SemiTones", "Cents", "MidiKey" })
+Unit.Type = Unit
 FileFormat = enum({ "All", "Audio", "MIDI" })
+FileFormat.Type = FileFormat
 RectanglePlacement = {
 	Left = 1, Right = 2, HorizontallyCentred = 4, Top = 8, Bottom = 16, VerticallyCentred = 32,
 	StretchToFit = 64, FillDestination = 128, OnlyReduceInSize = 256, OnlyIncreaseInSize = 512,
 	DoNotResize = 768, Centred = 36,
 }
+RectanglePlacement.Type = RectanglePlacement
 for _, name in ipairs({ "DisplayType", "Justification", "MouseEvent", "Direction" }) do
 	_G[name] = enum()
 end
@@ -1050,6 +1055,157 @@ function Element.getParameterConnections(self, name)
 	return list
 end
 
+-- Async task handle classes: every async operation returns a task table whose
+-- `:cancel()` marks it cancelled so deferred callbacks skip cleanly.
+local function task_class()
+	local cls = {}
+	cls.__index = cls
+	function cls:cancel()
+		self.cancelled = true
+	end
+	return cls
+end
+
+AsyncTask = task_class()
+AsyncBrowseForFileTask = task_class()
+AsyncDataLoadTask = task_class()
+AsyncDataSaveTask = task_class()
+AsyncListFilesTask = task_class()
+AsyncMidiFileLoadTask = task_class()
+
+local function make_task(cls, fields)
+	local t = fields or {}
+	t.cancelled = false
+	return setmetatable(t, cls or AsyncTask)
+end
+
+-- Dynamic effect chain mutations on an element's inserts container.
+local function reindex_inserts(list, parent)
+	for i, child in ipairs(list) do
+		local f = fields_of(child)
+		f.index = i
+		f.parent = parent
+	end
+end
+
+function Element.insertEffect(self, effectType, index)
+	local list = self.inserts
+	local fx = element({ params = { Name = tostring(effectType or "Effect"), Type = tostring(effectType or "Effect"), Bypass = "0" } })
+	local pos = tonumber(index)
+	if pos then
+		pos = math.max(1, math.min(#list + 1, math.floor(pos)))
+		table.insert(list, pos, fx)
+	else
+		table.insert(list, fx)
+	end
+	reindex_inserts(list, self)
+	return fx
+end
+
+function Element.removeEffect(self, target)
+	local list = self.inserts
+	local idx = tonumber(target)
+	if idx then
+		idx = math.floor(idx)
+	elseif type(target) == "userdata" then
+		for i, item in ipairs(list) do
+			if item == target then
+				idx = i
+				break
+			end
+		end
+	end
+	if not idx or idx < 1 or idx > #list then
+		return false
+	end
+	local removed = table.remove(list, idx)
+	local fx = removed and fields_of(removed).fx
+	if fx then
+		host_call("EffectBypass", fx[1], fx[2], fx[3], 1)
+	end
+	reindex_inserts(list, self)
+	return true
+end
+
+function Element.moveEffect(self, from, to)
+	local list = self.inserts
+	local f = math.floor(tonumber(from) or 0)
+	local t = math.floor(tonumber(to) or 0)
+	if f < 1 or f > #list or t < 1 or t > #list then
+		return false
+	end
+	if f ~= t then
+		local item = table.remove(list, f)
+		table.insert(list, t, item)
+		reindex_inserts(list, self)
+	end
+	return true
+end
+
+function Element.loadImpulse(self, path, done)
+	return loadImpulse(self, path, done)
+end
+
+-- ponytail: the count only; slice positions need the loop's slice data.
+function Element.getSliceInfo(self)
+	local p = fields_of(self).params or EMPTY
+	local count = math.max(0, math.floor(tonumber(p.NumSlices) or 0))
+	local slices = {}
+	for i = 1, count do
+		slices[i] = { index = i, start = 0, length = 0 }
+	end
+	return slices
+end
+
+function Element.getNumZones(self)
+	local fields = fields_of(self)
+	if fields.zones then
+		return #fields.zones
+	end
+	local path = fields.params and fields.params.SamplePath
+	return (type(path) == "string" and path ~= "") and 1 or 0
+end
+
+function Element.getLoadingStatus(self)
+	return fields_of(self).loadingStatus or 0
+end
+
+function Element.loadMapping(self, path, done)
+	local fields = fields_of(self)
+	fields.mappingPath = path
+	fields.loadingStatus = 0
+	-- Mapping files are not read: the load fails, as a missing file does in UVI.
+	local task = make_task(AsyncTask, { success = false })
+	if type(done) == "function" then
+		done(task)
+	end
+	return task
+end
+
+local function set_element_purged(self, purged)
+	local fields = fields_of(self)
+	fields.purged = purged
+	local parent = fields.parent
+	local g = fields.group or (parent and fields_of(parent).group)
+	if type(g) == "number" then
+		host_call("PurgeGroup", g, purged and 0 or 1)
+	end
+end
+
+function Element.purgeZones(self, _zones)
+	set_element_purged(self, true)
+end
+
+function Element.unpurgeZones(self, _zones)
+	set_element_purged(self, false)
+end
+
+function Element.waitForLoading(self)
+	while self:getLoadingStatus() ~= 0 do
+		wait(1)
+	end
+end
+
 local function element_index(e, key)
 	local fields = fields_of(e)
 	local value = fields[key]
@@ -1062,6 +1218,9 @@ local function element_index(e, key)
 	end
 	if key == "sends" then
 		return e.busRouters
+	end
+	if key == "synthChildren" then
+		return fields.layers or fields.keygroups or fields.oscillators or EMPTY
 	end
 	if is_container[key] then
 		local list = {}
@@ -1076,6 +1235,16 @@ local function element_index(e, key)
 		local p = fields.params
 		local info = { name = string.match(path, "[^/\\]*$"), basenote = p.BaseNote, finetune = p.FineTune }
 		fields.sampleInfo = info
+		return info
+	end
+	if key == "looplabInfo" then
+		local p = fields.params or EMPTY
+		local info = {
+			numSlices = math.max(0, math.floor(tonumber(p.NumSlices) or 0)),
+			tempo = tonumber(p.Tempo) or 120,
+			beats = tonumber(p.NumBeats) or 0,
+		}
+		fields.looplabInfo = info
 		return info
 	end
 	if key == "parameterDefinitions" then
@@ -1326,9 +1495,22 @@ function getTime()
 	return host_call("EngineMs") or 0
 end
 
+-- ponytail: no engine action reports the rate; the engine's default rate
+-- until one does (scripts mostly use it for ms/sample conversions).
+local DEFAULT_SAMPLE_RATE = 48000
+function getSamplingRate()
+	return DEFAULT_SAMPLE_RATE
+end
+
 function getTempo()
 	local quarter = host_call("DurationQuarter")
 	return quarter and quarter > 0 and 60e6 / quarter or 120
+end
+
+function getTimeSignature()
+	local num = host_call("SignatureNum")
+	local den = host_call("SignatureDenom")
+	return (num and num > 0) and num or 4, (den and den > 0) and den or 4
 end
 
 function beat2ms(beats)
@@ -1337,6 +1519,14 @@ end
 
 function ms2beat(ms)
 	return ms * getTempo() / 60000
+end
+
+function ms2samples(ms)
+	return (ms or 0) * getSamplingRate() / 1000
+end
+
+function samples2ms(samples)
+	return (samples or 0) * 1000 / getSamplingRate()
 end
 
 -- Beats since the engine started, at the current tempo.
@@ -1353,12 +1543,34 @@ function getBeatDuration()
 	return beat2ms(1)
 end
 
+function getBarDuration()
+	local bar = host_call("DurationBar")
+	if bar and bar > 0 then
+		return bar / 1000
+	end
+	local num, den = getTimeSignature()
+	return getBeatDuration() * num * 4 / den
+end
+
+function getCC(cc, _channel, _input)
+	return host_call("Cc", cc or 0) or 0
+end
+
+function getNoteDuration(note)
+	local us = host_call("NoteDuration", note or 0)
+	return us and us / 1000 or 0
+end
+
 function waitBeat(beats)
 	wait(beat2ms(beats))
 end
 
 function isKeyDown(note)
 	return host_call("KeyDown", note) ~= 0
+end
+
+function isOctaveKeyDown(note)
+	return host_call("KeyDownOct", math.floor(tonumber(note) or 0) % 12) ~= 0
 end
 
 -- UVI's: whether the note that started the callback is still down.
@@ -1420,11 +1632,14 @@ local function send(e, delta)
 	if e.type == Event.ControlChange then
 		host_call("SetController", e.controller, e.value, later)
 	elseif e.type == Event.PitchBend then
-		host_call("SetController", 128, math.floor(e.bend * 8192 + 0.5), later)
+		host_call("SetController", 128, math.floor((e.bend or 0) * 8192 + 0.5), later)
 	elseif e.type == Event.AfterTouch then
 		host_call("SetController", 129, e.value, later)
 	elseif e.type == Event.PolyAfterTouch then
 		host_call("SetPolyAt", e.note, e.value, later)
+	elseif e.type == Event.ProgramChange then
+		local ch = math.max(0, math.min(63, math.floor((e.channel or 1) - 1)))
+		host_call("SetMidi", ch, Event.ProgramChange, math.floor(e.program or e.value or 0), 0)
 	end
 end
 
@@ -1522,9 +1737,11 @@ function loadSample(oscillator, path, done)
 	if loads and type(oscillator) == "userdata" and oscillator.parent then
 		table.insert(loads, { oscillator.parent.group, oscillator.index - 1, path, oscillator.params.BaseNote })
 	end
+	local task = make_task(AsyncTask, { success = true })
 	if type(done) == "function" then
-		done({ success = true })
+		done(task)
 	end
+	return task
 end
 
 -- loadImpulse(insert, path, done): the bank's response `path` (found by its
@@ -1539,9 +1756,11 @@ function loadImpulse(insert, path, done)
 		-- Before init the call waits in `pending`: it loads then.
 		ok = host_call("LoadImpulse", fx[1], fx[2], fx[3], path) ~= nil or not __host
 	end
+	local task = make_task(AsyncTask, { success = ok })
 	if type(done) == "function" then
-		done({ success = ok })
+		done(task)
 	end
+	return task
 end
 
 -- The program as it loads, run once off the audio thread: init and onLoad,
@@ -1570,11 +1789,13 @@ function __record()
 end
 
 local function event(kind)
+	local id = host_call("EventId")
 	return {
 		type = kind,
-		id = host_call("EventId"),
+		id = id,
 		note = host_call("EventNote"),
-		velocity = host_call("EventVelocity"),
+		-- A release reports its key-up velocity ($EVENT_PAR_REL_VELOCITY, 27).
+		velocity = kind == Event.NoteOff and host_call("GetEventPar", id, 27) or host_call("EventVelocity"),
 		channel = 1,
 		layer = 0,
 	}
@@ -1627,12 +1848,18 @@ __entries = {
 		local e = event(Event.NoteOn)
 		-- A UVI note sounds only when the script posts it.
 		host_call("IgnoreEvent", e.id)
-		onNote(e)
+		local handler = onNote or onEvent
+		if handler then
+			handler(e)
+		end
 	end,
 	[2] = function()
 		local e = event(Event.NoteOff)
 		host_call("IgnoreEvent", e.id)
-		onRelease(e)
+		local handler = onRelease or onEvent
+		if handler then
+			handler(e)
+		end
 	end,
 	-- The editor moved widget `__widget` (its place in `__ui.widgets`) to
 	-- `__widget_value`: its `changed` runs, as a click would. A button's
@@ -1661,7 +1888,7 @@ __entries = {
 	-- Polyphonic aftertouch on key `PolyAtNum`, or a note's own pressure.
 	[6] = function()
 		local note = host_call("PolyAtNum")
-		hear(onPolyAfterTouch, {
+		hear(onPolyAfterTouch or onEvent, {
 			type = Event.PolyAfterTouch,
 			note = note,
 			value = host_call("PolyAt", note),
@@ -1677,11 +1904,11 @@ __entries = {
 		local cc = host_call("CcNum")
 		-- Pitch bend and channel pressure come as controllers 128 and 129.
 		if cc == 128 then
-			hear(onPitchBend, { type = Event.PitchBend, bend = host_call("Cc", 128) / 8192, channel = 1, input = 1 })
+			hear(onPitchBend or onEvent, { type = Event.PitchBend, bend = host_call("Cc", 128) / 8192, channel = 1, input = 1 })
 		elseif cc == 129 then
-			hear(onAfterTouch, { type = Event.AfterTouch, value = host_call("Cc", 129), channel = 1, input = 1 })
+			hear(onAfterTouch or onEvent, { type = Event.AfterTouch, value = host_call("Cc", 129), channel = 1, input = 1 })
 		else
-			hear(onController, { type = Event.ControlChange, controller = cc, value = host_call("Cc", cc), channel = 1, input = 1 })
+			hear(onController or onEvent, { type = Event.ControlChange, controller = cc, value = host_call("Cc", cc), channel = 1, input = 1 })
 		end
 	end,
 }
@@ -1696,9 +1923,182 @@ function table.copy(t)
 	return out
 end
 
-function controlChange(cc, value)
+function controlChange(cc, value, _channel, _input)
 	host_call("SetController", cc, value)
 end
+
+function pitchBend(value, _channel, _input)
+	host_call("SetController", 128, math.floor((value or 0) * 8192 + 0.5))
+end
+
+function afterTouch(value, _channel, _input)
+	host_call("SetController", 129, math.floor(tonumber(value) or 0))
+end
+
+function polyAfterTouch(note, value, _channel, _input)
+	host_call("SetPolyAt", math.floor(tonumber(note) or 0), math.floor(tonumber(value) or 0))
+end
+
+function programChange(program, channel, _input)
+	local ch = math.max(0, math.min(63, math.floor((tonumber(channel) or 1) - 1)))
+	local prog = math.floor(tonumber(program) or 0)
+	host_call("SetMidi", ch, Event.ProgramChange, prog, 0)
+end
+
+__midi_flags = { data_entry_as_cc = false, nrpn_as_cc = false, rpn_as_cc = false }
+function enable_data_entry_as_cc(enable)
+	__midi_flags.data_entry_as_cc = enable ~= false
+end
+function enable_nrpn_as_cc(enable)
+	__midi_flags.nrpn_as_cc = enable ~= false
+end
+function enable_rpn_as_cc(enable)
+	__midi_flags.rpn_as_cc = enable ~= false
+end
+
+-- MidiEvent & MidiSequence (UVI Falcon MIDI file API).
+MidiEvent = {}
+MidiEvent.__index = MidiEvent
+function MidiEvent.MidiEvent(ev, beat, track)
+	local out
+	if type(ev) == "table" then
+		out = table.copy(ev)
+		out.beat = beat ~= nil and beat or (out.beat or 0)
+		out.track = track ~= nil and track or (out.track or 1)
+	else
+		out = { type = ev or Event.NoteOn, note = 60, velocity = 100, channel = 1, beat = beat or 0, track = track or 1, duration = 0 }
+	end
+	return setmetatable(out, MidiEvent)
+end
+setmetatable(MidiEvent, {
+	__call = function(_, ...)
+		return MidiEvent.MidiEvent(...)
+	end,
+})
+
+function postMidiEvent(ev, delta)
+	if type(ev) ~= "table" then
+		return
+	end
+	return postEvent(ev, delta)
+end
+
+MidiSequence = {}
+MidiSequence.__index = MidiSequence
+setmetatable(MidiSequence, {
+	__call = function(_)
+		return setmetatable({ tracks = {} }, MidiSequence)
+	end,
+})
+
+local function seq_track(seq, track)
+	local idx = math.max(1, math.floor(tonumber(track) or 1))
+	local list = seq.tracks[idx]
+	if not list then
+		list = {}
+		seq.tracks[idx] = list
+	end
+	return list
+end
+
+function MidiSequence:insertEvent(ev, beat, track)
+	local item = MidiEvent(ev, beat, track)
+	local list = seq_track(self, item.track)
+	local pos = #list + 1
+	for i = 1, #list do
+		if (list[i].beat or 0) > (item.beat or 0) then
+			pos = i
+			break
+		end
+	end
+	table.insert(list, pos, item)
+	return pos
+end
+
+function MidiSequence:getNumEventsForTrack(track)
+	local list = self.tracks[math.max(1, math.floor(tonumber(track) or 1))]
+	return list and #list or 0
+end
+
+function MidiSequence:getEvent(index, track)
+	local list = self.tracks[math.max(1, math.floor(tonumber(track) or 1))]
+	return list and list[math.floor(tonumber(index) or 0)] or nil
+end
+
+function MidiSequence:findAt(beat, track)
+	local list = self.tracks[math.max(1, math.floor(tonumber(track) or 1))]
+	if not list then return nil end
+	local b = tonumber(beat) or 0
+	for i, ev in ipairs(list) do
+		if math.abs((ev.beat or 0) - b) <= 1e-6 then
+			return i
+		end
+	end
+	return nil
+end
+
+function MidiSequence:findNextAt(beat, track)
+	local list = self.tracks[math.max(1, math.floor(tonumber(track) or 1))]
+	if not list then return nil end
+	local b = tonumber(beat) or 0
+	for i, ev in ipairs(list) do
+		if (ev.beat or 0) >= b - 1e-6 then
+			return i
+		end
+	end
+	return nil
+end
+
+function MidiSequence:findPreviousAt(beat, track)
+	local list = self.tracks[math.max(1, math.floor(tonumber(track) or 1))]
+	if not list then return nil end
+	local b = tonumber(beat) or 0
+	local best = nil
+	for i, ev in ipairs(list) do
+		if (ev.beat or 0) <= b + 1e-6 then
+			best = i
+		else
+			break
+		end
+	end
+	return best
+end
+
+-- Element class parameter constant tables.
+Keygroup = {
+	Parameters = {
+		Gain = "Gain", Pan = "Pan", Mute = "Mute", Bypass = "Bypass",
+		LowKey = "LowKey", HighKey = "HighKey", LowVelocity = "LowVelocity", HighVelocity = "HighVelocity",
+		Tune = "Tune", ExclusiveGroup = "ExclusiveGroup", TriggerRule = "TriggerRule", TriggerMode = "TriggerMode",
+	},
+}
+Oscillator = {
+	Parameters = {
+		Gain = "Gain", Pitch = "Pitch", CoarseTune = "CoarseTune", FineTune = "FineTune",
+		NoteTracking = "NoteTracking", Bypass = "Bypass", BaseNote = "BaseNote",
+	},
+}
+SampleBasedOscillator = {
+	Parameters = {
+		SamplePath = "SamplePath", BaseNote = "BaseNote", CoarseTune = "CoarseTune", FineTune = "FineTune",
+		Gain = "Gain", Reverse = "Reverse", SampleStart = "SampleStart", StartOffset = "StartOffset",
+		LoopStart = "LoopStart", LoopEnd = "LoopEnd",
+	},
+}
+SampleMappingOscillator = {
+	Parameters = {
+		SamplePath = "SamplePath", Gain = "Gain", Pitch = "Pitch", Bypass = "Bypass", SampleStart = "SampleStart",
+	},
+}
+SamplePlayer = {
+	Parameters = {
+		SamplePath = "SamplePath", BaseNote = "BaseNote", CoarseTune = "CoarseTune", FineTune = "FineTune",
+		Gain = "Gain", Reverse = "Reverse", NoteTracking = "NoteTracking", Bypass = "Bypass", SampleStart = "SampleStart",
+	},
+}
+SampledReverb = {
+	loadImpulse = loadImpulse,
+}
 
 function fadein(id, ms)
 	host_call("FadeIn", id, math.floor((ms or 0) * 1000))
@@ -1833,9 +2233,160 @@ end
 -- does not carry calls nothing, as a failed load does.
 function loadData(path, done)
 	local file = stored[bank_path(path)] or __file(bank_path(path))
-	if file and file.data ~= nil and type(done) == "function" then
-		done(file.data)
+	local ok = file ~= nil and file.data ~= nil
+	local task = make_task(AsyncDataLoadTask, { success = ok, data = ok and file.data or nil })
+	if ok and type(done) == "function" then
+		done(file.data, task)
 	end
+	return task
+end
+
+function loadTextData(path, done)
+	local key = bank_path(path)
+	local file = stored[key] or __file(key)
+	local text = file and (file.text ~= nil and file.text or (type(file.data) == "string" and file.data or nil)) or nil
+	local task = make_task(AsyncDataLoadTask, { success = text ~= nil, data = text })
+	if text ~= nil and type(done) == "function" then
+		done(text, task)
+	end
+	return task
+end
+
+function saveTextData(text, path, done)
+	keep(path, { text = tostring(text or "") })
+	local task = make_task(AsyncDataSaveTask, { success = true })
+	if type(done) == "function" then
+		done(task)
+	end
+	return task
+end
+
+function createMidiFile()
+	return MidiSequence()
+end
+
+function saveMidi(seq, path, done)
+	keep(path, { midi = seq })
+	local task = make_task(AsyncDataSaveTask, { success = true })
+	if type(done) == "function" then
+		done(task)
+	end
+	return task
+end
+
+function loadMidi(path, done)
+	local key = bank_path(path)
+	local file = stored[key] or __file(key)
+	local seq = file and file.midi or nil
+	local task = make_task(AsyncMidiFileLoadTask, { success = seq ~= nil, midi = seq })
+	if seq ~= nil and type(done) == "function" then
+		done(task)
+	end
+	return task
+end
+
+local function glob_matches(path, filter)
+	if type(filter) ~= "string" or filter == "" or filter == "*" or filter == "*.*" then
+		return true
+	end
+	local lower = string.lower(path)
+	for pat in string.gmatch(filter, "[^;,%s]+") do
+		local lua_pat = "^" .. string.gsub(string.lower(pat), "([%.%+%-%^%$%(%)%[%]%%])", "%%%1")
+		lua_pat = string.gsub(lua_pat, "%*", ".*") .. "$"
+		local name = string.match(lower, "[^/]+$") or lower
+		if string.match(name, lua_pat) then
+			return true
+		end
+	end
+	return false
+end
+
+function listFiles(path, filter, done)
+	if type(filter) == "function" and done == nil then
+		done, filter = filter, nil
+	end
+	local prefix = bank_path(path or "")
+	local seen, result = {}, {}
+	local function add(p)
+		local lp = string.lower(p)
+		if not seen[lp] and glob_matches(p, filter) then
+			seen[lp] = true
+			table.insert(result, p)
+		end
+	end
+	if __list_files then
+		for _, p in ipairs(__list_files(prefix)) do
+			add(p)
+		end
+	end
+	local pref_low = string.lower(prefix)
+	for k in pairs(stored) do
+		local kl = string.lower(k)
+		if pref_low == "" or kl == pref_low or (string.sub(kl, 1, #pref_low) == pref_low and string.sub(kl, #pref_low + 1, #pref_low + 1) == "/") then
+			add(k)
+		end
+	end
+	table.sort(result)
+	local task = make_task(AsyncListFilesTask, { success = true, result = result })
+	if type(done) == "function" then
+		done(task)
+	end
+	return task
+end
+
+local function walk_purge(el, purged)
+	if type(el) ~= "userdata" then
+		return
+	end
+	local fields = fields_of(el)
+	if type(fields.group) == "number" then
+		host_call("PurgeGroup", fields.group, purged and 0 or 1)
+	end
+	for _, key in ipairs(containers) do
+		for _, child in ipairs(fields[key] or EMPTY) do
+			walk_purge(child, purged)
+		end
+	end
+end
+
+function purge(target, done)
+	if type(target) == "function" and done == nil then
+		done, target = target, Program
+	end
+	walk_purge(target or Program, true)
+	local task = make_task(AsyncTask, { success = true })
+	if type(done) == "function" then
+		done(task)
+	end
+	return task
+end
+
+function unpurge(target, done)
+	if type(target) == "function" and done == nil then
+		done, target = target, Program
+	end
+	walk_purge(target or Program, false)
+	local task = make_task(AsyncTask, { success = true })
+	if type(done) == "function" then
+		done(task)
+	end
+	return task
+end
+
+function setPlaybackOptions(oscillator, options, done)
+	if type(oscillator) == "userdata" and type(options) == "table" then
+		local p = fields_of(oscillator).params
+		if p then
+			for k, v in pairs(options) do
+				p[k] = v
+			end
+		end
+	end
+	local task = make_task(AsyncTask, { success = type(oscillator) == "userdata" })
+	if type(done) == "function" then
+		done(task)
+	end
+	return task
 end
 
 -- loadState(path, done): a saved script preset. Its widgets take their
@@ -1846,8 +2397,11 @@ local PRESET_PACE = 12
 
 -- Sets `file`'s values on the widgets, `pace(PRESET_PACE)` after each
 -- control with a changed, then hands its state to onLoad and calls `done`.
-local function land(file, done, pace)
+local function land(file, done, pace, task)
 	for _, w in ipairs(__ui.widgets) do
+		if task and task.cancelled then
+			return
+		end
 		local text = w.name and file.values[w.name]
 		local ok, err = true, nil
 		if text ~= nil and w.kind == "Table" and w.persistent ~= false then
@@ -1866,11 +2420,17 @@ local function land(file, done, pace)
 			pace(PRESET_PACE)
 		end
 	end
+	if task and task.cancelled then
+		return
+	end
 	if onLoad and file.state ~= nil then
 		onLoad(file.state)
 	end
+	if task then
+		task.success = true
+	end
 	if type(done) == "function" then
-		done({ success = true })
+		done(task or make_task(AsyncTask, { success = true }))
 	end
 end
 
@@ -1893,16 +2453,20 @@ function saveState(path, done)
 		end
 	end
 	keep(path, { values = values, state = onSave and onSave() })
+	local task = make_task(AsyncDataSaveTask, { success = true })
 	if type(done) == "function" then
-		done({ success = true })
+		done(task)
 	end
+	return task
 end
 
 function saveData(data, path, done)
 	keep(path, { data = data })
+	local task = make_task(AsyncDataSaveTask, { success = true })
 	if type(done) == "function" then
-		done({ success = true })
+		done(task)
 	end
+	return task
 end
 
 -- Milliseconds between looks at the editor's answer to a pick.
@@ -1912,34 +2476,42 @@ local PICK_PACE = 50
 -- player for a file of the filter's type among those saved for this
 -- instrument; `done` gets its name. A cancelled pick calls nothing.
 function browseForFile(mode, _title, _initial, filter, done)
+	local task = make_task(AsyncBrowseForFileTask, { success = false, result = nil })
 	local ext = tostring(filter or ""):match("%*(%.[%w_]+)") or ""
-	local id = __host(Action.PickFile, mode == "save" and 1 or 0, ext)
+	local id = __host and __host(Action.PickFile, mode == "save" and 1 or 0, ext)
 	if type(id) ~= "number" or id <= 0 or type(done) ~= "function" then
-		return
+		return task
 	end
 	spawn(function()
-		while true do
+		while not task.cancelled do
 			local answer = __host(Action.PickedFile, id)
+			if task.cancelled then
+				return
+			end
 			if type(answer) == "string" then
-				return done({ result = answer, success = true })
+				task.result = answer
+				task.success = true
+				return done(task)
 			elseif answer ~= nil then
 				return
 			end
 			wait(PICK_PACE)
 		end
 	end)
+	return task
 end
 
 function loadState(path, done)
+	local task = make_task(AsyncTask, { success = false })
 	local file = stored[bank_path(path)] or __file(bank_path(path))
 	if not (file and file.values) then
-		return
+		return task
 	end
 	if initializing then
 		-- Init runs off the audio thread, and the project's saved values
 		-- and state land after it, so they win over a default preset.
-		land(file, done, function() end)
-		return
+		land(file, done, function() end, task)
+		return task
 	end
 	-- Once running, the preset lands after the call returns, as UVI's async
 	-- `_loadState` task does. From a control move it lands at once, all its
@@ -1952,8 +2524,11 @@ function loadState(path, done)
 	local pace = __editing and function() end or wait
 	spawn(function()
 		wait(PRESET_PACE)
-		land(file, done, pace)
+		if not task.cancelled then
+			land(file, done, pace, task)
+		end
 	end)
+	return task
 end
 
 -- UVI's own: `setVoiceParameter(SampleStartMillisecond, id, ms)` (its
@@ -1963,8 +2538,94 @@ function setSampleOffset(id, ms)
 	host_call("SetEventPar", id, START_OFFSET, math.floor(math.max(0, ms or 0) * 1000))
 end
 
-for _, name in ipairs({
-	"setKeyColour", "setKeyType", "setKeyPressed",
-}) do
-	_G[name] = function() end
+-- Keyboard colouring and key types forwarded to the host (`SetKeyColor` /
+-- `SetKeyType` / `SetKeyPressed`): grey/gray marks out-of-range keys (type 0),
+-- red marks keyswitches (type 2), transparent/default or zone colours mark
+-- playable keys (type 1) so the host and keyboard display know the real range.
+local KEY_COLOURS = {
+	grey = 0xFF808080, gray = 0xFF808080, darkgrey = 0xFF404040, darkgray = 0xFF404040,
+	red = 0xFFFF0000, darkred = 0xFF8B0000,
+	blue = 0xFF0000FF, green = 0xFF00FF00, yellow = 0xFFFFFF00,
+	orange = 0xFFFFA500, cyan = 0xFF00FFFF, magenta = 0xFFFF00FF,
+	purple = 0xFF800080, white = 0xFFFFFFFF, black = 0xFF000000,
+	none = 0, transparent = 0,
+}
+
+local function parse_key_colour(colour)
+	if type(colour) == "number" then
+		return math.floor(colour), 1
+	end
+	if type(colour) ~= "string" then
+		return 0, 1
+	end
+	local s = string.lower(colour):gsub("^%s+", ""):gsub("%s+$", "")
+	if s == "" or s == "none" or s == "transparent" then
+		return 0, 1
+	end
+	if s == "grey" or s == "gray" or s == "darkgrey" or s == "darkgray" then
+		return KEY_COLOURS[s], 0
+	end
+	if s == "red" or s == "darkred" then
+		return KEY_COLOURS[s], 2
+	end
+	if KEY_COLOURS[s] then
+		return KEY_COLOURS[s], 1
+	end
+	local hex = s:gsub("^#", ""):gsub("^0x", "")
+	local n = tonumber(hex, 16)
+	if not n then
+		return 0, 1
+	end
+	if #hex == 8 then
+		local alpha = math.floor(n / 0x1000000) % 256
+		if alpha == 0 then
+			return 0, 1
+		end
+	elseif #hex == 6 then
+		n = 0xFF000000 + n
+	end
+	return n, 1
+end
+
+function setKeyColour(key, colour)
+	local k = tonumber(key)
+	if not k then return end
+	k = math.floor(k)
+	if k < 0 or k > 127 then return end
+	local argb, kind = parse_key_colour(colour)
+	host_call("SetKeyColor", k, argb)
+	host_call("SetKeyType", k, kind)
+end
+
+function resetKeyColour(key)
+	if key == nil then
+		for k = 0, 127 do
+			host_call("SetKeyColor", k, 0)
+			host_call("SetKeyType", k, 0)
+		end
+		return
+	end
+	local k = tonumber(key)
+	if not k then return end
+	k = math.floor(k)
+	if k < 0 or k > 127 then return end
+	host_call("SetKeyColor", k, 0)
+	host_call("SetKeyType", k, 0)
+end
+
+function setKeyType(key, kind)
+	local k = tonumber(key)
+	if not k then return end
+	k = math.floor(k)
+	if k < 0 or k > 127 then return end
+	host_call("SetKeyType", k, math.floor(tonumber(kind) or 0))
+end
+
+function setKeyPressed(key, pressed)
+	local k = tonumber(key)
+	if not k then return end
+	k = math.floor(k)
+	if k < 0 or k > 127 then return end
+	local on = pressed == true or (type(pressed) == "number" and pressed ~= 0)
+	host_call("SetKeyPressed", k, on and 1 or 0)
 end

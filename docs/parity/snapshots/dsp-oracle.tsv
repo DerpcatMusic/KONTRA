@@ -1,0 +1,12 @@
+# Structured Kontakt DSP oracle verification manifest.
+# Every row MUST cite a real, non-ignored v3 Rust test (`<rel_path>::<fn_name>`).
+# `parity-board.py --check` fails if any row cites a missing/ignored test or has status `failing`.
+effect_id	test_name	max_err_db	status	commit
+chorus	crates/dsp/delay/tests/delay.rs::legacy_chorus_and_flanger_land_near_the_native_vectors	0.7	tested	89d24291d7da
+compressor	crates/engine/effects/src/measured_dsp.rs::enhanced_compressor_matches_native_golden_vectors_and_link_cancellation	0.001	tested	89d24291d7da
+filter	crates/dsp/filter/tests/formant.rs::the_formant_matches_kontakt_within_a_tenth_of_a_db	0.1	tested	89d24291d7da
+flanger	crates/dsp/delay/tests/delay.rs::legacy_chorus_and_flanger_land_near_the_native_vectors	0.2	tested	89d24291d7da
+saturation	crates/dsp/drive/tests/drive.rs::the_curves_match_v1s_measured_transfer_vectors	0.1	tested	89d24291d7da
+skreamer	crates/dsp/drive/src/overdrive.rs::a_sine_matches_the_native_core	0.01	tested	89d24291d7da
+solid_g_eq	crates/engine/effects/src/measured_dsp.rs::solid_pass_filters_match_18db_hp_and_12db_lp_slopes_and_tsv	1.5	partial	89d24291d7da
+transient_master	crates/dsp/dynamics/tests/dynamics.rs::the_transient_shaper_matches_the_native_core	0.02	tested	89d24291d7da

@@ -22,9 +22,13 @@ Widget.x: ok
 Widget.y: ok
 ParamWidget.paramId: ok
 ParamWidget.mapper.default: ok
+Mapper.Type: ok
 Mapper.values: ok
+Unit.Type: ok
 Unit.values: ok
+RectanglePlacement.Type: ok
 RectanglePlacement.values: ok
+FileFormat.Type: ok
 FileFormat.values: ok
 Knob.alpha: ok
 Knob.default: ok

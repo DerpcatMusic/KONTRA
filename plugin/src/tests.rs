@@ -459,6 +459,7 @@ fn a_library_control_moved_in_the_editor_reaches_its_script_and_shows() {
                 cell: None,
                 keys: Default::default(),
             },
+            seq: 0,
         }));
     settle(&params, &mut dsp);
     settle(&params, &mut dsp);
@@ -730,6 +731,7 @@ fn a_uvi_preset_saved_in_the_header_reopens_with_its_panel() {
     use kontra_ui::app::{Action, PresetEdit};
     const ROOT: &str = "/data/main/Libraries/UVI/VWinds - Clarinets";
     if !Path::new(ROOT).exists() {
+        // silent-skip-ok: needs the local VWinds UVI library, absent on CI
         eprintln!("skipped: no {ROOT}");
         return;
     }
@@ -857,6 +859,7 @@ fn move_panel(params: &KontraParams) -> Vec<(String, f64)> {
                     cell: None,
                     keys: Default::default(),
                 },
+                seq: 0,
             }));
     }
     moves
@@ -1373,6 +1376,7 @@ fn uvi_knob_moves_the_sound_and_survives_reload(program: &str, knob: &str, to: f
                 cell: None,
                 keys: Default::default(),
             },
+            seq: 0,
         }));
     settle(&params, &mut dsp);
     settle(&params, &mut dsp);
@@ -1440,13 +1444,13 @@ fn a_host_save_waits_out_a_tick_but_not_a_load() {
     *params.saved.write().unwrap() = "before the load".into();
     // A tick loading a program holds the rack for seconds.
     let held = crate::lock(&params.shared.rack);
-    params.shared.holding.store(true, Ordering::Release);
+    params.shared.gate.set_holding(true);
     let t = std::time::Instant::now();
     params.capture();
     assert!(t.elapsed() < Duration::from_millis(50), "{:?}", t.elapsed());
     assert_eq!(*params.saved.read().unwrap(), "before the load");
     // Any other tick is short: the save waits for it and writes the rack.
-    params.shared.holding.store(false, Ordering::Release);
+    params.shared.gate.set_holding(false);
     std::thread::scope(|s| {
         s.spawn(|| params.capture());
         std::thread::sleep(Duration::from_millis(20));
@@ -1889,6 +1893,7 @@ fn conflux_edit_tab_switches_the_page() {
                     cell: None,
                     keys: Default::default(),
                 },
+                seq: 0,
             }));
         settle(&params, &mut dsp);
     }
@@ -2184,8 +2189,13 @@ fn a_host_macro_move_inside_a_block_lands_on_its_frame() {
             play_note(60, 100, 0, -1)
         end on",
     );
+    let generation = crate::lock(&params.shared.rack)
+        .as_ref()
+        .and_then(|r| r.part_generation(0))
+        .unwrap();
     let target = MacroTarget {
         part: 0,
+        generation,
         slot: 0,
         control: Control::Integer(k.parse().unwrap()),
         scale: Scale::Range {
@@ -2482,6 +2492,7 @@ fn ui_requests_wake_tick_when_audio_is_suspended() {
     params.shared.request_ui(crate::editor::Edit {
         slot: None,
         action: kontra_ui::app::Action::Refresh,
+        seq: 0,
     });
     assert!(
         rx.recv_timeout(std::time::Duration::from_secs(2)).is_ok(),
@@ -2865,4 +2876,201 @@ fn a_background_load_wakes_the_tick_that_installs_it() {
         Tick.run(&params);
     }
     assert!(crate::lock(&params.shared.rack).as_ref().unwrap().parts()[0].is_some());
+}
+
+fn load_ksp_ui_part(params: &KontraParams, name: &str, source: &str) {
+    use kontra_host::rack::ir;
+    let mut inst = ir::Instrument {
+        name: name.into(),
+        ..ir::Instrument::DEFAULT
+    };
+    inst.scripts.push(ir::Script {
+        name: "main".into(),
+        slot: 0,
+        dialect: ir::Dialect::Ksp,
+        source: source.into(),
+        saved: Vec::new(),
+        data: Vec::new(),
+        links: Vec::new(),
+        container: None,
+        player: false,
+    });
+    let mut guard = crate::lock(&params.shared.rack);
+    guard.as_mut().unwrap().load_ir(0, inst, None).unwrap();
+}
+
+/// AC3: 16 consecutive drag moves for the same continuous control collapse to
+/// 1 KSP `on ui_control` invocation (latest value) while preserving button
+/// press/release edges and inter-control ordering.
+#[test]
+fn lifecycle_drag_coalescing_collapses_16_moves_preserving_edges_and_order() {
+    use kontra_ui::app::Action;
+    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
+    params.shared.open_editor();
+    load_ksp_ui_part(
+        &params,
+        "CoalesceTest",
+        "on init
+            make_perfview
+            declare ui_slider $s (0, 100)
+            declare ui_button $btn
+            declare ui_slider $other (0, 100)
+            declare ui_label $log (1, 1)
+            declare $s_runs := 0
+            declare $btn_edges := 0
+            declare $other_runs := 0
+            set_text($log, \"0,0,0,0,0\")
+        end on
+        on ui_control ($s)
+            $s_runs := $s_runs + 1
+            set_text($log, $s_runs & \",\" & $s & \",\" & $btn_edges & \",\" & $other_runs & \",\" & $other)
+        end on
+        on ui_control ($btn)
+            $btn_edges := $btn_edges + 1
+            set_text($log, $s_runs & \",\" & $s & \",\" & $btn_edges & \",\" & $other_runs & \",\" & $other)
+        end on
+        on ui_control ($other)
+            $other_runs := $other_runs + 1
+            set_text($log, $s_runs & \",\" & $s & \",\" & $btn_edges & \",\" & $other_runs & \",\" & $other)
+        end on",
+    );
+    settle(&params, &mut dsp);
+    let (s_idx, btn_idx, other_idx, log_idx) = {
+        let guard = crate::lock(&params.shared.rack);
+        let widgets = &guard.as_ref().unwrap().parts()[0]
+            .as_ref()
+            .unwrap()
+            .view
+            .as_ref()
+            .unwrap()
+            .tree()
+            .widgets;
+        (
+            widgets.iter().position(|w| w.name == "$s").unwrap(),
+            widgets.iter().position(|w| w.name == "$btn").unwrap(),
+            widgets.iter().position(|w| w.name == "$other").unwrap(),
+            widgets.iter().position(|w| w.name == "$log").unwrap(),
+        )
+    };
+    let send = |widget: usize, value: f64| {
+        params.shared.request_ui(crate::editor::Edit {
+            slot: Some(0),
+            action: Action::Control {
+                part: 0,
+                widget,
+                cell: None,
+                value,
+                keys: Default::default(),
+            },
+            seq: 0,
+        })
+    };
+    // 16 rapid drag moves for $s -> should collapse to 1 call with value 16.
+    for v in 1..=16 {
+        send(s_idx, f64::from(v));
+    }
+    // Button press + release -> BOTH edges must survive (2 calls).
+    send(btn_idx, 1.0);
+    send(btn_idx, 0.0);
+    // 4 rapid moves for $other -> should collapse to 1 call with value 40.
+    for v in [10.0, 20.0, 30.0, 40.0] {
+        send(other_idx, v);
+    }
+    // 2 trailing moves for $s -> separate burst after $other, 1 call with value 60.
+    send(s_idx, 50.0);
+    let last_seq = send(s_idx, 60.0);
+
+    // One Tick + one audio block + one Tick completes the round-trip.
+    Tick.run(&params);
+    block(&params, &mut dsp, &[]);
+    Tick.run(&params);
+
+    let guard = crate::lock(&params.shared.rack);
+    let view = guard.as_ref().unwrap().parts()[0]
+        .as_ref()
+        .unwrap()
+        .view
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        view.applied_seq, last_seq,
+        "final coalesced seq must be echoed back by audio"
+    );
+    assert_eq!(
+        view.tree().widgets[log_idx].text,
+        "2,60,2,1,40",
+        "expected 2 $s runs (16 collapsed + 2 collapsed), value 60, 2 $btn edges, 1 $other run (4 collapsed), value 40"
+    );
+}
+
+/// AC1: Event-driven `Kontra::process` wakes `Tick` immediately after audio
+/// processes a UI control (0 ms poll wait), and stays completely silent
+/// (0 `Tick` spawns) across 100 idle audio blocks.
+#[test]
+fn lifecycle_audio_wakes_tick_immediately_on_drag_and_stays_quiet_when_idle() {
+    use std::sync::mpsc;
+    moose::core::tasks::warm_pool();
+    let (params, mut dsp) = activate(&Saved::new(Vec::new()).write());
+    params.shared.open_editor();
+    load_ksp_ui_part(
+        &params,
+        "WakeTest",
+        "on init
+            make_perfview
+            declare ui_slider $s (0, 100)
+            make_persistent($s)
+        end on",
+    );
+    settle(&params, &mut dsp);
+
+    let (tx, rx) = mpsc::channel();
+    let spawner: moose::prelude::TaskSpawner<Tick> = moose::prelude::TaskSpawner::new(move |_| {
+        let _ = tx.send(());
+    });
+    let any_tasks = moose::core::tasks::AnyTaskSpawner::new(&spawner);
+    let list = EventList::with_capacity(16);
+    let mut channels = vec![vec![0.0f32; BLOCK]; 2 * crate::OUTPUTS];
+    let run_block = |dsp: &mut Dsp, params: &KontraParams, channels: &mut [Vec<f32>]| {
+        let mut outs: Vec<&mut [f32]> = channels.iter_mut().map(Vec::as_mut_slice).collect();
+        let mut buffer = AudioBuffer::from_slices_checked(&[], &mut outs, BLOCK);
+        let transport = TransportInfo::default();
+        let mut out_events = EventList::with_capacity(16);
+        let mut cx = ProcessContext::new(&transport, RATE, BLOCK, &mut out_events)
+            .with_process_mode(ProcessMode::Offline)
+            .with_tasks(&any_tasks);
+        <Kontra as Plugin>::process(dsp, params, &mut buffer, &list, &mut cx);
+    };
+    // Drain any initial wake.
+    run_block(&mut dsp, &params, &mut channels);
+    Tick.run(&params);
+    while rx.try_recv().is_ok() {}
+
+    // 100 completely idle audio blocks -> 0 Tick wakes!
+    for i in 0..100 {
+        run_block(&mut dsp, &params, &mut channels);
+        assert!(
+            rx.try_recv().is_err(),
+            "idle block {i} must not wake Tick via 20 Hz polling"
+        );
+    }
+
+    // One UI slider move -> single audio block wakes Tick immediately!
+    params.shared.request_ui(crate::editor::Edit {
+        slot: Some(0),
+        action: kontra_ui::app::Action::Control {
+            part: 0,
+            widget: 0,
+            cell: None,
+            value: 42.0,
+            keys: Default::default(),
+        },
+        seq: 0,
+    });
+    Tick.run(&params);
+    run_block(&mut dsp, &params, &mut channels);
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(500))
+            .is_ok(),
+        "audio block returning LookFrame for drag MUST wake Tick immediately"
+    );
 }

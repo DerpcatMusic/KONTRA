@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::{Engine, Kind, Running, SustainPedal};
+use crate::{CallbackContext, Engine, Kind, Running, SustainPedal};
 
 /// The controller numbers scripts hear pitch bend and channel pressure as
 /// (Kontakt's `$VCC_PITCH_BEND` and `$VCC_MONO_AT`).
@@ -94,10 +94,23 @@ impl Engine {
             }
         }
         // The reference 8.13 runs on rpn / on nrpn as the data entry LSB arrives,
-        // before that CC's on controller (probes/rpn_audio.py).
+        // before that CC's on controller (probes/rpn_audio.py). RPN/NRPN Null
+        // (127/127) deselects the active parameter per MIDI 1.0.
         match controller {
-            101 | 100 => self.rpn_nrpn = Some(false),
-            99 | 98 => self.rpn_nrpn = Some(true),
+            101 | 100 => {
+                self.rpn_nrpn = if self.cc_values[101] == 127 && self.cc_values[100] == 127 {
+                    None
+                } else {
+                    Some(false)
+                };
+            }
+            99 | 98 => {
+                self.rpn_nrpn = if self.cc_values[99] == 127 && self.cc_values[98] == 127 {
+                    None
+                } else {
+                    Some(true)
+                };
+            }
             38 => {
                 if let Some(nrpn) = self.rpn_nrpn {
                     self.run_rpns(nrpn);
@@ -298,10 +311,7 @@ impl Engine {
             let Some(entry) = script.callbacks.controller else {
                 continue;
             };
-            let running = Running {
-                controller,
-                ..Running::new(Kind::Controller, None)
-            };
+            let running = Running::new(CallbackContext::Controller { cc: controller });
             let heard = Heard::of(&self.run_callback(slot, entry, running));
             if heard != Heard::Passed {
                 return self.count(heard);
@@ -310,31 +320,39 @@ impl Engine {
         Heard::Passed
     }
 
-    /// Each script's `on rpn` (or `on nrpn`).
+    /// Each script's `on rpn` (or `on nrpn`), capturing the 14-bit address and
+    /// value on the callback frame so they survive `wait(...)` intact.
     fn run_rpns(&mut self, nrpn: bool) {
+        let pair = |hi: usize, lo: usize| -> u16 {
+            let cc = |n: usize| u16::from(self.cc_values.get(n).copied().unwrap_or(0));
+            cc(hi) * 128 + cc(lo)
+        };
+        let value = pair(6, 38);
+        let address = if nrpn { pair(99, 98) } else { pair(101, 100) };
+        let context = if nrpn {
+            CallbackContext::Nrpn { address, value }
+        } else {
+            CallbackContext::Rpn { address, value }
+        };
         let plan = Arc::clone(&self.plan);
         for (slot, script) in (0u8..).zip(&plan.scripts) {
-            let (entry, kind) = match nrpn {
-                false => (script.callbacks.rpn, Kind::Rpn),
-                true => (script.callbacks.nrpn, Kind::Nrpn),
+            let entry = if nrpn {
+                script.callbacks.nrpn
+            } else {
+                script.callbacks.rpn
             };
             if let Some(entry) = entry {
-                self.run_callback(slot, entry, Running::new(kind, None));
+                self.run_callback(slot, entry, Running::new(context));
             }
         }
     }
 
-    /// `$RPN_ADDRESS` and `$RPN_VALUE`: the 14-bit address of the running
-    /// callback's kind and the data entry, MSB times 128 plus LSB.
+    /// `$RPN_ADDRESS` and `$RPN_VALUE`: the 14-bit address and value captured
+    /// by the running `on rpn` / `on nrpn` callback.
     pub(crate) fn rpn(&self, value: bool) -> i32 {
-        let pair = |hi: usize, lo: usize| {
-            let cc = |n: usize| i32::from(self.cc_values.get(n).copied().unwrap_or(0));
-            cc(hi) * 128 + cc(lo)
-        };
-        match (value, self.running.kind == Kind::Nrpn) {
-            (true, _) => pair(6, 38),
-            (false, false) => pair(101, 100),
-            (false, true) => pair(99, 98),
+        match self.running.rpn() {
+            Some((addr, val)) => i32::from(if value { val } else { addr }),
+            None => 0,
         }
     }
 
@@ -386,7 +404,7 @@ impl Engine {
         if let Some(v) = self.poly_at.get_mut(usize::from(key)) {
             *v = value;
         }
-        if self.running.kind == Kind::PolyAt && self.running.controller == key {
+        if self.running.is(Kind::PolyAt) && self.running.controller() == key {
             self.running.set_own = true;
         }
         // The key's notes on the channel take it as their own pressure.
@@ -409,10 +427,7 @@ impl Engine {
         let plan = Arc::clone(&self.plan);
         for (slot, script) in (0u8..).zip(&plan.scripts) {
             if let Some(entry) = script.callbacks.poly_at {
-                let running = Running {
-                    controller: key,
-                    ..Running::new(Kind::PolyAt, None)
-                };
+                let running = Running::new(CallbackContext::PolyAt { key });
                 let heard = Heard::of(&self.run_callback(slot, entry, running));
                 if heard != Heard::Passed {
                     return self.count(heard);

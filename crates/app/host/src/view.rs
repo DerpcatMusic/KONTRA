@@ -5,6 +5,7 @@
 //! controls; a Lua script's from the page it made ([`crate::ui::lua`]).
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -14,12 +15,96 @@ use kontra_ui_model as model;
 use crate::ui::lua::Page as _;
 use crate::ui::{Changes, Face, Library, Live, Looks, Waves};
 
+/// Maximum incremental [`TreePatch`]es kept per [`View`] before a lagging
+/// reader falls back to a full tree copy.
+const MAX_PATCHES: usize = 16;
+
+/// Keyboard/status fields updated together when `Changes::keys` fires.
+#[derive(Clone, Debug)]
+pub struct KeyState {
+    pub keybed: Vec<(u8, model::Rgba)>,
+    pub key_names: Vec<(u8, String)>,
+    pub key_pressed: Option<Vec<u8>>,
+    pub message: String,
+}
+
+/// Widget-level diff carried by a [`TreePatch`].
+#[derive(Clone, Debug)]
+pub enum WidgetPatch {
+    /// Same widget count: replace only these `(index, widget)` entries in place.
+    InPlace(Vec<(usize, model::Widget)>),
+    /// Structural widget change (length changed or >50% of widgets rebuilt).
+    ReplaceAll(Arc<model::Interface>),
+}
+
+/// Incremental update to a part's [`model::Interface`] between consecutive
+/// revisions so the editor updates only changed widgets without cloning or
+/// re-resolving the whole tree.
+#[derive(Clone, Debug)]
+pub struct TreePatch {
+    pub from_revision: u64,
+    pub to_revision: u64,
+    pub page: Option<Vec<model::Page>>,
+    pub paint_order: Option<Option<Vec<model::WidgetRef>>>,
+    pub keys: Option<KeyState>,
+    pub assets: Vec<model::Asset>,
+    pub styles: Vec<model::TextStyle>,
+    pub widgets: WidgetPatch,
+}
+
+impl TreePatch {
+    /// Applies this patch onto `tree`. Returns `Some(changed_widget_indices)`
+    /// for incremental layout resolution, or `None` when the entire tree was
+    /// replaced and needs a full layout resolve.
+    pub fn apply(&self, tree: &mut model::Interface) -> Option<Vec<usize>> {
+        match &self.widgets {
+            WidgetPatch::ReplaceAll(full) => {
+                *tree = (**full).clone();
+                None
+            }
+            WidgetPatch::InPlace(updates) => {
+                if !self.assets.is_empty() {
+                    tree.assets.extend(self.assets.iter().cloned());
+                }
+                if !self.styles.is_empty() {
+                    tree.styles.extend(self.styles.iter().cloned());
+                }
+                if let Some(pages) = &self.page {
+                    tree.pages.clone_from(pages);
+                }
+                if let Some(order) = &self.paint_order {
+                    tree.paint_order.clone_from(order);
+                }
+                if let Some(keys) = &self.keys {
+                    tree.keybed.clone_from(&keys.keybed);
+                    tree.key_names.clone_from(&keys.key_names);
+                    tree.key_pressed.clone_from(&keys.key_pressed);
+                    tree.message.clone_from(&keys.message);
+                }
+                let mut changed = Vec::with_capacity(updates.len());
+                for (idx, widget) in updates {
+                    if let Some(slot) = tree.widgets.get_mut(*idx) {
+                        *slot = widget.clone();
+                        changed.push(*idx);
+                    }
+                }
+                Some(changed)
+            }
+        }
+    }
+}
+
 /// The interface of a part's first script with one.
 pub struct View {
     pub slot: u8,
     shown: Shown,
     /// Moves whenever [`View::refresh`] changed the tree.
     pub revision: u64,
+    /// Highest UI command sequence acknowledged by the audio thread for this
+    /// part (`LookFrame.applied_seq`), or applied directly for `Binding::Param`.
+    pub applied_seq: u64,
+    /// Recent incremental patches leading up to `revision`.
+    patches: VecDeque<Arc<TreePatch>>,
     /// The frame between trips to the audio side; `None` while it is there.
     pub(crate) frame: Option<Box<LookFrame>>,
     /// The library's resources, opened once and kept for later pictures.
@@ -175,6 +260,8 @@ impl View {
             slot: 0,
             shown: Shown::Direct(Box::new(tree)),
             revision: 0,
+            applied_seq: 0,
+            patches: VecDeque::new(),
             frame: None,
             library: None,
             waves: Waves::default(),
@@ -186,10 +273,45 @@ impl View {
             slot,
             shown,
             revision: 0,
+            applied_seq: 0,
+            patches: VecDeque::new(),
             frame: Some(frame),
             library: None,
             waves: Waves::default(),
         }
+    }
+
+    /// Returns the contiguous incremental patches from `revision` to
+    /// `self.revision`, or `None` if `revision` fell behind the patch window.
+    #[must_use]
+    pub fn patches_since(&self, revision: u64) -> Option<Vec<Arc<TreePatch>>> {
+        if revision == self.revision {
+            return Some(Vec::new());
+        }
+        let first = self.patches.front()?;
+        if revision < first.from_revision || revision > self.revision {
+            return None;
+        }
+        let mut expected = revision;
+        let mut out = Vec::new();
+        for p in &self.patches {
+            if p.to_revision <= revision {
+                continue;
+            }
+            if p.from_revision != expected {
+                return None;
+            }
+            expected = p.to_revision;
+            out.push(Arc::clone(p));
+        }
+        (expected == self.revision).then_some(out)
+    }
+
+    fn push_patch(&mut self, patch: TreePatch) {
+        if self.patches.len() >= MAX_PATCHES {
+            self.patches.pop_front();
+        }
+        self.patches.push_back(Arc::new(patch));
     }
 
     /// The tree the editor shows.
@@ -216,12 +338,44 @@ impl View {
         path: Option<&Path>,
         frame: Box<LookFrame>,
     ) {
+        if frame.state == Filled::Whole {
+            self.applied_seq = self.applied_seq.max(frame.applied_seq);
+        }
         let live = match &mut self.shown {
             Shown::Ksp(live) => live,
             Shown::Lua(tree) => {
                 let mut frame = frame;
-                if frame.state == Filled::Whole && frame.apply(tree) {
-                    self.revision += 1;
+                if frame.state == Filled::Whole {
+                    let old_assets = tree.assets.len();
+                    let old_styles = tree.styles.len();
+                    let changed = frame.apply(tree);
+                    if !changed.is_empty() {
+                        let from = self.revision;
+                        self.revision += 1;
+                        let to = self.revision;
+                        let widgets = if changed.len() <= tree.widgets.len() / 2 + 1 {
+                            WidgetPatch::InPlace(
+                                changed
+                                    .into_iter()
+                                    .filter_map(|i| Some((i, tree.widgets.get(i)?.clone())))
+                                    .collect(),
+                            )
+                        } else {
+                            WidgetPatch::ReplaceAll(Arc::new((**tree).clone()))
+                        };
+                        let assets = tree.assets.get(old_assets..).unwrap_or_default().to_vec();
+                        let styles = tree.styles.get(old_styles..).unwrap_or_default().to_vec();
+                        self.push_patch(TreePatch {
+                            from_revision: from,
+                            to_revision: to,
+                            page: None,
+                            paint_order: None,
+                            keys: None,
+                            assets,
+                            styles,
+                            widgets,
+                        });
+                    }
                 }
                 self.frame = Some(frame.kept());
                 return;
@@ -240,12 +394,66 @@ impl View {
         };
         // An overflowed frame has stale lists under new generations: the
         // tree waits for the grown one rather than remember them as seen.
+        let mut next_patch = None;
         if frame.state == Filled::Whole {
+            let old_len = live.tree.widgets.len();
+            let old_assets = live.tree.assets.len();
+            let old_styles = live.tree.styles.len();
+            let old_order_len = live.tree.paint_order.as_ref().map(Vec::len);
             let changes: Changes = live.refresh(face, self.slot, &*frame, &meta);
             if !changes.is_empty() {
                 self.waves.fill(&mut live.tree);
+                let from = self.revision;
                 self.revision += 1;
+                let to = self.revision;
+                let mut indices: Vec<usize> = changes.widgets.iter().map(|w| w.0).collect();
+                indices.sort_unstable();
+                indices.dedup();
+                let same_len = live.tree.widgets.len() == old_len;
+                let small_diff = same_len && indices.len() <= old_len / 2 + 1;
+                let widgets = if small_diff {
+                    WidgetPatch::InPlace(
+                        indices
+                            .into_iter()
+                            .filter_map(|i| Some((i, live.tree.widgets.get(i)?.clone())))
+                            .collect(),
+                    )
+                } else {
+                    WidgetPatch::ReplaceAll(Arc::new(live.tree.clone()))
+                };
+                let paint_order = (live.tree.paint_order.as_ref().map(Vec::len) != old_order_len
+                    || !same_len)
+                    .then(|| live.tree.paint_order.clone());
+                let keys = changes.keys.then(|| KeyState {
+                    keybed: live.tree.keybed.clone(),
+                    key_names: live.tree.key_names.clone(),
+                    key_pressed: live.tree.key_pressed.clone(),
+                    message: live.tree.message.clone(),
+                });
+                next_patch = Some(TreePatch {
+                    from_revision: from,
+                    to_revision: to,
+                    page: changes.page.then(|| live.tree.pages.clone()),
+                    paint_order,
+                    keys,
+                    assets: live
+                        .tree
+                        .assets
+                        .get(old_assets..)
+                        .unwrap_or_default()
+                        .to_vec(),
+                    styles: live
+                        .tree
+                        .styles
+                        .get(old_styles..)
+                        .unwrap_or_default()
+                        .to_vec(),
+                    widgets,
+                });
             }
+        }
+        if let Some(patch) = next_patch {
+            self.push_patch(patch);
         }
         self.frame = Some(frame.kept());
         self.library = library.into_inner();
@@ -271,7 +479,21 @@ impl View {
         };
         let slot = self.slot;
         let set = live.tap(widget, value)?;
+        let updated = live.tree.widgets.get(widget).cloned();
+        let from = self.revision;
         self.revision += 1;
+        if let Some(w) = updated {
+            self.push_patch(TreePatch {
+                from_revision: from,
+                to_revision: self.revision,
+                page: None,
+                paint_order: None,
+                keys: None,
+                assets: Vec::new(),
+                styles: Vec::new(),
+                widgets: WidgetPatch::InPlace(vec![(widget, w)]),
+            });
+        }
         Some(set.into_iter().map(|(id, v)| (slot, id, v)).collect())
     }
 
@@ -310,10 +532,28 @@ impl View {
             _ => (model::Value::Real(value), value),
         };
         let param = self.param(widget, value)?;
-        let w = self.tree_mut().widgets.get_mut(widget)?;
-        if w.value.as_ref() != Some(&next) {
-            w.value = Some(next);
+        let updated = {
+            let w = self.tree_mut().widgets.get_mut(widget)?;
+            if w.value.as_ref() != Some(&next) {
+                w.value = Some(next);
+                Some(w.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(w) = updated {
+            let from = self.revision;
             self.revision += 1;
+            self.push_patch(TreePatch {
+                from_revision: from,
+                to_revision: self.revision,
+                page: None,
+                paint_order: None,
+                keys: None,
+                assets: Vec::new(),
+                styles: Vec::new(),
+                widgets: WidgetPatch::InPlace(vec![(widget, w)]),
+            });
         }
         Some(param)
     }
@@ -364,6 +604,11 @@ struct MenuRead {
 pub struct LookFrame {
     pub(crate) part: usize,
     pub(crate) generation: u64,
+    /// Highest UI command sequence executed by the audio thread before this
+    /// frame was filled.
+    pub(crate) applied_seq: u64,
+    /// Audio-side `ui_epoch` latched when this frame was filled.
+    pub(crate) ui_epoch: u64,
     slot: u8,
     looks: Box<[Look]>,
     cells: Box<[(u32, Option<i64>)]>,
@@ -435,6 +680,8 @@ impl LookFrame {
         Box::new(Self {
             part: 0,
             generation: 0,
+            applied_seq: 0,
+            ui_epoch: 0,
             slot,
             looks,
             cells: cells.into_iter().map(|c| (c, None)).collect(),
@@ -465,6 +712,8 @@ impl LookFrame {
         Box::new(Self {
             part: 0,
             generation: 0,
+            applied_seq: 0,
+            ui_epoch: 0,
             slot,
             looks: Box::default(),
             cells: Box::default(),
@@ -517,10 +766,10 @@ impl LookFrame {
     }
 
     /// Brings a Lua page's `tree` to this frame, and picks what the next
-    /// trip reads; whether anything changed.
-    fn apply(&mut self, tree: &mut model::Interface) -> bool {
+    /// trip reads; returns the widget indices that changed.
+    fn apply(&mut self, tree: &mut model::Interface) -> Vec<usize> {
         let mut texts = self.texts.iter().filter(|t| t.1).peekable();
-        let mut changed = false;
+        let mut changed = Vec::new();
         // Items first: the value then picks the shown one among them.
         for m in self.menus.iter().filter(|m| m.fresh) {
             if let Some(model::Kind::Menu { items }) =
@@ -536,18 +785,22 @@ impl LookFrame {
                     .collect();
                 if *items != now {
                     *items = now;
-                    changed = true;
+                    changed.push(m.n as usize);
                 }
             }
         }
         for (n, look) in self.widgets.iter_mut().enumerate() {
             let text = texts.next_if(|t| t.0 as usize == n).map(|t| t.2.as_str());
-            if let Some(look) = look.take() {
-                changed |= crate::ui::lua::apply(tree, n, look, text);
+            if let Some(look) = look.take()
+                && crate::ui::lua::apply(tree, n, look, text)
+            {
+                changed.push(n);
             }
         }
         for (n, _, path) in self.images.iter().filter(|i| i.1) {
-            changed |= crate::ui::lua::picture(tree, *n as usize, path.as_str());
+            if crate::ui::lua::picture(tree, *n as usize, path.as_str()) {
+                changed.push(*n as usize);
+            }
         }
         for (n, has, cells) in &self.arrays {
             if *has
@@ -555,13 +808,15 @@ impl LookFrame {
                 && !matches!(&w.value, Some(model::Value::Reals(old)) if old.as_slice() == cells.as_ref())
             {
                 w.value = Some(model::Value::Reals(cells.to_vec()));
-                changed = true;
+                changed.push(*n as usize);
             }
         }
         // Within the room it was made with: every widget fits.
         let reads = readable(tree);
         self.reads.clear();
         self.reads.extend(reads);
+        changed.sort_unstable();
+        changed.dedup();
         changed
     }
 
@@ -703,6 +958,8 @@ impl LookFrame {
 
     /// Not filled: the part was gone or reloaded when it arrived.
     pub(crate) fn unfilled(&mut self) {
+        self.applied_seq = 0;
+        self.ui_epoch = 0;
         self.state = Filled::No;
     }
 }
@@ -818,12 +1075,12 @@ mod tests {
         let mut frame = LookFrame::lua(0, &tree);
         frame.arrays[0].1 = true;
         frame.arrays[0].2.copy_from_slice(&[0.25, 0.75]);
-        assert!(frame.apply(&mut tree));
+        assert!(!frame.apply(&mut tree).is_empty());
         assert_eq!(
             tree.widgets[0].value,
             Some(model::Value::Reals(vec![0.25, 0.75]))
         );
-        assert!(!frame.apply(&mut tree));
+        assert!(frame.apply(&mut tree).is_empty());
     }
 
     #[test]
@@ -851,12 +1108,12 @@ mod tests {
         menu.items
             .extend([Text::from_str_cut("a").0, Text::from_str_cut("b").0]);
         menu.fresh = true;
-        assert!(frame.apply(&mut tree));
+        assert!(!frame.apply(&mut tree).is_empty());
         let model::Kind::Menu { items } = &tree.widgets[0].kind else {
             panic!("a menu");
         };
         let texts: Vec<_> = items.iter().map(|i| (i.text.as_str(), i.value)).collect();
         assert_eq!(texts, [("a", 1), ("b", 2)]);
-        assert!(!frame.apply(&mut tree));
+        assert!(frame.apply(&mut tree).is_empty());
     }
 }

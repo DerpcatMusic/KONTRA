@@ -954,7 +954,7 @@ impl Engine {
         let Ok(cc) = u8::try_from(controller) else {
             return;
         };
-        if self.running.kind == Kind::Controller && self.running.controller == cc {
+        if self.running.is(Kind::Controller) && self.running.controller() == cc {
             self.running.set_own = true;
         }
         if cc == crate::midi::VCC_PITCH_BEND {
@@ -976,7 +976,11 @@ impl Engine {
         // automation ties to the switch whose callback unpurges that layer).
         for (slot, script) in (0u8..).zip(&self.plan.scripts) {
             for link in script.links.iter().filter(|l| l.cc == cc) {
-                self.linked.push((slot, link.id, link.value(value)));
+                if self.linked.len() < self.linked.capacity() {
+                    self.linked.push_back((slot, link.id, link.value(value)));
+                } else {
+                    self.stats.events_refused += 1;
+                }
             }
         }
         if cc == crate::midi::VCC_MONO_AT {

@@ -164,7 +164,8 @@ fn vendor_word_ratchet_in_engine_dsp_and_model() {
 fn architecture_metric_ratchets_hold() {
     let crates_dir = kontra_crates_dir();
 
-    // 1. Zero `Source::` format branching in `crates/app/ui/src`.
+    // 1. Zero `Source::` format branching in `crates/app/ui/src`, plus
+    // ratchet `Source::` and vendor words in `crates/model/ui-model/src`.
     let mut ui_files = Vec::new();
     walk_rs(&crates_dir.join("app/ui/src"), &mut ui_files);
     let ui_source_refs: usize = ui_files
@@ -179,6 +180,42 @@ fn architecture_metric_ratchets_hold() {
     assert_eq!(
         ui_source_refs, 0,
         "Source:: branching leaked into app/ui/src"
+    );
+
+    let mut ui_model_files = Vec::new();
+    walk_rs(&crates_dir.join("model/ui-model/src"), &mut ui_model_files);
+    let ui_model_prod_source: usize = ui_model_files
+        .iter()
+        .map(|p| {
+            let text = std::fs::read_to_string(p).expect("read ui-model");
+            let prod = text.split("#[cfg(test)]").next().unwrap_or("");
+            prod.matches("Source::").count()
+        })
+        .sum();
+    assert_eq!(
+        ui_model_prod_source, 0,
+        "Source:: format branching leaked into production code of model/ui-model/src"
+    );
+    let ui_model_total_source: usize = ui_model_files
+        .iter()
+        .map(|p| {
+            std::fs::read_to_string(p)
+                .expect("read ui-model")
+                .matches("Source::")
+                .count()
+        })
+        .sum();
+    assert!(
+        ui_model_total_source <= 1,
+        "Source:: ratchet regressed in model/ui-model/src: {ui_model_total_source} > 1"
+    );
+    let ui_model_vendor_words: usize = ui_model_files
+        .iter()
+        .map(|p| count_vendor_words(&std::fs::read_to_string(p).expect("read ui-model")))
+        .sum();
+    assert!(
+        ui_model_vendor_words <= 143,
+        "vendor-word ratchet regressed in model/ui-model/src: {ui_model_vendor_words} > 143"
     );
 
     // 2. Zero `fn_addr_eq` across all crate `src/` directories.
@@ -353,11 +390,12 @@ fn uvi_effects_load_through_their_module_tables() {
     );
     // 6,966 on b19c21ca3, 6,613 after the tables (06-FORMATS.md §3), 6,607
     // on c63dea078, 6,609 with the mono pan law, 6,619 with bank folder links (#258),
-    // 6,620 with the performance-view preference (#336).
+    // 6,620 with the performance-view preference (#336), 6,636 with the
+    // tolerated missing bank sample (#352).
     let lines: usize = files.iter().map(|p| production_lines(p)).sum();
     assert!(
-        lines <= 6_620,
-        "format/uvi code lines rose to {lines}; ratchet is 6,620"
+        lines <= 6_636,
+        "format/uvi code lines rose to {lines}; ratchet is 6,636"
     );
 }
 
@@ -376,9 +414,10 @@ fn count_needles(files: &[PathBuf], needles: &[&str]) -> usize {
 
 #[test]
 fn all_kontakt_effect_modules_register_unique_ids_and_roundtrip_saved() {
+    use kontra_ir::EffectModel;
     use kontra_kontakt_effects::{
-        bite, choral, dstortion, dynamics, flair, freak, module, phasis, psyche, skreamer, supergt,
-        tape, vibrato,
+        bite, choral, delays, dstortion, dynamics, flair, freak, module, phasis, psyche, skreamer,
+        supergt, tape, vibrato,
     };
 
     module::register_all();
@@ -405,6 +444,9 @@ fn all_kontakt_effect_modules_register_unique_ids_and_roundtrip_saved() {
     }
 
     // Per-module encoding equality: `model.build(&model.saved)` == load-time constructor.
+    // Every module in `module::ALL` MUST be covered here so new modules cannot skip verification.
+    let mut checked = HashSet::new();
+
     // Tape
     let mut tape_pub = Vec::new();
     for v in [0.4f32, 0.5, 0.7] {
@@ -413,6 +455,7 @@ fn all_kontakt_effect_modules_register_unique_ids_and_roundtrip_saved() {
     tape_pub.push(0);
     let tm = tape::model(&tape_pub).unwrap();
     assert_eq!(tm.build(&tm.saved), Some(tape::tape(0.4, 0.5, 0.7)));
+    checked.insert(tm.id);
 
     // Skreamer
     let sk_pub: Vec<u8> = [0.5f32, 0.6, 0.4, 0.3, 0.8]
@@ -424,6 +467,7 @@ fn all_kontakt_effect_modules_register_unique_ids_and_roundtrip_saved() {
         sm.build(&sm.saved),
         Some(skreamer::skreamer(0.5, 0.6, 0.4, 0.3, 0.8))
     );
+    checked.insert(sm.id);
 
     // DStortion
     let ds_pub: Vec<u8> = [0.5f32, 0.4, 0.7, 0.5, 0.5, 0.6]
@@ -435,6 +479,7 @@ fn all_kontakt_effect_modules_register_unique_ids_and_roundtrip_saved() {
         dm.build(&dm.saved),
         Some(dstortion::dstortion(0.5, 0.4, 0.7, 0.5, 0.5, 0.6))
     );
+    checked.insert(dm.id);
 
     // Supercharger GT
     let mut sgt_pub = Vec::new();
@@ -448,6 +493,7 @@ fn all_kontakt_effect_modules_register_unique_ids_and_roundtrip_saved() {
     let sgt_k = supergt::saved(&sgt_pub).unwrap();
     let sgtm = supergt::model(&sgt_pub).unwrap();
     assert_eq!(sgtm.build(&sgtm.saved), Some(supergt::supergt(sgt_k)));
+    checked.insert(sgtm.id);
 
     // Feedback Compressor
     let mut fb_pub = Vec::new();
@@ -458,23 +504,30 @@ fn all_kontakt_effect_modules_register_unique_ids_and_roundtrip_saved() {
     let (fb_eff, _) = dynamics::effect(0x4c, 0x10, &fb_pub).unwrap();
     let fbm = dynamics::feedback_model(&fb_pub).unwrap();
     assert_eq!(fbm.build(&fbm.saved), Some(fb_eff));
+    checked.insert(fbm.id);
 
     // Phasis, Flair, Choral, Bite, Freak, Psyche, Vibrato
     let pm = phasis::model();
     assert_eq!(pm.build(&pm.saved), Some(phasis::phasis(phasis::INIT)));
+    checked.insert(pm.id);
     let flm = flair::model();
     assert_eq!(flm.build(&flm.saved), Some(flair::flair(flair::INIT)));
+    checked.insert(flm.id);
     let chm = choral::model();
     assert_eq!(chm.build(&chm.saved), Some(choral::choral(choral::INIT)));
+    checked.insert(chm.id);
     let bm = bite::model(bite::FRESH);
     assert_eq!(bm.build(&bm.saved), Some(bite::bite(bite::FRESH)));
+    checked.insert(bm.id);
     let frm = freak::model(freak::FRESH);
     assert_eq!(frm.build(&frm.saved), Some(freak::freak(freak::FRESH)));
+    checked.insert(frm.id);
     let psm = psyche::model(psyche::INIT);
     assert_eq!(
         psm.build(&psm.saved),
         Some(ir::EffectKind::Shifter(psyche::shifter(psyche::INIT)))
     );
+    checked.insert(psm.id);
     let vib = vibrato::Vibrato {
         depth: 2,
         color: 1,
@@ -487,6 +540,138 @@ fn all_kontakt_effect_modules_register_unique_ids_and_roundtrip_saved() {
     assert_eq!(
         vm.build(&vm.saved),
         Some(ir::EffectKind::Scanner(vibrato::scanner(vib)))
+    );
+    checked.insert(vm.id);
+
+    // Legacy Chorus & Flanger
+    let ch_pub: Vec<u8> = [0.5f32, 1.5, 0.3, 0.0]
+        .into_iter()
+        .flat_map(f32::to_le_bytes)
+        .collect();
+    let ch_saved = delays::saved::<4>(0x51, &ch_pub).unwrap();
+    let ch_mod = delays::CHORUS.knob_model(&ch_saved);
+    assert_eq!(
+        ch_mod.build(&ch_mod.saved),
+        delays::legacy(0x11, 0x51, &ch_pub)
+    );
+    checked.insert(ch_mod.id);
+
+    let fl_pub: Vec<u8> = [0.7f32, 0.6, 0.8, 0.4, 2.5, 0.0]
+        .into_iter()
+        .flat_map(f32::to_le_bytes)
+        .collect();
+    let fl_saved = delays::saved::<6>(0x51, &fl_pub).unwrap();
+    let fl_mod = delays::FLANGER.knob_model(&fl_saved);
+    assert_eq!(
+        fl_mod.build(&fl_mod.saved),
+        delays::legacy(0x12, 0x51, &fl_pub)
+    );
+    checked.insert(fl_mod.id);
+
+    assert_eq!(
+        checked, seen_ids,
+        "every module in kontakt_effects::module::ALL must be covered by roundtrip verification"
+    );
+
+    // Structural knob liveness guard: every SlotKnob written by a module's `rows()`
+    // must exist in `module.knobs` and visibly affect `build_effect` when moved
+    // across its law's range (prevents dead knobs like KT-12).
+    let delay_rows = delays::rows();
+    let ch_rows: Vec<_> = delay_rows
+        .iter()
+        .filter(|(n, ..)| n.starts_with("$ENGINE_PAR_CH_"))
+        .cloned()
+        .collect();
+    let fl_rows: Vec<_> = delay_rows
+        .iter()
+        .filter(|(n, ..)| n.starts_with("$ENGINE_PAR_FL_"))
+        .cloned()
+        .collect();
+    type Rows<'a> = &'a [(&'a str, ir::KnobTarget, ir::Law)];
+    let modules_and_rows: &[(&module::Module, Rows, Vec<f32>)] = &[
+        (&tape::MODULE, &tape::rows(), tm.saved.to_vec()),
+        (&skreamer::MODULE, &skreamer::rows(), sm.saved.to_vec()),
+        (&dstortion::MODULE, &dstortion::rows(), dm.saved.to_vec()),
+        (&supergt::MODULE, &supergt::rows(), sgtm.saved.to_vec()),
+        (
+            &dynamics::FEEDBACK_MODULE,
+            &dynamics::feedback_rows(),
+            fbm.saved.to_vec(),
+        ),
+        (&phasis::MODULE, &phasis::rows(), pm.saved.to_vec()),
+        (&flair::MODULE, &flair::rows(), flm.saved.to_vec()),
+        (&choral::MODULE, &choral::rows(), chm.saved.to_vec()),
+        (&bite::MODULE, &bite::rows(), bm.saved.to_vec()),
+        (&freak::MODULE, &freak::rows(), frm.saved.to_vec()),
+        (&psyche::MODULE, &psyche::rows(), psm.saved.to_vec()),
+        (&vibrato::MODULE, &vibrato::rows(), vm.saved.to_vec()),
+        (&delays::CHORUS, &ch_rows, ch_mod.saved.to_vec()),
+        (&delays::FLANGER, &fl_rows, fl_mod.saved.to_vec()),
+    ];
+    let row_checked_ids: HashSet<_> = modules_and_rows.iter().map(|(m, ..)| m.id).collect();
+    assert_eq!(
+        row_checked_ids, seen_ids,
+        "every module in kontakt_effects::module::ALL must have its rows() checked for knob liveness"
+    );
+    let base_effect = ir::Effect {
+        kind: ir::EffectKind::Other,
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    };
+    let mut dead = Vec::new();
+    for (m, rows, base_params) in modules_and_rows {
+        let base_built = m
+            .build_effect(base_params, &base_effect)
+            .expect("baseline params must build");
+        for (par_name, target, law) in *rows {
+            let ir::KnobTarget::Slot(knob) = *target else {
+                continue;
+            };
+            let idx = m.knobs.iter().position(|k| *k == knob).unwrap_or_else(|| {
+                panic!(
+                    "module {} row {par_name} targets {knob:?}, which is absent from module.knobs",
+                    m.name
+                )
+            });
+            let mut changed = false;
+            for x in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+                let mut probe = base_params.clone();
+                probe[idx] = law.eval(x);
+                if m.build_effect(&probe, &base_effect)
+                    .is_some_and(|e| e != base_built)
+                {
+                    changed = true;
+                    break;
+                }
+            }
+            if !changed {
+                dead.push(format!("{} {par_name}", m.name));
+            }
+        }
+    }
+    // Ratchet: knobs a row writes that `build` never reads. This list may
+    // only shrink; a new entry is a dead knob (like KT-12) to fix, not list.
+    // Swept one at a time from the saved defaults, so a knob only another
+    // mode reads (Freak's) shows here too.
+    let known_dead: &[&str] = &[
+        "Freak $ENGINE_PAR_FREAK_BP_FILTER",
+        "Freak $ENGINE_PAR_FREAK_BP_FREQ",
+        "Freak $ENGINE_PAR_FREAK_CARRIER",
+        "Freak $ENGINE_PAR_FREAK_CONTOUR",
+        "Freak $ENGINE_PAR_FREAK_DEMOD",
+        "Freak $ENGINE_PAR_FREAK_RELEASE",
+        "Freak $ENGINE_PAR_FREAK_TUNING",
+        "Freak $ENGINE_PAR_FREAK_WIDTH",
+        "Phasis $ENGINE_PAR_PHASIS_INVERT_MOD_MIX",
+        "Phasis $ENGINE_PAR_PHASIS_RATE_UNIT",
+        "Psyche Delay $ENGINE_PAR_PSYDL_DETUNE_STEREO",
+        "Tape Saturator $ENGINE_PAR_TP_QUALITY",
+    ];
+    dead.sort();
+    assert_eq!(
+        dead, known_dead,
+        "dead knobs changed: fix the new ones or shrink the list"
     );
 }
 

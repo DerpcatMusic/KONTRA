@@ -426,7 +426,7 @@ impl Engine {
     /// `on async_complete` follows.
     fn midi_file(&mut self, path: Text, args: [i32; 3], save: bool) -> i32 {
         let name = Text::from_str_cut(path.as_str().rsplit(['/', '\\']).next().unwrap_or("")).0;
-        if !save && (self.building || self.running.kind == Kind::Init) {
+        if !save && (self.building || self.running.is(Kind::Init)) {
             let script = self.script();
             let bytes = script.and_then(|s| s.read_file(path.as_str()));
             let smf = bytes.and_then(|b| midi_file::read(&b));

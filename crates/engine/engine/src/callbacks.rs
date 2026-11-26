@@ -11,10 +11,53 @@ use kontra_voice::FadeTarget;
 
 use crate::ledger::{NoteRef, Releases};
 use crate::queue::{Due, Exit, Work};
-use crate::script::{Kind, Running, ScriptPlan};
+use crate::script::{CallbackContext, CallbackFrame, Kind, Running, ScriptPlan};
 use crate::{BLOCK_SCRIPT_TURNS, Engine, ReleaseZones, Trigger};
 
 impl Engine {
+    /// Stores the typed callback frame for coroutine `co` in script `slot`.
+    pub(crate) fn store_frame(&mut self, slot: u8, co: kontra_vm::CoId, frame: CallbackFrame) {
+        if let Some(cell) = self
+            .co_frames
+            .get_mut(usize::from(slot))
+            .and_then(|frames| frames.get_mut(usize::from(co.index())))
+        {
+            *cell = Some(frame);
+        }
+    }
+
+    /// Reads the typed callback frame for live coroutine `co` in script `slot`.
+    fn load_frame(&self, slot: u8, co: kontra_vm::CoId) -> Option<CallbackFrame> {
+        self.co_frames
+            .get(usize::from(slot))
+            .and_then(|frames| frames.get(usize::from(co.index())))
+            .copied()
+            .flatten()
+            .filter(|f| f.generation == co.generation())
+    }
+
+    /// Clears the typed callback frame once `co` finishes or is cancelled.
+    pub(crate) fn clear_frame(&mut self, slot: u8, co: kontra_vm::CoId) {
+        if let Some(cell) = self
+            .co_frames
+            .get_mut(usize::from(slot))
+            .and_then(|frames| frames.get_mut(usize::from(co.index())))
+            && cell.is_some_and(|f| f.generation == co.generation())
+        {
+            *cell = None;
+        }
+    }
+
+    /// Finishes one callback turn (start or resume): forwards notes played by
+    /// the callback, starts pending notes, and drains MIDI-linked controls FIFO.
+    fn finish_turn(&mut self, mark: usize) {
+        self.forward_from(mark);
+        self.start_pending();
+        while let Some((slot, id, value)) = self.linked.pop_front() {
+            self.set_control(slot, id, value);
+        }
+    }
+
     /// The plan of the slot whose callback runs.
     pub(crate) fn script(&self) -> Option<&ScriptPlan> {
         self.plan.scripts.get(usize::from(self.running.slot))
@@ -39,18 +82,29 @@ impl Engine {
         let outer = std::mem::replace(&mut self.running, running);
         let mark = self.forward.len();
         if let Some(mut vm) = self.take_vm(slot) {
-            if let Some(co) = start(&mut vm, running.context()) {
+            if let Some(co) = start(&mut vm, running.vm_context()) {
                 self.stats.script_starts += 1;
+                if let Some(context) = running.context {
+                    self.store_frame(
+                        slot,
+                        co,
+                        CallbackFrame {
+                            generation: co.generation(),
+                            context,
+                            callback_id: running.callback_id,
+                        },
+                    );
+                }
                 #[cfg(feature = "trace")]
                 if let Some(trace) = &mut self.trace {
                     trace.push(crate::TraceEvent::Callback {
                         frame: self.now.0,
                         slot,
-                        kind: running.callback_type,
+                        kind: running.callback_type(),
                         id: running.callback_id,
-                        note_id: running.event.map(crate::NoteRef::event_id),
-                        controller: running.controller,
-                        control: running.ui,
+                        note_id: running.event().map(crate::NoteRef::event_id),
+                        controller: running.controller(),
+                        control: running.ui(),
                         resume: false,
                     });
                 }
@@ -59,11 +113,7 @@ impl Engine {
             self.put_vm(slot, vm);
         }
         let ran = std::mem::replace(&mut self.running, outer);
-        self.forward_from(mark);
-        self.start_pending();
-        while let Some((slot, id, value)) = self.linked.pop() {
-            self.set_control(slot, id, value);
-        }
+        self.finish_turn(mark);
         ran
     }
 
@@ -72,14 +122,14 @@ impl Engine {
         let entry = (self.plan.scripts.get(usize::from(slot))).and_then(|s| s.callbacks.widget);
         if let (Some(entry), Some(vm)) = (entry, self.vm_mut(slot)) {
             vm.stage_widget(n, value, cell);
-            let mut running = Running::new(Kind::UiControl, None);
-            running.ui = i32::try_from(n).unwrap_or(i32::MAX);
-            self.run_callback(slot, entry, running);
+            let id = i32::try_from(n).unwrap_or(i32::MAX);
+            self.run_callback(slot, entry, Running::new(CallbackContext::UiControl { id }));
         }
     }
 
     /// Reads each route onto a script knob ([`kontra_plan::KnobModPlan`]) at
-    /// control rate, and moves the knob where the value changed.
+    /// control rate, and moves the knob where the value changed. Zero heap
+    /// allocations on the audio thread.
     pub(crate) fn follow_knobs(&mut self, loading: bool) {
         let plan = Arc::clone(&self.plan);
         if plan.knob_mods.is_empty() {
@@ -96,19 +146,18 @@ impl Engine {
         // Routes onto one knob add (a multiplicative one scales its place
         // in the range): the sums of what each reads now, held within the
         // range once, run its `changed` once.
-        let reads: Vec<f32> = plan
-            .knob_mods
-            .iter()
-            .map(|k| self.knobs.read(&live, k.source).unwrap_or(0.0))
-            .collect();
-        let mut moved = Vec::new();
+        for (dst, k) in self.knob_read_scratch.iter_mut().zip(&plan.knob_mods) {
+            *dst = self.knobs.read(&live, k.source).unwrap_or(0.0);
+        }
+        let mut moved = std::mem::take(&mut self.knob_moved_scratch);
+        moved.clear();
         for (n, k) in plan.knob_mods.iter().enumerate() {
             let same = |o: &&crate::KnobModPlan| (o.slot, o.id) == (k.slot, k.id);
             if plan.knob_mods.iter().position(|o| same(&o)) != Some(n) {
                 continue;
             }
             let sum = |scale: bool| -> f32 {
-                (plan.knob_mods.iter().zip(&reads))
+                (plan.knob_mods.iter().zip(self.knob_read_scratch.iter()))
                     .filter(|(o, _)| same(o) && o.scale == scale)
                     .map(|(_, m)| m)
                     .sum()
@@ -127,24 +176,29 @@ impl Engine {
                     *last = reading;
                 } else if reading != *last {
                     *last = reading;
-                    moved.push((
-                        k,
-                        f64::from(scale) - f64::from(initial[0]),
-                        f64::from(add) - f64::from(initial[1]),
-                    ));
+                    if moved.len() < moved.capacity() {
+                        moved.push((
+                            k.slot,
+                            k.id,
+                            f64::from(scale) - f64::from(initial[0]),
+                            f64::from(add) - f64::from(initial[1]),
+                        ));
+                    }
                 }
             }
         }
-        for (k, scale, add) in moved {
-            self.set_control_mod(k.slot, k.id, scale, add);
+        for &(slot, id, scale, add) in &moved {
+            self.set_control_mod(slot, id, scale, add);
         }
+        moved.clear();
+        self.knob_moved_scratch = moved;
     }
 
     /// A route's value moved foreign script `slot`'s control `id`
     /// ([`kontra_plan::KnobModPlan`]); the machine runs its `changed` if the
     /// value moved.
     pub fn set_control_mod(&mut self, slot: u8, id: i32, scale: f64, m: f64) {
-        let running = Running::new(Kind::UiControl, None);
+        let running = Running::new(CallbackContext::UiControl { id });
         self.run_with(slot, running, |vm, context| {
             vm.control_mod(id, scale, m, context)
         });
@@ -163,7 +217,7 @@ impl Engine {
         };
         if script.foreign.is_some() {
             let value = f64::from_bits(value as u64);
-            let running = Running::new(Kind::UiControl, None);
+            let running = Running::new(CallbackContext::UiControl { id });
             self.run_with(slot, running, |vm, context| vm.control(id, value, context));
             return;
         }
@@ -186,17 +240,16 @@ impl Engine {
         // A menu the user picks from selects that entry.
         self.ui
             .select(slot, n, i32::try_from(value).unwrap_or(i32::MIN));
-        for (kind, entry) in [
-            (Kind::UiControls, script.callbacks.ui_controls),
-            (Kind::UiControl, own),
-            (Kind::UiUpdate, script.callbacks.ui_update),
+        for (context, entry) in [
+            (
+                CallbackContext::UiControls { id },
+                script.callbacks.ui_controls,
+            ),
+            (CallbackContext::UiControl { id }, own),
+            (CallbackContext::UiUpdate { id }, script.callbacks.ui_update),
         ] {
             if let Some(entry) = entry {
-                let running = Running {
-                    ui: id,
-                    ..Running::new(kind, None)
-                };
-                self.run_callback(slot, entry, running);
+                self.run_callback(slot, entry, Running::new(context));
             }
         }
     }
@@ -244,7 +297,7 @@ impl Engine {
             .get(usize::from(slot))
             .and_then(|s| s.callbacks.async_complete);
         if let Some(entry) = entry {
-            self.run_callback(slot, entry, Running::new(Kind::AsyncComplete, None));
+            self.run_callback(slot, entry, Running::new(CallbackContext::AsyncComplete));
         }
     }
 
@@ -256,11 +309,10 @@ impl Engine {
                 // A stopped wait: its callback already went on.
                 return self.put_vm(slot, vm);
             }
+            let frame = self.load_frame(slot, co);
             // What `on init` left waiting (loading, tables, UI) is chunked
             // work with no deadline: a block runs a share of it, not all.
-            if self.block_end > self.now
-                && vm.context(co).is_some_and(|c| (c >> 32) as u8 == INIT_TYPE)
-            {
+            if self.block_end > self.now && frame.is_some_and(|f| f.context.kind() == Kind::Init) {
                 let left = BLOCK_SCRIPT_TURNS.saturating_sub(self.block_turns);
                 if left == 0
                     && self
@@ -273,20 +325,23 @@ impl Engine {
                 self.fuel = u32::try_from(left).unwrap_or(0);
             }
             self.stats.script_resumes += 1;
-            self.running = Running {
-                slot,
-                ..Running::resumed(vm.context(co).unwrap_or(0))
+            self.running = match frame {
+                Some(frame) => Running::from_frame(slot, frame),
+                None => Running {
+                    slot,
+                    ..Running::IDLE
+                },
             };
             #[cfg(feature = "trace")]
             if let Some(trace) = &mut self.trace {
                 trace.push(crate::TraceEvent::Callback {
                     frame: self.now.0,
                     slot,
-                    kind: self.running.callback_type,
+                    kind: self.running.callback_type(),
                     id: self.running.callback_id,
-                    note_id: self.running.event.map(crate::NoteRef::event_id),
-                    controller: self.running.controller,
-                    control: self.running.ui,
+                    note_id: self.running.event().map(crate::NoteRef::event_id),
+                    controller: self.running.controller(),
+                    control: self.running.ui(),
                     resume: true,
                 });
             }
@@ -296,8 +351,7 @@ impl Engine {
             self.put_vm(slot, vm);
         }
         self.running = Running::IDLE;
-        self.forward_from(mark);
-        self.start_pending();
+        self.finish_turn(mark);
     }
 
     /// KSP `stop_wait`: applied when the slot's running callback returns or waits.
@@ -325,12 +379,13 @@ impl Engine {
         // `stop_wait` the slot's callbacks asked for while it ran: each goes on now.
         while let Some(i) = self.stop_waits.iter().position(|s| s.0 == slot) {
             let (_, id, rest) = self.stop_waits.swap_remove(i);
-            let matches = |context| Running::resumed(context).callback_id == id & 0xF_FFFF;
+            let matches = |context| Running::callback_id_of(context) == id & 0xF_FFFF;
             if let Some((co, wait)) = vm.stop_wait(matches, rest)
                 && !self.queue.push(self.now, Work::Resume(slot, co, wait))
             {
                 self.stats.events_refused += 1;
                 vm.cancel(co);
+                self.clear_frame(slot, co);
             }
         }
         if let Some(cell) = self.vms.get_mut(usize::from(slot)) {
@@ -349,21 +404,59 @@ impl Engine {
         self.flush_refresh();
         self.stats.script_turns += u64::from(vm.last_turns());
         self.refresh_moved_routes();
-        if let Step::Wait(micros) = step {
-            self.wake(slot, vm, co, micros, now);
-        } else if step == Step::Yield {
-            let wait = vm.wait_epoch(co).unwrap_or(0);
-            if !self
-                .queue
-                .push_due(Due::at(self.block_end), Work::Resume(slot, co, wait))
-            {
-                self.stats.events_refused += 1;
-                vm.cancel(co);
+        match step {
+            Step::Wait(micros) => {
+                if let Some(context) = self.running.context {
+                    self.store_frame(
+                        slot,
+                        co,
+                        CallbackFrame {
+                            generation: co.generation(),
+                            context,
+                            callback_id: self.running.callback_id,
+                        },
+                    );
+                }
+                self.wake(slot, vm, co, micros, now);
             }
+            Step::Yield => {
+                if let Some(context) = self.running.context {
+                    self.store_frame(
+                        slot,
+                        co,
+                        CallbackFrame {
+                            generation: co.generation(),
+                            context,
+                            callback_id: self.running.callback_id,
+                        },
+                    );
+                }
+                let wait = vm.wait_epoch(co).unwrap_or(0);
+                if !self
+                    .queue
+                    .push_due(Due::at(self.block_end), Work::Resume(slot, co, wait))
+                {
+                    self.stats.events_refused += 1;
+                    vm.cancel(co);
+                    self.clear_frame(slot, co);
+                }
+            }
+            Step::Done => self.clear_frame(slot, co),
         }
         // A task started beside this one starts at this one's time (UVI's
         // `spawn`), after it; one that waited waits from that time.
         while let Some((spawned, waited)) = vm.spawned() {
+            if let Some(context) = self.running.context {
+                self.store_frame(
+                    slot,
+                    spawned,
+                    CallbackFrame {
+                        generation: spawned.generation(),
+                        context,
+                        callback_id: self.running.callback_id,
+                    },
+                );
+            }
             if let Some(micros) = waited {
                 self.wake(slot, vm, spawned, micros, now);
                 continue;
@@ -372,6 +465,7 @@ impl Engine {
             if !self.queue.push_due(now, Work::Resume(slot, spawned, wait)) {
                 self.stats.events_refused += 1;
                 vm.cancel(spawned);
+                self.clear_frame(slot, spawned);
             }
         }
     }
@@ -394,6 +488,7 @@ impl Engine {
         if !self.queue.push_due(due, Work::Resume(slot, co, wait)) {
             self.stats.events_refused += 1;
             vm.cancel(co);
+            self.clear_frame(slot, co);
         }
     }
 
@@ -424,7 +519,11 @@ impl Engine {
                 queued = true;
             }
             if let Some(entry) = script.callbacks.note {
-                self.run_callback(slot, entry, Running::new(Kind::Note, Some(note)));
+                self.run_callback(
+                    slot,
+                    entry,
+                    Running::new(CallbackContext::Note { event: note }),
+                );
             }
         }
         if !queued {
@@ -465,7 +564,11 @@ impl Engine {
         for (slot, script) in (0u8..).zip(&plan.scripts).skip(first) {
             if let Some(entry) = script.callbacks.release
                 && self
-                    .run_callback(slot, entry, Running::new(Kind::Release, Some(note)))
+                    .run_callback(
+                        slot,
+                        entry,
+                        Running::new(CallbackContext::Release { event: note }),
+                    )
                     .ignore_release
             {
                 return Some(slot);
@@ -671,14 +774,11 @@ impl Engine {
             .get(usize::from(slot))
             .and_then(|s| s.callbacks.listener)
         {
-            let running = Running {
-                signal,
-                ..Running::new(Kind::Listener, None)
-            };
-            self.run_callback(slot, entry, running);
+            self.run_callback(
+                slot,
+                entry,
+                Running::new(CallbackContext::Listener { signal }),
+            );
         }
     }
 }
-
-/// The callback type number of `on init`, which a resumed `on init` keeps.
-const INIT_TYPE: u8 = 5;

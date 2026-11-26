@@ -2818,6 +2818,43 @@ fn authored_playback_options_suppress_file_loops_on_load_and_swap() {
     assert!(zones[2].loops.is_empty());
 }
 
+/// Augmented Orchestra's risers: the script loads one sample a key, and the
+/// bank lacks one of them (`D#2`). UVI's load fails for that key alone and
+/// its oscillator keeps the saved sample, so one gap in a loaded set is
+/// audible, not broken; a script that loads nothing at all stays broken.
+#[test]
+fn a_script_sample_the_bank_lacks_is_audible_when_its_set_loads() {
+    let xml = r#"<Program Name="p">
+        <Scripts><ScriptProcessor Bypass="0"><script><![CDATA[--]]></script></ScriptProcessor></Scripts>
+        <Layers><Layer><Keygroups>
+          <Keygroup LowKey="38" HighKey="38"><Oscillators><SamplePlayer Bypass="0" SamplePath="./t.wav"/></Oscillators></Keygroup>
+          <Keygroup LowKey="39" HighKey="39"><Oscillators><SamplePlayer Bypass="0" SamplePath="./t.wav"/></Oscillators></Keygroup>
+        </Keygroups></Layer></Layers>
+    </Program>"#;
+    let doc = roxmltree::Document::parse(xml).unwrap();
+    let impact = |paths: &[(u32, &str)]| {
+        let out = translate(doc.root_element(), "Presets", &Stub, &|_| {
+            (paths.iter())
+                .map(|&(group, path)| Swap {
+                    group,
+                    slot: 0,
+                    path: path.into(),
+                    root: None,
+                })
+                .collect()
+        })
+        .unwrap();
+        (out.diagnostics.iter())
+            .find(|d| d.feature == "script sample")
+            .map(|d| d.impact)
+    };
+    assert_eq!(
+        impact(&[(0, "riser-D2.wav"), (1, "missing-D#2.wav")]),
+        Some(ir::Impact::Audible)
+    );
+    assert_eq!(impact(&[(1, "missing-D#2.wav")]), Some(ir::Impact::Broken));
+}
+
 /// A keygroup with `connections` on LFO 1 (`lfo` attributes) and mapper
 /// `mapper` (`Min`, `Discrete`, points), translated.
 fn mapped_lfo_program(lfo: &str, mapper: (&str, &str, &str), connections: &str) -> ir::Instrument {

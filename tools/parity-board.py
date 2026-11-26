@@ -2,7 +2,8 @@
 """The parity board: every Kontakt and UVI Falcon item KONTRA must match, with its status.
 
     tools/parity-board.py                  generate docs/PARITY.md and docs/PARITY.html (and blame new rows)
-    tools/parity-board.py --check          fail when a snapshot is malformed or the generator fails on them
+    tools/parity-board.py --check          fail when snapshots are malformed, dsp-oracle.tsv cites a
+                                           missing/failing test, or flagged-claims.tsv is non-empty
     tools/parity-board.py --ksp-manual KSP_Reference_Manual.txt    refresh snapshots/ksp-manual.tsv
     tools/parity-board.py --uvi-reference [DIR]   refresh snapshots/uvi-reference.tsv from lua.uvi.net
                                                   (or from a directory of its saved pages)
@@ -12,16 +13,13 @@ No cargo and no oracle: inputs that need either are the checked-in snapshots und
 docs/parity/snapshots/, refreshed by the lane that changes them (the board's header lists the
 commands). Each snapshot keeps its rows in byte order, one per line, so two PRs that add rows merge.
 The board itself is generated, never committed: committed output made every lane PR conflict. The
-site and the public mirror generate it (.github/workflows/mirror.yml in the monorepo). Every status is derived from the repo: tests, probes, law tables, the census.
-snapshots/overrides.tsv is the only hand-typed layer, and every row of it gives a reason.
+site and the public mirror generate it (.github/workflows/mirror.yml in the monorepo). Every status
+is derived structurally from the repo: passing v3 oracle manifests, law tables, source registrations,
+and corpus censuses. snapshots/overrides.tsv is the only hand-typed layer, and every row gives a reason.
 
-Statuses: tested (KONTRA does it and a test, probe or oracle measurement checks it), done (KONTRA
-does it), partial (some of it), missing. "Passing" is tested + done.
-
-Each passing row names the PR that brought its evidence: the squash-merge `(#NNN)` of the commit
-that last changed the evidence line (git blame, cached by file content), or a `Parity: <row-id>...`
-trailer in a commit message. A claim on a row that does not pass is listed, not trusted.
-Attributions are a local cache (docs/parity/attribution.tsv, gitignored) rebuilt from git on demand.
+Statuses: tested (KONTRA does it and a real test, probe or oracle measurement verifies it),
+done (KONTRA does it with verified law), partial (some of it), unseen (reader exists, 0 corpus
+objects observed), missing. "Passing" is tested + done (unseen does not count as passing).
 """
 import collections
 import hashlib
@@ -41,16 +39,24 @@ OUT_MD = ROOT / "docs/PARITY.md"
 OUT_HTML = ROOT / "docs/PARITY.html"
 REPO = "https://github.com/DerpcatMusic/KONTRA/blob/main/"
 UVI_DOCS = "https://lua.uvi.net/"
-STATUSES = ("tested", "done", "partial", "missing")
+STATUSES = ("tested", "done", "partial", "unseen", "missing")
 CACHE = pathlib.Path(os.environ.get("XDG_CACHE_HOME", pathlib.Path.home() / ".cache")) / "kontra-parity-blame"
+
+_TEXT_CACHE = {}
 
 
 def read(rel):
-    return (ROOT / rel).read_text(errors="ignore")
+    p = ROOT / rel
+    key = p.as_posix()
+    if key not in _TEXT_CACHE:
+        _TEXT_CACHE[key] = p.read_text(errors="ignore") if p.is_file() else ""
+    return _TEXT_CACHE[key]
 
 
 def tsv(path, header=True):
     lines = [l.rstrip("\n").split("\t") for l in pathlib.Path(path).read_text().splitlines() if l and not l.startswith("#")]
+    if not lines:
+        return []
     return [dict(zip(lines[0], r)) for r in lines[1:]] if header else lines
 
 
@@ -58,34 +64,27 @@ def files(*globs):
     return sorted(p for g in globs for p in ROOT.glob(g) if p.is_file() and "target" not in p.parts)
 
 
-class Index:
-    """Lower-cased words per file, to find the first file that names a word."""
-
-    def __init__(self, paths):
-        self.words = [(p.relative_to(ROOT).as_posix(), set(re.findall(r"[a-z_0-9]+", p.read_text(errors="ignore").lower())))
-                      for p in paths]
-
-    def find(self, *words):
-        for path, ws in self.words:
-            if any(w.lower() in ws for w in words):
-                return path
-        return None
+def find_regex(paths, pattern):
+    """First repo-relative path in `paths` whose text matches compiled regex `pattern`."""
+    for p in paths:
+        rel = p.relative_to(ROOT).as_posix()
+        if pattern.search(read(rel)):
+            return rel
+    return None
 
 
-class Titles:
-    """A measurement is of a module when its file name or its first line names it. One whose first line says
-    "(partial" has settings that still miss the threshold: it does not count yet."""
-
-    def __init__(self, paths):
-        self.heads = [(p.relative_to(ROOT).as_posix(), (p.stem + " " + p.read_text(errors="ignore").lstrip().split("\n", 1)[0]).lower())
-                      for p in paths]
-
-    def find(self, word, legacy=None):
-        """`legacy`: True/False keeps only measurements that do/do not say "legacy" (a legacy module and its namesake)."""
-        word = word.lower()
-        return next((path for path, head in self.heads if "(partial" not in head
-                     and re.search(rf"(?<![a-z]){re.escape(word)}", head)
-                     and (legacy is None or ("legacy" in head) == legacy)), None)
+def tsv_first_col_names(paths):
+    """Exact `$NAME` -> first repo-relative TSV path mapping from column 0 of binding TSVs."""
+    found = {}
+    for p in paths:
+        rel = p.relative_to(ROOT).as_posix()
+        for line in read(rel).splitlines():
+            if not line or line.startswith("#"):
+                continue
+            cell = line.split("\t", 1)[0].strip()
+            if cell.startswith("$"):
+                found.setdefault(cell.lstrip("$").upper(), rel)
+    return found
 
 
 def row(rid, area, group, name, status, ev=None, note=""):
@@ -93,13 +92,15 @@ def row(rid, area, group, name, status, ev=None, note=""):
 
 
 def grade(cells):
-    """A parameter's status from its applicable cells (True/False; None is not applicable)."""
-    cells = [c for c in cells if c is not None]
-    if all(cells):
+    """A parameter's status from its applicable cells [law, display, range, acts].
+    `tested` requires every applicable cell; `done` requires verified `law` and `acts`."""
+    law, acts = cells[0], cells[-1]
+    applicable = [c for c in cells if c is not None]
+    if applicable and all(applicable):
         return "tested"
-    if cells[-1]:  # the last cell is the one that acts: it drives sound or the UI
+    if law and acts:
         return "done"
-    return "partial" if any(cells) else "missing"
+    return "partial" if any(applicable) else "missing"
 
 
 # ------------------------------------------------------------------ shared inputs
@@ -111,41 +112,143 @@ def ksp_inputs():
     return manual, status
 
 
+def load_dsp_oracle():
+    """Structured Kontakt DSP oracle manifest (`snapshots/dsp-oracle.tsv`)."""
+    path = SNAP / "dsp-oracle.tsv"
+    if not path.is_file():
+        return {}
+    return {r["effect_id"]: r for r in tsv(path)}
+
+
+def dsp_oracle_errors():
+    """Validate every row of `snapshots/dsp-oracle.tsv`: real file, real non-ignored test fn, no failing status."""
+    path = SNAP / "dsp-oracle.tsv"
+    if not path.is_file():
+        return ["dsp-oracle.tsv: missing required manifest"]
+    errors = []
+    seen = set()
+    for r in tsv(path):
+        eid = r.get("effect_id", "")
+        test_name = r.get("test_name", "")
+        max_err = r.get("max_err_db", "")
+        st = r.get("status", "")
+        commit_sha = r.get("commit", "")
+        if eid in seen:
+            errors.append(f"dsp-oracle.tsv: duplicate effect_id {eid!r}")
+        seen.add(eid)
+        if st not in ("tested", "partial", "failing"):
+            errors.append(f"dsp-oracle.tsv: {eid}: invalid status {st!r}")
+        elif st == "failing":
+            errors.append(f"dsp-oracle.tsv: {eid}: test {test_name!r} is marked failing")
+        try:
+            float(max_err)
+        except ValueError:
+            errors.append(f"dsp-oracle.tsv: {eid}: max_err_db {max_err!r} is not a number")
+        if not commit_sha:
+            errors.append(f"dsp-oracle.tsv: {eid}: missing commit")
+        if "::" not in test_name:
+            errors.append(f"dsp-oracle.tsv: {eid}: test_name {test_name!r} must be '<rel_path>::<fn_name>'")
+            continue
+        rel_path, fn_name = test_name.split("::", 1)
+        target = ROOT / rel_path
+        if not target.is_file():
+            errors.append(f"dsp-oracle.tsv: {eid}: cited test file missing: {rel_path}")
+            continue
+        lines = target.read_text(errors="ignore").splitlines()
+        fn_rx = re.compile(rf"\bfn\s+{re.escape(fn_name)}\s*\(")
+        matches = [i for i, line in enumerate(lines) if fn_rx.search(line)]
+        if not matches:
+            errors.append(f"dsp-oracle.tsv: {eid}: cited test fn missing: {test_name}")
+            continue
+        idx = matches[0]
+        header = "\n".join(lines[max(0, idx - 5):idx])
+        if "#[ignore" in header:
+            errors.append(f"dsp-oracle.tsv: {eid}: cited test fn is #[ignore]: {test_name}")
+    return errors
+
+
 # ------------------------------------------------------------------ Kontakt: KSP and parameters
+# Maps `kontra_vm::event::*` constants handled in engine src to KSP `$EVENT_PAR_*` bare names.
+EVENT_CONST_TO_KSP = {
+    "VOLUME": ("EVENT_PAR_VOLUME",),
+    "PAN": ("EVENT_PAR_PAN",),
+    "TUNE": ("EVENT_PAR_TUNE",),
+    "NOTE": ("EVENT_PAR_NOTE",),
+    "SOURCE": ("EVENT_PAR_SOURCE",),
+    "VELOCITY": ("EVENT_PAR_VELOCITY",),
+    "REL_VELOCITY": ("EVENT_PAR_REL_VELOCITY",),
+    "ALLOW_GROUP": ("EVENT_PAR_ALLOW_GROUP",),
+    "MOD_VALUE": ("EVENT_PAR_MOD_VALUE_ID",),
+    "MOD_VALUE_EX": ("EVENT_PAR_MOD_VALUE_EX_ID",),
+    "CUSTOM": ("EVENT_PAR_CUSTOM",),
+    "CUSTOM_LAST": ("EVENT_PAR_0", "EVENT_PAR_1", "EVENT_PAR_2", "EVENT_PAR_3"),
+    "ZONE_SLOT": ("EVENT_PAR_ZONE_SLOT",),
+    "PLAY_POS": ("EVENT_PAR_PLAY_POS",),
+    "ZONE_ID": ("EVENT_PAR_ZONE_ID",),
+    "MIDI_CHANNEL": ("EVENT_PAR_MIDI_CHANNEL",),
+    "MIDI_COMMAND": ("EVENT_PAR_MIDI_COMMAND",),
+    "MIDI_BYTE_1": ("EVENT_PAR_MIDI_BYTE_1",),
+    "MIDI_BYTE_2": ("EVENT_PAR_MIDI_BYTE_2",),
+    "POS": ("EVENT_PAR_POS",),
+    "TRACK_NR": ("EVENT_PAR_TRACK_NR",),
+    "NOTE_LENGTH": ("EVENT_PAR_NOTE_LENGTH",),
+    "ID": ("EVENT_PAR_ID",),
+}
+
+
+def handled_event_pars():
+    """`$EVENT_PAR_*` names structurally matched in engine script/midi_in/midi_object handlers."""
+    ev_src = "\n".join(read(p) for p in (
+        "crates/engine/engine/src/script.rs",
+        "crates/engine/engine/src/midi_in.rs",
+        "crates/engine/engine/src/midi_object.rs",
+    ))
+    used_consts = set(re.findall(r"\bevent::([A-Z0-9_]+)\b", ev_src))
+    out = set()
+    for c in used_consts:
+        out.update(EVENT_CONST_TO_KSP.get(c, ()))
+    return out
+
+
 def kontakt_ksp_and_params(manual, status):
-    """The KSP manual's items (was tools/ksp-manual-coverage.py), split: language items, then parameters."""
+    """The KSP manual's items, split into language items and parameters."""
     tsv_consts = read("crates/script/ksp/data/constants.tsv")
     valued = {l.split("\t")[0].lstrip("$").upper() for l in tsv_consts.splitlines() if l and l[0] != "#"}
     valued |= {n.lstrip("~").upper() for n in re.findall(r'"(~NI_[A-Z_]+)"', read("crates/script/ksp/src/consts.rs"))}
     vendor = {l.strip().lstrip("$%~@!").upper() for l in read("crates/script/ksp/data/vendor_constants.txt").splitlines()
               if l.strip() and l[0] != "#"}
-    tests = Index([p for p in files("crates/script/ksp/tests/**/*", "crates/app/host/tests/**/*", "tools/ksp-conformance/**/*",
-                                    "tools/ksp-ui/**/*") if p.suffix in (".rs", ".ksp", ".lua", ".py") and
-                   re.search("ksp", p.read_text(errors="ignore"), re.I)]
-                  + [p for p in files("tools/kontakt-oracle/probes/ksp/*.kspp") if p.with_suffix(".measured").is_file()])
+    # Only real Rust KSP tests and measured oracle probes verify KSP items (no `.lua` constant dumps).
+    ksp_test_paths = [
+        p for p in files("crates/script/ksp/tests/**/*.rs", "crates/app/host/tests/**/*.rs")
+        if re.search("ksp", read(p.relative_to(ROOT).as_posix()), re.I)
+    ] + [p for p in files("tools/kontakt-oracle/probes/ksp/*.kspp") if p.with_suffix(".measured").is_file()]
+    measured_probe_paths = [
+        p for p in files("tools/kontakt-oracle/probes/ksp/*.kspp", "tools/ksp-ui/probes/*.ksp")
+        if p.with_suffix(".measured").is_file()
+    ]
     disp_rows = read("docs/re/kontakt-bindings/engine-par-disp.tsv").splitlines()
     pending = {n for l in disp_rows if l.startswith("# pending:") for n in l[len("# pending:"):].split()}
     disp = {l.split("\t")[0].lstrip("$").upper() for l in disp_rows if l and not l.startswith("#")} - {p.lstrip("$").upper() for p in pending}
     disp_file = "docs/re/kontakt-bindings/engine-par-disp.tsv"
     ui_paths = [p for d in ("crates/app/face/src", "crates/app/ui/src", "crates/engine/script-ui/src", "crates/app/host/src")
                 for p in sorted((ROOT / d).rglob("*.rs"))]
-    ui_text = "\n".join(p.read_text(errors="ignore") for p in ui_paths)
+    ui_text = "\n".join(read(p.relative_to(ROOT).as_posix()) for p in ui_paths)
     ui_actions = set(re.findall(r"Action::(\w+)", ui_text))
     ui_names = set(re.findall(r'"\$((?:CONTROL_PAR|UI_WF_PROP|UI_WAVEFORM|NI_MOUSE)[A-Z0-9_]*)"', ui_text))
-    src = Index(files("crates/script/ksp/src/**/*.rs", "crates/engine/vm/src/**/*.rs",
-                      "crates/engine/engine/src/**/*.rs", "crates/engine/script-ui/src/**/*.rs", "crates/app/face/src/**/*.rs"))
+    ev_handled = handled_event_pars()
+    src_paths = files("crates/script/ksp/src/**/*.rs", "crates/engine/vm/src/**/*.rs",
+                      "crates/engine/engine/src/**/*.rs", "crates/engine/script-ui/src/**/*.rs",
+                      "crates/app/face/src/**/*.rs")
     plan = read("crates/engine/plan/src/script.rs")
     ran = set(re.findall(r"pub (\w+):", plan[plan.index("pub struct Callbacks"):].split("\n}", 1)[0]))
     CB = {"init": "init", "note": "note", "release": "release", "controller": "controller", "poly_at": "polyat",
           "ui_control": "uicontrol", "ui_controls": "uicontrols", "ui_update": "uiupdate", "listener": "listener",
           "pgs_changed": "pgschanged", "persistence_changed": "persistencechanged", "async_complete": "asynccomplete",
           "rpn": "rpn", "nrpn": "nrpn", "note_controller": "notecontroller", "midi_in": "midiin"}
-    # Law tables: a $ENGINE_PAR whose set -> stored value Kontakt's oracle measured.
+    # Exact first-column $ENGINE_PAR_* lookup from binding TSVs (no bag-of-words matching).
     law_files = [p for p in files("docs/re/kontakt-bindings/*.tsv") if p.name != "engine-par-disp.tsv"]
-    law = Index(law_files)
-    clamp = Index([ROOT / "docs/re/kontakt-bindings/engine_par_clamp.tsv"])
-    measured_probes = Index([p for p in files("tools/kontakt-oracle/probes/ksp/*.kspp", "tools/ksp-ui/probes/*.ksp")
-                             if p.with_suffix(".measured").is_file()])
+    law_map = tsv_first_col_names(law_files)
+    clamp_map = tsv_first_col_names([ROOT / "docs/re/kontakt-bindings/engine_par_clamp.tsv"])
 
     ksp, pars = [], []
     for item in manual:
@@ -155,47 +258,61 @@ def kontakt_ksp_and_params(manual, status):
         if kind == "widget":
             continue
         if kind == "par":  # $ENGINE_PAR_*: value law, display text, range, drives sound
-            law_ev = law.find("engine_par_" + key.removeprefix("engine_par_"), key)
-            # acts: the engine plays it; one only stored and shown (`held`) does not.
-            cells = [law_ev is not None, bare in disp, clamp.find(key) is not None, status.get(("par", bare)) == "carried"]
+            law_ev = law_map.get(bare)
+            # acts: the engine plays it; HeldOnly (`Opaque` and `GroupHeld`) reports `held`.
+            cells = [law_ev is not None, bare in disp, bare in clamp_map, status.get(("par", bare)) == "carried"]
             ev = (law_ev, name) if law_ev else (disp_file, name) if cells[1] else None
-            if not ev and cells[3]:  # carried: the engine answers it (ksp_status)
-                ev = (src.find(key), name) if src.find(key) else ("docs/parity/snapshots/ksp-status.tsv", bare)
+            if not ev and cells[3]:
+                ev = ("docs/parity/snapshots/ksp-status.tsv", bare)
             pars.append(row(f"kontakt.par.{bare}", "kontakt.par", "$ENGINE_PAR", name, grade(cells), ev, cells_note(cells)))
             continue
         if kind in ("uipar", "evpar"):  # $CONTROL_PAR_*, $ZONE_PAR_*, $EVENT_PAR_*: measured law, acts
             if bare.startswith("ZONE_PAR"):
                 acts = status.get(("par", bare)) == "carried"
+                group = "$ZONE_PAR"
+            elif kind == "evpar":
+                acts = bare in ev_handled
+                group = "$EVENT_PAR"
             else:
-                acts = bare in ui_names or bare in valued or any(("fn", p + key) in status for p in ("", "$", "%"))
-            probe = measured_probes.find(key)
-            tested = tests.find(key)
-            cells = [probe is not None or tested is not None, None, None, acts]
-            group = "$ZONE_PAR" if bare.startswith("ZONE_PAR") else "$EVENT_PAR" if kind == "evpar" else "$CONTROL_PAR"
-            ev = (probe or tested, name) if (probe or tested) else (src.find(key), name) if acts and src.find(key) else None
+                acts = bare in ui_names
+                group = "$CONTROL_PAR"
+            tok_rx = re.compile(rf"\${re.escape(bare)}\b", re.I)
+            probe = find_regex(measured_probe_paths, tok_rx)
+            cells = [probe is not None, None, None, acts]
+            ev = (probe, name) if probe else (find_regex(src_paths, tok_rx), name) if acts else None
+            if ev and not ev[0]:
+                ev = None
             pars.append(row(f"kontakt.par.{bare}", "kontakt.par", group, name, grade(cells), ev, cells_note(cells)))
             continue
         ev = None
         if kind == "fn":
             st = status.get(("fn", key))
-            got = {"vm": "done", "answered": "done", "partial": "partial", "missing": "partial"}.get(st, "missing")
-            if got == "partial" and "".join(w.capitalize() for w in key.split("_")) in ui_actions:
+            got = {"vm": "done", "answered": "done", "partial": "partial", "missing": "missing"}.get(st, "missing")
+            if got in ("partial", "missing") and "".join(w.capitalize() for w in key.split("_")) in ui_actions:
                 got = "done"
             group, rid = "commands", f"kontakt.ksp.cmd.{key}"
+            test_rx = re.compile(rf"\b{re.escape(key)}\s*\(", re.I)
+            src_rx = re.compile(rf"\b{re.escape(key)}\b", re.I)
         elif kind == "cb":
             got = "missing" if name not in CB else "partial" if name not in ran else "done"
             group, rid = "callbacks", f"kontakt.ksp.cb.{key}"
+            test_rx = re.compile(rf"\bon\s+{re.escape(key)}\b", re.I)
+            src_rx = re.compile(rf"\b{re.escape(key)}\b", re.I)
         else:
             known_fn = any(("fn", p + key) in status for p in ("", "$", "%"))
             got = "done" if known_fn or bare in ui_names or bare in valued else "partial" if bare in vendor else "missing"
             group = "built-in variables" if kind == "var" else "constants and names"
             rid = f"kontakt.ksp.{'var' if kind == 'var' else 'const'}.{bare}"
+            test_rx = re.compile(rf"[$%~@!]{re.escape(bare)}\b", re.I)
+            src_rx = re.compile(rf"\b{re.escape(bare)}\b", re.I)
         if got == "done":
-            t = tests.find(key)
+            t = find_regex(ksp_test_paths, test_rx)
             if t:
                 got, ev = "tested", (t, key)
-            elif src.find(key):
-                ev = (src.find(key), key)
+            else:
+                s = find_regex(src_paths, src_rx)
+                if s:
+                    ev = (s, key)
         ksp.append(row(rid, "kontakt.ksp", group, name, got, ev, sec))
     return ksp, pars
 
@@ -213,8 +330,7 @@ def modulation_targets():
         if p == "UNREGISTERED":
             continue
         cells = [bool(r["template"]), None, "UNPROVED" not in r["notes"], f'"{p}"' in code]
-        ev = ("crates/format/kontakt/src", p) if cells[3] else ("docs/parity/snapshots/modulation-targets.tsv", p)
-        ev = (find_in_dir("crates/format/kontakt/src", f'"{p}"'), p) if cells[3] else ev
+        ev = (find_in_dir("crates/format/kontakt/src", f'"{p}"'), p) if cells[3] else ("docs/parity/snapshots/modulation-targets.tsv", p)
         out.append(row(f"kontakt.par.MOD_{p}", "kontakt.par", "modulation targets", f"{p} (target {r['target_id']})",
                        grade(cells), ev, cells_note(cells)))
     return out
@@ -270,16 +386,19 @@ def kontakt_ui(manual):
 
 # ------------------------------------------------------------------ Kontakt: format (ni-file)
 def kontakt_format():
-    """Every serialized class Kontakt 8.13.1 registers, by the corpus census: tested = every object of it on
-    the corpus is read in full; partial = some bytes unaccounted for; done = a reader exists but the corpus
-    holds none; missing = no stream reader."""
+    """Every serialized class in `ser_classes.tsv` UNION every class observed in `ni-file-census.tsv`:
+    tested = every corpus object read in full; partial = some bytes unaccounted for;
+    unseen = reader exists but 0 objects in corpus (does not count as passing); missing = no reader."""
     census = collections.defaultdict(lambda: [0, 0, 0, 0])
+    census_sertype = {}
     totals = {}
     for r in tsv(SNAP / "ni-file-census.tsv"):
         if r["sertype"] == "total":
             totals = r
             continue
-        c = census[r["class"]]
+        cls_name = r["class"]
+        census_sertype.setdefault(cls_name, r["sertype"])
+        c = census[cls_name]
         for i, k in enumerate(("objects", "full", "bytes", "unaccounted")):
             c[i] += int(r[k])
     cov = {}
@@ -288,9 +407,11 @@ def kontakt_format():
         if len(c) == 6 and c[0].startswith("0x"):
             cov[c[1]] = c
     out = []
+    seen_names = set()
     for r in tsv(ROOT / "docs/re/kontakt-catalog/ser_classes.tsv"):
         full = r["class"]
         name = re.sub(r"^(class|struct) ", "", full)
+        seen_names.add(name)
         c = census.get(name)
         if c and c[0]:
             st = "tested" if c[0] == c[1] else "partial"
@@ -299,12 +420,25 @@ def kontakt_format():
         else:
             cv = cov.get(full, ["", "", "", "", "", ""])
             stub = "no stream reader" in cv[5] or cv[3] in ("stub", "not-a-reader", "")
-            st = "missing" if stub and not cv[4] else "done"
-            note = "not in the corpus" + ("" if st == "done" else ", no reader")
-            ev = ("docs/re/kontakt-catalog/parser_coverage.md", name) if st == "done" else None
+            st = "missing" if stub and not cv[4] else "unseen"
+            note = "0 corpus objects (unseen)" if st == "unseen" else "not in the corpus, no reader"
+            ev = ("docs/re/kontakt-catalog/parser_coverage.md", name) if st == "unseen" else None
         out.append(row(f"kontakt.format.{r['sertype']}.{re.sub(r'[^A-Za-z0-9]+', '_', name).strip('_')}", "kontakt.format",
                        "serialized classes", f"{r['sertype']} {name}", st, ev, note))
-    # The latest whole-corpus totals NI_FILE_PARITY.md records (each batch's "After" row).
+    # Union with all classes present in ni-file-census.tsv not listed in ser_classes.tsv
+    # (exposes top-level/container classes like Bank, Program, ZoneList, FNTableImpl, etc.).
+    for name in sorted(census.keys()):
+        if name in seen_names:
+            continue
+        c = census[name]
+        if not c[0]:
+            continue
+        sertype = census_sertype[name]
+        st = "tested" if c[0] == c[1] else "partial"
+        note = f"{c[1]}/{c[0]} objects full, {c[3]} of {c[2]} bytes unaccounted"
+        ev = ("docs/parity/snapshots/ni-file-census.tsv", name)
+        out.append(row(f"kontakt.format.{sertype}.{re.sub(r'[^A-Za-z0-9]+', '_', name).strip('_')}", "kontakt.format",
+                       "serialized classes", f"{sertype} {name}", st, ev, note))
     after = re.findall(r"^\| After \|.*\| (\d+) \|\s*$", read("docs/re/NI_FILE_PARITY.md"), re.M)
     return out, totals, (int(after[-1]) if after else None)
 
@@ -337,18 +471,70 @@ def key_of(name):
 BINDING = {"Reverb": "galoisreverb", "Replika": "rdelay", "Stereo Modeller": "stereo", "Supercharger": "superchargergt",
            "Hilbert Limiter": "transparentlimiter"}
 
+# Explicit structural registration checks for Kontakt modulator classes:
+# cls -> ((ir_file, ir_symbol), (engine_file, engine_symbol))
+MODULATOR_CHECKS = {
+    "BParLFO": (
+        ("crates/format/kontakt/src/timed.rs", "Modulator::Lfo("),
+        ("crates/engine/engine/src/voice_gain.rs", "ir::Source::Lfo("),
+    ),
+    "BParArp": (
+        ("crates/format/kontakt/src/timed.rs", "Modulator::StepMod("),
+        ("crates/engine/engine/src/voice_gain.rs", "ir::Source::Shaped("),
+    ),
+    "BParEnv_AHDSR": (
+        ("crates/format/kontakt/src/timed.rs", "Modulator::Ahdsr("),
+        ("crates/engine/engine/src/voice_gain.rs", "ir::Source::Envelope("),
+    ),
+    "BParEnv_DBD": (
+        ("crates/format/kontakt/src/timed.rs", "Modulator::Dbd("),
+        ("crates/engine/engine/src/voice_gain.rs", "ir::Source::Envelope("),
+    ),
+    "BParEnv_FM7": (
+        ("crates/format/kontakt/src/timed.rs", "Modulator::Flex("),
+        ("crates/engine/engine/src/voice_gain.rs", "ir::Source::Envelope("),
+    ),
+    "BParEnvF": (
+        ("crates/format/kontakt/src/timed.rs", "Modulator::Follower("),
+        ("crates/engine/engine/src/voice_gain.rs", "ir::Source::EnvelopeFollower"),
+    ),
+    "BParGlide": (
+        ("crates/format/kontakt/src/translate.rs", "Modulator::Glide("),
+        ("crates/engine/engine/src/glide.rs", "pub(crate) struct Slide"),
+    ),
+    "BParExternalMod": (
+        ("crates/format/kontakt/src/external.rs", "pub(crate) fn external("),
+        ("crates/engine/engine/src/voice_gain.rs", "ir::Source::Controller("),
+    ),
+    "BParInternalMod": (
+        ("crates/format/kontakt/src/timed.rs", "pub(crate) fn timed("),
+        ("crates/engine/engine/src/voice_gain.rs", "ir::Source::Lfo("),
+    ),
+    "BZoneLevelEnv": (
+        ("crates/format/kontakt/src/laws.rs", "pub(crate) fn zone_envelope("),
+        ("crates/engine/engine/src/voice_gain.rs", "ir::Source::ZoneEnvelope("),
+    ),
+}
+
+
+def oracle_row(rid, group, label, slug, ir_ok, oracle):
+    """Grade one `.measured` row strictly from `snapshots/dsp-oracle.tsv`."""
+    hit = oracle.get(slug) if ir_ok else None
+    if not hit or hit["status"] not in ("tested", "partial"):
+        return row(rid, "kontakt.dsp", group, label, "missing", None, "")
+    rel_path, fn_name = hit["test_name"].split("::", 1)
+    note = f"max {hit['max_err_db']} dB ({fn_name})"
+    if hit["status"] == "partial":
+        note = "partial: " + note
+    return row(rid, "kontakt.dsp", group, label, hit["status"], (rel_path, fn_name), note)
+
 
 def kontakt_dsp(status):
-    """Every effect module Kontakt's files can hold (the MODULES table of crates/format/kontakt/src/effects.rs) and
-    every modulator class, three rows each: in the IR (decoded to an ir::EffectKind / translated), driven at run
-    time (script and automation moves rebuild it live), and its output measured against the oracle (a gate or
-    response measurement under docs/re/engine/fx-measured or docs/re/kontakt-bindings names it)."""
+    """Every effect module in `format/kontakt/src/effects.rs` MODULES and every modulator class,
+    three rows each: in IR, driven live, and output vs oracle (strictly from `dsp-oracle.tsv`)."""
     src = read("crates/format/kontakt/src/effects.rs")
     table = src[src.index("const MODULES"):src.index("];", src.index("const MODULES"))]
-    measured = Titles(files("docs/re/engine/fx-measured/*.md", "docs/re/kontakt-bindings/*-responses*.tsv",
-                            "docs/re/kontakt-bindings/limiter-dynamics.tsv", "docs/re/kontakt-bindings/saturation-curves.tsv",
-                            "docs/re/kontakt-bindings/filter-laws.tsv"))
-    # Each module's own $ENGINE_PAR_* names (the shared BParFX ones aside), from the binding tables.
+    oracle = load_dsp_oracle()
     own = {}
     for f in files("docs/re/kontakt-bindings/fx_*.tsv"):
         for r in tsv(f):
@@ -364,46 +550,43 @@ def kontakt_dsp(status):
         ir_ok = m[6] != "Unread"
         ev = ("crates/format/kontakt/src/effects.rs", name)
         out.append(row(f"kontakt.dsp.{slug}.ir", "kontakt.dsp", t, f"{name}: in IR", "done" if ir_ok else "missing", ev if ir_ok else None))
-        # Driven live: every control it binds has a runtime setter; with none bound, a model module.
         pars = own.get(BINDING.get(name, key_of(name)), set())
         live = pars <= played if pars else kind == "model"
         out.append(row(f"kontakt.dsp.{slug}.driven", "kontakt.dsp", t, f"{name}: driven live",
                        "done" if live else "partial" if ir_ok else "missing", ev if ir_ok else None,
                        "" if live or not ir_ok else "held: " + " ".join(sorted(pars - played)) if pars else "load-time only"))
-        hit = measured.find(words[0], "legacy" in name.lower()) if ir_ok and words else None
-        out.append(row(f"kontakt.dsp.{slug}.measured", "kontakt.dsp", t, f"{name}: output vs oracle",
-                       "tested" if hit else "missing", (hit, words[0]) if hit else None,
-                       "threshold in the cited measurement" if hit else ""))
-    code = read_dir("crates/format/kontakt/src")
-    voice = read_dir("crates/engine/voice/src") + read_dir("crates/engine/engine/src")
-    oracle = Titles(files("docs/re/engine/fx-measured/*.md", "tools/kontakt-oracle/probes/*.lua"))
+        out.append(oracle_row(f"kontakt.dsp.{slug}.measured", t, f"{name}: output vs oracle", slug, ir_ok, oracle))
     for r in tsv(ROOT / "docs/re/kontakt-catalog/ser_classes.tsv"):
         cls = re.sub(r"^(class|struct) ", "", r["class"])
         if not re.fullmatch(r"BPar(LFO|Env_\w+|EnvF|Glide|Arp|ExternalMod|InternalMod)|BZoneLevelEnv", cls):
             continue
         token = cls.split("_")[-1] if "_" in cls else cls.removeprefix("BPar").removeprefix("B")
+        slug = token.lower()
         t = "envelope" if "Env" in cls else "LFO" if "LFO" in cls else "modulation source"
-        ir_ok = re.search(rf"\b{token}\b", code, re.I) is not None
-        drv = ir_ok and re.search(rf"\b{token}\b", voice, re.I) is not None
-        hit = oracle.find(token)
-        ev = (find_in_dir("crates/format/kontakt/src", token) or "crates/format/kontakt/src", token)
-        out.append(row(f"kontakt.dsp.{token.lower()}.ir", "kontakt.dsp", t, f"{cls}: in IR", "done" if ir_ok else "missing", ev if ir_ok else None))
-        out.append(row(f"kontakt.dsp.{token.lower()}.driven", "kontakt.dsp", t, f"{cls}: driven",
-                       "done" if drv else "partial" if ir_ok else "missing", ev if ir_ok else None))
-        out.append(row(f"kontakt.dsp.{token.lower()}.measured", "kontakt.dsp", t, f"{cls}: output vs oracle",
-                       "tested" if hit and ir_ok else "missing", (hit, token) if hit and ir_ok else None))
+        check = MODULATOR_CHECKS.get(cls)
+        if check:
+            (ir_file, ir_sym), (drv_file, drv_sym) = check
+            ir_ok = ir_sym in read(ir_file)
+            drv_ok = ir_ok and drv_sym in read(drv_file)
+            ir_ev = (ir_file, ir_sym) if ir_ok else None
+            drv_ev = (drv_file, drv_sym) if drv_ok else ir_ev
+        else:
+            ir_ok = drv_ok = False
+            ir_ev = drv_ev = None
+        out.append(row(f"kontakt.dsp.{slug}.ir", "kontakt.dsp", t, f"{cls}: in IR", "done" if ir_ok else "missing", ir_ev))
+        out.append(row(f"kontakt.dsp.{slug}.driven", "kontakt.dsp", t, f"{cls}: driven",
+                       "done" if drv_ok else "partial" if ir_ok else "missing", drv_ev))
+        out.append(oracle_row(f"kontakt.dsp.{slug}.measured", t, f"{cls}: output vs oracle", slug, ir_ok, oracle))
     return out
 
 
 # ------------------------------------------------------------------ UVI Falcon
 def uvi():
-    """UVI Falcon from its public script reference (snapshots/uvi-reference.tsv, cited per row): script API
-    functions and class members, UI widgets and their members (the probe crates/script/lua/tests/uvi_ui
-    checks each), elements by processing type (in IR / driven / measured), and every element parameter."""
+    """UVI Falcon from its public script reference (snapshots/uvi-reference.tsv, cited per row)."""
     ref = tsv(SNAP / "uvi-reference.tsv")
     lua_src = "\n".join(read(p) for p in ("crates/script/lua/src/prelude.lua", "crates/script/lua/src/widgets.lua")) \
         + read_dir("crates/script/lua/src")
-    lua_tests = Index(files("crates/script/lua/tests/**/*", "crates/format/uvi/src/program/tests.rs"))
+    lua_test_paths = files("crates/script/lua/tests/**/*", "crates/format/uvi/src/program/tests.rs")
     probe = {}
     for l in read("crates/script/lua/tests/uvi_ui/probe.expected").splitlines():
         if ": " in l:
@@ -421,7 +604,8 @@ def uvi():
             full = f"{owner}.{name}" if owner else name
             in_probe = probe.get(full)
             defined = re.search(rf"(function\s+(?:[\w.:]*[.:])?{re.escape(name)}\b|\b{re.escape(name)}\s*=|\"{re.escape(name)}\")", lua_src)
-            t = lua_tests.find(name)
+            call_rx = re.compile(rf"(?:[.:]\s*{re.escape(name)}\b|\b{re.escape(name)}\s*\()")
+            t = find_regex(lua_test_paths, call_rx)
             if in_probe == "ok":
                 st, ev = "tested", ("crates/script/lua/tests/uvi_ui/probe.expected", f"{full}: ok")
             elif in_probe:
@@ -448,7 +632,6 @@ def uvi():
             out.append(row(f"uvi.dsp.{name}.measured", "uvi.dsp", t, f"{label}: output vs oracle", "missing", None,
                            "no UVI oracle in the repo yet"))
         elif kind == "param":
-            # value law: KONTRA reads the attribute; range: it is clamped or ranged where read; acts: its element is driven.
             lit = f'"{name}"' in uvi_code
             el_driven = f'"{owner}"' in uvi_code and any(w in features.get(owner, "") for w in ("mapped", "runtime-consumed"))
             cells = [lit, None, lit and _ranged(uvi_code, name), lit and el_driven]
@@ -538,7 +721,7 @@ def claims():
     for entry in git("log", "--format=%s%x1f%b%x1e", "--", ".").split("\x1e"):
         if "\x1f" not in entry:
             continue
-        subject, body = entry.strip("\n").split("\x1f", 1)  # not strip(): Python counts \x1f as whitespace
+        subject, body = entry.strip("\n").split("\x1f", 1)
         pr = re.search(r"\(#(\d+)\)\s*$", subject)
         for ids in re.findall(r"^Parity:\s*(.+)$", body, re.M):
             for rid in ids.split():
@@ -546,18 +729,38 @@ def claims():
     return out
 
 
+RETRACTED = SNAP / "retracted-claims.tsv"
+PASSING = set()  # row ids passing in the last build()
+
+
+def retracted():
+    """`snapshots/retracted-claims.tsv`: `Parity:` trailers the honest grading no longer supports, each
+    with its reason. Git history cannot be edited, so a retraction is the only way to drop a claim."""
+    return {r["id"]: r["reason"] for r in tsv(RETRACTED)} if RETRACTED.is_file() else {}
+
+
+def flagged_claims(rows):
+    """Every `Parity:` claim in git history whose row does not currently pass (`tested` or `done`)
+    and is not retracted with a reason."""
+    claim = claims()
+    passing = {r["id"] for r in rows if r["status"] in ("tested", "done")}
+    gone = retracted()
+    flagged = [
+        (rid, ",".join(sorted(p for p in prs if p)))
+        for rid, prs in claim.items()
+        if rid not in passing and rid not in gone
+    ]
+    flagged.sort()
+    return flagged, claim
+
+
 def attribute(rows, refresh):
     """Fill each passing row's PR(s) and date from the attribution cache; with `refresh`, blame the rows
-    it lacks or holds unmerged (no PR number yet), add trailer claims, and rewrite it."""
+    it lacks or holds unmerged, add trailer claims, and rewrite it."""
     path = ATTRIBUTION
     known = {r["id"]: r for r in tsv(path)} if path.is_file() else {}
-    flagged = []
     if refresh:
-        claim = claims()
-        passing = {r["id"] for r in rows if r["status"] in ("tested", "done")}
-        for rid, prs in claim.items():
-            if rid not in passing:
-                flagged.append((rid, ",".join(sorted(p for p in prs if p))))
+        flagged, claim = flagged_claims(rows)
         new = {}
         for r in rows:
             if r["status"] not in ("tested", "done"):
@@ -574,10 +777,9 @@ def attribute(rows, refresh):
             new[r["id"]] = dict(id=r["id"], pr=",".join(sorted(prs, key=lambda p: (p[0] == "K", int(p.lstrip("K"))))), date=date)
         known = new
         path.write_text("id\tpr\tdate\n" + "".join(f"{v['id']}\t{v['pr']}\t{v['date']}\n" for v in sorted(new.values(), key=lambda v: v["id"])))
-        flagged.sort()  # the order --check reads back
         FLAGGED.write_text("id\tpr\n" + "".join(f"{a}\t{b}\n" for a, b in flagged))
     else:
-        flagged = [tuple(l) for l in tsv(FLAGGED, header=False)[1:]] if FLAGGED.is_file() else []
+        flagged, _ = flagged_claims(rows)  # live from git history, never a stale local file
     for r in rows:
         a = known.get(r["id"]) if r["status"] in ("tested", "done") else None
         r["pr"], r["date"] = (a["pr"], a["date"]) if a else ("", "")
@@ -622,20 +824,27 @@ def summary(rows):
 
 
 def corpus_census():
-    """One criterion per format from snapshots/corpus-census.tsv: every installed instrument, tested when it
-    is fully green (loads, samples resolve, scripts run with no fault, every UI builds with nothing
-    unsupported, the note sounds), partial when it loads but fails a check, missing when it does not load."""
+    """Per-format corpus rows from snapshots/corpus-census.tsv: both `playable` (loads, samples, no
+    fault, UI, sound) and `clean` (`playable` + 0 audible diagnostics, 0 unhandled actions, 0 opaque pars)."""
     path = SNAP / "corpus-census.tsv"
     if not path.is_file():
         return []
     c = {(r["format"], r["check"]): r for r in tsv(path)}
     out = []
     for fmt in ("Kontakt", "UVI"):
-        if (fmt, "green") not in c:
-            continue
-        n, green, loads = (int(c[fmt, "green"]["instruments"]), int(c[fmt, "green"]["pass"]), int(c[fmt, "loads"]["pass"]))
-        pct = f"{100 * green / n:.1f}" if n else "0.0"
-        out.append((f"**{fmt} corpus** (instruments fully green)", [n, green, 0, loads - green, n - loads, pct, pct]))
+        play_key = "playable" if (fmt, "playable") in c else "green"
+        if (fmt, play_key) in c:
+            n = int(c[fmt, play_key]["instruments"])
+            playable = int(c[fmt, play_key]["pass"])
+            loads = int(c[fmt, "loads"]["pass"])
+            pct = f"{100 * playable / n:.1f}" if n else "0.0"
+            out.append((f"**{fmt} corpus** (playable)", [n, playable, 0, loads - playable, 0, n - loads, pct, pct]))
+        if (fmt, "clean") in c:
+            n = int(c[fmt, "clean"]["instruments"])
+            clean = int(c[fmt, "clean"]["pass"])
+            loads = int(c[fmt, "loads"]["pass"])
+            pct = f"{100 * clean / n:.1f}" if n else "0.0"
+            out.append((f"**{fmt} corpus** (clean: 0 audible/script drops)", [n, clean, 0, loads - clean, 0, n - loads, pct, pct]))
     return out
 
 
@@ -652,9 +861,10 @@ def corpus_line():
 SNAPSHOTS = [
     ("ksp-manual.tsv", "the KSP manual's items", "tools/parity-board.py --ksp-manual KSP_Reference_Manual.txt (pdftotext -layout of the manual)"),
     ("ksp-status.tsv", "what KONTRA's VM and engine answer", "build-slot cargo run -p kontra-host --example ksp_status \\| LC_ALL=C sort -u > docs/parity/snapshots/ksp-status.tsv"),
+    ("dsp-oracle.tsv", "passing v3 Rust DSP oracle tests", "checked by tools/parity-board.py --check against real non-ignored Rust tests"),
     ("ni-file-census.tsv", "the ni-file corpus census", "build-slot cargo run --release -p kontra-format-kontakt --example chunks -- <Kontakt library root> > census.md; tools/parity-board.py --census census.md"),
     ("ui-corpus.tsv", "UI areas that differ from Kontakt per corpus instrument", "tools/ksp-ui/align.py per instrument (README 'Library instruments'); one row per instrument: an opaque id and its count"),
-    ("corpus-census.tsv", "per check, how many installed instruments pass (load, samples, script, UI, sound) and load time", "KONTRA_CENSUS_JOBS=4 tools/parity/census.sh <out> --snapshot (counts only, no library content)"),
+    ("corpus-census.tsv", "per check, how many installed instruments pass (load, samples, script, UI, sound, playable, clean) and load time", "KONTRA_CENSUS_JOBS=4 tools/parity/census.sh <out> --snapshot (counts only, no library content)"),
     ("uvi-reference.tsv", "UVI Falcon's public script reference", f"tools/parity-board.py --uvi-reference ({UVI_DOCS})"),
     ("uvi-elements.tsv", "which UVI elements the loader maps or runs", "the UVI catalog lane (was tools/coverage/data/uvi-features.tsv)"),
     ("modulation-targets.tsv", "Kontakt's modulation targets", "docs/specs/modulation-laws.md lane"),
@@ -684,14 +894,15 @@ def render_md(rows, sums, fmt_extra, flagged):
            "Every Kontakt and UVI Falcon item KONTRA must match, one checkable row each. Generated by "
            "`tools/parity-board.py` from the snapshots below and the repo; never edited or committed. A PR changes "
            "snapshots (rows in byte order) and evidence, and the site regenerates this board.", "",
-           "**tested**: KONTRA does it and a test, probe or oracle measurement checks it. **done**: KONTRA does it. "
-           "**partial**: some of it. **missing**: not yet. Passing = tested + done. Parameter cells: law (set → internal "
-           "value), display (internal → text), range (clamp), acts (drives sound or the UI).", "",
+           "**tested**: KONTRA does it and a real test, probe or oracle measurement verifies it. **done**: KONTRA does it "
+           "(parameters require both verified `law` and `acts`). **partial**: some of it. **unseen**: reader exists, 0 corpus "
+           "objects observed (not counted in passing). **missing**: not yet. Passing = tested + done. Parameter cells: law "
+           "(set → internal value), display (internal → text), range (clamp), acts (drives sound or the UI).", "",
            "PR: the squash merge that last changed each row's evidence line (`Parity: <row-id>` trailers add claims). "
            "KONTRA#N is a PR of the public KONTRA repository from before it moved into the monorepo; #N is a monorepo PR.", "",
            "## Summary", "",
-           "| Criterion | Items | tested | done | partial | missing | % tested | % passing |",
-           "|---|---:|---:|---:|---:|---:|---:|---:|"]
+           "| Criterion | Items | tested | done | partial | unseen | missing | % tested | % passing |",
+           "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
     out += [f"| {label} | " + " | ".join(map(str, c)) + " |" for label, c in sums]
     out += ["", f"ni-file corpus bytes: {tot.get('bytes', '?')} read, {tot.get('unaccounted', '?')} unaccounted for "
                 f"(census snapshot); {latest if latest is not None else '?'} unaccounted after the latest batch in "
@@ -708,7 +919,7 @@ def render_md(rows, sums, fmt_extra, flagged):
         for g in sorted({r["group"] for r in rs}):
             grs = [r for r in rs if r["group"] == g]
             c = counts(grs)
-            out += [f"### {g} ({c[1]} tested, {c[2]} done, {c[3]} partial, {c[4]} missing)", "",
+            out += [f"### {g} ({c[1]} tested, {c[2]} done, {c[3]} partial, {c[4]} unseen, {c[5]} missing)", "",
                     "| Status | Row | Item | Evidence | PR | Changed | Note |", "|---|---|---|---|---|---|---|"]
             for r in grs:
                 out.append(f"| {r['status']} | `{r['id']}` | {esc(r['name'])} | {ev_link(r['ev'])} | {pr_md(r['pr'])} | {r['date']} | {esc(r['note'])} |")
@@ -726,7 +937,7 @@ def render_html(rows, sums):
 
 
 FRAGMENT = """<!-- board:start --><div class="pboard"><style>
-.pboard{--bg:#fafaf8;--fg:#1b1b1b;--mute:#6b6b6b;--line:#e2e2dc;--card:#fff;--tested:#2f7d4f;--done:#7aa95c;--partial:#d39b2a;--missing:#c4c4bc;--badge:#eef1f5;--badge-fg:#1f4f8a}
+.pboard{--bg:#fafaf8;--fg:#1b1b1b;--mute:#6b6b6b;--line:#e2e2dc;--card:#fff;--tested:#2f7d4f;--done:#7aa95c;--partial:#d39b2a;--unseen:#7a8b99;--missing:#c4c4bc;--badge:#eef1f5;--badge-fg:#1f4f8a}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .pboard{--bg:#161616;--fg:#ececec;--mute:#9a9a9a;--line:#2c2c2c;--card:#1e1e1e;--missing:#4a4a4a;--badge:#1f2a38;--badge-fg:#8cb8f0}}
 :root[data-theme="dark"] .pboard{--bg:#161616;--fg:#ececec;--mute:#9a9a9a;--line:#2c2c2c;--card:#1e1e1e;--missing:#4a4a4a;--badge:#1f2a38;--badge-fg:#8cb8f0}
 .pboard,.pboard *{box-sizing:border-box}.pboard{color:var(--fg);font:15px/1.45 system-ui,sans-serif}
@@ -744,29 +955,29 @@ FRAGMENT = """<!-- board:start --><div class="pboard"><style>
 .pboard td,.pboard th{padding:6px 10px;border-top:1px solid var(--line);text-align:left;vertical-align:top}.pboard th{color:var(--mute);font-weight:500}
 .pboard td.cat{color:var(--mute);white-space:nowrap}.pboard a{color:inherit}
 .pboard .st{display:inline-block;white-space:nowrap;border-radius:999px;padding:1px 8px;font-size:12px;font-weight:600;color:#fff}
-.pboard .st.tested{background:var(--tested)}.pboard .st.done{background:var(--done)}.pboard .st.partial{background:var(--partial)}.pboard .st.missing{background:var(--missing);color:var(--fg)}
+.pboard .st.tested{background:var(--tested)}.pboard .st.done{background:var(--done)}.pboard .st.partial{background:var(--partial)}.pboard .st.unseen{background:var(--unseen)}.pboard .st.missing{background:var(--missing);color:var(--fg)}
 .pboard .pr{display:inline-block;margin:0 4px 2px 0;padding:1px 7px;border-radius:6px;background:var(--badge);color:var(--badge-fg);font:12px ui-monospace,monospace;text-decoration:none;white-space:nowrap}
 .pboard .pr:hover{text-decoration:underline}.pboard .when{color:var(--mute);font-size:12px;white-space:nowrap}
 .pboard .more{padding:8px 12px}.pboard .more button{font:inherit;padding:4px 10px}.pboard .none{padding:10px 12px;color:var(--mute)}
 @media (max-width:600px){.pboard summary{grid-template-columns:1fr auto}.pboard summary .bar{display:none}.pboard td.cat,.pboard th.cat{display:none}}
 </style>
 <div class="heads" id="heads"></div>
-<div class="controls"><input id="q" type="search" placeholder="Search features" aria-label="Search features"><select id="fmt" aria-label="Sampler"><option value="">Kontakt and UVI</option><option>Kontakt</option><option>UVI</option></select><select id="st" aria-label="Status"><option value="">Any status</option><option value="tested">Done and verified</option><option value="done">Done</option><option value="partial">Partial</option><option value="missing">Not done</option></select></div>
+<div class="controls"><input id="q" type="search" placeholder="Search features" aria-label="Search features"><select id="fmt" aria-label="Sampler"><option value="">Kontakt and UVI</option><option>Kontakt</option><option>UVI</option></select><select id="st" aria-label="Status"><option value="">Any status</option><option value="tested">Done and verified</option><option value="done">Done</option><option value="partial">Partial</option><option value="unseen">Unseen</option><option value="missing">Not done</option></select></div>
 <div id="areas"></div>
 <script>
 const ROWS=__DATA__,AREAS=__AREAS__,SUM=__SUMMARY__,REPO="__REPO__";
-const C={tested:"var(--tested)",done:"var(--done)",partial:"var(--partial)"},L={tested:"Done ✓",done:"Done",partial:"Partial",missing:"Not done"};
-const T={tested:"Done, and a test, probe or measurement against the original checks it",done:"Done",partial:"Some of it works",missing:"Not implemented yet"};
+const C={tested:"var(--tested)",done:"var(--done)",partial:"var(--partial)",unseen:"var(--unseen)"},L={tested:"Done ✓",done:"Done",partial:"Partial",unseen:"Unseen",missing:"Not done"};
+const T={tested:"Done, and a test, probe or measurement against the original checks it",done:"Done with verified law",partial:"Some of it works",unseen:"Reader exists, 0 corpus objects observed",missing:"Not implemented yet"};
 const e=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"})[c]);
-const bar=c=>`<div class="bar" aria-hidden="true">${["tested","done","partial"].map((s,i)=>`<span style="width:${100*c[i+1]/(c[0]||1)}%;background:${C[s]}"></span>`).join("")}</div>`;
+const bar=c=>`<div class="bar" aria-hidden="true">${["tested","done","partial","unseen"].map((s,i)=>`<span style="width:${100*c[i+1]/(c[0]||1)}%;background:${C[s]}"></span>`).join("")}</div>`;
 document.getElementById("heads").innerHTML=SUM.filter(([l])=>/overall|corpus/i.test(l)).map(([l,c])=>{const corpus=/corpus/i.test(l);
-return `<div class="head"><b>${c[6]}%</b><span>${e(corpus?l.replace(/\\s*\\(.*/,"").replace("corpus","instruments that fully work"):l.replace("overall","features done"))}: ${c[1]+c[2]} of ${c[0]}</span>${bar(c)}</div>`}).join("");
+return `<div class="head"><b>${c[7]}%</b><span>${e(corpus?l:l.replace("overall","features done"))}: ${c[1]+c[2]} of ${c[0]}</span>${bar(c)}</div>`}).join("");
 const prs=p=>p?p.split(",").map(n=>n[0]==="K"?`<a class="pr" href="https://github.com/DerpcatMusic/KONTRA/pull/${e(n.slice(1))}">KONTRA#${e(n.slice(1))}</a>`:`<a class="pr" href="https://github.com/DerpcatMusic/KONTRA/search?q=%23${e(n)}&type=commits" title="Commits from change #${e(n)}">#${e(n)}</a>`).join(""):"";
 const PAGE=200;
 function match(r,q,st,fmt,a){return r[1]===a&&(!st||r[4]===st)&&(!q||(r[0]+" "+r[2]+" "+r[3]+" "+r[8]).toLowerCase().includes(q))}
 function draw(){const q=document.getElementById("q").value.toLowerCase(),st=document.getElementById("st").value,fmt=document.getElementById("fmt").value;let html="",last="";
 for(const [a,t,f] of AREAS){if(fmt&&f!==fmt)continue;const all=ROWS.filter(r=>r[1]===a),rs=all.filter(r=>match(r,q,st,fmt,a));if((q||st)&&!rs.length)continue;
-if(f!==last){html+=`<h2>${e(f)}</h2>`;last=f}const c=[all.length,...["tested","done","partial","missing"].map(s=>all.filter(r=>r[4]===s).length)];
+if(f!==last){html+=`<h2>${e(f)}</h2>`;last=f}const c=[all.length,...["tested","done","partial","unseen","missing"].map(s=>all.filter(r=>r[4]===s).length)];
 html+=`<details data-a="${a}"${q||st?" open":""}><summary><span class="t">${e(t)}</span>${bar(c)}<small>${c[1]+c[2]} of ${c[0]} done${q||st?` · ${rs.length} shown`:""}</small></summary><div class="wrap"><table><thead><tr><th>Feature</th><th class="cat">Category</th><th>Status</th><th>Changes</th><th>Proof</th><th>Note</th></tr></thead><tbody data-n="0"></tbody></table></div><div class="more"></div></details>`}
 document.getElementById("areas").innerHTML=html||'<p class="none">No features match.</p>';
 document.querySelectorAll("#areas details").forEach(d=>{const fill=()=>{const a=d.dataset.a,tb=d.querySelector("tbody");const rs=ROWS.filter(r=>match(r,q,st,fmt,a));
@@ -807,12 +1018,12 @@ def refresh_ksp_manual(path):
     line or bullet, and each UI widget; a control parameter carries the widgets its description names."""
     manual = pathlib.Path(path).read_text(errors="ignore").splitlines()
     whole = "\n".join(manual)
-    spelled = {"$ENGINE_PAR_SF100_OVEDRIVE": "$ENGINE_PAR_SF100_OVERDRIVE"}  # the manual's misspelling of the binary's name
-    kontakt = set(read("crates/script/ksp/data/kontakt-8.13.1-names.txt").split())  # names Kontakt 8.13.1 knows
+    spelled = {"$ENGINE_PAR_SF100_OVEDRIVE": "$ENGINE_PAR_SF100_OVERDRIVE"}
+    kontakt = set(read("crates/script/ksp/data/kontakt-8.13.1-names.txt").split())
     at = {}
     for i, line in enumerate(manual):
         m = re.match(r"^\d+\. (.+?)\s*$", line)
-        if m and m[1] in SECTIONS and i > 300:  # headings appear in the contents and the body: take the body
+        if m and m[1] in SECTIONS and i > 300:
             at[m[1]] = i
     starts = sorted((i, t) for t, i in at.items())
     section = lambda i: max(((s, t) for s, t in starts if s <= i), default=(0, "Front"))[1]
@@ -828,14 +1039,12 @@ def refresh_ksp_manual(path):
             continue
         if sec == "User Interface Widgets" and re.fullmatch(r"ui_[a-z_]+", line.strip()):
             items.setdefault(("widget", line.strip()), [sec, ""])
-        # A command's heading `name()`, or in a command section a bare signature `name(<arg>...)`: the
-        # Zone Commands "Zone and Slice Functions" list and Advanced Concepts' PGS lists have no headings.
         if (m := fn.match(line)) or ((sec.endswith("Commands") or sec == "Advanced Concepts") and (m := sig.match(line))):
             items.setdefault(("fn", m[1]), [sec, ""])
         elif m := var.match(line):
             name = m[1]
             tail = re.match(r"^([A-Z_0-9]+)(?:\s|$)", manual[i + 1] if i + 1 < len(manual) else "")
-            if tail and name.isupper() and name + tail[1] in whole:  # a long name the PDF wrapped in a table cell
+            if tail and name.isupper() and name + tail[1] in whole:
                 name += tail[1]
             name = spelled.get(name, name)
             bare = name.lstrip("$%~@!")
@@ -848,7 +1057,7 @@ def refresh_ksp_manual(path):
             if sec in ("Variables", "Built-in Variables and Constants", "Engine Parameters", "Control Parameters",
                        "Zone Parameters", "Event Commands", "General Commands", "Callbacks") or kind in ("par", "evpar", "uipar"):
                 if kind in ("sym", "var") and bare.lower() in declared and bare.upper() not in kontakt:
-                    continue  # an example's own variable
+                    continue
                 k = (kind, bare.lower() if kind == "var" else name)
                 items.setdefault(k, [sec, ""])
                 last_par = k if kind == "uipar" and sec == "Control Parameters" else None
@@ -934,7 +1143,8 @@ def refresh_census(path):
 
 # ------------------------------------------------------------------ main
 def snapshot_errors():
-    """Each snapshot: every row as wide as its header, rows in byte order (`LC_ALL=C sort`) and unique."""
+    """Each snapshot: every row as wide as its header, rows in byte order (`LC_ALL=C sort`) and unique,
+    plus `dsp-oracle.tsv` test-existence and passing-status validation."""
     errors = []
     for p in sorted(SNAP.glob("*.tsv")):
         lines = [l for l in p.read_text().splitlines() if l and not l.startswith("#")]
@@ -943,6 +1153,8 @@ def snapshot_errors():
         errors += [f"{p.name}: {l!r} has {len(l.split(chr(9)))} columns, not {width}" for l in body if len(l.split("\t")) != width]
         if body != sorted(set(body)):
             errors.append(f"{p.name}: rows are not sorted and unique (keep the header, LC_ALL=C sort -u the rows)")
+    if (SNAP / "dsp-oracle.tsv").is_file():
+        errors.extend(dsp_oracle_errors())
     return errors
 
 
@@ -953,15 +1165,17 @@ def build(refresh):
     fmt, totals, latest = kontakt_format()
     rows = ksp + pars + modulation_targets() + ui + kontakt_dsp(status) + fmt + uvi()
     seen = set()
-    for r in rows:  # ids are the links' anchors: keep them unique
+    for r in rows:
         while r["id"] in seen:
             r["id"] += "_"
         seen.add(r["id"])
     apply_overrides(rows)
     flagged = attribute(rows, refresh)
+    PASSING.clear()
+    PASSING.update(r["id"] for r in rows if r["status"] in ("tested", "done"))
     mism = (sum(int(r["areas"]) for r in corpus), len(corpus))
     sums = summary(rows)
-    return render_md(rows, sums, (totals, latest, mism), flagged), render_html(rows, sums), sums
+    return render_md(rows, sums, (totals, latest, mism), flagged), render_html(rows, sums), sums, flagged
 
 
 def main():
@@ -973,16 +1187,27 @@ def main():
     if args[:1] == ["--census"]:
         return refresh_census(args[1])
     if args[:1] == ["--check"]:
-        if errors := snapshot_errors():
+        errors = snapshot_errors()
+        if not (SNAP / "dsp-oracle.tsv").is_file():
+            errors.append("dsp-oracle.tsv: missing required manifest")
+        if errors:
             sys.exit("\n".join(errors))
-        build(refresh=False)
-        print("parity snapshots are well-formed and the board generates")
+        _, _, _, flagged = build(refresh=False)
+        if flagged:
+            details = ", ".join(f"{rid} (#{pr})" if pr else rid for rid, pr in flagged)
+            sys.exit(f"flagged-claims.tsv is non-empty ({len(flagged)} failing claims): {details}")
+        stale = sorted(set(retracted()) & PASSING)
+        if stale:
+            sys.exit(f"retracted-claims.tsv: these rows pass again, delete their retraction: {', '.join(stale)}")
+        print("parity snapshots are well-formed, dsp-oracle.tsv verified, and the board generates with 0 flagged claims")
         return
-    md, page, sums = build(refresh=True)
+    md, page, sums, flagged = build(refresh=True)
     OUT_MD.write_text(md)
     OUT_HTML.write_text(page)
     for label, c in sums:
-        print(f"{label:48} {c[0]:6} tested {c[1]:5} done {c[2]:5} partial {c[3]:5} missing {c[4]:5}  {c[5]}% / {c[6]}%")
+        print(f"{label:48} {c[0]:6} tested {c[1]:5} done {c[2]:5} partial {c[3]:5} unseen {c[4]:4} missing {c[5]:5}  {c[6]}% / {c[7]}%")
+    if flagged:
+        print(f"WARNING: {len(flagged)} flagged claims written to {FLAGGED.relative_to(ROOT)}", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -51,6 +51,12 @@ pub fn rack_only(kind: &ir::EffectKind) -> bool {
             | ir::EffectKind::Transient(_)
             | ir::EffectKind::Cascade(_)
             | ir::EffectKind::Clocked(_)
+            | ir::EffectKind::Rotary(_)
+            | ir::EffectKind::Gater(_)
+            | ir::EffectKind::BeatMasher(_)
+            | ir::EffectKind::BeatSlicer(_)
+            | ir::EffectKind::ReverseGrain(_)
+            | ir::EffectKind::TransposeStretch(_)
     )
 }
 
@@ -127,7 +133,13 @@ pub fn matrix(e: &ir::Effect) -> Gain {
             | ir::EffectKind::Cascade(_)
             | ir::EffectKind::Clocked(_)
             | ir::EffectKind::Clipper(_)
-            | ir::EffectKind::RingMod(_) => [[0.0; 2]; 2],
+            | ir::EffectKind::RingMod(_)
+            | ir::EffectKind::Rotary(_)
+            | ir::EffectKind::Gater(_)
+            | ir::EffectKind::BeatMasher(_)
+            | ir::EffectKind::BeatSlicer(_)
+            | ir::EffectKind::ReverseGrain(_)
+            | ir::EffectKind::TransposeStretch(_) => [[0.0; 2]; 2],
             // Handled above by `utility_matrix`.
             ir::EffectKind::Gain(_)
             | ir::EffectKind::Matrix(_)

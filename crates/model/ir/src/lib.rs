@@ -33,7 +33,9 @@ pub use effects::{
     IDENTITY, ImpulseCuts, ImpulseKnob, Limiter, Matrix, Notches, Phaser, Polarity, Reverb,
     ScanShape, Scanner, Shifter, Strip, Transient, VowelSet,
 };
-pub use engine_par::{Drives, EnginePar, HeldSet, ScriptPar, ZonePar, held_key, unit_read};
+pub use engine_par::{
+    Drives, EnginePar, HeldSet, ParRole, ScriptPar, ZonePar, held_key, unit_read,
+};
 pub use generator::Generator;
 pub use graph::{AudioGraph, ChannelLayout, EffectId, GraphEdge, GraphNode, GraphNodeKind, NodeId};
 pub use kontra_law::{FormulaId, Section, Sections, Stage, common};
@@ -56,6 +58,8 @@ pub use wavetable::{
     FormShaper, Inharmonic, ModOsc, ModOscKind, Quality, Side, TableValue, TuneUnit, Warp,
     WarpShape, Wavetable,
 };
+// Tempo-synced slicing and rotary units, kept apart from the list above.
+pub use effects::{BeatMasher, BeatSlicer, Gater, ReverseGrain, Rotary, TransposeStretch};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Instrument {
@@ -1048,6 +1052,18 @@ pub enum EffectKind {
     Comb(Comb),
     /// A transient shaper, in place.
     Transient(Transient),
+    /// A two-rotor rotary speaker, its input mixed in by `mix`.
+    Rotary(Rotary),
+    /// A rhythmic amplitude gater.
+    Gater(Gater),
+    /// A beat-locked loop/stutter masher.
+    BeatMasher(BeatMasher),
+    /// A beat capture that replays reordered slices.
+    BeatSlicer(BeatSlicer),
+    /// A reverse granular delay.
+    ReverseGrain(ReverseGrain),
+    /// An overlap-add pitch shifter and time stretcher.
+    TransposeStretch(TransposeStretch),
     /// Not carried, an insert: audio passes unchanged (its output gain trims
     /// processing that does not run); the translator reports it.
     Other,

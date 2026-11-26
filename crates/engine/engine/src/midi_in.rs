@@ -10,13 +10,15 @@
 //! that already ran). What is left reaches the engine's own handlers.
 
 use kontra_events::{Event, HostNote, HostPattern};
+use kontra_time::{Frames, SampleTime};
 use kontra_vm::midi;
 
 use crate::midi::Heard;
-use crate::{Engine, Kind, Running};
+use crate::queue::{Due, Work};
+use crate::{CallbackContext, Engine, MAX_SPAN, Play, Running};
 
-/// `set_midi` messages one callback may add before the rest are dropped.
-pub(crate) const MADE: usize = 16;
+/// `set_midi` messages held in the inline ring before overflow is counted.
+pub(crate) const MADE: usize = 64;
 
 impl Engine {
     /// `event` as MIDI bytes `[status nibble, channel, data 1, data 2]`, when
@@ -133,16 +135,21 @@ impl Engine {
             let Some(entry) = script.callbacks.midi_in else {
                 continue;
             };
-            self.midi_made.0 = 0;
-            let running = Running {
-                midi: m,
-                ..Running::new(Kind::MidiIn, None)
-            };
+            let base = self.midi_made.0;
+            let running = Running::new(CallbackContext::MidiIn { bytes: m });
             let ran = self.run_callback(slot, entry, running);
-            m = ran.midi;
+            m = ran.midi();
             ignored |= Heard::of(&ran) != Heard::Passed;
-            let made = std::mem::take(&mut self.midi_made);
-            for &bytes in made.1.iter().take(made.0) {
+            let end = self.midi_made.0.min(MADE);
+            let mut batch = [[0u8; 4]; MADE];
+            let count = end.saturating_sub(base);
+            if let (Some(dst), Some(src)) =
+                (batch.get_mut(..count), self.midi_made.1.get(base..end))
+            {
+                dst.copy_from_slice(src);
+            }
+            self.midi_made.0 = base;
+            for &bytes in batch.iter().take(count) {
                 apply(self, Self::rebuilt(bytes, heard, &event));
             }
             if ignored {
@@ -174,6 +181,27 @@ impl Engine {
         out
     }
 
+    /// Converts standalone `set_midi` bytes (from a delayed `wait`, `on
+    /// listener`, or `on ui_control`) into an [`Event`].
+    fn midi_event(bytes: [u8; 4]) -> Event {
+        Self::event_from(bytes, &Event::midi1(0xB0, 0, 0))
+    }
+
+    /// Drains any pending `set_midi` messages produced by resumed waits,
+    /// `on listener`, or `on ui_control` into `out` at `offset`, without
+    /// growing `out` past its pre-allocated capacity.
+    fn drain_midi_made(&mut self, offset: u32, out: &mut Vec<(u32, Event)>) {
+        let count = self.midi_made.0.min(MADE);
+        self.midi_made.0 = 0;
+        for &bytes in self.midi_made.1.iter().take(count) {
+            if out.len() < out.capacity() {
+                out.push((offset, Self::midi_event(bytes)));
+            } else {
+                self.stats.events_refused += 1;
+            }
+        }
+    }
+
     /// A multi script's turn at `event`: its `on midi_in` runs, and what it
     /// lets through or sends (`set_midi`) goes to `out`, for the rack's
     /// parts. The engine itself plays none of it.
@@ -184,7 +212,97 @@ impl Engine {
         }
     }
 
-    /// `set_midi` from the running `on midi_in`.
+    /// Sample-accurate multi-script block processor: forwards host `tempo` and
+    /// `transport`, schedules `input` at each event's exact sample offset,
+    /// advances the script clock / `wait(...)` resumes / `on listener` timers
+    /// across `frames`, and emits every passed-through or `set_midi` event
+    /// (including delayed, listener, and pre-block `ui_control` emissions) into
+    /// `out` with its exact block-relative sample offset. Zero heap allocations
+    /// on the audio thread (never grows `out` past `out.capacity()`).
+    pub fn process_midi(
+        &mut self,
+        frames: usize,
+        input: &[(u32, Event)],
+        tempo: Option<f32>,
+        transport: Option<(Play, f64, (u8, u8))>,
+        out: &mut Vec<(u32, Event)>,
+    ) {
+        out.clear();
+        if let Some(bpm) = tempo {
+            self.set_tempo(bpm);
+        }
+        if let Some((play, quarters, signature)) = transport {
+            self.set_transport(play, quarters, signature);
+        }
+        // Emit any `set_midi` queued between blocks (e.g. from `on ui_control`).
+        self.drain_midi_made(0, out);
+
+        let start = self.now;
+        let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
+        let end = start.advance(Frames(frames_u32));
+        for &(at, event) in input {
+            let clamped = at.min(frames_u32.saturating_sub(1));
+            if !self
+                .queue
+                .push(SampleTime(start.0 + u64::from(clamped)), Work::Input(event))
+            {
+                self.stats.events_refused += 1;
+            }
+        }
+        self.block_end = end;
+        self.block_turns = 0;
+        for vm in self.vms.iter_mut().flatten() {
+            vm.begin_block();
+        }
+        while self.now < end {
+            let mut resumes = 0;
+            while let Some((due, work)) = self.queue.pop_due(self.now) {
+                if let Work::Resume(..) = work {
+                    resumes += 1;
+                    if resumes > self.queue.capacity() {
+                        let next = Due::at(SampleTime(self.now.0 + 1));
+                        self.stats.resumes_deferred += 1;
+                        if !self.queue.push_due(next, work) {
+                            self.stats.events_refused += 1;
+                        }
+                        continue;
+                    }
+                }
+                let offset = u32::try_from(self.now.0.saturating_sub(start.0)).unwrap_or(u32::MAX);
+                match work {
+                    Work::Input(event) => {
+                        let mut emit = |engine: &mut Self, e: Event| {
+                            if out.len() < out.capacity() {
+                                out.push((offset, e));
+                            } else {
+                                engine.stats.events_refused += 1;
+                            }
+                        };
+                        if let Some(passed) = self.through_midi_in(event, &mut emit) {
+                            emit(self, passed);
+                        }
+                    }
+                    other => {
+                        self.dispatch(due, other);
+                        self.drain_midi_made(offset, out);
+                    }
+                }
+            }
+            let until = self
+                .queue
+                .next_at()
+                .map_or(end, |at| at.min(end))
+                .min(SampleTime((self.now.0 / MAX_SPAN + 1) * MAX_SPAN));
+            let len = (until.0 - self.now.0) as usize;
+            self.advance_transport(len);
+            self.follow_knobs(false);
+            let offset = u32::try_from(self.now.0.saturating_sub(start.0)).unwrap_or(u32::MAX);
+            self.drain_midi_made(offset, out);
+            self.now = until;
+        }
+    }
+
+    /// `set_midi` from `on midi_in`, a resumed wait, `on listener`, or `on ui_control`.
     pub(crate) fn set_midi(&mut self, bytes: [u8; 4]) {
         let (n, made) = &mut self.midi_made;
         if let Some(slot) = made.get_mut(*n) {
@@ -201,17 +319,16 @@ impl Engine {
     /// the manual's only source is another script slot.)
     pub(crate) fn note_controller(&mut self, from: u8, controller: i32, note: i32, value: i32) {
         let plan = std::sync::Arc::clone(&self.plan);
+        let context = CallbackContext::NoteController {
+            cc: controller.clamp(0, 255) as u8,
+            note: note.clamp(0, 127) as u8,
+            value,
+        };
         for (slot, script) in (0u8..).zip(&plan.scripts) {
             let Some(entry) = script.callbacks.note_controller.filter(|_| slot != from) else {
                 continue;
             };
-            let running = Running {
-                controller: controller.clamp(0, 255) as u8,
-                midi: [0, 0, note.clamp(0, 127) as u8, 0],
-                value,
-                ..Running::new(Kind::NoteController, None)
-            };
-            self.run_callback(slot, entry, running);
+            self.run_callback(slot, entry, Running::new(context));
         }
     }
 }

@@ -207,6 +207,7 @@ pub fn page_as(
     // A scrolling region's content, by region; the page is `None`.
     let mut groups = std::collections::HashMap::from([(None, layers)]);
     let mut regions = Vec::new();
+    let mut memo_seen = std::collections::HashMap::<u64, u32>::new();
     for item in plan.widgets {
         let bare = item.bare;
         let n = item.index;
@@ -555,7 +556,8 @@ pub fn page_as(
             ),
             (wd.opacity.to_bits(), wd.rotation.to_bits()),
         );
-        let el = ui.memo(format!("kontra-ui-{face}-{}", n.0), deps, |ui| {
+        let memo_id = stable_memo_id(face, wd, tree.page_rect(n), &mut memo_seen);
+        let el = ui.memo(memo_id.clone(), deps, |ui| {
             built += 1;
             BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let (w, h) = (r.width, r.height);
@@ -662,7 +664,7 @@ pub fn page_as(
                 let px = |v: f64| (v / scale * device).round() as usize;
                 let (pw, ph) = (px(w), px(h));
                 let key = (wave_key, pw, ph, device.to_bits());
-                let id = format!("kontra-wave-{face}-{}", n.0);
+                let id = format!("{memo_id}-wave");
                 let pic = ui.memo(id, key, |_| match wave::raster(v, wl, (pw, ph, device)) {
                     Some(img) => block(w, h).radius(0.).fill(Fill::Image(img, Fit::Fill)),
                     None => stack(Vec::<El>::new()),
@@ -764,6 +766,43 @@ pub fn page_as(
     }
     let layers = groups.remove(&None).unwrap_or_default();
     (stack(layers).w(w).h(h).radius(0.).clip(), built)
+}
+
+/// Stable, non-positional widget memo identity keyed by `source_id`, widget
+/// kind/name, or unscaled page position (with an occurrence suffix for
+/// duplicates) so Conflux `native_ui` splices shifting widget indices do not
+/// bust unrelated widget memos.
+fn stable_memo_id(
+    face: usize,
+    wd: &model::Widget,
+    rect: model::Rect,
+    seen: &mut std::collections::HashMap<u64, u32>,
+) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    std::mem::discriminant(&wd.kind).hash(&mut h);
+    if let Some(id) = wd.source_id {
+        0u8.hash(&mut h);
+        id.hash(&mut h);
+        wd.name.hash(&mut h);
+    } else if !wd.name.is_empty() {
+        1u8.hash(&mut h);
+        wd.name.hash(&mut h);
+    } else {
+        2u8.hash(&mut h);
+        (rect.x.round() as i64, rect.y.round() as i64).hash(&mut h);
+    }
+    let key = h.finish();
+    let occ = seen.entry(key).or_insert(0);
+    let n = *occ;
+    *occ += 1;
+    if let Some(id) = wd.source_id
+        && n == 0
+    {
+        format!("kontra-ui-{face}-s{id}")
+    } else {
+        format!("kontra-ui-{face}-{key:x}-{n}")
+    }
 }
 
 /// What a meter lights (crate::meter), in steps of a hundredth so a frame
@@ -1214,3 +1253,69 @@ pub fn color(c: model::Rgba) -> Color {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod lifecycle_memo_tests {
+    use super::*;
+
+    /// AC4: Splicing widgets in the middle of a page (Conflux `native_ui`)
+    /// must not bust MUI memos for shifted tail widgets.
+    #[test]
+    fn lifecycle_stable_memo_keys_survive_widget_splice_without_busting_tail() {
+        let mut tree = Interface::default();
+        tree.pages.push(model::Page {
+            size: model::Size {
+                width: 400.,
+                height: 300.,
+            },
+            ..Default::default()
+        });
+        for i in 0..10 {
+            let mut w = model::Widget::new(
+                format!("$k{i}"),
+                PageRef(0),
+                model::Rect::new(i * 30, 10, 24, 24),
+                Kind::Knob {
+                    range: model::Range {
+                        min: 0.,
+                        max: 100.,
+                        default: 0.,
+                        step: Some(1.),
+                    },
+                    display: model::Display::default(),
+                },
+            );
+            w.source_id = Some(1000 + i);
+            tree.widgets.push(w);
+        }
+        let mut ui = crate::ui();
+        let mut pics = Pictures::new(Box::new(|_| None));
+        let size = Some(mui::prelude::Size::new(400., 300.));
+        let (el, first_built) = page(&mut ui, 0, &tree, PageRef(0), &mut pics, (1., &[]));
+        assert_eq!(first_built, 10);
+        ui.frame(el, size, mui::input::Input::default(), 1. / 60.)
+            .unwrap();
+        let (el, idle_built) = page(&mut ui, 0, &tree, PageRef(0), &mut pics, (1., &[]));
+        assert_eq!(idle_built, 0);
+        ui.frame(el, size, mui::input::Input::default(), 1. / 60.)
+            .unwrap();
+        // Insert 2 popover widgets at index 3 (shifting 3..10 -> 5..12).
+        for j in 0..2 {
+            let mut pop = model::Widget::new(
+                format!("popover_{j}"),
+                PageRef(0),
+                model::Rect::new(50 + (j * 20) as i32, 100, 18, 18),
+                Kind::Label,
+            );
+            pop.text = format!("P{j}");
+            tree.widgets.insert(3 + j, pop);
+        }
+        let (el, splice_built) = page(&mut ui, 0, &tree, PageRef(0), &mut pics, (1., &[]));
+        assert_eq!(
+            splice_built, 2,
+            "splicing 2 widgets must not bust memos of shifted tail widgets"
+        );
+        ui.frame(el, size, mui::input::Input::default(), 1. / 60.)
+            .unwrap();
+    }
+}

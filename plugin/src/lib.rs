@@ -23,8 +23,7 @@ mod readout;
 mod tests;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, TryLockError};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, RwLock, TryLockError};
 
 use kontra_host::rack::{Event, Rack, RackAudio, RenderMode, Store, StoreConfig};
 use kontra_host::state::Saved;
@@ -96,10 +95,62 @@ pub struct KontraParams {
 
 use KontraParamsParamId as P;
 
-/// What the control threads share. The audio thread reads only `latency`.
+/// Coordinates `KontraParams::capture` with [`Tick`] without spinning or
+/// sleeping: `capture` blocks on `cv` only during short ticks and returns
+/// immediately (keeping pre-load `saved`) while a slow load holds the rack.
+#[derive(Default)]
+struct RackGate {
+    state: Mutex<GateState>,
+    cv: Condvar,
+}
+
+#[derive(Default)]
+struct GateState {
+    busy: bool,
+    holding: bool,
+}
+
+struct GateGuard<'a>(&'a RackGate);
+
+impl Drop for GateGuard<'_> {
+    fn drop(&mut self) {
+        let mut s = lock(&self.0.state);
+        s.busy = false;
+        s.holding = false;
+        self.0.cv.notify_all();
+    }
+}
+
+impl RackGate {
+    fn enter(&self) -> GateGuard<'_> {
+        lock(&self.state).busy = true;
+        GateGuard(self)
+    }
+
+    fn set_holding(&self, holding: bool) {
+        let mut s = lock(&self.state);
+        if s.holding != holding {
+            s.holding = holding;
+            self.cv.notify_all();
+        }
+    }
+
+    /// Waits while a short tick is running; returns `false` if a slow load or
+    /// restore is holding the rack (caller should keep the pre-load state).
+    fn wait_for_rack(&self) -> bool {
+        let mut s = lock(&self.state);
+        while s.busy && !s.holding {
+            s = self.cv.wait(s).unwrap_or_else(PoisonError::into_inner);
+        }
+        !s.holding
+    }
+}
+
+/// What the control threads share. The audio thread reads only `latency` and `shown`.
 #[derive(Default)]
 pub struct Shared {
     rack: Mutex<Option<Rack>>,
+    gate: RackGate,
     /// Each macro's host value as last applied to its control, as f64
     /// bits: the audio thread applies a host's in-block moves too.
     macro_values: macros::PerSlot<AtomicU64>,
@@ -124,7 +175,9 @@ pub struct Shared {
     browser: Mutex<Option<kontra_host::browser::Browser>>,
     /// The editor's copy of the rack, refreshed by [`Tick`].
     view: Mutex<editor::Snapshot>,
-    dirty: std::sync::atomic::AtomicBool,
+    dirty: AtomicBool,
+    /// Coalesced wakeup handle for the currently open editor window.
+    waker: Mutex<Option<moose::mui::EditorWaker>>,
     progress: Arc<kontra_protocol::LoadProgress>,
     /// Loads asked for and loads carried out: the editor shows one loading
     /// while the first is ahead.
@@ -158,8 +211,6 @@ pub struct Shared {
     /// What the last editor window left (its faces, pictures and view
     /// state), for the next one to take.
     editor: Mutex<Option<editor::Kept>>,
-    /// A load holds the rack; `saved` is the state from just before it.
-    holding: AtomicBool,
     /// The audio thread caught a panic in the rack's render: the block went
     /// silent. The tick tells the player, once per fault.
     fault: AtomicBool,
@@ -195,6 +246,19 @@ impl Shared {
         self.wake_tick();
     }
 
+    pub fn set_waker(&self, waker: Option<moose::mui::EditorWaker>) {
+        *lock(&self.waker) = waker;
+    }
+
+    /// Marks the editor dirty and immediately wakes any open editor window
+    /// without waiting for a poll timer.
+    pub fn wake_editor(&self) {
+        self.dirty.store(true, Ordering::Release);
+        if let Some(waker) = lock(&self.waker).as_ref() {
+            waker.wake();
+        }
+    }
+
     pub fn set_tasks(&self, tasks: Option<moose::prelude::TaskSpawner<Tick>>) {
         if let Some(tasks) = tasks {
             *lock(&self.tasks) = Some(tasks);
@@ -226,10 +290,11 @@ impl Shared {
 
     /// Asks for the editor's `edit`; its number in order, which the
     /// editor's copy of the rack shows once it is carried out.
-    pub fn request_ui(&self, edit: editor::Edit) -> u64 {
+    pub fn request_ui(&self, mut edit: editor::Edit) -> u64 {
         let seq = {
             let mut requests = lock(&self.requests);
             let seq = self.ui_sent.fetch_add(1, Ordering::AcqRel) + 1;
+            edit.seq = seq;
             requests.push(Request::Ui(edit));
             seq
         };
@@ -297,15 +362,16 @@ impl KontraParams {
         }
         // A load holds the rack for seconds: the host's thread does not
         // wait for it, and keeps the state the tick saved just before it.
-        // Any other tick is over in milliseconds.
+        // Any other tick is over in milliseconds and notifies `gate.cv`.
         let rack = loop {
             match self.shared.rack.try_lock() {
                 Ok(rack) => break rack,
                 Err(TryLockError::Poisoned(e)) => break e.into_inner(),
-                Err(TryLockError::WouldBlock) if self.shared.holding.load(Ordering::Acquire) => {
-                    return;
+                Err(TryLockError::WouldBlock) => {
+                    if !self.shared.gate.wait_for_rack() {
+                        return;
+                    }
                 }
-                Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(1)),
             }
         };
         if let Some(rack) = rack.as_ref() {
@@ -399,6 +465,7 @@ pub struct Dsp {
     gain: f32,
     rate: f64,
     until_tick: usize,
+    was_active: bool,
     latency: u32,
 }
 
@@ -416,11 +483,83 @@ enum Change {
 /// second; moose runs one at a time.
 pub struct Tick;
 
+/// Whether `widget` on `rack` part `slot` is a continuous control whose
+/// consecutive identical-modifier drag moves can safely coalesce to
+/// latest-wins (buttons, switches, and `native_ui` tap areas preserve every
+/// press/release edge).
+fn is_continuous_control(rack: &Rack, slot: usize, widget: usize) -> bool {
+    let Some(w) = rack
+        .parts()
+        .get(slot)
+        .and_then(Option::as_ref)
+        .and_then(|p| p.view.as_ref())
+        .and_then(|v| v.tree().widgets.get(widget))
+    else {
+        return false;
+    };
+    if w.name.starts_with("native_ui tap") {
+        return false;
+    }
+    matches!(
+        w.kind,
+        kontra_ui_model::Kind::Knob { .. }
+            | kontra_ui_model::Kind::Slider { .. }
+            | kontra_ui_model::Kind::ValueEdit { .. }
+            | kontra_ui_model::Kind::Table { .. }
+            | kontra_ui_model::Kind::Xy { .. }
+    )
+}
+
+/// Coalesces consecutive continuous `Request::Ui(Action::Control)` moves for
+/// the exact same `(slot, widget, cell, keys)` to latest-wins (preserving the
+/// highest `seq`), while keeping press/release edges and inter-control
+/// ordering intact.
+pub(crate) fn coalesce_requests(requests: Vec<Request>, rack: &Rack) -> Vec<Request> {
+    use kontra_ui::app::Action;
+    let mut out: Vec<Request> = Vec::with_capacity(requests.len());
+    for req in requests {
+        let same_continuous = match (out.last(), &req) {
+            (
+                Some(Request::Ui(editor::Edit {
+                    slot: Some(s1),
+                    action:
+                        Action::Control {
+                            widget: w1,
+                            cell: c1,
+                            keys: k1,
+                            ..
+                        },
+                    ..
+                })),
+                Request::Ui(editor::Edit {
+                    slot: Some(s2),
+                    action:
+                        Action::Control {
+                            widget: w2,
+                            cell: c2,
+                            keys: k2,
+                            ..
+                        },
+                    ..
+                }),
+            ) => (s1, w1, c1, k1) == (s2, w2, c2, k2) && is_continuous_control(rack, *s2, *w2),
+            _ => false,
+        };
+        if same_continuous && let Some(last) = out.last_mut() {
+            *last = req;
+        } else {
+            out.push(req);
+        }
+    }
+    out
+}
+
 impl BackgroundTask for Tick {
     type Params = KontraParams;
     const SERIALIZED: bool = true;
 
     fn run(self, p: &KontraParams) {
+        let _gate = p.shared.gate.enter();
         let mut guard = lock(&p.shared.rack);
         let Some(rack) = guard.as_mut() else {
             return;
@@ -439,8 +578,9 @@ impl BackgroundTask for Tick {
         } else {
             Interfaces::Hidden
         };
-        let requests = std::mem::take(&mut *lock(&p.shared.requests));
-        let changed = !requests.is_empty();
+        let raw_requests = std::mem::take(&mut *lock(&p.shared.requests));
+        let changed = !raw_requests.is_empty();
+        let requests = coalesce_requests(raw_requests, rack);
         let mut report = Vec::new();
         if p.shared.fault.swap(false, Ordering::AcqRel) {
             report.push(
@@ -466,7 +606,7 @@ impl BackgroundTask for Tick {
                 if loads && !restores && !requests_restoring(p) {
                     *p.saved.write().unwrap_or_else(PoisonError::into_inner) = rack.save().write();
                 }
-                p.shared.holding.store(true, Ordering::Release);
+                p.shared.gate.set_holding(true);
             }
             match r {
                 Request::Load { part, path } => {
@@ -492,13 +632,18 @@ impl BackgroundTask for Tick {
                 }
                 Request::Notice(message) => report.push(message),
                 Request::Ui(edit) => {
+                    let seq = edit.seq;
                     editor::apply(rack, edit);
-                    p.shared.ui_applied.fetch_add(1, Ordering::AcqRel);
+                    if seq > 0 {
+                        p.shared.ui_applied.fetch_max(seq, Ordering::AcqRel);
+                    } else {
+                        p.shared.ui_applied.fetch_add(1, Ordering::AcqRel);
+                    }
                 }
                 Request::Browse(action) => editor::browse(rack, browser, action, &mut report),
                 Request::AddRoot(path) => browser.add_root(path),
             }
-            p.shared.holding.store(false, Ordering::Release);
+            p.shared.gate.set_holding(false);
             // Counted before `done`, so the load never looks finished.
             p.shared
                 .in_flight
@@ -588,12 +733,10 @@ impl BackgroundTask for Tick {
             }
             _ => view.report(report),
         };
-        // What the requests did shows, whether or not the editor's copy
-        // of the rack noticed (a script's answer to a click).
+        // What the requests did shows immediately via the coalesced editor
+        // waker instead of waiting on a poll timer.
         if refreshed | changed {
-            p.shared
-                .dirty
-                .store(true, std::sync::atomic::Ordering::Release);
+            p.shared.wake_editor();
         }
     }
 }
@@ -656,6 +799,7 @@ impl Plugin for Kontra {
             gain: db_to_linear(p.volume.value()),
             rate: c.sample_rate,
             until_tick: 0,
+            was_active: false,
             latency: p.shared.latency.load(Ordering::Relaxed),
         })
     }
@@ -683,14 +827,6 @@ impl Plugin for Kontra {
         cx: &mut ProcessContext,
     ) -> ProcessStatus {
         let frames = b.num_samples();
-        if s.until_tick <= frames {
-            if let Some(tasks) = cx.tasks::<Tick>() {
-                tasks.spawn_coalescing(Tick);
-            }
-            s.until_tick = (s.rate / 20.0) as usize;
-        } else {
-            s.until_tick -= frames;
-        }
         let Some(audio) = s.audio.as_mut() else {
             for ch in 0..b.num_output_channels() {
                 b.output(ch).fill(0.0);
@@ -806,6 +942,9 @@ impl Plugin for Kontra {
             .is_err()
             {
                 p.shared.fault.store(true, Ordering::Release);
+                if let Some(tasks) = cx.tasks::<Tick>() {
+                    tasks.spawn_coalescing(Tick);
+                }
                 for ch in 0..b.num_output_channels() {
                     b.output(ch).fill(0.0);
                 }
@@ -826,6 +965,30 @@ impl Plugin for Kontra {
         }
         s.gain = target;
         cx.set_meter(&p.level, peak.min(1.0));
+        // Event-driven wake: whenever audio returned a LookFrame/Capture/
+        // request or advanced a part's UI/persist epoch, wake `Tick`
+        // immediately (≤ 1 block round-trip). While actively producing sound
+        // with an open editor, keep a 20 Hz housekeeping tick for meters/stats;
+        // when completely silent and idle, spawn 0 ticks.
+        let active = peak > 1e-6 || audio.active_voices() > 0;
+        let urgent = audio.take_wake();
+        let meter_tick = (active || s.was_active) && p.shared.shown.load(Ordering::Relaxed);
+        s.was_active = active;
+        if urgent {
+            if let Some(tasks) = cx.tasks::<Tick>() {
+                tasks.spawn_coalescing(Tick);
+            }
+            s.until_tick = (s.rate / 20.0) as usize;
+        } else if meter_tick {
+            if s.until_tick <= frames {
+                if let Some(tasks) = cx.tasks::<Tick>() {
+                    tasks.spawn_coalescing(Tick);
+                }
+                s.until_tick = (s.rate / 20.0) as usize;
+            } else {
+                s.until_tick -= frames;
+            }
+        }
         ProcessStatus::Normal
     }
 

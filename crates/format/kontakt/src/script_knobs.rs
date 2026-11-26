@@ -129,6 +129,8 @@ pub(crate) fn script_knobs() -> Vec<(&'static str, ir::KnobTarget, ir::Law)> {
     rows.extend(crate::vibrato::rows());
     rows.extend(crate::replika::rows());
     rows.extend(crate::delays::rows());
+    rows.extend(crate::rotator::rows());
+    rows.extend(crate::mangling::rows());
     rows
 }
 
@@ -477,6 +479,8 @@ pub(crate) fn slot_types() -> Vec<ir::SlotType> {
         model: Some(crate::vibrato::model(crate::vibrato::INIT)),
         ..ty(55, false, 0, Some(vibrato), [].into())
     });
+    types.push(crate::rotator::slot_type());
+    types.extend(crate::mangling::slot_types());
     types
 }
 
@@ -752,7 +756,7 @@ mod tests {
     #[test]
     fn the_saved_type_indices_never_move() {
         #[rustfmt::skip]
-        const PINNED: [(i32, bool); 65] = [
+        const PINNED: &[(i32, bool)] = &[
             (29, false), (39, false), (11, false), (40, false), (0, false), (7, false),
             (24, true), (19, true), (13, true), (14, true), (15, true),
             (100, true), (101, true), (102, true), (103, true), (104, true), (105, true),
@@ -784,6 +788,14 @@ mod tests {
             (54, false),
             (49, false),
             (55, false),
+            // Rotator, Beat Masher, Gater, Beat Slicer, Reverse Grain,
+            // Transpose Stretch.
+            (22, false),
+            (62, false),
+            (63, false),
+            (64, false),
+            (65, false),
+            (66, false),
         ];
         let types: Vec<_> = slot_types().iter().map(|t| (t.id, t.subtype)).collect();
         assert_eq!(types, PINNED);

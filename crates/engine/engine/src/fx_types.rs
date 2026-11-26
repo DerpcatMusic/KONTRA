@@ -109,7 +109,7 @@ impl Engine {
             ir::RackAt::Sends => ir::Effect { dry: 0.0, ..e },
             _ => e,
         });
-        let init = self.building || self.running.kind == Kind::Init;
+        let init = self.building || self.running.is(Kind::Init);
         // Loading the type a slot holds keeps it as it is (Kontakt 8.13: a
         // reverb's size stays through a reverb load; measured). Compare the
         // stored effect-type / subtype ID rather than the `ir::EffectKind`
@@ -152,7 +152,7 @@ impl Engine {
         let network = usize::try_from(n)
             .ok()
             .and_then(|n| self.script()?.reverb_networks.get(n).cloned());
-        let init = self.building || self.running.kind == Kind::Init;
+        let init = self.building || self.running.is(Kind::Init);
         let Some(slot_now) = self.effect_mut(group, slot, generic) else {
             return false;
         };

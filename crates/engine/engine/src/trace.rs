@@ -43,7 +43,9 @@ impl crate::Engine {
             let direct = group.is_some_and(|g| source_kind.is_some_and(|s| g.reads(s, cc)));
             let related =
                 group.is_some_and(|g| source_kind.is_some_and(|s| g.reads_modulated(s, cc)));
-            let callback = (self.running.kind == crate::Kind::Controller)
+            let callback = self
+                .running
+                .is(crate::Kind::Controller)
                 .then_some((self.running.slot, self.running.callback_id));
             if trace.routes.is_onset() && !related {
                 continue;

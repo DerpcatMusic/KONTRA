@@ -146,14 +146,20 @@ pub fn compile(
     let callbacks = Callbacks {
         // Always: init pushes the levels the program tree sets.
         init: true,
-        note: defined("onNote"),
-        release: defined("onRelease"),
-        // Pitch bend and channel pressure reach scripts as controllers.
-        controller: ["onController", "onPitchBend", "onAfterTouch"]
-            .into_iter()
-            .any(defined),
+        note: defined("onNote") || defined("onEvent"),
+        release: defined("onRelease") || defined("onEvent"),
+        // Pitch bend, channel pressure, and program change reach scripts as controllers.
+        controller: [
+            "onController",
+            "onPitchBend",
+            "onAfterTouch",
+            "onProgramChange",
+            "onEvent",
+        ]
+        .into_iter()
+        .any(defined),
         transport: defined("onTransport"),
-        poly_at: defined("onPolyAfterTouch"),
+        poly_at: defined("onPolyAfterTouch") || defined("onEvent"),
     };
     let controls = lua
         .globals()
@@ -462,6 +468,26 @@ fn state(
         Ok(files.get(&key).and_then(|text| literal::read(lua, text)))
     })?;
     globals.set("__file", file)?;
+    let list_source = Arc::clone(modules);
+    let list_files = lua.create_function(move |lua, prefix: String| {
+        let pref = prefix.trim_matches('/').to_lowercase();
+        let mut names: Vec<&str> = list_source
+            .keys()
+            .filter_map(|k| k.strip_prefix(FILE))
+            .filter(|p| {
+                pref.is_empty()
+                    || *p == pref
+                    || (p.starts_with(pref.as_str()) && p.as_bytes().get(pref.len()) == Some(&b'/'))
+            })
+            .collect();
+        names.sort_unstable();
+        let out = lua.create_table_with_capacity(names.len(), 0)?;
+        for (i, name) in names.into_iter().enumerate() {
+            out.raw_set(i + 1, name)?;
+        }
+        Ok(out)
+    })?;
+    globals.set("__list_files", list_files)?;
     lua.load(PRELUDE).set_name("prelude").exec()?;
     lua.load(WIDGETS).set_name("widgets").exec()?;
     lua.load(source).set_name("script").exec()?;
@@ -1072,6 +1098,20 @@ fn host_call(lua: &Lua, host: &mut dyn HostApi, context: u64, args: &[Value]) ->
 mod tests {
     use super::*;
 
+    /// Runs `co` to its end. A script run has a wall-clock slice: on a busy
+    /// machine it may yield and go on in the next block, as the host resumes it.
+    macro_rules! finish {
+        ($m:expr, $co:expr, $host:expr) => {{
+            let co = $co;
+            let mut step = $m.run(co, $host);
+            while step == Step::Yield {
+                $m.begin_block();
+                step = $m.run(co, $host);
+            }
+            step
+        }};
+    }
+
     /// Luau bytes one event allocates, the GC stopped so nothing it frees
     /// hides them: Luau carves small objects out of 16 KB pages, so a
     /// counting allocator sees only about one allocation in fifty.
@@ -1162,7 +1202,7 @@ mod tests {
         let modules = [("__program.lua".to_string(), tree.to_string())];
         let mut m = compile(source, &modules, &[]).unwrap().machine();
         let co = m.start(Callbacks::INIT, 0).expect("init");
-        assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
+        assert_eq!(finish!(m, co, &mut Log(Vec::new())), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
     }
 
@@ -1179,10 +1219,12 @@ mod tests {
         // Its own -10 is 0.25 of the range; +0.5 per unit puts 1.0 at 0.75
         // (10), and a ratio of -1 from the same -10 holds at the bottom
         // (-20): the route moves from the knob's value, not its own last.
+        // A route is an editor run on a wall-clock slice: on a busy machine
+        // it may yield and go on in the next block, as the host resumes it.
         let mut log = Log(Vec::new());
         for at in [0.5, -1.0] {
             let co = m.control_mod(1, 0.0, at, 0).expect("route");
-            assert_eq!(m.run(co, &mut log), Step::Done);
+            assert_eq!(finish!(m, co, &mut log), Step::Done);
         }
         assert_eq!(m.faults().bad_code, 0);
         let sent: Vec<i64> = (log.0.iter())
@@ -1212,11 +1254,11 @@ mod tests {
         // Init sends the saved value; moving the widget sends its own.
         let mut log = Log(Vec::new());
         let co = m.start(Callbacks::INIT, 0).expect("init");
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         assert_eq!(sent(&log), [vec![-1, 30, 250_000, 32768, 0]]);
         let mut log = Log(Vec::new());
         let co = m.control(1, 0.5, 0).expect("control");
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
         assert_eq!(sent(&log), [vec![-1, 30, 500_000, 32768, 0]]);
     }
@@ -1294,10 +1336,10 @@ mod tests {
         let mut m = compile(source, &modules, &[]).unwrap().machine();
         let co = m.start(Callbacks::INIT, 0).expect("init");
         let mut log = Log(Vec::new());
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         assert!(m.spawned().is_none(), "init's preset landed in the call");
         let note = m.start(Callbacks::NOTE, 0).expect("note");
-        assert_eq!(m.run(note, &mut log), Step::Done);
+        assert_eq!(finish!(m, note, &mut log), Step::Done);
         // The preset's task, not started yet (UVI's `spawn`): its pace before
         // the first control, then one wait after the only control with a
         // changed (air).
@@ -1308,7 +1350,7 @@ mod tests {
         }
         assert_eq!(waits, 2, "its pace, then a wait after air's changed");
         let release = m.start(Callbacks::RELEASE, 0).expect("release");
-        assert_eq!(m.run(release, &mut log), Step::Done);
+        assert_eq!(finish!(m, release, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
     }
 
@@ -1335,9 +1377,9 @@ mod tests {
         let mut m = compile(source, &modules, &[]).unwrap().machine();
         let init = m.start(Callbacks::INIT, 0).expect("init");
         let mut log = Log(Vec::new());
-        assert_eq!(m.run(init, &mut log), Step::Done);
+        assert_eq!(finish!(m, init, &mut log), Step::Done);
         let pick = m.control(2, 2.0, 0).expect("pick");
-        assert_eq!(m.run(pick, &mut log), Step::Done);
+        assert_eq!(finish!(m, pick, &mut log), Step::Done);
         let (task, _) = m.spawned().expect("the preset lands in a task");
         // Not started yet (UVI's `spawn`): it first waits its pace, after
         // any slice that runs out (resumed in the next block).
@@ -1356,7 +1398,7 @@ mod tests {
         }
         assert_eq!(step, Step::Done, "no wait between its controls");
         let note = m.start(Callbacks::NOTE, 0).expect("note");
-        assert_eq!(m.run(note, &mut log), Step::Done);
+        assert_eq!(finish!(m, note, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0, "{:?}", m.faults().last_error);
     }
 
@@ -1382,7 +1424,7 @@ mod tests {
         let mut m = compile(source, &modules, &[]).unwrap().machine();
         let init = m.start(Callbacks::INIT, 0).expect("init");
         let mut log = Log(Vec::new());
-        assert_eq!(m.run(init, &mut log), Step::Done);
+        assert_eq!(finish!(m, init, &mut log), Step::Done);
         // A run past its block's budget yields; it goes on in the next block.
         let mut settle = |m: &mut Box<dyn Machine>, co| {
             let mut step = m.run(co, &mut log);
@@ -1426,7 +1468,7 @@ mod tests {
         assert!(!m.control_has_route_base(0));
         let mut log = Log(Vec::new());
         let co = m.start(Callbacks::INIT, 0).expect("init");
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
         assert!(m.control_has_route_base(0));
         let mut room = [0u8; 4096];
@@ -1458,12 +1500,12 @@ mod tests {
         let mut m = compile(source, &modules, &[]).unwrap().machine();
         let mut log = Log(Vec::new());
         let co = m.start(Callbacks::INIT, 0).expect("init");
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         while let Some((task, _)) = m.spawned() {
             while let Step::Wait(_) = m.run(task, &mut log) {}
         }
         let note = m.start(Callbacks::NOTE, 0).expect("note");
-        assert_eq!(m.run(note, &mut log), Step::Done);
+        assert_eq!(finish!(m, note, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
     }
 
@@ -1474,7 +1516,7 @@ mod tests {
         let mut m = compile(source, &[], &[]).unwrap().machine();
         let before = m.widget(0).map(|l| l.items);
         let co = m.start(Callbacks::INIT, 0).expect("init");
-        assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
+        assert_eq!(finish!(m, co, &mut Log(Vec::new())), Step::Done);
         assert_ne!(m.widget(0).map(|l| l.items), before);
         let mut text = Text::EMPTY;
         assert!(m.widget_item(0, 1, &mut text) && text.as_str() == "b");
@@ -1495,7 +1537,7 @@ mod tests {
         let mut m = compiled.machine();
         for (control, value) in [(0, 1.0), (0, 1.0), (2, 0.5)] {
             let co = m.control(control, value, 0).expect("control");
-            assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
+            assert_eq!(finish!(m, co, &mut Log(Vec::new())), Step::Done);
         }
         assert_eq!(m.faults().bad_code, 0);
     }
@@ -1518,7 +1560,7 @@ mod tests {
         let compiled = compile(source, &[], &[]).unwrap();
         let mut m = compiled.machine();
         let co = m.control(1, 0.5, 0).expect("control");
-        assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
+        assert_eq!(finish!(m, co, &mut Log(Vec::new())), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
     }
 
@@ -1530,7 +1572,7 @@ mod tests {
         let mut m = compiled.machine();
         let co = m.start(Callbacks::NOTE, 0).expect("start");
         let mut log = Log(Vec::new());
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
         let actions: Vec<Action> = log.0.iter().map(|c| c.0).collect();
         assert!(actions.contains(&Action::IgnoreEvent), "{actions:?}");
@@ -1713,7 +1755,7 @@ mod tests {
         let mut m = compile(source, &[], &[]).unwrap().machine();
         let before = alloc::spills();
         let co = m.start(Callbacks::NOTE, 0).expect("start");
-        assert_eq!(m.run(co, &mut Log(Vec::new())), Step::Done);
+        assert_eq!(finish!(m, co, &mut Log(Vec::new())), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
         assert_eq!(alloc::spills(), before);
     }
@@ -1734,7 +1776,7 @@ mod tests {
         let mut m = compiled.machine();
         let co = m.start(entry, 0).expect("start");
         let mut log = Log(Vec::new());
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
         log
     }
@@ -1862,7 +1904,7 @@ mod tests {
         let mut m = compile(source, &modules, &[]).unwrap().machine();
         let co = m.start(Callbacks::INIT, 0).expect("start");
         let mut log = Log(Vec::new());
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         let sent: Vec<_> = (log.0.iter())
             .filter(|(a, _)| matches!(a, Action::VoiceLine | Action::GlideKnob))
             .map(|(_, i)| i.clone())
@@ -1895,7 +1937,7 @@ mod tests {
         let mut m = compile(source, &modules, &[]).unwrap().machine();
         let co = m.start(Callbacks::INIT, 0).expect("start");
         let mut log = Log(Vec::new());
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         let sent: Vec<_> = (log.0.iter())
             .filter(|(a, _)| *a == Action::LfoSet)
             .map(|(_, i)| [i[0], i[1], i[2], i[8], i[9], i[10]])
@@ -1922,7 +1964,7 @@ mod tests {
         let mut m = compile(source, &modules, &[]).unwrap().machine();
         let co = m.start(Callbacks::INIT, 0).expect("start");
         let mut log = Log(Vec::new());
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         let call = log.0.iter().find(|(a, _)| *a == Action::ImpulseKnob);
         assert_eq!(
             call.map(|(_, i)| i.clone()),
@@ -1989,7 +2031,7 @@ mod tests {
         let mut m = compile(source, &modules, &[]).unwrap().machine();
         let co = m.start(Callbacks::INIT, 0).unwrap();
         let mut log = Log(Vec::new());
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
         let calls = |action| {
             log.0
@@ -2091,13 +2133,13 @@ mod tests {
         assert!(!m.control_has_route_base(2));
         let mut log = Log(Vec::new());
         let co = m.start(Callbacks::INIT, 0).expect("start");
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         // At rest, up by half the range, at rest again.
         for (at, check) in [(0.0, 1.0), (0.5, 0.0), (0.0, 1.0)] {
             let co = m.control_mod(0, 0.0, at, 0).expect("route");
-            assert_eq!(m.run(co, &mut log), Step::Done);
+            assert_eq!(finish!(m, co, &mut log), Step::Done);
             let co = m.control(1, check, 0).expect("check");
-            assert_eq!(m.run(co, &mut log), Step::Done);
+            assert_eq!(finish!(m, co, &mut log), Step::Done);
         }
         assert_eq!(m.faults().bad_code, 0, "{:?}", m.faults());
     }
@@ -2120,13 +2162,13 @@ mod tests {
         let mut m = compile(source, &[], &saved).unwrap().machine();
         let mut log = Log(Vec::new());
         let co = m.start(Callbacks::INIT, 0).expect("start");
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         let co = m.control_mod(0, 0.0, -0.5, 0).expect("route");
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         let co = m.control_mod(0, 0.0, 0.0, 0).expect("rest");
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         let co = m.control(2, 1.0, 0).expect("check");
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0, "{:?}", m.faults());
     }
 
@@ -2143,7 +2185,7 @@ mod tests {
         let mut m = compile(source, &[], &[]).unwrap().machine();
         let mut log = Log(Vec::new());
         let co = m.start(Callbacks::INIT, 0).expect("start");
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0, "{:?}", m.faults());
     }
 
@@ -2260,15 +2302,15 @@ mod tests {
         let mut m = compile(source, &[], &[]).unwrap().machine();
         let mut log = Log(Vec::new());
         let co = m.start(Callbacks::INIT, 0).expect("start");
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         let co = m.control_mod(0, 0.0, 0.25, 0).expect("route");
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         let co = m.control(1, 1.0, 0).expect("set");
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         let co = m.control_mod(0, 0.0, 0.0, 0).expect("rest");
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         let co = m.control(2, 1.0, 0).expect("check");
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0, "{:?}", m.faults());
     }
 
@@ -2296,7 +2338,7 @@ mod tests {
         let mut m = compile(source, &modules, &saved).unwrap().machine();
         let co = m.start(Callbacks::INIT, 0).expect("start");
         let mut log = Log(Vec::new());
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
         // −0.5 a unit of ratio at the saved 0.25: the default 0 it was built
         // at was set before init too, so only the last amount reaches the host.
@@ -2323,7 +2365,7 @@ mod tests {
         let mut m = compile(source, &modules, &[]).unwrap().machine();
         let co = m.start(Callbacks::INIT, 0).expect("start");
         let mut log = Log(Vec::new());
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         assert_eq!(m.faults().bad_code, 0);
         let amounts: Vec<_> = (log.0.iter())
             .filter(|(a, _)| *a == Action::RouteAmount)
@@ -2336,7 +2378,7 @@ mod tests {
         let mut m = compile(&source, &modules, &[]).unwrap().machine();
         let co = m.start(Callbacks::INIT, 0).expect("start");
         let mut log = Log(Vec::new());
-        assert_eq!(m.run(co, &mut log), Step::Done);
+        assert_eq!(finish!(m, co, &mut log), Step::Done);
         let amounts: Vec<_> = (log.0.iter())
             .filter(|(a, _)| *a == Action::RouteAmount)
             .map(|(_, ints)| ints.clone())
@@ -2373,14 +2415,14 @@ mod tests {
         let mut m = compile(source, &modules, &[]).unwrap().machine();
         let mut host = Routes(0, 0);
         let init = m.start(Callbacks::INIT, 0).expect("init");
-        assert_eq!(m.run(init, &mut host), Step::Done);
+        assert_eq!(finish!(m, init, &mut host), Step::Done);
         host = Routes(0, 0);
         // A thousand writes allocate no more than two (the allocator sees
         // Luau's pages, so the first callback may take one).
         let mut note = |host: &mut Routes| {
             let _ = probe::take();
             let co = m.start(Callbacks::NOTE, 0).expect("note");
-            assert_eq!(m.run(co, host), Step::Done);
+            assert_eq!(finish!(m, co, host), Step::Done);
             probe::take().allocs
         };
         let two = note(&mut host);

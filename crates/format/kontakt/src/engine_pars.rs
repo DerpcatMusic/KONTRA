@@ -146,6 +146,9 @@ const ACCEPTS: &[(&str, i32, i32)] = &[
     ("$ENGINE_PAR_FLEXENV_LOOP_START", 1, 30),
     ("$ENGINE_PAR_FLEXENV_LOOP_END", 2, 31),
     ("$ENGINE_PAR_FLEXENV_NUM_STAGES", 3, 31),
+    ("$ENGINE_PAR_BEATMASHER_LENGTH", 0, 8),
+    ("$ENGINE_PAR_BEATSLICER_PATTERN", 0, 4),
+    ("$ENGINE_PAR_BEATSLICER_STYLE", 0, 4),
 ];
 
 /// Filter-slot controls (KSP manual, "Filters") with no processor yet.

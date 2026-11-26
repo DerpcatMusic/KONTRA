@@ -147,6 +147,8 @@ impl Rack {
                 let text = to.map_or(request.path, |p| Text::from_str_cut(&p.to_string_lossy()).0);
                 self.send(Command::ControlText {
                     part,
+                    generation,
+                    ui_seq: 0,
                     slot: request.slot,
                     id: go.control,
                     cell: None,

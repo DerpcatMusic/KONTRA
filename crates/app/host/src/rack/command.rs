@@ -39,7 +39,10 @@ pub enum Command {
         generation: u64,
         unit: Box<Option<Prepared>>,
     },
-    Remove(usize),
+    Remove {
+        part: usize,
+        generation: u64,
+    },
     /// The rack's multi script, which hears MIDI before any part; the one
     /// it replaces is retired.
     Multi(Option<Box<Engine>>),
@@ -50,7 +53,11 @@ pub enum Command {
         n: usize,
         target: Option<MacroTarget>,
     },
-    Mix(usize, Mix),
+    Mix {
+        part: usize,
+        generation: u64,
+        mix: Mix,
+    },
     /// Linear master gain.
     Master(f32),
     /// Tempo in quarter notes per minute.
@@ -61,7 +68,11 @@ pub enum Command {
     /// and wheels).
     Play(Event),
     /// How long each note into `part` waits: auto-align.
-    Hold(usize, Hold),
+    Hold {
+        part: usize,
+        generation: u64,
+        hold: Hold,
+    },
     /// Read a part's persistent script cells and send them back.
     Capture(Box<Capture>),
     /// Lend `part`'s engine to the control thread to recall saved values
@@ -81,6 +92,8 @@ pub enum Command {
     /// `keys` at the click.
     Control {
         part: usize,
+        generation: u64,
+        ui_seq: u64,
         slot: u8,
         id: i32,
         /// The cell of a table set, 0 for any other control.
@@ -93,6 +106,8 @@ pub enum Command {
     /// `text` in file selector `id`.
     ControlText {
         part: usize,
+        generation: u64,
+        ui_seq: u64,
         slot: u8,
         id: i32,
         cell: Option<u32>,
@@ -103,6 +118,7 @@ pub enum Command {
     /// The box comes back as a typed text's does.
     DropItem {
         part: usize,
+        generation: u64,
         kind: u8,
         first: bool,
         text: Box<kontra_engine::Text>,
@@ -111,6 +127,7 @@ pub enum Command {
     /// `part`'s script `slot`, the drag `over` it or leaving: its callback runs.
     ControlDrop {
         part: usize,
+        generation: u64,
         slot: u8,
         id: i32,
         drop: bool,
@@ -119,6 +136,8 @@ pub enum Command {
     /// The user moved widget `n` of script `slot`'s own page to `value`.
     Widget {
         part: usize,
+        generation: u64,
+        ui_seq: u64,
         slot: u8,
         n: u32,
         value: f64,
@@ -129,6 +148,7 @@ pub enum Command {
     /// frees nothing.
     Sound {
         part: usize,
+        generation: u64,
         group: usize,
         envelope: kontra_engine::Ahdsr,
         insert: Box<Option<(usize, ir::Effect)>>,
@@ -136,6 +156,8 @@ pub enum Command {
     /// Format-neutral live parameter write routed to `Engine::set_param`.
     SetParam {
         part: usize,
+        generation: u64,
+        ui_seq: u64,
         scope: ir::Scope,
         addr: ir::ParamAddr,
         value: f32,

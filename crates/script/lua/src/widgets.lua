@@ -210,4 +210,3 @@ function moveControl(w, column, row)
 	rawset(w, "gridColumn", column)
 	rawset(w, "gridRow", row)
 end
-function resetKeyColour() end

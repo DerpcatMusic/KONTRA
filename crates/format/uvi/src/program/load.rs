@@ -57,16 +57,24 @@ impl<L: Library> Unfinished<'_, L> {
             .map(|(script, dir)| (dir.clone(), swaps(script)))
             .collect();
         for (dir, list) in runs {
+            let mut loaded = 0usize;
+            let mut missing: Vec<(bool, String)> = Vec::new();
             for swap in list {
                 let path = format!("{dir}/{}", swap.path);
                 let Sampled { sample, loops } =
                     match lookup(&mut self.lookups, self.library, self.program_dir, &path) {
                         Ok(sampled) => sampled,
                         Err(e) => {
-                            self.notes.add(ir::Impact::Broken, "script sample", e);
+                            let has_fallback = self
+                                .out
+                                .groups
+                                .get(swap.group as usize)
+                                .is_some_and(|g| g.zones.iter().any(|z| z.slot == swap.slot));
+                            missing.push((has_fallback, e));
                             continue;
                         }
                     };
+                loaded += 1;
                 let frames = sample.frames;
                 let index = sample_entry(&mut self.samples, &mut self.out.samples, sample);
                 let group_index = swap.group as usize;
@@ -85,6 +93,17 @@ impl<L: Library> Unfinished<'_, L> {
                     }
                     zone.root = swap.root.unwrap_or(zone.root);
                 }
+            }
+            for (has_fallback, err) in missing {
+                // A bank missing one sample of a set the script loads: UVI's
+                // load fails for that key alone (`success = false`) and the
+                // oscillator keeps its saved sample, as here.
+                let impact = if loaded > 0 && has_fallback {
+                    ir::Impact::Audible
+                } else {
+                    ir::Impact::Broken
+                };
+                self.notes.add(impact, "script sample", err);
             }
         }
     }

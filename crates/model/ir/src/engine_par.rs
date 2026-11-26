@@ -128,6 +128,16 @@ pub fn unit_read(v: f32) -> i32 {
     }
 }
 
+/// Whether an [`EnginePar`] actively drives audio/engine state or is only
+/// stored and displayed back to scripts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParRole {
+    /// Drives DSP, voice, modulation, zone, or routing state.
+    Active,
+    /// Stored and shown back to scripts, but no audio processor plays it.
+    HeldOnly,
+}
+
 impl EnginePar {
     /// Compatibility constructor for [`Self::Opaque`].
     #[doc(hidden)]
@@ -135,6 +145,52 @@ impl EnginePar {
     #[must_use]
     pub const fn Held(key: u32) -> Self {
         Self::Opaque(key)
+    }
+
+    /// Exhaustive classification of whether this parameter drives the engine
+    /// ([`ParRole::Active`]) or is only held for readback ([`ParRole::HeldOnly`]).
+    #[must_use]
+    pub const fn role(self) -> ParRole {
+        match self {
+            Self::Opaque(_) | Self::GroupHeld { .. } => ParRole::HeldOnly,
+            Self::Attack
+            | Self::Hold
+            | Self::Decay
+            | Self::Sustain
+            | Self::Release
+            | Self::AttackCurve
+            | Self::RouteIntensity
+            | Self::RouteDepth
+            | Self::ModBypass
+            | Self::LfoFade
+            | Self::EffectBypass
+            | Self::EffectOutput
+            | Self::EffectDry
+            | Self::SendLevel(_)
+            | Self::Reverb(_)
+            | Self::ReverbNetwork
+            | Self::GainerGain
+            | Self::StereoWidth
+            | Self::StereoPan
+            | Self::EffectSubtype
+            | Self::SlotKind
+            | Self::Volume
+            | Self::Pan
+            | Self::Tune
+            | Self::ReleaseTrigger
+            | Self::OutputChannel
+            | Self::Knob(_)
+            | Self::Zone(_)
+            | Self::LfoRetrigger
+            | Self::LfoUnit
+            | Self::Wavetable(_)
+            | Self::WarpMode(_)
+            | Self::InharmonicOn
+            | Self::ModOscKind
+            | Self::TableModWave
+            | Self::ModOscUnit
+            | Self::TableQuality => ParRole::Active,
+        }
     }
 }
 
@@ -174,6 +230,17 @@ pub enum Drives {
     Engine(EnginePar),
     /// A control the knob's `law` moves (value ÷ 1e6 is the knob x).
     Knob(KnobTarget, Law),
+}
+
+impl Drives {
+    /// Whether this binding actively drives audio/engine state or is held only.
+    #[must_use]
+    pub const fn role(&self) -> ParRole {
+        match self {
+            Self::Engine(par) => par.role(),
+            Self::Knob(_, _) => ParRole::Active,
+        }
+    }
 }
 
 /// A script parameter: its name, what it drives and the text it shows.

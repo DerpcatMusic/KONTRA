@@ -570,3 +570,135 @@ pub struct CascadeStage {
     /// How much of the stage's output replaces its input.
     pub wet: f32,
 }
+
+/// A two-rotor rotary speaker in physical units: a crossover splits the signal
+/// into a high-frequency horn and a low-frequency drum, each spinning between
+/// slow and fast speeds with independent acceleration inertia, driving stereo
+/// Doppler delay modulation and directional amplitude modulation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rotary {
+    /// Target speed state: `true` for fast, `false` for slow.
+    pub fast: bool,
+    /// Slow and fast rotation rates for the horn (Hz).
+    pub horn_slow_hz: f32,
+    pub horn_fast_hz: f32,
+    /// Slow and fast rotation rates for the drum (Hz).
+    pub drum_slow_hz: f32,
+    pub drum_fast_hz: f32,
+    /// Horn acceleration responsiveness, `0..=1` (higher accelerates faster).
+    pub accel_hi: f32,
+    /// Drum acceleration responsiveness, `0..=1` (higher accelerates faster).
+    pub accel_lo: f32,
+    /// Crossover frequency between drum and horn (Hz).
+    pub crossover_hz: f32,
+    /// Drum-to-horn balance, `0..=1` (`0` drum only, `0.5` equal, `1` horn only).
+    pub balance: f32,
+    /// Microphone distance / stereo spread, `0..=1` (`0` close/wide, `1` far/blended).
+    pub distance: f32,
+    /// Wet share of the output, `0..=1`.
+    pub mix: f32,
+}
+
+/// A rhythmic step/pulse amplitude gater in physical units: gates the stereo
+/// signal (and an optional internal white-noise generator) at a free or
+/// tempo-synced step rate with smoothed edge shaping and optional stutter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Gater {
+    /// Step clock rate (free Hz or tempo-synced beats).
+    pub rate: Rate,
+    /// Gate duty cycle and edge smoothness, `0..=1`.
+    pub shape: f32,
+    /// Internal white-noise level injected into the gated path, `0..=1`.
+    pub noise: f32,
+    /// Wet share of the output, `0..=1`.
+    pub mix: f32,
+    /// Doubles the rhythmic gate subdivision for stutter accents.
+    pub stutter: bool,
+    /// Mutes the audio input into the gate so only gated noise passes.
+    pub mute_input: bool,
+    /// Engages rhythmic gating (when `false`, passes un-gated).
+    pub active: bool,
+}
+
+/// A tempo-synced real-time loop/stutter masher in physical units: captures a
+/// beat-locked bar into a circular buffer and loops a rotated, optionally
+/// reversed and gated slice of `length_beats`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BeatMasher {
+    /// Looped slice length in quarter-note beats.
+    pub length_beats: f32,
+    /// Start offset rotation across the captured bar, `0..=1`.
+    pub rotate: f32,
+    /// Bipolar slice gate shaping, `-1..=1` (`0` full open).
+    pub gate: f32,
+    /// Wet share of the output, `0..=1`.
+    pub mix: f32,
+    /// Plays the captured slice backwards.
+    pub reverse: bool,
+    /// Wraps slice reads inside the active bar boundary.
+    pub wrap: bool,
+    /// Engages capture lock and rhythmic looping.
+    pub mash: bool,
+}
+
+/// A tempo-synced beat capture and slice-reordering engine in physical units:
+/// divides a 1-bar or 2-bar capture into rhythmic slices and replays them
+/// according to `pattern`, `style`, micro-repeat `buzz`, and `gate`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BeatSlicer {
+    /// Capture length in 4/4 bars (`1` or `2`).
+    pub bars: u8,
+    /// Slice permutation pattern index (`0..=4`).
+    pub pattern: u8,
+    /// Playback and envelope style index (`0..=4`).
+    pub style: u8,
+    /// Sub-slice buzz / micro-repeat intensity, `0..=1`.
+    pub buzz: f32,
+    /// Shortens slice envelopes for percussive gating.
+    pub gate: bool,
+    /// Engages capture and slice reordering.
+    pub slice: bool,
+    /// Wet share of the output, `0..=1`.
+    pub mix: f32,
+}
+
+/// A dual-window raised-cosine reverse granular engine in physical units:
+/// reads overlapping Hann-windowed grains from a live capture buffer with
+/// independent traversal speed, grain duration, pitch ratio, and direction.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReverseGrain {
+    /// Capture traversal speed, `0..=1`.
+    pub speed: f32,
+    /// Grain window duration, ms.
+    pub grain_ms: f32,
+    /// Grain playback pitch ratio (`1.0` unity, `2.0` octave up).
+    pub pitch_ratio: f32,
+    /// Wet share of the output, `0..=1`.
+    pub mix: f32,
+    /// Runs forward capture traversal.
+    pub forward: bool,
+    /// Flips individual grain playback direction.
+    pub invert_grains: bool,
+    /// Engages reverse granular capture playback.
+    pub reverse: bool,
+}
+
+/// A real-time WSOLA / overlap-add pitch-shift and time-stretch processor in
+/// physical units.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TransposeStretch {
+    /// Pitch transposition in semitones (`-60..=12`, `0` unity).
+    pub semitones: f32,
+    /// Time-stretch slowdown amount when stretching, `0..=1`.
+    pub amount: f32,
+    /// Grain window duration, ms.
+    pub grain_ms: f32,
+    /// Wet share of the output, `0..=1`.
+    pub mix: f32,
+    /// Engages beat-buffer time-stretch capture.
+    pub stretch: bool,
+    /// Selects granular freeze texture vs continuous WSOLA overlap-add.
+    pub grain_mode: bool,
+    /// Capture length in 4/4 bars (`1` or `2`).
+    pub bars: u8,
+}

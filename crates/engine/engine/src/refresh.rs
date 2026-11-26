@@ -32,7 +32,9 @@ impl Engine {
             };
             #[cfg(feature = "trace")]
             let trace_cc = cc.or_else(|| {
-                (self.running.kind == Kind::Controller).then_some(self.running.controller)
+                self.running
+                    .is(Kind::Controller)
+                    .then_some(self.running.controller())
             });
             #[cfg(feature = "trace")]
             if self.trace.is_some()

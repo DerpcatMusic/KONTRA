@@ -10,6 +10,9 @@ pub const STEPS: usize = 16;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MacroTarget {
     pub part: usize,
+    /// Load generation of `part` when this target was bound; stale moves
+    /// racing with a preset swap are discarded on the audio thread.
+    pub generation: u64,
     pub slot: u8,
     pub control: Control,
     pub scale: Scale,
@@ -65,6 +68,7 @@ mod tests {
         values[..3].copy_from_slice(&[0, 1, 10]);
         let t = MacroTarget {
             part: 0,
+            generation: 1,
             slot: 0,
             control: Control::Integer(1),
             scale: Scale::Steps { values, len: 3 },

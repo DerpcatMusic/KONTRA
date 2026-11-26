@@ -50,6 +50,7 @@ mod voice_rack;
 mod zone_edits;
 mod zone_index;
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use kontra_ledger::{group_masks, ledger, queue};
@@ -100,7 +101,7 @@ use group_masks::GroupMasks;
 use kontra_behaviour::Behaviour;
 use ledger::{Ledger, Note, Origin, Releases};
 use queue::{EventQueue, Work};
-use script::{Kind, Running};
+use script::{CallbackContext, CallbackFrame, Kind, Running};
 
 use kontra_effects::MAX_SPAN;
 use kontra_effects::matrix as effects;
@@ -245,12 +246,14 @@ pub struct Engine {
     stats: Stats,
     /// Each script slot's state; taken out while its callback runs.
     vms: Box<[Option<kontra_vm::Vm>]>,
+    /// Typed callback context per active coroutine slot, preserved across `wait(...)`.
+    co_frames: Box<[Box<[Option<CallbackFrame>]>]>,
     running: Running,
     /// Notes through every script slot, starting once the callback returns.
     pending: Vec<NoteRef>,
     /// Script controls a script's `set_controller` moved through their MIDI
-    /// links (slot, UI id, value), set once the callback returns its VM.
-    linked: Vec<(u8, i32, i64)>,
+    /// links (slot, UI id, value), drained FIFO once the callback turn finishes.
+    linked: VecDeque<(u8, i32, i64)>,
     /// Notes a callback played, still to pass the slots after it.
     forward: Vec<NoteRef>,
     pgs: pgs::Pgs,
@@ -322,6 +325,9 @@ pub struct Engine {
     knobs: racks::Rack,
     /// The loaded and last [scale, add] sums for each routed knob.
     knob_reads: Box<[[[f32; 2]; 2]]>,
+    /// Pre-allocated scratch for `follow_knobs` (zero audio-thread allocations).
+    knob_read_scratch: Box<[f32]>,
+    knob_moved_scratch: Vec<(u8, i32, f64, f64)>,
     /// One single-slot rack per send slot, its input, then the main rack.
     sends: Box<[racks::Rack]>,
     taps: Box<[Box<[[f32; 2]]>]>,
@@ -444,6 +450,8 @@ impl Engine {
         let main = racks::Rack::new(&plan.main, rate, &[]);
         let knobs = racks::Rack::reader(&plan.knob_blends, &plan.knob_lfos, rate);
         let knob_reads = vec![[[0.0; 2]; 2]; plan.knob_mods.len()].into();
+        let knob_read_scratch = vec![0.0; plan.knob_mods.len()].into();
+        let knob_moved_scratch = Vec::with_capacity(plan.knob_mods.len());
         // A voice that ends early (stolen, choked or faded by a script)
         // fades for FADE_SECONDS in a spare slot. A chord on a full pool
         // steals one voice per note at once, up to the whole limit, so with
@@ -502,6 +510,25 @@ impl Engine {
                 ))
             })
             .collect();
+        let co_frames: Box<[Box<[Option<CallbackFrame>]>]> = plan
+            .scripts
+            .iter()
+            .map(|s| {
+                let cap = if s.foreign.is_some() {
+                    kontra_vm::TASKS
+                } else {
+                    s.coroutines.max(1)
+                };
+                vec![None; cap].into_boxed_slice()
+            })
+            .collect();
+        let linked_cap = 64usize.max(
+            plan.scripts
+                .iter()
+                .map(|s| s.links.len())
+                .sum::<usize>()
+                .saturating_mul(4),
+        );
         let timers = vec![[None; 2]; plan.scripts.len()].into();
         let ui = kontra_script_ui::Store::new(
             (plan.scripts.iter()).map(|s| (s.controls.cells.len(), s.controls.entries.as_slice())),
@@ -566,6 +593,7 @@ impl Engine {
             sostenuto: [false; kontra_behaviour::CHANNELS],
             stats: Stats::default(),
             vms,
+            co_frames,
             routes_moved: None,
             route_tags: route_tags::RouteTags::of_groups(&shared),
             reshaped: shared.iter().map(reshaped::Reshaped::of).collect(),
@@ -579,7 +607,7 @@ impl Engine {
             note_stamp: 0,
             running: Running::IDLE,
             pending: Vec::with_capacity(capacity),
-            linked: Vec::with_capacity(8),
+            linked: VecDeque::with_capacity(linked_cap),
             forward: Vec::with_capacity(capacity),
             pgs: pgs::Pgs::new(),
             timers,
@@ -624,6 +652,8 @@ impl Engine {
             main,
             knobs,
             knob_reads,
+            knob_read_scratch,
+            knob_moved_scratch,
             chains: Vec::new(),
             group_chain: Box::new([]),
             group_private: Box::new([]),
@@ -643,7 +673,7 @@ impl Engine {
         let plan = Arc::clone(&engine.plan);
         for (slot, script) in (0u8..).zip(&plan.scripts) {
             if let Some(init) = script.callbacks.init {
-                engine.run_callback(slot, init, Running::new(Kind::Init, None));
+                engine.run_callback(slot, init, Running::new(CallbackContext::Init));
             }
             engine.restore_after_init(slot);
             engine.persistence_changed(slot);

@@ -120,6 +120,11 @@ pub struct Note {
     pub script_volume: i32,
     /// Script pan, per mille.
     pub script_pan: i32,
+    /// Per-slot script contributions so `change_vol/tune/pan` mode 2 replaces
+    /// only the calling slot's offset while preserving earlier slots' offsets.
+    pub slot_tune: [i32; 5],
+    pub slot_volume: [i32; 5],
+    pub slot_pan: [i32; 5],
     /// Sample start offset a script asked for, microseconds.
     pub offset: u32,
     /// `EVENT_PAR_0..3`, free for the script.
@@ -177,6 +182,9 @@ impl Note {
             script_tune: 0,
             script_volume: 0,
             script_pan: 0,
+            slot_tune: [0; 5],
+            slot_volume: [0; 5],
+            slot_pan: [0; 5],
             offset: 0,
             custom: [0; 16],
             zone_slot: -1,

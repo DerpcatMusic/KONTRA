@@ -146,10 +146,14 @@ fn main() -> std::io::Result<()> {
     for c in CallbackKind::ALL {
         println!("cb\t{c:?}\tcompiled");
     }
-    // `held`: the slot stores and shows it, but nothing plays it.
+    // `held`: the slot or group stores and shows it, but nothing plays it.
+    // Match `ParRole` exhaustively so no unplayed parameter can report `carried`.
     for p in kontra_format_kontakt::engine_pars() {
-        let held = matches!(p.drives, ir::Drives::Engine(ir::EnginePar::Opaque(_)));
-        println!("par\t{}\t{}", p.name, if held { "held" } else { "carried" });
+        let status = match p.drives.role() {
+            ir::ParRole::Active => "carried",
+            ir::ParRole::HeldOnly => "held",
+        };
+        println!("par\t{}\t{status}", p.name);
     }
     Ok(())
 }

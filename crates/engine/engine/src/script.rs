@@ -11,7 +11,7 @@ use crate::ledger::{Note, NoteRef, Origin, Releases};
 use crate::queue::{Exit, Work};
 use crate::{Engine, EnginePar};
 
-pub(crate) use kontra_ledger::running::{Kind, Running};
+pub(crate) use kontra_ledger::running::{CallbackContext, CallbackFrame, Kind, Running};
 pub use kontra_plan::{
     Callbacks, CcLink, Controls, KnobModPlan, LookPars, ParLaw, ParRead, ParWrite, ScriptPlan,
 };
@@ -108,7 +108,7 @@ impl Engine {
     }
 
     fn play_note(&mut self, key: i32, velocity: i32, offset: i32, duration: i32) -> i32 {
-        let parent = self.running.event;
+        let parent = self.running.event();
         let key = key.clamp(0, 127) as u8;
         let host = parent.and_then(|p| self.notes.get(p)).map_or(
             HostNote {
@@ -134,7 +134,7 @@ impl Engine {
         // Once the starting note is released (its release callback), -1 has
         // nothing left to wait for and the sample plays out.
         // A release callback stays one across its waits.
-        let ending = self.running.callback_type == Running::new(Kind::Release, None).callback_type
+        let ending = self.running.is(Kind::Release)
             || parent
                 .and_then(|p| self.notes.get(p))
                 .is_some_and(|n| n.released);
@@ -183,8 +183,7 @@ impl Engine {
     }
 
     fn ignore_event(&mut self, id: i32) {
-        if self.running.kind == Kind::Release
-            && self.running.event.map(NoteRef::event_id) == Some(id)
+        if self.running.is(Kind::Release) && self.running.event().map(NoteRef::event_id) == Some(id)
         {
             self.running.ignore_release = true;
             return;
@@ -203,9 +202,7 @@ impl Engine {
         // its player ends from its own `on release` skips that script's
         // `on release`; ended from anywhere else, the player hears it.
         let player = self.running.slot + 1;
-        // Across a wait the kind is Resumed; the callback type stays.
-        let from_release =
-            self.running.callback_type == Running::new(Kind::Release, None).callback_type;
+        let from_release = self.running.is(Kind::Release);
         for &note in &hits {
             if let Some(n) = self.notes.get_mut(note) {
                 n.noted_off |= from_release && n.first == player;
@@ -264,9 +261,18 @@ impl Engine {
                     *c = value;
                 }
             }
-            event::VOLUME => n.script_volume = value,
-            event::TUNE => n.script_tune = value,
-            event::PAN => n.script_pan = value.clamp(-1000, 1000),
+            event::VOLUME => {
+                n.slot_volume.fill(0);
+                n.script_volume = value;
+            }
+            event::TUNE => {
+                n.slot_tune.fill(0);
+                n.script_tune = value;
+            }
+            event::PAN => {
+                n.slot_pan.fill(0);
+                n.script_pan = value.clamp(-1000, 1000);
+            }
             event::NOTE if !n.started => n.key = value.clamp(0, 127) as u8,
             event::ZONE_SLOT if !n.started => n.zone_slot = value,
             event::START_OFFSET if !n.started => n.offset = value.max(0).unsigned_abs(),
@@ -341,7 +347,7 @@ impl HostApi for Engine {
                 )
             }
             Action::EventNote | Action::EventVelocity | Action::EventId => {
-                let running = self.running.event;
+                let running = self.running.event();
                 let current = running.and_then(|r| self.notes.get(r));
                 match action {
                     Action::EventNote => current.map_or(0, |n| i32::from(n.key)),
@@ -411,7 +417,7 @@ impl HostApi for Engine {
         if let Some(value) = self.transport_value(call.action, int(0)) {
             return value;
         }
-        let running = self.running.event;
+        let running = self.running.event();
         let current = running.and_then(|r| self.notes.get(r));
         let flag = |b: bool| HostValue::Int(i32::from(b));
         match call.action {
@@ -420,13 +426,12 @@ impl HostApi for Engine {
             Action::EventVelocity => {
                 HostValue::Int(current.map_or(0, |n| i32::from(n.velocity_byte)))
             }
-            Action::CcNum => HostValue::Int(i32::from(self.running.controller)),
+            Action::CcNum => HostValue::Int(i32::from(self.running.controller())),
             Action::RpnAddress => HostValue::Int(self.rpn(false)),
             Action::RpnValue => HostValue::Int(self.rpn(true)),
             // 1 for the controller this controller callback runs for.
             Action::CcTouched => flag(
-                self.running.kind == Kind::Controller
-                    && int(0) == i32::from(self.running.controller),
+                self.running.is(Kind::Controller) && int(0) == i32::from(self.running.controller()),
             ),
             // `%CC[128]` is the bend, -8192..8191, on the last channel heard.
             Action::Cc if int(0) == i32::from(crate::midi::VCC_PITCH_BEND) => {
@@ -515,25 +520,21 @@ impl HostApi for Engine {
                 HostValue::Nothing
             }
             // In `on midi_in` the message's own fields.
-            Action::SetEventPar
-                if self.running.kind == Kind::MidiIn && midi_par(int(1)).is_some() =>
-            {
+            Action::SetEventPar if self.running.is(Kind::MidiIn) && midi_par(int(1)).is_some() => {
                 if let Some(at) = midi_par(int(1)) {
                     let max = if at == 3 || at == 2 { 127 } else { 255 };
                     let v = int(2).clamp(0, max) as u8;
-                    if let Some(byte) = self.running.midi.get_mut(at) {
+                    if let Some(byte) = self.running.midi_mut().and_then(|m| m.get_mut(at)) {
                         *byte = if at == 0 { v & 0xF0 } else { v };
                     }
                 }
                 HostValue::Nothing
             }
-            Action::GetEventPar
-                if self.running.kind == Kind::MidiIn && midi_par(int(1)).is_some() =>
-            {
+            Action::GetEventPar if self.running.is(Kind::MidiIn) && midi_par(int(1)).is_some() => {
                 HostValue::Int(
                     midi_par(int(1))
-                        .and_then(|at| self.running.midi.get(at))
-                        .map_or(0, |&b| i32::from(b)),
+                        .and_then(|at| self.running.midi().get(at).copied())
+                        .map_or(0, i32::from),
                 )
             }
             Action::IgnoreController => {
@@ -573,20 +574,39 @@ impl HostApi for Engine {
                 HostValue::Nothing
             }
             Action::ChangeTune | Action::ChangeVol | Action::ChangePan => {
-                // Mode 1 is relative; 0 and 2 are absolute (2 keeps zone volume).
-                let (value, relative) = (int(1), int(2) == 1);
+                // Mode 0: absolute (replaces all slots); mode 1: relative
+                // (accumulates); mode 2: per-slot absolute (replaces this
+                // slot's offset while preserving earlier slots' offsets).
+                let (value, mode, slot) = (int(1), int(2), usize::from(self.running.slot).min(4));
                 let action = call.action;
                 self.each(int(0), |n| {
-                    let field = match action {
-                        Action::ChangeTune => &mut n.script_tune,
-                        Action::ChangeVol => &mut n.script_volume,
-                        _ => &mut n.script_pan,
+                    let (field, slots) = match action {
+                        Action::ChangeTune => (&mut n.script_tune, &mut n.slot_tune),
+                        Action::ChangeVol => (&mut n.script_volume, &mut n.slot_volume),
+                        _ => (&mut n.script_pan, &mut n.slot_pan),
                     };
-                    *field = if relative {
-                        field.saturating_add(value)
-                    } else {
-                        value
-                    };
+                    match mode {
+                        1 => {
+                            if let Some(s) = slots.get_mut(slot) {
+                                *s = s.saturating_add(value);
+                            }
+                            *field = field.saturating_add(value);
+                        }
+                        2 => {
+                            let prev = slots.get(slot).copied().unwrap_or(0);
+                            if let Some(s) = slots.get_mut(slot) {
+                                *s = value;
+                            }
+                            *field = field.saturating_sub(prev).saturating_add(value);
+                        }
+                        _ => {
+                            slots.fill(0);
+                            if let Some(s) = slots.get_mut(slot) {
+                                *s = value;
+                            }
+                            *field = value;
+                        }
+                    }
                     n.script_pan = n.script_pan.clamp(-1000, 1000);
                 });
                 HostValue::Nothing
@@ -701,14 +721,14 @@ impl HostApi for Engine {
                 self.set_control_par(call.cells, int(0), int(1), int(2));
                 HostValue::Nothing
             }
-            Action::SignalType => HostValue::Int(i32::from(self.running.signal)),
+            Action::SignalType => HostValue::Int(i32::from(self.running.signal())),
             Action::SetListener | Action::ChangeListenerPar => {
                 self.set_listener(int(0), int(1));
                 HostValue::Nothing
             }
             Action::CurrentScriptSlot => HostValue::Int(i32::from(self.running.slot)),
-            Action::MidiChannel if self.running.kind == Kind::MidiIn => {
-                HostValue::Int(i32::from(self.running.midi[1]))
+            Action::MidiChannel if self.running.is(Kind::MidiIn) => {
+                HostValue::Int(i32::from(self.running.midi()[1]))
             }
             // Across Kontakt's ports A to D: 0..=63.
             Action::MidiChannel => {
@@ -718,8 +738,8 @@ impl HostApi for Engine {
             Action::PlayedVoicesInst | Action::PlayedVoicesTotal => {
                 HostValue::Int(self.active_voices() as i32)
             }
-            Action::CallbackType => HostValue::Int(i32::from(self.running.callback_type)),
-            Action::UiIdVar => HostValue::Int(self.running.ui),
+            Action::CallbackType => HostValue::Int(i32::from(self.running.callback_type())),
+            Action::UiIdVar => HostValue::Int(self.running.ui()),
             Action::ControlParIdx => HostValue::Int(self.ui.last_cell(self.running.slot) as i32),
             // $NI_MOUSE_EVENT_TYPE_DROP 4, _DRAG 3 (Kontakt 8 oracle); 0 for
             // a callback no drag ran.
@@ -878,14 +898,14 @@ impl HostApi for Engine {
                 if !set && loaded.is_none() && !self.absent(int(0), int(2), int(3), int(4)) {
                     self.count_unhandled(Action::SetEnginePar);
                     self.count_par([int(0), int(2), int(3), int(4)]);
-                } else if set && matches!(par, Some(EnginePar::Opaque(_))) {
+                } else if set && par.is_some_and(|p| p.role() == crate::ir::ParRole::HeldOnly) {
                     // Answered, but no processor plays it: the effects' work list.
                     self.count_par([int(0), int(2), int(3), int(4)]);
                 }
                 HostValue::Int(match loaded {
                     Some(answer) => answer,
                     // Set in place succeeded; a type that could not load failed.
-                    None if swap && !self.building && self.running.kind != Kind::Init => {
+                    None if swap && !self.building && !self.running.is(Kind::Init) => {
                         self.start_async(Exit::from(set))
                     }
                     None => -1,
@@ -1046,7 +1066,7 @@ impl HostApi for Engine {
             }
             // Mode 2 is the library's data folder, read at once (the next line
             // sees it). User-file modes and async text loads remain unsupported.
-            Action::LoadArray if int(2) == 2 && int(3) == 2 && self.running.kind == Kind::Init => {
+            Action::LoadArray if int(2) == 2 && int(3) == 2 && self.running.is(Kind::Init) => {
                 if self.script().is_some_and(|s| {
                     s.load_text_data(int(0) as u32, int(1) as usize, call.text_cells)
                 }) {
@@ -1137,8 +1157,21 @@ impl HostApi for Engine {
                 HostValue::Nothing
             }
             Action::EventStatus => {
-                let live = NoteRef::from_event_id(int(0)).and_then(|r| self.notes.get(r));
-                HostValue::Int(i32::from(live.is_some()))
+                // `$EVENT_STATUS_NOTE_QUEUE` (1) only while the note is active
+                // (not ignored, and still pending/held or sounding at least one
+                // active voice); otherwise `$EVENT_STATUS_INACTIVE` (0).
+                let active = NoteRef::from_event_id(int(0))
+                    .and_then(|r| self.notes.get(r).map(|n| (r, n)))
+                    .is_some_and(|(r, n)| {
+                        !n.ignored
+                            && (!n.started
+                                || !n.released
+                                || self
+                                    .voices
+                                    .iter()
+                                    .any(|s| s.note == Some(r) && s.voice.is_active()))
+                    });
+                HostValue::Int(i32::from(active))
             }
             other => {
                 self.count_unhandled(other);

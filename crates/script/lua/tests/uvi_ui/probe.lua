@@ -109,6 +109,9 @@ end)
 check("ParamWidget.mapper.default", function()
 	return Knob("a", 0, 0, 1).mapper == Mapper.Linear or "not linear"
 end)
+check("Mapper.Type", function()
+	return Mapper.Type == Mapper and Mapper.Type.Linear == Mapper.Linear or "missing"
+end)
 check("Mapper.values", function()
 	for _, n in ipairs({ "Linear", "Exponential", "QuinticRoot", "QuarticRoot", "CubeRoot", "SquareRoot", "Quadratic", "Cubic", "Quartic", "Quintic" }) do
 		if Mapper[n] == nil then
@@ -116,6 +119,9 @@ check("Mapper.values", function()
 		end
 	end
 	return true
+end)
+check("Unit.Type", function()
+	return Unit.Type == Unit and Unit.Type.Hertz == Unit.Hertz or "missing"
 end)
 check("Unit.values", function()
 	for _, n in ipairs({ "Generic", "Percent", "PercentNormalized", "Seconds", "MilliSeconds", "Hertz", "Decibels", "LinearGain", "UviFilter", "Pan", "Megabyte", "SemiTones", "Cents", "MidiKey" }) do
@@ -125,6 +131,9 @@ check("Unit.values", function()
 	end
 	return true
 end)
+check("RectanglePlacement.Type", function()
+	return RectanglePlacement.Type == RectanglePlacement and RectanglePlacement.Type.Centred == RectanglePlacement.Centred or "missing"
+end)
 check("RectanglePlacement.values", function()
 	for _, n in ipairs({ "Left", "Right", "HorizontallyCentred", "Top", "Bottom", "VerticallyCentred", "StretchToFit", "FillDestination", "OnlyReduceInSize", "OnlyIncreaseInSize", "DoNotResize", "Centred" }) do
 		if RectanglePlacement[n] == nil then
@@ -132,6 +141,9 @@ check("RectanglePlacement.values", function()
 		end
 	end
 	return true
+end)
+check("FileFormat.Type", function()
+	return FileFormat.Type == FileFormat and FileFormat.Type.Audio == FileFormat.Audio or "missing"
 end)
 check("FileFormat.values", function()
 	return (FileFormat.All and FileFormat.Audio and FileFormat.MIDI) and true or "missing"

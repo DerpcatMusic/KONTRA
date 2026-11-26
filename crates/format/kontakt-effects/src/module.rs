@@ -116,6 +116,12 @@ pub mod ids {
     pub const LEGACY_CHORUS: ModelId = ModelId(B + 16);
     pub const LEGACY_FLANGER: ModelId = ModelId(B + 17);
     pub const REPLIKA: ModelId = ModelId(B + 18);
+    pub const ROTATOR: ModelId = ModelId(B + 24);
+    pub const GATER: ModelId = ModelId(B + 25);
+    pub const BEAT_MASHER: ModelId = ModelId(B + 26);
+    pub const BEAT_SLICER: ModelId = ModelId(B + 27);
+    pub const REVERSE_GRAIN: ModelId = ModelId(B + 28);
+    pub const TRANSPOSE_STRETCH: ModelId = ModelId(B + 29);
 }
 
 /// All modules defined in `kontra-kontakt-effects`.
@@ -134,6 +140,12 @@ pub static ALL: &[&Module] = &[
     &crate::vibrato::MODULE,
     &crate::delays::CHORUS,
     &crate::delays::FLANGER,
+    &crate::rotator::MODULE,
+    &crate::mangling::beat_masher::MODULE,
+    &crate::mangling::gater::MODULE,
+    &crate::mangling::beat_slicer::MODULE,
+    &crate::mangling::reverse_grain::MODULE,
+    &crate::mangling::transpose_stretch::MODULE,
 ];
 
 /// Standard `Knob(0..N)` slice helper for static [`Module`] tables.

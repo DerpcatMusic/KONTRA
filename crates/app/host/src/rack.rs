@@ -5,6 +5,7 @@
 //! so no lock is reachable from audio.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 
 use kontra_engine::{EffectRequest, Engine, Prepared};
@@ -98,6 +99,15 @@ pub struct Channels {
     pub looks: Ring<Box<crate::view::LookFrame>>,
     pub meters: MeterCells,
     pub stats: StatCells,
+    /// Per-part UI state epochs bumped on the audio thread when scripts run
+    /// or UI/MIDI/macro commands mutate a part.
+    pub ui_epochs: [AtomicU64; MAX_PARTS],
+    /// Per-part persistent state epochs bumped on the audio thread when
+    /// script state may have changed.
+    pub persist_epochs: [AtomicU64; MAX_PARTS],
+    /// Sticky audio→control wakeup flag: set when any return ring receives an
+    /// item or an epoch advances.
+    pub wake_tick: AtomicBool,
 }
 
 /// A loaded part as the control thread knows it.
@@ -218,6 +228,11 @@ pub struct ScriptState {
     /// The capture before `latest`, sent again: its room is reused.
     spare: Option<Box<Capture>>,
     asked: bool,
+    /// Control-side dirty/epoch tracking so idle parts send 0 `Look` / `Capture`.
+    look_needed: bool,
+    ui_epoch_seen: u64,
+    capture_needed: bool,
+    persist_epoch_seen: u64,
 }
 
 impl ScriptState {
@@ -297,6 +312,9 @@ pub struct Rack {
     ),
     /// Loads not installed yet ([`loader`]).
     loads: loader::Loads,
+    /// Diagnostic counters for sent `Command::Look` and `Command::Capture`.
+    looks_sent: u64,
+    captures_sent: u64,
 }
 
 /// An instrument read and prepared, ready to install ([`Rack::build_part`]).
@@ -329,6 +347,9 @@ impl Rack {
             typed: Ring::new(16),
             meters: MeterCells::default(),
             stats: StatCells::default(),
+            ui_epochs: std::array::from_fn(|_| AtomicU64::new(0)),
+            persist_epochs: std::array::from_fn(|_| AtomicU64::new(0)),
+            wake_tick: AtomicBool::new(false),
         });
         let audio = RackAudio::new(Arc::clone(&channels), store.client(), rate, max_block);
         let rack = Self {
@@ -345,6 +366,8 @@ impl Rack {
             snapshot_bases: (0..MAX_PARTS).map(|_| None).collect(),
             known: (0, Arc::default()),
             loads: loader::Loads::default(),
+            looks_sent: 0,
+            captures_sent: 0,
             multi: None,
             moved: Vec::new(),
             roots: Vec::new(),
@@ -380,6 +403,33 @@ impl Rack {
     #[must_use]
     pub fn parts(&self) -> &[Option<Part>] {
         &self.parts
+    }
+
+    /// Current load generation of `part`, if loaded.
+    #[must_use]
+    pub fn part_generation(&self, part: usize) -> Option<u64> {
+        self.parts
+            .get(part)
+            .and_then(Option::as_ref)
+            .map(|p| p.script.generation)
+    }
+
+    /// Total `Command::Look` messages sent by [`Rack::tick`].
+    #[must_use]
+    pub fn looks_sent(&self) -> u64 {
+        self.looks_sent
+    }
+
+    /// Total `Command::Capture` messages sent by [`Rack::tick`].
+    #[must_use]
+    pub fn captures_sent(&self) -> u64 {
+        self.captures_sent
+    }
+
+    /// Shared lock-free rings between this [`Rack`] and its [`RackAudio`].
+    #[must_use]
+    pub fn channels(&self) -> &Channels {
+        &self.channels
     }
 
     /// The first part with nothing loaded and nothing loading.
@@ -855,6 +905,10 @@ impl Rack {
         self.generation += 1;
         let mut info = info;
         info.script.generation = self.generation;
+        info.script.look_needed = true;
+        info.script.ui_epoch_seen = 0;
+        info.script.capture_needed = true;
+        info.script.persist_epoch_seen = 0;
         let (solo, mute, mix) = slot.as_ref().map_or((info.solo, info.mute, info.mix), |p| {
             (p.solo, p.mute, p.mix)
         });
@@ -880,11 +934,14 @@ impl Rack {
     pub fn remove(&mut self, part: usize) {
         self.supersede(Some(part));
         if let Some(slot) = self.parts.get_mut(part) {
+            let generation = slot.as_ref().map(|p| p.script.generation);
             *slot = None;
             if let Some(base) = self.snapshot_bases.get_mut(part) {
                 *base = None;
             }
-            self.send(Command::Remove(part));
+            if let Some(generation) = generation {
+                self.send(Command::Remove { part, generation });
+            }
             self.resend_mix();
         }
     }
@@ -929,9 +986,24 @@ impl Rack {
         value: f64,
         keys: UiModifiers,
     ) {
+        self.control_with_seq(part, widget, cell, value, keys, 0);
+    }
+
+    /// Like [`Self::control`], stamping `ui_seq` so the audio thread echoes
+    /// it back in `LookFrame.applied_seq` once executed.
+    pub fn control_with_seq(
+        &mut self,
+        part: usize,
+        widget: usize,
+        cell: Option<u32>,
+        value: f64,
+        keys: UiModifiers,
+        ui_seq: u64,
+    ) {
         let Some(Some(p)) = self.parts.get_mut(part) else {
             return;
         };
+        let generation = p.script.generation;
         let Some(view) = p.view.as_mut() else {
             return;
         };
@@ -946,9 +1018,12 @@ impl Rack {
             return;
         }
         p.named.touch();
+        p.script.look_needed = true;
+        p.script.capture_needed = true;
         if let Some((scope, addr, physical)) = view.apply_param_value(widget, value) {
+            view.applied_seq = view.applied_seq.max(ui_seq);
             p.modified = true;
-            self.set_param(part, scope, addr, physical);
+            self.set_param_with_seq(part, scope, addr, physical, ui_seq);
         } else if let Some(set) = view.tap(widget, value) {
             let vars = &p.script.vars;
             p.modified |= set.iter().any(|&(slot, id, _)| saves(vars, slot, id));
@@ -956,6 +1031,8 @@ impl Rack {
                 let cell = 0;
                 self.send(Command::Control {
                     part,
+                    generation,
+                    ui_seq,
                     slot,
                     id,
                     cell,
@@ -967,6 +1044,8 @@ impl Rack {
             p.modified = true;
             self.send(Command::Widget {
                 part,
+                generation,
+                ui_seq,
                 slot,
                 n,
                 value,
@@ -976,6 +1055,8 @@ impl Rack {
             p.modified |= saves(&p.script.vars, slot, id);
             self.send(Command::Control {
                 part,
+                generation,
+                ui_seq,
                 slot,
                 id,
                 cell: cell.unwrap_or(0),
@@ -989,11 +1070,19 @@ impl Rack {
     /// or picked file `text` in file selector `widget`: its variable or
     /// `$CONTROL_PAR_FILEPATH` reads it, then its callbacks run.
     pub fn control_text(&mut self, part: usize, widget: usize, text: &str) {
+        self.control_text_with_seq(part, widget, text, 0);
+    }
+
+    /// Like [`Self::control_text`], stamping `ui_seq` for audio ACK tracking.
+    pub fn control_text_with_seq(&mut self, part: usize, widget: usize, text: &str, ui_seq: u64) {
         let Some(Some(p)) = self.parts.get_mut(part) else {
             return;
         };
+        let generation = p.script.generation;
         p.modified = true;
         p.named.touch();
+        p.script.look_needed = true;
+        p.script.capture_needed = true;
         let Some(view) = p.view.as_ref() else {
             return;
         };
@@ -1011,6 +1100,8 @@ impl Rack {
         let text = Box::new(kontra_engine::Text::from_str_cut(text).0);
         self.send(Command::ControlText {
             part,
+            generation,
+            ui_seq,
             slot,
             id,
             cell,
@@ -1031,6 +1122,7 @@ impl Rack {
         let Some(Some(p)) = self.parts.get_mut(part) else {
             return;
         };
+        let generation = p.script.generation;
         let Some((slot, id, _)) = p.view.as_ref().and_then(|v| v.control(widget, 0.)) else {
             return;
         };
@@ -1051,10 +1143,13 @@ impl Rack {
         if fits.is_empty() && !items.is_empty() {
             return;
         }
+        p.script.look_needed = true;
+        p.script.capture_needed = true;
         for (i, (kind, text)) in fits.into_iter().enumerate() {
             let first = i == 0;
             self.send(Command::DropItem {
                 part,
+                generation,
                 kind,
                 first,
                 text,
@@ -1062,6 +1157,7 @@ impl Rack {
         }
         self.send(Command::ControlDrop {
             part,
+            generation,
             slot,
             id,
             drop,
@@ -1081,6 +1177,7 @@ impl Rack {
         let Some(Some(p)) = self.parts.get_mut(part) else {
             return;
         };
+        let generation = p.script.generation;
         let groups = group.map_or(0..p.sounds.len(), |g| g..g + 1);
         let edits: Vec<_> = groups
             .filter_map(|g| Some((g, p.sounds.set(g, param, value)?)))
@@ -1088,6 +1185,7 @@ impl Rack {
         for (group, (envelope, insert)) in edits {
             self.send(Command::Sound {
                 part,
+                generation,
                 group,
                 envelope,
                 insert: Box::new(insert),
@@ -1097,8 +1195,25 @@ impl Rack {
 
     /// Writes a format-neutral live parameter on `part` via `Engine::set_param`.
     pub fn set_param(&mut self, part: usize, scope: ir::Scope, addr: ir::ParamAddr, value: f32) {
+        self.set_param_with_seq(part, scope, addr, value, 0);
+    }
+
+    /// Like [`Self::set_param`], stamping `ui_seq` for audio ACK tracking.
+    pub fn set_param_with_seq(
+        &mut self,
+        part: usize,
+        scope: ir::Scope,
+        addr: ir::ParamAddr,
+        value: f32,
+        ui_seq: u64,
+    ) {
+        let Some(generation) = self.part_generation(part) else {
+            return;
+        };
         self.send(Command::SetParam {
             part,
+            generation,
+            ui_seq,
             scope,
             addr,
             value,
@@ -1125,8 +1240,16 @@ impl Rack {
     /// Moves control `id` of `part`'s script `slot` to `value`, as the user
     /// turning it: its callbacks run on the audio thread.
     pub fn set_control(&mut self, part: usize, slot: u8, id: i32, value: i64) {
+        let Some(Some(p)) = self.parts.get_mut(part) else {
+            return;
+        };
+        let generation = p.script.generation;
+        p.script.look_needed = true;
+        p.script.capture_needed = true;
         self.send(Command::Control {
             part,
+            generation,
+            ui_seq: 0,
             slot,
             id,
             cell: 0,
@@ -1143,6 +1266,11 @@ impl Rack {
 
     /// Whether the next ticks keep the parts' interfaces current.
     pub fn show_interfaces(&mut self, interfaces: Interfaces) {
+        if self.interfaces != Interfaces::Shown && interfaces == Interfaces::Shown {
+            for p in self.parts.iter_mut().flatten() {
+                p.script.look_needed = true;
+            }
+        }
         self.interfaces = interfaces;
     }
 
@@ -1166,8 +1294,9 @@ impl Rack {
         // Effect types and zone edits scripts asked for, built here.
         self.native_ready();
         self.script_requests();
-        // The interfaces catch up with what their scripts changed, and ask
-        // again: the editor shows each at most one tick late.
+        // The interfaces catch up with what their scripts changed; only
+        // request a new `LookFrame` when the part actually needs one (initial
+        // load, editor open, UI edit, or audio-side `ui_epoch` advance).
         while let Some(frame) = self.channels.looks.recv() {
             let Some(Some(p)) = self.parts.get_mut(frame.part) else {
                 continue;
@@ -1176,6 +1305,9 @@ impl Rack {
                 continue;
             };
             if p.script.generation == frame.generation {
+                if frame.ui_epoch > 0 {
+                    p.script.ui_epoch_seen = p.script.ui_epoch_seen.max(frame.ui_epoch);
+                }
                 view.refresh(&p.faces, p.path.as_deref(), frame);
                 p.named.look(view.tree());
             } else if view.frame.is_none() {
@@ -1192,16 +1324,31 @@ impl Rack {
             let Some(Some(p)) = self.parts.get_mut(n) else {
                 continue;
             };
+            let audio_epoch = self
+                .channels
+                .ui_epochs
+                .get(n)
+                .map_or(0, |e| e.load(Ordering::Acquire));
+            let needed =
+                p.script.look_needed || (audio_epoch != 0 && audio_epoch != p.script.ui_epoch_seen);
+            if !needed {
+                continue;
+            }
             let Some(mut frame) = p.view.as_mut().and_then(|v| v.frame.take()) else {
                 continue;
             };
+            p.script.look_needed = false;
             (frame.part, frame.generation) = (n, p.script.generation);
+            self.looks_sent += 1;
             self.send(Command::Look(frame));
         }
         while let Some(mut c) = self.channels.captured.recv() {
             if let Some(Some(p)) = self.parts.get_mut(c.part)
                 && p.script.generation == c.generation
             {
+                if c.persist_epoch > 0 {
+                    p.script.persist_epoch_seen = p.script.persist_epoch_seen.max(c.persist_epoch);
+                }
                 let files = c.take_files();
                 let source = p.source.as_deref();
                 let failed = picks::write_script_files(self.saves.as_deref(), source, files);
@@ -1215,22 +1362,31 @@ impl Rack {
                 crate::persist::landed(c, &mut p.script.latest, &mut p.script.spare);
             }
         }
-        // Ask again for every part with persistent values: what a save
-        // writes is at most one tick old.
+        // Only capture persistent values when a part's script state actually
+        // changed (initial load, UI edit, or audio-side `persist_epoch` advance).
         for n in 0..self.parts.len() {
             let Some(Some(p)) = self.parts.get_mut(n) else {
                 continue;
             };
+            let audio_epoch = self
+                .channels
+                .persist_epochs
+                .get(n)
+                .map_or(0, |e| e.load(Ordering::Acquire));
             let s = &mut p.script;
+            let needed =
+                s.capture_needed || (audio_epoch != 0 && audio_epoch != s.persist_epoch_seen);
             let nothing =
                 |v: &crate::persist::Vars| v.vars.is_empty() && v.widgets.is_empty() && !v.state;
-            if s.asked || s.vars.iter().all(nothing) {
+            if !needed || s.asked || s.vars.iter().all(nothing) {
                 continue;
             }
+            s.capture_needed = false;
             s.asked = true;
             let spare = s.spare.take().filter(|c| c.generation == s.generation);
             let mut c = spare.unwrap_or_else(|| Capture::new(n, s.generation, &s.vars));
             c.after(s.latest.as_deref());
+            self.captures_sent += 1;
             self.send(Command::Capture(c));
         }
         while let Some(c) = self.pending.pop_front() {
@@ -1273,11 +1429,16 @@ impl Rack {
     fn resend_mix(&mut self) {
         for part in 0..MAX_PARTS {
             if let Some(Some(p)) = self.parts.get(part) {
+                let generation = p.script.generation;
                 let mix = Mix {
                     silent: self.silent(part),
                     ..p.mix
                 };
-                self.send(Command::Mix(part, mix));
+                self.send(Command::Mix {
+                    part,
+                    generation,
+                    mix,
+                });
             }
         }
     }

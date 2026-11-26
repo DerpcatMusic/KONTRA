@@ -177,6 +177,13 @@ impl super::Rack {
     /// Holds each note into `part` by its `hold` from the next block on,
     /// so it sounds in time with a later part (auto-align).
     pub fn set_hold(&mut self, part: usize, hold: Hold) {
-        self.send(super::Command::Hold(part, hold));
+        let Some(generation) = self.part_generation(part) else {
+            return;
+        };
+        self.send(super::Command::Hold {
+            part,
+            generation,
+            hold,
+        });
     }
 }

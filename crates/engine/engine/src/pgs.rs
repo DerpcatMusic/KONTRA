@@ -7,7 +7,7 @@ use kontra_vm::{Action, HostCall, HostValue, Text};
 
 use crate::Engine;
 use crate::queue::Work;
-use crate::script::{Kind, Running};
+use crate::script::Running;
 
 /// Elements a key may hold (KSP manual, PGS).
 const MOST: usize = 256;
@@ -246,7 +246,7 @@ impl Engine {
         let plan = Arc::clone(&self.plan);
         for (slot, script) in (0u8..).zip(&plan.scripts) {
             if let Some(entry) = script.callbacks.pgs_changed {
-                self.run_callback(slot, entry, Running::new(Kind::Pgs, None));
+                self.run_callback(slot, entry, Running::new(crate::CallbackContext::Pgs));
             }
         }
     }

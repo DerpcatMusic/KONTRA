@@ -44,16 +44,18 @@ pub(super) const TAP: &str = "native_ui tap";
 /// The name a canvas's widget carries, then its `paint` callback's number.
 pub(super) const CANVAS: &str = "native_ui canvas";
 
-/// Paints the page's canvases from widget `first` on, each in its size.
-fn paint(page: &mut nui::Page, bld: &mut Builder<'_>, first: usize) {
+/// Paints the page's canvases inside `range`, each in its size.
+fn paint_range(page: &mut nui::Page, bld: &mut Builder<'_>, range: std::ops::Range<usize>) {
     let mut failed = None;
-    for w in bld.ui.widgets.iter_mut().skip(first) {
-        let Some(n) = (w.name.strip_prefix(CANVAS)).and_then(|n| n.trim().parse().ok()) else {
-            continue;
-        };
-        match page.paint(n, [w.rect.width, w.rect.height]) {
-            Ok(p) => w.kind = ui::Kind::Canvas(p),
-            Err(e) => failed = Some(e),
+    if let Some(slice) = bld.ui.widgets.get_mut(range) {
+        for w in slice {
+            let Some(n) = (w.name.strip_prefix(CANVAS)).and_then(|n| n.trim().parse().ok()) else {
+                continue;
+            };
+            match page.paint(n, [w.rect.width, w.rect.height]) {
+                Ok(p) => w.kind = ui::Kind::Canvas(p),
+                Err(e) => failed = Some(e),
+            }
         }
     }
     if let Some(e) = failed {
@@ -175,7 +177,8 @@ pub(super) fn face(
     let first = bld.ui.widgets.len();
     bld.nui.clear();
     layout::lower(&root, size, bld);
-    paint(&mut page, bld, first);
+    let end = bld.ui.widgets.len();
+    paint_range(&mut page, bld, first..end);
     bld.ui.paint_order = Some(order(bld, first));
     Some(Shown {
         page,
@@ -240,14 +243,50 @@ impl Shown {
             }
         };
         bld.nui = std::mem::take(&mut self.slots);
+        let mut dirty_ranges: Vec<(usize, usize)> = Vec::new();
+        let mut structural = false;
         for (path, node) in &out {
-            layout::splice(bld, self.first, self.size, path, node.as_ref());
+            let Some(spliced) = layout::splice(bld, self.first, self.size, path, node.as_ref())
+            else {
+                continue;
+            };
+            if spliced.shift != 0 || spliced.z_changed || path.is_empty() {
+                structural = true;
+            }
+            paint_range(&mut self.page, bld, spliced.start..spliced.end);
+            if path.is_empty() {
+                dirty_ranges.clear();
+                dirty_ranges.push((spliced.start, spliced.end));
+                continue;
+            }
+            if spliced.shift != 0 {
+                let mut adjusted = Vec::with_capacity(dirty_ranges.len() + 1);
+                for (a, b) in dirty_ranges {
+                    if b <= spliced.start {
+                        adjusted.push((a, b));
+                    } else if a >= spliced.old_end {
+                        let na = (a as isize + spliced.shift).max(0) as usize;
+                        let nb = (b as isize + spliced.shift).max(na as isize) as usize;
+                        adjusted.push((na, nb));
+                    }
+                }
+                dirty_ranges = adjusted;
+            }
+            if spliced.start < spliced.end {
+                dirty_ranges.push((spliced.start, spliced.end));
+            }
         }
         self.slots = std::mem::take(&mut bld.nui);
-        paint(&mut self.page, bld, self.first);
-        let all = order(bld, self.first);
-        bld.ui.paint_order = Some(all.clone());
-        all
+        if structural || bld.ui.paint_order.is_none() {
+            bld.ui.paint_order = Some(order(bld, self.first));
+        }
+        let mut dirty: Vec<ui::WidgetRef> = dirty_ranges
+            .into_iter()
+            .flat_map(|(a, b)| (a..b).map(ui::WidgetRef))
+            .collect();
+        dirty.sort_unstable();
+        dirty.dedup();
+        dirty
     }
 }
 

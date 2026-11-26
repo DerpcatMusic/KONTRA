@@ -3,8 +3,9 @@
 //! with their settings in DSP terms. Not real-time unless a function says so.
 
 use kontra_dsp::delay::{
-    CombBank, CombSettings, MAX_MS, ModDelay, Phaser, PhaserSettings, Scanner, ScannerSettings,
-    Shifter, ShifterSettings,
+    BeatMasher, BeatMasherSettings, BeatSlicer, BeatSlicerSettings, CombBank, CombSettings, Gater,
+    GaterSettings, MAX_MS, ModDelay, Phaser, PhaserSettings, ReverseGrain, ReverseGrainSettings,
+    Scanner, ScannerSettings, Shifter, ShifterSettings, TransposeStretch, TransposeStretchSettings,
 };
 use kontra_dsp::drive::{
     self, Circuit, Clipper, Converter, Crush, Overdrive, Reduction, Shaper, Voicing,
@@ -17,7 +18,7 @@ use kontra_dsp::filter::{
     Cascade, CascadeSettings, CascadeStage, Clocked, ClockedShape, NotchSettings, Notches, Svf,
 };
 use kontra_dsp::reverb::{Combs, Convolver, Fdn, Hadamard, Network, Settings};
-use kontra_dsp::spatial::{Ring, RingMod, RingSource};
+use kontra_dsp::spatial::{Ring, RingMod, RingSource, Rotary, RotarySettings};
 use kontra_ir as ir;
 use kontra_voice::Gain;
 
@@ -459,6 +460,225 @@ impl Wet for Rated<Ring> {
     }
 }
 
+impl Wet for Rotary {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Rotary::process(self, io);
+    }
+
+    fn memory(&self) -> Option<usize> {
+        Some(Rotary::memory(self))
+    }
+
+    fn written(&self) -> f32 {
+        Rotary::written(self)
+    }
+
+    fn idle(&mut self, silence: &mut [[f32; 2]]) {
+        Rotary::idle(self, silence.len());
+    }
+
+    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
+        if let ir::EffectKind::Rotary(r) = kind {
+            Rotary::set(self, rotary(*r));
+        }
+    }
+}
+
+fn rotary(r: ir::Rotary) -> RotarySettings {
+    RotarySettings {
+        fast: r.fast,
+        horn_slow_hz: r.horn_slow_hz,
+        horn_fast_hz: r.horn_fast_hz,
+        drum_slow_hz: r.drum_slow_hz,
+        drum_fast_hz: r.drum_fast_hz,
+        accel_hi: r.accel_hi,
+        accel_lo: r.accel_lo,
+        crossover_hz: r.crossover_hz,
+        balance: r.balance,
+        distance: r.distance,
+        mix: r.mix,
+    }
+}
+
+impl Wet for Gater {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        Gater::process(self, io);
+    }
+
+    fn written(&self) -> f32 {
+        Gater::written(self)
+    }
+
+    fn idle(&mut self, silence: &mut [[f32; 2]]) {
+        Gater::idle(self, silence.len());
+    }
+
+    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
+        if let ir::EffectKind::Gater(g) = kind {
+            Gater::set(self, gater(*g, tempo));
+        }
+    }
+}
+
+fn gater(g: ir::Gater, tempo: f32) -> GaterSettings {
+    GaterSettings {
+        rate_hz: hz(g.rate, tempo),
+        shape: g.shape,
+        noise: g.noise,
+        mix: g.mix,
+        stutter: g.stutter,
+        mute_input: g.mute_input,
+        active: g.active,
+    }
+}
+
+impl Wet for BeatMasher {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        BeatMasher::process(self, io);
+    }
+
+    fn memory(&self) -> Option<usize> {
+        Some(BeatMasher::memory(self))
+    }
+
+    fn written(&self) -> f32 {
+        BeatMasher::written(self)
+    }
+
+    fn idle(&mut self, silence: &mut [[f32; 2]]) {
+        BeatMasher::idle(self, silence.len());
+    }
+
+    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
+        if let ir::EffectKind::BeatMasher(m) = kind {
+            BeatMasher::set(self, beat_masher(*m, tempo));
+        }
+    }
+}
+
+fn beat_masher(m: ir::BeatMasher, tempo: f32) -> BeatMasherSettings {
+    BeatMasherSettings {
+        tempo_bpm: tempo,
+        length_beats: m.length_beats,
+        rotate: m.rotate,
+        gate: m.gate,
+        mix: m.mix,
+        reverse: m.reverse,
+        wrap: m.wrap,
+        mash: m.mash,
+    }
+}
+
+impl Wet for BeatSlicer {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        BeatSlicer::process(self, io);
+    }
+
+    fn memory(&self) -> Option<usize> {
+        Some(BeatSlicer::memory(self))
+    }
+
+    fn written(&self) -> f32 {
+        BeatSlicer::written(self)
+    }
+
+    fn idle(&mut self, silence: &mut [[f32; 2]]) {
+        BeatSlicer::idle(self, silence.len());
+    }
+
+    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
+        if let ir::EffectKind::BeatSlicer(s) = kind {
+            BeatSlicer::set(self, beat_slicer(*s, tempo));
+        }
+    }
+}
+
+fn beat_slicer(s: ir::BeatSlicer, tempo: f32) -> BeatSlicerSettings {
+    BeatSlicerSettings {
+        tempo_bpm: tempo,
+        bars: s.bars,
+        pattern: s.pattern,
+        style: s.style,
+        buzz: s.buzz,
+        gate: s.gate,
+        slice: s.slice,
+        mix: s.mix,
+    }
+}
+
+impl Wet for ReverseGrain {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        ReverseGrain::process(self, io);
+    }
+
+    fn memory(&self) -> Option<usize> {
+        Some(ReverseGrain::memory(self))
+    }
+
+    fn written(&self) -> f32 {
+        ReverseGrain::written(self)
+    }
+
+    fn idle(&mut self, silence: &mut [[f32; 2]]) {
+        ReverseGrain::idle(self, silence.len());
+    }
+
+    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
+        if let ir::EffectKind::ReverseGrain(r) = kind {
+            ReverseGrain::set(self, reverse_grain(*r));
+        }
+    }
+}
+
+fn reverse_grain(r: ir::ReverseGrain) -> ReverseGrainSettings {
+    ReverseGrainSettings {
+        speed: r.speed,
+        grain_ms: r.grain_ms,
+        pitch_ratio: r.pitch_ratio,
+        mix: r.mix,
+        forward: r.forward,
+        invert_grains: r.invert_grains,
+        reverse: r.reverse,
+    }
+}
+
+impl Wet for TransposeStretch {
+    fn process(&mut self, io: &mut [[f32; 2]]) {
+        TransposeStretch::process(self, io);
+    }
+
+    fn memory(&self) -> Option<usize> {
+        Some(TransposeStretch::memory(self))
+    }
+
+    fn written(&self) -> f32 {
+        TransposeStretch::written(self)
+    }
+
+    fn idle(&mut self, silence: &mut [[f32; 2]]) {
+        TransposeStretch::idle(self, silence.len());
+    }
+
+    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
+        if let ir::EffectKind::TransposeStretch(t) = kind {
+            TransposeStretch::set(self, transpose_stretch(*t, tempo));
+        }
+    }
+}
+
+fn transpose_stretch(t: ir::TransposeStretch, tempo: f32) -> TransposeStretchSettings {
+    TransposeStretchSettings {
+        tempo_bpm: tempo,
+        semitones: t.semitones,
+        amount: t.amount,
+        grain_ms: t.grain_ms,
+        mix: t.mix,
+        stretch: t.stretch,
+        grain_mode: t.grain_mode,
+        bars: t.bars,
+    }
+}
+
 fn ring(r: ir::RingMod) -> RingMod {
     RingMod {
         hz: r.hz,
@@ -835,6 +1055,21 @@ pub fn processor(slot: Option<&ir::Effect>, rate: u32, impulses: &Responses<'_>)
         ))),
         Some(ir::EffectKind::Transient(t)) => wet(Box::new(Transient::new(transient(*t), rate))),
         Some(ir::EffectKind::RingMod(r)) => wet(Box::new(Rated(Ring::new(ring(*r), rate), rate))),
+        Some(ir::EffectKind::Rotary(r)) => wet(Box::new(Rotary::new(rotary(*r), rate))),
+        Some(ir::EffectKind::Gater(g)) => wet(Box::new(Gater::new(gater(*g, 120.0), rate))),
+        Some(ir::EffectKind::BeatMasher(m)) => {
+            wet(Box::new(BeatMasher::new(beat_masher(*m, 120.0), rate)))
+        }
+        Some(ir::EffectKind::BeatSlicer(s)) => {
+            wet(Box::new(BeatSlicer::new(beat_slicer(*s, 120.0), rate)))
+        }
+        Some(ir::EffectKind::ReverseGrain(r)) => {
+            wet(Box::new(ReverseGrain::new(reverse_grain(*r), rate)))
+        }
+        Some(ir::EffectKind::TransposeStretch(t)) => wet(Box::new(TransposeStretch::new(
+            transpose_stretch(*t, 120.0),
+            rate,
+        ))),
         _ => Dsp::None,
     }
 }

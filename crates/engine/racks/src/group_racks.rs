@@ -31,6 +31,12 @@ fn wet(kind: &ir::EffectKind) -> bool {
             | ir::EffectKind::Cascade(_)
             | ir::EffectKind::Clocked(_)
             | ir::EffectKind::RingMod(_)
+            | ir::EffectKind::Rotary(_)
+            | ir::EffectKind::Gater(_)
+            | ir::EffectKind::BeatMasher(_)
+            | ir::EffectKind::BeatSlicer(_)
+            | ir::EffectKind::ReverseGrain(_)
+            | ir::EffectKind::TransposeStretch(_)
     )
 }
 

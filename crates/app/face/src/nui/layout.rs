@@ -702,6 +702,16 @@ pub(super) fn place(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder
     }
 }
 
+/// Result of splicing one `native_ui` component instance into the widget tree.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Spliced {
+    pub(super) start: usize,
+    pub(super) end: usize,
+    pub(super) old_end: usize,
+    pub(super) shift: isize,
+    pub(super) z_changed: bool,
+}
+
 /// Puts instance `path`'s new tree (`None`: it draws nothing now) in the
 /// room its last one had, in place of that one's widgets and slots; the
 /// root (`""`) is the whole page again from widget `first` on.
@@ -711,21 +721,33 @@ pub(super) fn splice(
     size: ui::Size,
     path: &str,
     node: Option<&Node>,
-) {
+) -> Option<Spliced> {
     if path.is_empty() {
+        let old_end = bld.ui.widgets.len();
         bld.ui.widgets.truncate(first);
         bld.nui.clear();
         if let Some(n) = node {
             lower(n, size, bld);
         }
-        return;
+        let end = bld.ui.widgets.len();
+        return Some(Spliced {
+            start: first,
+            end,
+            old_end,
+            shift: end as isize - old_end as isize,
+            z_changed: true,
+        });
     }
-    let Some(i) = bld.nui.iter().position(|s| s.path == path) else {
-        return;
-    };
-    let Some(old) = bld.nui.get(i).cloned() else {
-        return;
-    };
+    let i = bld.nui.iter().position(|s| s.path == path)?;
+    let old = bld.nui.get(i).cloned()?;
+    let old_zs: Vec<i32> = bld
+        .ui
+        .widgets
+        .get(old.start..old.end)
+        .unwrap_or_default()
+        .iter()
+        .map(|w| w.z)
+        .collect();
     let tail = bld.ui.widgets.split_off(old.end);
     bld.ui.widgets.truncate(old.start);
     let after = bld.nui.split_off(i + 1 + old.inner);
@@ -760,7 +782,18 @@ pub(super) fn splice(
             ..old.clone()
         }),
     }
-    let shift = bld.ui.widgets.len().wrapping_sub(old.end);
+    let new_end = bld.ui.widgets.len();
+    let shift = new_end.wrapping_sub(old.end);
+    let shift_signed = new_end as isize - old.end as isize;
+    let z_changed = shift_signed != 0
+        || bld
+            .ui
+            .widgets
+            .get(old.start..new_end)
+            .unwrap_or_default()
+            .iter()
+            .zip(&old_zs)
+            .any(|(w, &z)| w.z != z);
     let grown = (bld.nui.len() - i - 1).wrapping_sub(old.inner);
     bld.ui.widgets.extend(tail);
     bld.nui.extend(after.into_iter().map(|s| Slot {
@@ -775,6 +808,13 @@ pub(super) fn splice(
             s.inner = s.inner.wrapping_add(grown);
         }
     }
+    Some(Spliced {
+        start: old.start,
+        end: new_end,
+        old_end: old.end,
+        shift: shift_signed,
+        z_changed,
+    })
 }
 
 fn place_layer(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder<'_>) {

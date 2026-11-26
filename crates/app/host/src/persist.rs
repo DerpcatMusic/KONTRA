@@ -139,6 +139,8 @@ impl Vars {
 pub struct Capture {
     pub(crate) part: usize,
     pub(crate) generation: u64,
+    /// Audio-side `persist_epoch` latched when this capture began reading.
+    pub(crate) persist_epoch: u64,
     /// Persistent number variables, back to back in `values`.
     spans: Box<[Span]>,
     values: Box<[i64]>,
@@ -244,6 +246,7 @@ impl Capture {
         Box::new(Self {
             part,
             generation,
+            persist_epoch: 0,
             values: vec![0; spans.iter().map(|s| s.len).sum()].into(),
             texts: vec![Text::EMPTY; text_spans.iter().map(|s| s.len).sum()].into(),
             spans,
@@ -367,6 +370,11 @@ impl Capture {
         files.collect()
     }
 
+    /// Whether this capture has not started reading cells yet.
+    pub(crate) fn is_at_start(&self) -> bool {
+        self.at == Cursor::Start
+    }
+
     /// Asks only for what changed since `last`, this part's capture before,
     /// and starts the read over (a capture is reused).
     pub fn after(&mut self, last: Option<&Self>) {
@@ -374,6 +382,7 @@ impl Capture {
             Some(last) => self.seen.copy_from_slice(&last.seen),
             None => self.seen.fill(None),
         }
+        self.persist_epoch = 0;
         self.fresh.fill(false);
         self.at = Cursor::Start;
     }

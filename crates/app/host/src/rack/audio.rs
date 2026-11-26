@@ -2,6 +2,7 @@
 //! the commands the control side sends.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use kontra_engine::{Engine, Play, RenderMode, SampleTime, Timed};
 use kontra_protocol::{Meters, Slowest, Stats};
@@ -22,6 +23,14 @@ struct Playing {
     held: Held,
     /// Which load it is ([`Command::Install`]).
     generation: u64,
+    /// Highest UI command sequence executed on this part's audio thread.
+    last_ui_seq: u64,
+    /// Last observed script activity fingerprint, to detect script mutations
+    /// without polling while idle.
+    last_script_fp: u64,
+    /// Monotonic audio-side UI/persist epochs published to [`Channels`].
+    ui_epoch: u64,
+    persist_epoch: u64,
     /// The engines this one replaced, fading out under it: an install never
     /// stops a sound dead, effect tails included.
     outgoing: [Option<Fading>; FADING],
@@ -105,6 +114,14 @@ pub struct RackAudio {
     /// This block's time in the script callbacks a control or widget move
     /// ran: script work, as a note's callbacks, not the commands' own.
     ui_scripts_ns: u64,
+    /// Pre-allocated deferred command buffers so a single full return ring
+    /// (e.g. `looks` or `captured`) never head-of-line blocks unrelated
+    /// commands such as `Control`, `Mix`, `SetParam`, or `Panic`.
+    stalled: Vec<Command>,
+    stalled_next: Vec<Command>,
+    /// Monotonic epoch generator shared across UI/persist bumps so epochs
+    /// never collide across preset swaps or reloads.
+    next_epoch: u64,
 }
 
 impl RackAudio {
@@ -146,7 +163,61 @@ impl RackAudio {
             mode: RenderMode::Live,
             macros: [None; MACROS],
             ui_scripts_ns: 0,
+            stalled: Vec::with_capacity(256),
+            stalled_next: Vec::with_capacity(256),
+            next_epoch: 1,
         }
+    }
+
+    /// Consumes the sticky audio→control wake flag (non-blocking, RT-safe).
+    /// Returns `true` when any return ring received data or any part's UI or
+    /// persistent epoch advanced since the last call.
+    #[must_use]
+    pub fn take_wake(&self) -> bool {
+        self.channels.wake_tick.swap(false, Ordering::AcqRel)
+    }
+
+    /// Active voices across all parts (plus fading outgoing engines), RT-safe.
+    #[must_use]
+    pub fn active_voices(&self) -> usize {
+        self.parts
+            .iter()
+            .flatten()
+            .map(|p| {
+                p.engine.active_voices()
+                    + p.outgoing
+                        .iter()
+                        .flatten()
+                        .map(|f| f.engine.active_voices().max(1))
+                        .sum::<usize>()
+            })
+            .sum()
+    }
+
+    fn signal_wake(&self) {
+        self.channels.wake_tick.store(true, Ordering::Release);
+    }
+
+    fn alloc_epoch(&mut self) -> u64 {
+        let e = self.next_epoch;
+        self.next_epoch = self.next_epoch.wrapping_add(1).max(1);
+        e
+    }
+
+    fn mark_part_dirty(&mut self, part: usize) {
+        let epoch = self.alloc_epoch();
+        if let Some(Some(p)) = self.parts.get_mut(part) {
+            p.ui_epoch = epoch;
+            p.persist_epoch = epoch;
+            p.last_script_fp = script_fingerprint(&p.engine);
+        }
+        if let Some(cell) = self.channels.ui_epochs.get(part) {
+            cell.store(epoch, Ordering::Release);
+        }
+        if let Some(cell) = self.channels.persist_epochs.get(part) {
+            cell.store(epoch, Ordering::Release);
+        }
+        self.signal_wake();
     }
 
     /// Ends the current notes on the next render, keeping the loaded parts.
@@ -186,6 +257,9 @@ impl RackAudio {
         let Some(Some(p)) = self.parts.get_mut(t.part) else {
             return false;
         };
+        if p.generation != t.generation {
+            return false;
+        }
         let start = std::time::Instant::now();
         let plain = t.plain(normalized);
         match t.control {
@@ -200,6 +274,7 @@ impl RackAudio {
             Control::Widget(n) => p.engine.set_widget(t.slot, n, plain, None),
         }
         self.ui_scripts_ns += ns_since(start);
+        self.mark_part_dirty(t.part);
         true
     }
 
@@ -399,14 +474,18 @@ impl RackAudio {
                     }
                     if f.left == 0
                         && let Some(f) = slot.take()
-                        && let Err(engine) = self.channels.retired.send(f.engine)
                     {
-                        // No room this block: it stays, silent, until there is.
-                        *slot = Some(Fading {
-                            engine,
-                            left: 0,
-                            gain: 0.0,
-                        });
+                        match self.channels.retired.send(f.engine) {
+                            Ok(()) => self.channels.wake_tick.store(true, Ordering::Release),
+                            Err(engine) => {
+                                // No room this block: it stays, silent, until there is.
+                                *slot = Some(Fading {
+                                    engine,
+                                    left: 0,
+                                    gain: 0.0,
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -453,21 +532,51 @@ impl RackAudio {
             p.audible = rendered_peak > 1e-6;
             let (requests, generation) = (&self.channels.requests, p.generation);
             let mut lost = 0;
+            let mut wake = false;
             p.engine.drain_requests(|r| {
                 if requests.send((n, generation, r)).is_err() {
                     lost += 1;
+                } else {
+                    wake = true;
                 }
             });
             let edits = &self.channels.zones.edits;
-            p.engine
-                .drain_zone_edits(|e| edits.send((n, generation, e)).is_ok());
+            p.engine.drain_zone_edits(|e| {
+                let ok = edits.send((n, generation, e)).is_ok();
+                wake |= ok;
+                ok
+            });
             let asks = &self.channels.unpurges;
-            p.engine
-                .drain_unpurges(|u| asks.send((n, generation, u)).is_ok());
+            p.engine.drain_unpurges(|u| {
+                let ok = asks.send((n, generation, u)).is_ok();
+                wake |= ok;
+                ok
+            });
             let files = &self.channels.files;
-            p.engine
-                .drain_files(|r| files.send((n, generation, r)).is_ok());
+            p.engine.drain_files(|r| {
+                let ok = files.send((n, generation, r)).is_ok();
+                wake |= ok;
+                ok
+            });
             self.dropped += lost;
+            let fp = script_fingerprint(&p.engine);
+            if !self.events.is_empty() || fp != p.last_script_fp {
+                p.last_script_fp = fp;
+                let epoch = self.next_epoch;
+                self.next_epoch = self.next_epoch.wrapping_add(1).max(1);
+                p.ui_epoch = epoch;
+                p.persist_epoch = epoch;
+                if let Some(cell) = self.channels.ui_epochs.get(n) {
+                    cell.store(epoch, Ordering::Release);
+                }
+                if let Some(cell) = self.channels.persist_epochs.get(n) {
+                    cell.store(epoch, Ordering::Release);
+                }
+                wake = true;
+            }
+            if wake {
+                self.channels.wake_tick.store(true, Ordering::Release);
+            }
             let s = p.engine.stats();
             stats.voices += u32::try_from(p.engine.active_voices()).unwrap_or(u32::MAX);
             stats.voices_stolen += s.voices_stolen;
@@ -538,6 +647,8 @@ impl RackAudio {
                 if let Err(recalling) = self.channels.recalled.send(pending.recalling) {
                     self.dropped += 1;
                     drop(recalling);
+                } else {
+                    self.channels.wake_tick.store(true, Ordering::Release);
                 }
             }
         }
@@ -570,386 +681,595 @@ impl RackAudio {
         self.meters = Meters::default();
     }
 
-    fn apply_commands(&mut self) {
-        // An install retires the engine it replaces; with no room to retire
-        // it, the command waits for the next block rather than free here.
-        while self.channels.retired.room() >= RETIRES
-            && !self.channels.captured.is_full()
-            && !self.channels.units.is_full()
-            && !self.channels.sounds.is_full()
-            && !self.channels.typed.is_full()
-            && !self.channels.looks.is_full()
-            && !self.channels.recalled.is_full()
-            && !self.channels.zones.done.is_full()
-            && !self.channels.filed.is_full()
+    /// Returns the part index if `cmd` mutates a part's state and must stay
+    /// ordered behind earlier stalled mutations on that part. Read-only
+    /// snapshots (`Look`, `Capture`) return `None` so they never head-of-line
+    /// block controls, mix, param writes, or panic.
+    fn mutated_part(cmd: &Command) -> Option<usize> {
+        match *cmd {
+            Command::Install { part, .. }
+            | Command::Zones { part, .. }
+            | Command::Unpurged { part, .. }
+            | Command::Effect { part, .. }
+            | Command::Remove { part, .. }
+            | Command::Mix { part, .. }
+            | Command::Hold { part, .. }
+            | Command::File { part, .. }
+            | Command::Control { part, .. }
+            | Command::ControlText { part, .. }
+            | Command::DropItem { part, .. }
+            | Command::ControlDrop { part, .. }
+            | Command::Widget { part, .. }
+            | Command::Sound { part, .. }
+            | Command::SetParam { part, .. } => Some(part),
+            Command::Recall(ref r) => Some(r.part),
+            Command::Multi(_)
+            | Command::Macro { .. }
+            | Command::Master(_)
+            | Command::Tempo(_)
+            | Command::Panic
+            | Command::Play(_)
+            | Command::Capture(_)
+            | Command::Look(_) => None,
+        }
+    }
+
+    /// Per-command room check: only requires space in the exact return ring(s)
+    /// that `cmd` actually writes to. Zero-return-ring commands (`Control`,
+    /// `Mix`, `Hold`, `Master`, `Tempo`, `Panic`, `Play`, `Macro`, `Widget`,
+    /// `SetParam`, `ControlDrop`, `Unpurged`) never wait on `looks` or
+    /// `captured`.
+    fn can_execute(&self, cmd: &Command, blocked: &[bool; MAX_PARTS]) -> bool {
+        if let Some(part) = Self::mutated_part(cmd)
+            && blocked.get(part).copied().unwrap_or(false)
         {
+            return false;
+        }
+        match cmd {
+            Command::Install { .. } => {
+                self.channels.retired.room() >= 1 && !self.channels.recalled.is_full()
+            }
+            Command::Remove { .. } => {
+                self.channels.retired.room() >= RETIRES && !self.channels.recalled.is_full()
+            }
+            Command::Multi(_) => !self.channels.retired.is_full(),
+            Command::Zones { .. } => !self.channels.zones.done.is_full(),
+            Command::Effect { .. } => !self.channels.units.is_full(),
+            Command::Recall(_) => {
+                !self.channels.recalled.is_full() && self.channels.retired.room() >= RETIRES
+            }
+            Command::File { .. } => !self.channels.filed.is_full(),
+            Command::Capture(c) => {
+                self.capturing.get(c.part).is_none_or(Option::is_none)
+                    || !self.channels.captured.is_full()
+            }
+            Command::Look(_) => !self.channels.looks.is_full(),
+            Command::Sound { .. } => !self.channels.sounds.is_full(),
+            Command::ControlText { .. } | Command::DropItem { .. } => {
+                !self.channels.typed.is_full()
+            }
+            Command::Control { .. }
+            | Command::ControlDrop { .. }
+            | Command::Widget { .. }
+            | Command::SetParam { .. }
+            | Command::Mix { .. }
+            | Command::Hold { .. }
+            | Command::Master(_)
+            | Command::Tempo(_)
+            | Command::Panic
+            | Command::Play(_)
+            | Command::Macro { .. }
+            | Command::Unpurged { .. } => true,
+        }
+    }
+
+    fn apply_commands(&mut self) {
+        let mut blocked = [false; MAX_PARTS];
+        // Retry previously deferred commands first, in arrival order.
+        let mut prev = std::mem::take(&mut self.stalled);
+        let mut next = std::mem::take(&mut self.stalled_next);
+        next.clear();
+        for command in prev.drain(..) {
+            if self.can_execute(&command, &blocked) {
+                self.execute_command(command);
+            } else {
+                if let Some(part) = Self::mutated_part(&command)
+                    && let Some(b) = blocked.get_mut(part)
+                {
+                    *b = true;
+                }
+                next.push(command);
+            }
+        }
+        // Drain newly arrived commands without head-of-line blocking behind a
+        // full unrelated return ring (`looks`, `captured`, etc.).
+        while next.len() < next.capacity() {
             let Some(command) = self.channels.commands.recv() else {
                 break;
             };
-            match command {
-                Command::Install {
-                    part,
-                    mut engine,
-                    mix,
-                    generation,
-                } => {
-                    if let Some(slot) = self.parts.get_mut(part) {
-                        if let Some(bpm) = self.tempo {
-                            engine.set_tempo(bpm);
+            if self.can_execute(&command, &blocked) {
+                self.execute_command(command);
+            } else {
+                if let Some(part) = Self::mutated_part(&command)
+                    && let Some(b) = blocked.get_mut(part)
+                {
+                    *b = true;
+                }
+                next.push(command);
+            }
+        }
+        self.stalled = next;
+        self.stalled_next = prev;
+    }
+
+    fn execute_command(&mut self, command: Command) {
+        match command {
+            Command::Install {
+                part,
+                mut engine,
+                mix,
+                generation,
+            } => {
+                let fp = script_fingerprint(&engine);
+                let epoch = self.alloc_epoch();
+                if let Some(slot) = self.parts.get_mut(part) {
+                    if let Some(bpm) = self.tempo {
+                        engine.set_tempo(bpm);
+                    }
+                    let (mut outgoing, mut gone) = ([None, None], None);
+                    let mut superseded_recall = None;
+                    if let Some(mut old) = slot.take() {
+                        superseded_recall = old.recalling.take();
+                        // A recall fading this part already scaled its
+                        // output (tails included): fade on from there.
+                        let level = superseded_recall
+                            .as_ref()
+                            .map_or(1.0, |r| r.left as f32 / r.total.max(1) as f32);
+                        old.engine.reset();
+                        // Every replaced engine fades; with no room, the
+                        // most faded goes now.
+                        let [mut a, mut b] = old.outgoing;
+                        for f in [&mut a, &mut b].into_iter().flatten() {
+                            f.gain *= level;
                         }
-                        let (mut outgoing, mut gone) = ([None, None], None);
-                        let mut superseded_recall = None;
-                        if let Some(mut old) = slot.take() {
-                            superseded_recall = old.recalling.take();
-                            // A recall fading this part already scaled its
-                            // output (tails included): fade on from there.
-                            let level = superseded_recall
-                                .as_ref()
-                                .map_or(1.0, |r| r.left as f32 / r.total.max(1) as f32);
-                            old.engine.reset();
-                            // Every replaced engine fades; with no room, the
-                            // most faded goes now.
-                            let [mut a, mut b] = old.outgoing;
-                            for f in [&mut a, &mut b].into_iter().flatten() {
-                                f.gain *= level;
-                            }
-                            let left = self.fade;
-                            let mut all = [
-                                Some(Fading {
-                                    engine: old.engine,
-                                    left,
-                                    gain: level,
-                                }),
-                                a,
-                                b,
-                            ];
-                            all.sort_by_key(|f| {
-                                std::cmp::Reverse(f.as_ref().map_or(0, |f| f.left))
-                            });
-                            let [a, b, c] = all;
-                            (outgoing, gone) = ([a, b], c);
-                        }
-                        let mut engine = engine;
-                        engine.set_render_mode(self.mode);
-                        *slot = Some(Playing {
-                            engine,
-                            mix,
-                            release: None,
-                            held: Held::new(Hold::default()),
-                            generation,
-                            outgoing,
-                            audible: false,
-                            recalling: None,
+                        let left = self.fade;
+                        let mut all = [
+                            Some(Fading {
+                                engine: old.engine,
+                                left,
+                                gain: level,
+                            }),
+                            a,
+                            b,
+                        ];
+                        all.sort_by_key(|f| std::cmp::Reverse(f.as_ref().map_or(0, |f| f.left)));
+                        let [a, b, c] = all;
+                        (outgoing, gone) = ([a, b], c);
+                    }
+                    let mut engine = engine;
+                    engine.set_render_mode(self.mode);
+                    *slot = Some(Playing {
+                        engine,
+                        mix,
+                        release: None,
+                        held: Held::new(Hold::default()),
+                        generation,
+                        last_ui_seq: 0,
+                        last_script_fp: fp,
+                        ui_epoch: epoch,
+                        persist_epoch: epoch,
+                        outgoing,
+                        audible: false,
+                        recalling: None,
+                    });
+                    if let Some(cell) = self.channels.ui_epochs.get(part) {
+                        cell.store(epoch, Ordering::Release);
+                    }
+                    if let Some(cell) = self.channels.persist_epochs.get(part) {
+                        cell.store(epoch, Ordering::Release);
+                    }
+                    if let Some(pending) = superseded_recall {
+                        self.return_recalling(pending.recalling);
+                    }
+                    if let Some(gone) = gone {
+                        self.retire_engine(gone.engine);
+                    }
+                } else {
+                    self.retire(Some(Playing {
+                        engine,
+                        mix,
+                        release: None,
+                        held: Held::new(Hold::default()),
+                        generation,
+                        last_ui_seq: 0,
+                        last_script_fp: fp,
+                        ui_epoch: epoch,
+                        persist_epoch: epoch,
+                        outgoing: [None, None],
+                        audible: false,
+                        recalling: None,
+                    }));
+                }
+            }
+            Command::Zones {
+                part,
+                generation,
+                mut swap,
+            } => {
+                if let Some(Some(p)) = self.parts.get_mut(part)
+                    && p.generation == generation
+                {
+                    p.engine.swap_plan(&mut swap.plan, &swap.edits);
+                }
+                if let Err(swap) = self.channels.zones.done.send(swap) {
+                    // Checked for room first; if it ever fails, it frees here.
+                    self.dropped += 1;
+                    drop(swap);
+                } else {
+                    self.signal_wake();
+                }
+            }
+            Command::Unpurged {
+                part,
+                generation,
+                unpurge,
+                took,
+            } => {
+                if let Some(Some(p)) = self.parts.get_mut(part)
+                    && p.generation == generation
+                {
+                    p.engine.unpurged(unpurge, took);
+                }
+            }
+            Command::Effect {
+                part,
+                generation,
+                mut unit,
+            } => {
+                if let Some(Some(p)) = self.parts.get_mut(part)
+                    && p.generation == generation
+                    && let Some(new) = unit.take()
+                {
+                    *unit = Some(p.engine.install(new));
+                }
+                if let Err(unit) = self.channels.units.send(unit) {
+                    // Checked for room first; if it ever fails, it frees here.
+                    self.dropped += 1;
+                    drop(unit);
+                } else {
+                    self.signal_wake();
+                }
+            }
+            Command::Recall(recalling) => {
+                let part = recalling.part;
+                let generation = recalling.generation;
+                let fade = self.fade;
+                enum Action {
+                    Armed,
+                    Superseded(Box<super::command::Recalling>),
+                    Immediate(Box<super::command::Recalling>),
+                    Stale(Box<super::command::Recalling>),
+                }
+                let action = if let Some(Some(p)) = self.parts.get_mut(part)
+                    && p.generation == generation
+                {
+                    if let Some(mut prev) = p.recalling.take() {
+                        let old = std::mem::replace(&mut prev.recalling, recalling);
+                        p.recalling = Some(prev);
+                        Action::Superseded(old)
+                    } else if !p.mix.silent
+                        && (p.audible
+                            || p.engine.active_voices() > 0
+                            || p.outgoing.iter().any(Option::is_some))
+                    {
+                        // Fade active voices / tails smoothly to silence
+                        // before lending the engine back to the control thread.
+                        p.recalling = Some(PendingRecall {
+                            recalling,
+                            left: fade,
+                            total: fade,
                         });
-                        if let Some(pending) = superseded_recall {
-                            self.return_recalling(pending.recalling);
-                        }
-                        if let Some(gone) = gone {
-                            self.retire_engine(gone.engine);
-                        }
+                        Action::Armed
                     } else {
-                        self.retire(Some(Playing {
-                            engine,
-                            mix,
-                            release: None,
-                            held: Held::new(Hold::default()),
-                            generation,
-                            outgoing: [None, None],
-                            audible: false,
-                            recalling: None,
-                        }));
+                        Action::Immediate(recalling)
                     }
-                }
-                Command::Zones {
-                    part,
-                    generation,
-                    mut swap,
-                } => {
-                    if let Some(Some(p)) = self.parts.get_mut(part)
-                        && p.generation == generation
-                    {
-                        p.engine.swap_plan(&mut swap.plan, &swap.edits);
+                } else {
+                    Action::Stale(recalling)
+                };
+                match action {
+                    Action::Armed => {}
+                    Action::Superseded(old) | Action::Stale(old) => {
+                        self.return_recalling(old);
                     }
-                    if let Err(swap) = self.channels.zones.done.send(swap) {
-                        // Checked for room first; if it ever fails, it frees here.
-                        self.dropped += 1;
-                        drop(swap);
-                    }
-                }
-                Command::Unpurged {
-                    part,
-                    generation,
-                    unpurge,
-                    took,
-                } => {
-                    if let Some(Some(p)) = self.parts.get_mut(part)
-                        && p.generation == generation
-                    {
-                        p.engine.unpurged(unpurge, took);
-                    }
-                }
-                Command::Effect {
-                    part,
-                    generation,
-                    mut unit,
-                } => {
-                    if let Some(Some(p)) = self.parts.get_mut(part)
-                        && p.generation == generation
-                        && let Some(new) = unit.take()
-                    {
-                        *unit = Some(p.engine.install(new));
-                    }
-                    if let Err(unit) = self.channels.units.send(unit) {
-                        // Checked for room first; if it ever fails, it frees here.
-                        self.dropped += 1;
-                        drop(unit);
-                    }
-                }
-                Command::Recall(recalling) => {
-                    let part = recalling.part;
-                    let generation = recalling.generation;
-                    let fade = self.fade;
-                    enum Action {
-                        Armed,
-                        Superseded(Box<super::command::Recalling>),
-                        Immediate(Box<super::command::Recalling>),
-                        Stale(Box<super::command::Recalling>),
-                    }
-                    let action = if let Some(Some(p)) = self.parts.get_mut(part)
-                        && p.generation == generation
-                    {
-                        if let Some(mut prev) = p.recalling.take() {
-                            let old = std::mem::replace(&mut prev.recalling, recalling);
-                            p.recalling = Some(prev);
-                            Action::Superseded(old)
-                        } else if !p.mix.silent
-                            && (p.audible
-                                || p.engine.active_voices() > 0
-                                || p.outgoing.iter().any(Option::is_some))
+                    Action::Immediate(mut recalling) => {
+                        if let Some(slot) = self.parts.get_mut(part)
+                            && let Some(p) = slot.take()
                         {
-                            // Fade active voices / tails smoothly to silence
-                            // before lending the engine back to the control thread.
-                            p.recalling = Some(PendingRecall {
-                                recalling,
-                                left: fade,
-                                total: fade,
-                            });
-                            Action::Armed
-                        } else {
-                            Action::Immediate(recalling)
-                        }
-                    } else {
-                        Action::Stale(recalling)
-                    };
-                    match action {
-                        Action::Armed => {}
-                        Action::Superseded(old) | Action::Stale(old) => {
-                            self.return_recalling(old);
-                        }
-                        Action::Immediate(mut recalling) => {
-                            if let Some(slot) = self.parts.get_mut(part)
-                                && let Some(p) = slot.take()
-                            {
-                                recalling.engine = Some(p.engine);
-                                for f in p.outgoing.into_iter().flatten() {
-                                    self.retire_engine(f.engine);
-                                }
+                            recalling.engine = Some(p.engine);
+                            for f in p.outgoing.into_iter().flatten() {
+                                self.retire_engine(f.engine);
                             }
-                            self.return_recalling(recalling);
                         }
+                        self.return_recalling(recalling);
                     }
                 }
-                Command::File {
-                    part,
-                    generation,
-                    mut reply,
-                } => {
-                    if let Some(Some(p)) = self.parts.get_mut(part)
-                        && p.generation == generation
-                    {
-                        p.engine.file_done(&mut reply);
+            }
+            Command::File {
+                part,
+                generation,
+                mut reply,
+            } => {
+                if let Some(Some(p)) = self.parts.get_mut(part)
+                    && p.generation == generation
+                {
+                    p.engine.file_done(&mut reply);
+                    self.mark_part_dirty(part);
+                }
+                if let Err(reply) = self.channels.filed.send((part, generation, reply)) {
+                    // Checked for room first; if it ever fails, it frees here.
+                    self.dropped += 1;
+                    drop(reply);
+                } else {
+                    self.signal_wake();
+                }
+            }
+            Command::Remove { part, generation } => {
+                let old = self
+                    .parts
+                    .get_mut(part)
+                    .filter(|slot| slot.as_ref().is_some_and(|p| p.generation == generation))
+                    .and_then(Option::take);
+                self.retire(old);
+            }
+            Command::Multi(engine) => {
+                if let Some(old) = std::mem::replace(&mut self.multi, engine) {
+                    self.retire_engine(old);
+                }
+            }
+            Command::Mix {
+                part,
+                generation,
+                mix,
+            } => {
+                if let Some(Some(p)) = self.parts.get_mut(part)
+                    && p.generation == generation
+                {
+                    if p.mix.channel != mix.channel {
+                        p.release = p.release.max(Some(p.held.hold.max()));
                     }
-                    if let Err(reply) = self.channels.filed.send((part, generation, reply)) {
-                        // Checked for room first; if it ever fails, it frees here.
+                    p.mix = mix;
+                }
+            }
+            // Notes held under the old hold let go after the later of
+            // the two, so no note-off overtakes its note-on.
+            Command::Hold {
+                part,
+                generation,
+                hold,
+            } => {
+                if let Some(Some(p)) = self.parts.get_mut(part)
+                    && p.generation == generation
+                    && p.held.hold != hold
+                {
+                    // The latest release asked for wins: several changes
+                    // may come before one block.
+                    let longest = p.held.hold.max().max(hold.max());
+                    p.release = p.release.max(Some(longest));
+                    p.held.hold = hold;
+                }
+            }
+            Command::Macro { n, target } => {
+                if let Some(slot) = self.macros.get_mut(n) {
+                    *slot = target;
+                }
+            }
+            Command::Master(gain) => self.master = gain,
+            Command::Tempo(bpm) => self.set_tempo(bpm),
+            // What was played before the panic ends with it.
+            Command::Panic => self.panic(),
+            Command::Play(event) => {
+                if self.played.len() < self.played.capacity() {
+                    self.played.push(event);
+                } else {
+                    self.dropped += 1;
+                }
+            }
+            // Read from the next block on, a budget at a time.
+            Command::Capture(c) => match self.capturing.get_mut(c.part) {
+                Some(slot @ None) => *slot = Some(c),
+                // One is being read already: this one goes back unread.
+                _ => {
+                    if let Err(c) = self.channels.captured.send(c) {
                         self.dropped += 1;
-                        drop(reply);
-                    }
-                }
-                Command::Remove(part) => {
-                    let old = self.parts.get_mut(part).and_then(Option::take);
-                    self.retire(old);
-                }
-                Command::Multi(engine) => {
-                    if let Some(old) = std::mem::replace(&mut self.multi, engine) {
-                        self.retire_engine(old);
-                    }
-                }
-                Command::Mix(part, mix) => {
-                    if let Some(Some(p)) = self.parts.get_mut(part) {
-                        if p.mix.channel != mix.channel {
-                            p.release = p.release.max(Some(p.held.hold.max()));
-                        }
-                        p.mix = mix;
-                    }
-                }
-                // Notes held under the old hold let go after the later of
-                // the two, so no note-off overtakes its note-on.
-                Command::Hold(part, hold) => {
-                    if let Some(Some(p)) = self.parts.get_mut(part)
-                        && p.held.hold != hold
-                    {
-                        // The latest release asked for wins: several changes
-                        // may come before one block.
-                        let longest = p.held.hold.max().max(hold.max());
-                        p.release = p.release.max(Some(longest));
-                        p.held.hold = hold;
-                    }
-                }
-                Command::Macro { n, target } => {
-                    if let Some(slot) = self.macros.get_mut(n) {
-                        *slot = target;
-                    }
-                }
-                Command::Master(gain) => self.master = gain,
-                Command::Tempo(bpm) => self.set_tempo(bpm),
-                // What was played before the panic ends with it.
-                Command::Panic => self.panic(),
-                Command::Play(event) => {
-                    if self.played.len() < self.played.capacity() {
-                        self.played.push(event);
+                        drop(c);
                     } else {
-                        self.dropped += 1;
+                        self.signal_wake();
                     }
                 }
-                // Read from the next block on, a budget at a time.
-                Command::Capture(c) => match self.capturing.get_mut(c.part) {
-                    Some(slot @ None) => *slot = Some(c),
-                    // One is being read already: this one goes back unread.
-                    _ => {
-                        if let Err(c) = self.channels.captured.send(c) {
-                            self.dropped += 1;
-                            drop(c);
-                        }
+            },
+            Command::Look(mut frame) => {
+                match self.parts.get(frame.part) {
+                    Some(Some(p)) if p.generation == frame.generation => {
+                        frame.applied_seq = p.last_ui_seq;
+                        frame.ui_epoch = p.ui_epoch;
+                        frame.fill(&p.engine);
                     }
-                },
-                Command::Look(mut frame) => {
-                    match self.parts.get(frame.part) {
-                        Some(Some(p)) if p.generation == frame.generation => frame.fill(&p.engine),
-                        _ => frame.unfilled(),
-                    }
-                    if let Err(frame) = self.channels.looks.send(frame) {
-                        self.dropped += 1;
-                        drop(frame);
-                    }
+                    _ => frame.unfilled(),
                 }
-                Command::Sound {
-                    part,
-                    group,
-                    envelope,
-                    mut insert,
-                } => {
-                    let edit = insert.take();
-                    if let Some(Some(p)) = self.parts.get_mut(part) {
-                        p.engine.set_group_sound(group, envelope, edit);
-                    }
-                    if let Err(insert) = self.channels.sounds.send(insert) {
-                        // Checked for room first; if it ever fails, it frees here.
-                        self.dropped += 1;
-                        drop(insert);
-                    }
+                if let Err(frame) = self.channels.looks.send(frame) {
+                    self.dropped += 1;
+                    drop(frame);
+                } else {
+                    self.signal_wake();
                 }
-                Command::Control {
-                    part,
-                    slot,
-                    id,
-                    cell,
-                    value,
-                    keys,
-                } => {
-                    let t = std::time::Instant::now();
-                    if let Some(Some(p)) = self.parts.get_mut(part) {
-                        let held = [keys.shift, keys.alt, keys.ctrl || keys.cmd];
-                        p.engine.set_click(slot, id, held, cell);
-                        p.engine.set_control(slot, id, value);
-                    }
-                    self.ui_scripts_ns += ns_since(t);
+            }
+            Command::Sound {
+                part,
+                generation,
+                group,
+                envelope,
+                mut insert,
+            } => {
+                let edit = insert.take();
+                if let Some(Some(p)) = self.parts.get_mut(part)
+                    && p.generation == generation
+                {
+                    p.engine.set_group_sound(group, envelope, edit);
                 }
-                Command::ControlText {
-                    part,
-                    slot,
-                    id,
-                    cell,
-                    text,
-                } => {
-                    let t = std::time::Instant::now();
-                    if let Some(Some(p)) = self.parts.get_mut(part) {
-                        match cell {
-                            Some(cell) => {
-                                if let Some(vm) = p.engine.vm_mut(slot) {
-                                    vm.set_text(cell as usize, *text);
-                                }
+                if let Err(insert) = self.channels.sounds.send(insert) {
+                    // Checked for room first; if it ever fails, it frees here.
+                    self.dropped += 1;
+                    drop(insert);
+                } else {
+                    self.signal_wake();
+                }
+            }
+            Command::Control {
+                part,
+                generation,
+                ui_seq,
+                slot,
+                id,
+                cell,
+                value,
+                keys,
+            } => {
+                let t = std::time::Instant::now();
+                let mut ran = false;
+                if let Some(Some(p)) = self.parts.get_mut(part)
+                    && p.generation == generation
+                {
+                    let held = [keys.shift, keys.alt, keys.ctrl || keys.cmd];
+                    p.engine.set_click(slot, id, held, cell);
+                    p.engine.set_control(slot, id, value);
+                    p.last_ui_seq = p.last_ui_seq.max(ui_seq);
+                    ran = true;
+                }
+                self.ui_scripts_ns += ns_since(t);
+                if ran {
+                    self.mark_part_dirty(part);
+                }
+            }
+            Command::ControlText {
+                part,
+                generation,
+                ui_seq,
+                slot,
+                id,
+                cell,
+                text,
+            } => {
+                let t = std::time::Instant::now();
+                let mut ran = false;
+                if let Some(Some(p)) = self.parts.get_mut(part)
+                    && p.generation == generation
+                {
+                    match cell {
+                        Some(cell) => {
+                            if let Some(vm) = p.engine.vm_mut(slot) {
+                                vm.set_text(cell as usize, *text);
                             }
-                            None => p.engine.set_picked(slot, id, *text),
                         }
-                        p.engine.set_click(slot, id, [false; 3], 0);
-                        p.engine.set_control(slot, id, 0);
+                        None => p.engine.set_picked(slot, id, *text),
                     }
-                    self.ui_scripts_ns += ns_since(t);
-                    // Freed on the control side: the loop takes no command while the ring is full.
-                    if self.channels.typed.send(text).is_err() {
-                        self.dropped += 1;
-                    }
+                    p.engine.set_click(slot, id, [false; 3], 0);
+                    p.engine.set_control(slot, id, 0);
+                    p.last_ui_seq = p.last_ui_seq.max(ui_seq);
+                    ran = true;
                 }
-                Command::DropItem {
-                    part,
-                    kind,
-                    first,
-                    text,
-                } => {
-                    if let Some(Some(p)) = self.parts.get_mut(part) {
-                        p.engine.drop_item(first, kind, *text);
-                    }
-                    if self.channels.typed.send(text).is_err() {
-                        self.dropped += 1;
-                    }
+                self.ui_scripts_ns += ns_since(t);
+                if ran {
+                    self.mark_part_dirty(part);
                 }
-                Command::ControlDrop {
-                    part,
-                    slot,
-                    id,
-                    drop,
-                    over,
-                } => {
-                    let t = std::time::Instant::now();
-                    if let Some(Some(p)) = self.parts.get_mut(part) {
-                        p.engine.set_click(slot, id, [false; 3], 0);
-                        p.engine.drop_event(slot, drop, over);
-                        p.engine.set_control(slot, id, 0);
-                    }
-                    self.ui_scripts_ns += ns_since(t);
+                // Freed on the control side: the loop takes no command while the ring is full.
+                if self.channels.typed.send(text).is_err() {
+                    self.dropped += 1;
+                } else {
+                    self.signal_wake();
                 }
-                Command::Widget {
-                    part,
-                    slot,
-                    n,
-                    value,
-                    cell,
-                } => {
-                    let t = std::time::Instant::now();
-                    if let Some(Some(p)) = self.parts.get_mut(part) {
-                        p.engine.set_widget(slot, n, value, cell);
-                    }
-                    self.ui_scripts_ns += ns_since(t);
+            }
+            Command::DropItem {
+                part,
+                generation,
+                kind,
+                first,
+                text,
+            } => {
+                if let Some(Some(p)) = self.parts.get_mut(part)
+                    && p.generation == generation
+                {
+                    p.engine.drop_item(first, kind, *text);
                 }
-                Command::SetParam {
-                    part,
-                    scope,
-                    addr,
-                    value,
-                } => {
-                    if let Some(Some(p)) = self.parts.get_mut(part) {
-                        p.engine.set_param(scope, addr, value);
-                    }
+                if self.channels.typed.send(text).is_err() {
+                    self.dropped += 1;
+                } else {
+                    self.signal_wake();
+                }
+            }
+            Command::ControlDrop {
+                part,
+                generation,
+                slot,
+                id,
+                drop,
+                over,
+            } => {
+                let t = std::time::Instant::now();
+                let mut ran = false;
+                if let Some(Some(p)) = self.parts.get_mut(part)
+                    && p.generation == generation
+                {
+                    p.engine.set_click(slot, id, [false; 3], 0);
+                    p.engine.drop_event(slot, drop, over);
+                    p.engine.set_control(slot, id, 0);
+                    ran = true;
+                }
+                self.ui_scripts_ns += ns_since(t);
+                if ran {
+                    self.mark_part_dirty(part);
+                }
+            }
+            Command::Widget {
+                part,
+                generation,
+                ui_seq,
+                slot,
+                n,
+                value,
+                cell,
+            } => {
+                let t = std::time::Instant::now();
+                let mut ran = false;
+                if let Some(Some(p)) = self.parts.get_mut(part)
+                    && p.generation == generation
+                {
+                    p.engine.set_widget(slot, n, value, cell);
+                    p.last_ui_seq = p.last_ui_seq.max(ui_seq);
+                    ran = true;
+                }
+                self.ui_scripts_ns += ns_since(t);
+                if ran {
+                    self.mark_part_dirty(part);
+                }
+            }
+            Command::SetParam {
+                part,
+                generation,
+                ui_seq,
+                scope,
+                addr,
+                value,
+            } => {
+                let mut ran = false;
+                if let Some(Some(p)) = self.parts.get_mut(part)
+                    && p.generation == generation
+                {
+                    p.engine.set_param(scope, addr, value);
+                    p.last_ui_seq = p.last_ui_seq.max(ui_seq);
+                    ran = true;
+                }
+                if ran {
+                    self.mark_part_dirty(part);
                 }
             }
         }
@@ -968,15 +1288,22 @@ impl RackAudio {
             };
             let Some(c) = slot else { continue };
             let done = match self.parts.get_mut(n) {
-                Some(Some(p)) if p.generation == c.generation => c.read(&mut p.engine, &mut budget),
+                Some(Some(p)) if p.generation == c.generation => {
+                    if c.is_at_start() {
+                        c.persist_epoch = p.persist_epoch;
+                    }
+                    c.read(&mut p.engine, &mut budget)
+                }
                 _ => true,
             };
-            if done
-                && let Some(c) = slot.take()
-                && let Err(c) = self.channels.captured.send(c)
-            {
-                // No room: it goes back in a later block.
-                *slot = Some(c);
+            if done && let Some(c) = slot.take() {
+                match self.channels.captured.send(c) {
+                    Ok(()) => self.channels.wake_tick.store(true, Ordering::Release),
+                    Err(c) => {
+                        // No room: it goes back in a later block.
+                        *slot = Some(c);
+                    }
+                }
             }
             if budget == 0 {
                 break;
@@ -1002,6 +1329,8 @@ impl RackAudio {
             // it frees here.
             self.dropped += 1;
             drop(recalling);
+        } else {
+            self.signal_wake();
         }
     }
 
@@ -1011,8 +1340,27 @@ impl RackAudio {
             // not happen; if it ever does, the engine is freed here.
             self.dropped += 1;
             drop(engine);
+        } else {
+            self.signal_wake();
         }
     }
+}
+
+/// Fast, allocation-free fingerprint of an engine's script execution counters
+/// across all script slots (KSP and Lua). Unchanged while completely idle.
+fn script_fingerprint(engine: &Engine) -> u64 {
+    let s = engine.stats();
+    let mut h = s
+        .script_starts
+        .wrapping_add(s.script_resumes.wrapping_mul(31))
+        .wrapping_add(s.script_turns.wrapping_mul(131))
+        .wrapping_add(s.messages.wrapping_mul(1009));
+    for slot in 0..8u8 {
+        if let Some(vm) = engine.vm(slot) {
+            h = h.wrapping_mul(1_099_511_628_211) ^ u64::from(vm.runs());
+        }
+    }
+    h
 }
 
 const fn wildcard(clap: bool) -> HostPattern {

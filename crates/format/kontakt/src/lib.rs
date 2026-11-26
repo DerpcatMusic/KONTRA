@@ -3,8 +3,8 @@
 //! store; everything this cannot carry over is an [`ir::Diagnostic`].
 
 use kontra_kontakt_effects::{
-    bite, choral, delays, dstortion, dynamics, flair, freak, legacy_reverb, phasis, psyche,
-    skreamer, supergt, tape, vibrato,
+    bite, choral, delays, dstortion, dynamics, flair, freak, legacy_reverb, mangling, phasis,
+    psyche, rotator, skreamer, supergt, tape, vibrato,
 };
 
 mod access;

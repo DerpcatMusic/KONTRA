@@ -299,7 +299,9 @@ pub fn send_targets(p: &KontraParams, rack: &mut Rack) {
 }
 
 fn target(rack: &Rack, m: &Macro) -> Option<MacroTarget> {
-    let view = rack.parts().get(m.part)?.as_ref()?.view.as_ref()?;
+    let part = rack.parts().get(m.part)?.as_ref()?;
+    let generation = part.script.generation();
+    let view = part.view.as_ref()?;
     let widget = view
         .tree()
         .widgets
@@ -336,6 +338,7 @@ fn target(rack: &Rack, m: &Macro) -> Option<MacroTarget> {
     };
     Some(MacroTarget {
         part: m.part,
+        generation,
         slot,
         control,
         scale,

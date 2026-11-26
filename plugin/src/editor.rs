@@ -40,10 +40,14 @@ struct PartView {
     /// The instrument file its pictures are found near: a user preset's
     /// base, not the preset in KONTRA's own folder.
     source: Option<PathBuf>,
-    /// Its library's interface; copied when the part loads and whenever
-    /// its script changes it ([`kontra_host::view::View::revision`]).
-    tree: Option<Arc<Interface>>,
+    /// Its library's interface at `revision`; copied only on load or
+    /// structural fallback, updated in-place from [`TreePatch`]es on drags.
+    tree: Option<Interface>,
+    patches: Vec<Arc<kontra_host::view::TreePatch>>,
     revision: u64,
+    /// Highest UI command sequence acknowledged by the audio thread in a
+    /// returned `LookFrame` (or applied directly for `Binding::Param`).
+    applied_seq: u64,
     /// Each group's sound, copied when an edit moves it
     /// ([`kontra_host::sound::Sounds::revision`]).
     sounds: (u64, Arc<Vec<app::Sound>>),
@@ -69,18 +73,85 @@ struct PartView {
     diag_latent: Arc<Vec<String>>,
 }
 
+impl PartView {
+    /// Builds a resolved full [`Interface`] from this snapshot (used on initial
+    /// face creation or when a reader fell behind the incremental patch window).
+    fn full_resolved(&self) -> Option<Interface> {
+        let mut tree = self.tree.as_ref()?.clone();
+        RESOLVES.fetch_add(1, Ordering::Relaxed);
+        let all = 0..tree.widgets.len();
+        layout::resolve(&mut tree, all);
+        Some(tree)
+    }
+
+    /// Applies incremental patches from `prev_rev` to `self.revision` directly
+    /// onto `tree`, resolving layout only on changed widgets (0 full-tree
+    /// clones and 0 full-tree resolves on single-slider drags).
+    fn update_tree(&self, tree: &mut Interface, prev_rev: u64) {
+        if prev_rev == self.revision {
+            return;
+        }
+        let contiguous = self
+            .patches
+            .first()
+            .is_some_and(|p| p.from_revision <= prev_rev)
+            && self
+                .patches
+                .last()
+                .is_some_and(|p| p.to_revision == self.revision);
+        if contiguous {
+            let mut changed = Vec::new();
+            let mut expected = prev_rev;
+            let mut full = false;
+            for patch in &self.patches {
+                if patch.to_revision <= prev_rev {
+                    continue;
+                }
+                if patch.from_revision != expected {
+                    full = true;
+                    break;
+                }
+                expected = patch.to_revision;
+                match patch.apply(tree) {
+                    Some(indices) => changed.extend(indices),
+                    None => {
+                        full = true;
+                        break;
+                    }
+                }
+            }
+            if !full && expected == self.revision {
+                changed.sort_unstable();
+                changed.dedup();
+                layout::resolve(tree, changed);
+                return;
+            }
+        }
+        if let Some(fresh) = self.full_resolved() {
+            *tree = fresh;
+        }
+    }
+
+    /// Clean authoritative widget at `index` (used to revert an optimistic
+    /// hold when a script rejects/clamps a move without bumping `revision`).
+    fn widget_at(&self, index: usize) -> Option<kontra_ui_model::Widget> {
+        self.tree.as_ref()?.widgets.get(index).cloned()
+    }
+}
+
 /// How long a library control the player let go keeps the editor's value
-/// once the rack has carried its last move out, when the script's answer
-/// changes nothing the copy shows.
+/// if no audio `LookFrame` acknowledgement arrives (e.g. suspended audio).
 const HOLD: Duration = Duration::from_millis(250);
 
 /// A library control the player moved: its last move, sent as edit `seq`.
 struct Held {
     edit: input::Edit,
     seq: u64,
-    /// The copy's revision and the time when the rack had first carried
-    /// `seq` out.
-    seen: Option<(u64, Instant)>,
+    /// Set by [`Mine::keep`] while the pointer still holds this part's face.
+    kept: bool,
+    /// Fallback deadline start when `Tick` dispatched `seq` but audio has not
+    /// echoed `applied_seq >= seq` yet.
+    fallback_since: Option<Instant>,
 }
 
 /// The editor's own edits, which the rack's copy may not show yet.
@@ -126,7 +197,8 @@ impl Mine {
         mine.push(Held {
             edit,
             seq,
-            seen: None,
+            kept: false,
+            fallback_since: None,
         });
     }
 
@@ -135,30 +207,50 @@ impl Mine {
     fn keep(&mut self, slot: usize, generation: u64) {
         let last = self.touched.get_mut(&(slot, generation));
         if let Some(h) = last.and_then(|held| held.last_mut()) {
-            h.seen = None;
+            h.kept = true;
+            h.fallback_since = None;
         }
     }
 
-    /// Lets go of what the copy shows now: a move ends once the rack has
-    /// carried it out (`applied`) and a newer copy came (the script's
-    /// answer), or [`HOLD`] after it was carried out when none comes. Edits
-    /// to unloaded parts go.
-    fn prune(&mut self, parts: &[PartView], applied: u64, now: Instant) {
+    /// Lets go of what the audio thread has acknowledged (`p.applied_seq >= h.seq`),
+    /// or after [`HOLD`] past `Tick` dispatch if no audio reply arrives.
+    /// Returns `(slot, widget_index)` pairs that were just released.
+    fn prune(
+        &mut self,
+        parts: &[PartView],
+        tick_applied: u64,
+        now: Instant,
+    ) -> Vec<(usize, usize)> {
+        self.sent
+            .retain(|slot, _| parts.iter().any(|p| p.slot == *slot));
+        let mut released = Vec::new();
         self.touched.retain(|&(slot, generation), held| {
             let Some(p) = (parts.iter()).find(|p| (p.slot, p.generation) == (slot, generation))
             else {
                 return false;
             };
-            held.retain_mut(|h| match h.seen {
-                _ if applied < h.seq => true,
-                None => {
-                    h.seen = Some((p.revision, now));
-                    true
+            held.retain_mut(|h| {
+                if std::mem::take(&mut h.kept) {
+                    return true;
                 }
-                Some((revision, at)) => revision == p.revision && now.duration_since(at) < HOLD,
+                if p.applied_seq >= h.seq {
+                    released.push((slot, h.edit.widget.0));
+                    return false;
+                }
+                if tick_applied < h.seq {
+                    return true;
+                }
+                let since = *h.fallback_since.get_or_insert(now);
+                if now.duration_since(since) < HOLD {
+                    true
+                } else {
+                    released.push((slot, h.edit.widget.0));
+                    false
+                }
             });
             !held.is_empty()
         });
+        released
     }
 
     /// The edits to rack `slot`'s face (for load `generation`) still held.
@@ -244,23 +336,60 @@ impl Snapshot {
             let buses = meters.buses.get(slot).into_iter().flatten().copied();
             std::iter::once(out).chain(buses).collect()
         };
-        let old = std::mem::take(&mut self.parts);
+        let mut old: HashMap<(usize, u64), PartView> = std::mem::take(&mut self.parts)
+            .into_iter()
+            .map(|v| ((v.slot, v.generation), v))
+            .collect();
         self.parts = (rack.parts().iter().enumerate())
             .filter_map(|(slot, p)| {
                 let p = p.as_ref()?;
                 let generation = p.script.generation();
-                let same = (old.iter()).find(|v| v.slot == slot && v.generation == generation);
+                let mut same = old.remove(&(slot, generation));
                 let revision = p.view.as_ref().map_or(0, |v| v.revision);
-                let tree = match same {
-                    Some(v) if v.revision == revision => v.tree.clone(),
-                    _ => p.view.as_ref().map(|v| Arc::new(v.tree().clone())),
+                let applied_seq = p.view.as_ref().map_or(0, |v| v.applied_seq);
+                let (tree, patches) = match same.as_mut() {
+                    Some(v) if v.revision == revision => {
+                        (v.tree.take(), std::mem::take(&mut v.patches))
+                    }
+                    Some(v) if v.tree.is_some() => {
+                        match p
+                            .view
+                            .as_ref()
+                            .and_then(|view| view.patches_since(v.revision))
+                        {
+                            Some(new_patches)
+                                if !new_patches.iter().any(|patch| {
+                                    matches!(
+                                        patch.widgets,
+                                        kontra_host::view::WidgetPatch::ReplaceAll(_)
+                                    )
+                                }) =>
+                            {
+                                let mut tree = v.tree.take();
+                                if let Some(t) = tree.as_mut() {
+                                    for patch in &new_patches {
+                                        let _ = patch.apply(t);
+                                    }
+                                }
+                                let mut patches = std::mem::take(&mut v.patches);
+                                patches.extend(new_patches);
+                                let excess = patches.len().saturating_sub(16);
+                                if excess > 0 {
+                                    patches.drain(..excess);
+                                }
+                                (tree, patches)
+                            }
+                            _ => (p.view.as_ref().map(|v| v.tree().clone()), Vec::new()),
+                        }
+                    }
+                    _ => (p.view.as_ref().map(|v| v.tree().clone()), Vec::new()),
                 };
-                let sounds = match same {
+                let sounds = match same.as_ref() {
                     Some(v) if v.sounds.0 == p.sounds.revision => v.sounds.clone(),
                     _ => (p.sounds.revision, Arc::new(sounds(&p.sounds))),
                 };
                 // A recall changes the path, not the load.
-                let (library, preset) = match same {
+                let (library, preset) = match same.as_ref() {
                     Some(v) if !rescanned && v.path == p.path => (v.library.clone(), v.preset),
                     _ => {
                         let found = p.path.as_deref().and_then(|path| browser.find(path));
@@ -270,7 +399,7 @@ impl Snapshot {
                     }
                 };
                 let diag_count = p.diagnostics.len();
-                let (needs, diag_visible, diag_latent) = match same {
+                let (needs, diag_visible, diag_latent) = match same.as_ref() {
                     Some(v) if v.diag_count == diag_count => (
                         Arc::clone(&v.needs),
                         Arc::clone(&v.diag_visible),
@@ -288,7 +417,9 @@ impl Snapshot {
                     path: p.path.clone(),
                     source: p.source.clone().or_else(|| p.path.clone()),
                     tree,
+                    patches,
                     revision,
+                    applied_seq,
                     sounds,
                     name: p.name.clone(),
                     library,
@@ -354,6 +485,7 @@ impl Snapshot {
                     p.slot,
                     p.generation,
                     p.revision,
+                    p.applied_seq,
                     p.diag_count,
                     p.name.clone(),
                     p.library.clone(),
@@ -374,12 +506,23 @@ impl Snapshot {
         )
     }
 
-    /// Fills `app` for a frame, keeping each part's own view state; `shown`
-    /// is which load of each part the editor's faces are of. `mine` is what
-    /// the editor sent: a part's mix this copy predates, and a library
-    /// control [`Mine`] still holds, keep what the editor drew, so a drag
-    /// never springs back to a value from before its own moves.
+    /// Fills `app` for a frame, keeping each part's own view state keyed by
+    /// rack slot (never positional Vec index). `mine` is what the editor sent:
+    /// a part's mix this copy predates, and a library control [`Mine`] still
+    /// holds, keep what the editor drew, so a drag never springs back.
+    #[cfg(test)]
     fn fill(&self, app: &mut App, shown: &mut Shown, mine: &Mine) {
+        self.fill_with(app, shown, mine, &[], None);
+    }
+
+    fn fill_with(
+        &self,
+        app: &mut App,
+        shown: &mut Shown,
+        mine: &Mine,
+        released: &[(usize, usize)],
+        wake: Option<&Arc<dyn Fn() + Send + Sync>>,
+    ) {
         let sent = &mine.sent;
         if shown.browser != self.libraries.0 {
             let fresh = self.libraries.1.as_ref();
@@ -387,11 +530,18 @@ impl Snapshot {
             // decoded so far stay (they are keyed by library and art).
             let same = (app.libraries.iter().map(|l| &l.art)).eq(fresh.iter().map(|l| &l.art));
             if app.covers.is_none() || !same {
-                app.covers = Some(Pictures::new(Box::new(cover)));
-                app.banners = Some(Pictures::with_look(
-                    Box::new(cover),
-                    kontra_ui::artwork::banner,
-                ));
+                app.covers = Some(match wake {
+                    Some(w) => Pictures::with_wake(Box::new(cover), Arc::clone(w)),
+                    None => Pictures::new(Box::new(cover)),
+                });
+                app.banners = Some(match wake {
+                    Some(w) => Pictures::with_look_and_wake(
+                        Box::new(cover),
+                        kontra_ui::artwork::banner,
+                        Arc::clone(w),
+                    ),
+                    None => Pictures::with_look(Box::new(cover), kontra_ui::artwork::banner),
+                });
             }
             app.libraries = fresh.clone();
             app.recent.clone_from(&self.recent);
@@ -404,25 +554,19 @@ impl Snapshot {
         for pictures in [&mut app.covers, &mut app.banners].into_iter().flatten() {
             pictures.poll();
         }
-        let Shown {
-            parts: shown,
-            sounds: sounds_shown,
-            ..
-        } = shown;
-        let heard = std::mem::take(sounds_shown);
-        let mut old = std::mem::take(&mut app.parts);
-        // The editor is ahead of this copy on a part it edited since the
-        // copy was taken (same load, its face on screen).
-        let ahead: Vec<bool> = (self.parts.iter().enumerate())
-            .map(|(n, p)| {
-                sent.get(&p.slot).is_some_and(|&s| s > self.applied)
-                    && shown.get(n).is_some_and(|s| s.0 == p.generation)
-                    && old.get(n).is_some()
-            })
+        let prev_slots = std::mem::take(&mut shown.slots);
+        let mut old_by_slot: HashMap<usize, Part> = prev_slots
+            .into_iter()
+            .zip(std::mem::take(&mut app.parts))
             .collect();
-        let parts = self.parts.iter().enumerate().map(|(n, p)| {
-            let held = ahead.get(n).copied().unwrap_or(false);
-            let mut old = old.get_mut(n);
+        let prev_parts = std::mem::take(&mut shown.parts);
+        let prev_sounds = std::mem::take(&mut shown.sounds);
+        let parts = self.parts.iter().map(|p| {
+            let mut old = old_by_slot.remove(&p.slot);
+            let prev = prev_parts.get(&p.slot);
+            let held = sent.get(&p.slot).is_some_and(|&s| s > self.applied)
+                && prev.is_some_and(|s| s.0 == p.generation)
+                && old.is_some();
             let (open, tab, look) = old
                 .as_ref()
                 .map_or((true, Default::default(), None), |old| {
@@ -432,29 +576,54 @@ impl Snapshot {
             let sound_now = (p.generation, p.sounds.0);
             // The editor's own edit shows at once; the rack's copy once it moved.
             let sounds = match old.as_mut() {
-                Some(old) if heard.get(n) == Some(&sound_now) => std::mem::take(&mut old.sounds),
+                Some(old) if prev_sounds.get(&p.slot) == Some(&sound_now) => {
+                    std::mem::take(&mut old.sounds)
+                }
                 _ => p.sounds.1.as_ref().clone(),
             };
             let face = match old.as_mut() {
-                Some(old) if shown.get(n).is_some_and(|s| (s.0, s.1) == at) => old.face.take(),
-                // Same load or same instrument asset root (e.g. snapshot swap):
-                // swap the tree while keeping decoded Pictures cached to avoid flashes.
-                Some(old)
-                    if shown.get(n).is_some_and(|s| {
-                        s.0 == at.0 || (p.source.is_some() && s.2 == p.source)
-                    }) =>
-                {
-                    let tree = p.tree.as_deref();
-                    let new_load = shown.get(n).is_some_and(|s| s.0 != p.generation);
-                    old.face.take().zip(tree).map(|(mut f, tree)| {
-                        f.tree = resolved(tree);
-                        if new_load {
-                            f.gesture = Default::default();
+                Some(old) if prev.is_some_and(|s| (s.0, s.1) == at) => {
+                    let mut f = old.face.take();
+                    if let Some(f) = f.as_mut() {
+                        // Revert any optimistic hold that just released without
+                        // a revision bump (e.g. script clamped/rejected edit).
+                        let mut reverted = Vec::new();
+                        for &(slot, idx) in released {
+                            if slot == p.slot
+                                && let Some(clean) = p.widget_at(idx)
+                                && let Some(dst) = f.tree.widgets.get_mut(idx)
+                            {
+                                *dst = clean;
+                                reverted.push(idx);
+                            }
                         }
+                        if !reverted.is_empty() {
+                            layout::resolve(&mut f.tree, reverted);
+                        }
+                    }
+                    f
+                }
+                // Same load: patch only changed widgets incrementally without
+                // cloning or re-resolving the whole tree.
+                Some(old) if prev.is_some_and(|s| s.0 == p.generation) => {
+                    let prev_rev = prev.map_or(0, |s| s.1);
+                    old.face.take().map(|mut f| {
+                        p.update_tree(&mut f.tree, prev_rev);
                         f
                     })
                 }
-                _ => p.tree.as_deref().map(|tree| face(tree, p.source.clone())),
+                // Different load of the same instrument asset root (e.g.
+                // snapshot swap): keep decoded Pictures cached to avoid flashes.
+                Some(old) if prev.is_some_and(|s| p.source.is_some() && s.2 == p.source) => {
+                    old.face.take().zip(p.full_resolved()).map(|(mut f, tree)| {
+                        f.tree = tree;
+                        f.gesture = Default::default();
+                        f
+                    })
+                }
+                _ => p
+                    .full_resolved()
+                    .map(|tree| face_resolved(tree, p.source.clone(), wake)),
             };
             // The controls the player is moving show where the player put
             // them until the script has had them.
@@ -502,13 +671,17 @@ impl Snapshot {
         for face in app.parts.iter_mut().filter_map(|p| p.face.as_mut()) {
             face.pictures.poll();
         }
-        *shown = self
+        shown.slots = self.parts.iter().map(|p| p.slot).collect();
+        shown.parts = self
             .parts
             .iter()
-            .map(|p| (p.generation, p.revision, p.source.clone()))
+            .map(|p| (p.slot, (p.generation, p.revision, p.source.clone())))
             .collect();
-        let heard = self.parts.iter().map(|p| (p.generation, p.sounds.0));
-        sounds_shown.extend(heard);
+        shown.sounds = self
+            .parts
+            .iter()
+            .map(|p| (p.slot, (p.generation, p.sounds.0)))
+            .collect();
         app.level = f64::from(self.level);
         let r = &self.readout;
         app.stats = app::Stats {
@@ -539,12 +712,15 @@ impl Snapshot {
 }
 
 /// Which change of the rack's parts and of the browser the editor shows.
+/// Keyed by rack slot so removing or inserting parts never aliases state.
 #[derive(Default)]
 struct Shown {
-    /// By part: its load generation, interface revision, and instrument source path.
-    parts: Vec<(u64, u64, Option<PathBuf>)>,
-    /// By part: its load and its sound's revision.
-    sounds: Vec<(u64, u64)>,
+    /// Rack slot for each entry in `app.parts`, in `app.parts` order.
+    slots: Vec<usize>,
+    /// By rack slot: its load generation, interface revision, and instrument source path.
+    parts: HashMap<usize, (u64, u64, Option<PathBuf>)>,
+    /// By rack slot: its load generation and sound revision.
+    sounds: HashMap<usize, (u64, u64)>,
     browser: u64,
 }
 
@@ -829,15 +1005,27 @@ pub fn browse(rack: &mut Rack, browser: &mut Browser, action: Action, report: &m
 
 /// A library's interface for the editor, laid out, its pictures read from
 /// the library at `path` off the UI thread.
+#[cfg(test)]
 fn face(tree: &Interface, path: Option<PathBuf>) -> Face {
+    face_resolved(resolved(tree), path, None)
+}
+
+fn face_resolved(
+    tree: Interface,
+    path: Option<PathBuf>,
+    wake: Option<&Arc<dyn Fn() + Send + Sync>>,
+) -> Face {
     FACES.fetch_add(1, Ordering::Relaxed);
-    let tree = resolved(tree);
     let library = Mutex::new(None);
-    let pictures = Pictures::new(Box::new(move |p: &str| {
+    let read = Box::new(move |p: &str| {
         let path = path.as_deref()?;
         let mut library = library.lock().ok()?;
         library.get_or_insert_with(|| Library::open(path)).read(p)
-    }));
+    });
+    let pictures = match wake {
+        Some(w) => Pictures::with_wake(read, Arc::clone(w)),
+        None => Pictures::new(read),
+    };
     Face {
         tree,
         pictures,
@@ -851,6 +1039,7 @@ static FACES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::n
 static RESOLVES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// `tree` laid out.
+#[cfg(test)]
 fn resolved(tree: &Interface) -> Interface {
     RESOLVES.fetch_add(1, Ordering::Relaxed);
     let mut tree = tree.clone();
@@ -863,10 +1052,12 @@ fn resolved(tree: &Interface) -> Interface {
 pub struct Edit {
     pub(crate) slot: Option<usize>,
     pub(crate) action: Action,
+    pub(crate) seq: u64,
 }
 
 /// Carries out `edit` on the rack.
 pub fn apply(rack: &mut Rack, edit: Edit) {
+    let seq = edit.seq;
     let part = edit
         .slot
         .and_then(|s| Some((s, rack.parts().get(s)?.as_ref()?)));
@@ -892,8 +1083,10 @@ pub fn apply(rack: &mut Rack, edit: Edit) {
             value,
             keys,
             ..
-        } => return rack.control(slot, widget, cell, value, keys),
-        Action::ControlText { widget, text, .. } => return rack.control_text(slot, widget, &text),
+        } => return rack.control_with_seq(slot, widget, cell, value, keys, seq),
+        Action::ControlText { widget, text, .. } => {
+            return rack.control_text_with_seq(slot, widget, &text, seq);
+        }
         Action::ControlDrop {
             widget,
             drop,
@@ -1077,6 +1270,11 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let closing = Arc::clone(&params);
     let log_params = Arc::clone(&params);
     let cancel_params = Arc::clone(&params);
+    let waker_params = Arc::clone(&params);
+    let picture_wake: Arc<dyn Fn() + Send + Sync> = {
+        let p = Arc::clone(&params);
+        Arc::new(move || p.shared.wake_editor())
+    };
     // Faces, pictures and view state the last window left.
     let mut kept = Kept::take(&params);
     let mut look = SavedView::default();
@@ -1151,15 +1349,17 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 return moose::mui::mui::prelude::body("Refreshing rack…");
             }
             // A control pressed on a face keeps its move for as long as the
-            // press lasts, however late the script's answers come.
-            for (part, v) in app.parts.iter().zip(&view.parts) {
-                if part.face.as_ref().is_some_and(|f| f.gesture.held()) {
-                    mine.keep(v.slot, v.generation);
+            // press lasts, keyed by each part's own rack slot (never Vec index).
+            for (part, &slot) in app.parts.iter().zip(&shown.slots) {
+                if part.face.as_ref().is_some_and(|f| f.gesture.held())
+                    && let Some(&(generation, ..)) = shown.parts.get(&slot)
+                {
+                    mine.keep(slot, generation);
                 }
             }
             let now = Instant::now();
-            mine.prune(&view.parts, view.applied, now);
-            view.fill(app, shown, mine);
+            let released = mine.prune(&view.parts, view.applied, now);
+            view.fill_with(app, shown, mine, &released, Some(&picture_wake));
             (
                 view.parts.iter().map(|v| v.slot).collect(),
                 view.parts.iter().map(|v| (v.slot, v.generation)).collect(),
@@ -1180,7 +1380,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         // the frame after it: ask for that one, or it waits for more input.
         let held = ui.pointer().buttons;
         if buttons.replace(held) != Some(held) || !response.changed.is_empty() {
-            p.shared.dirty.store(true, Ordering::Release);
+            p.shared.wake_editor();
         }
         for action in response.changed {
             let asked = match action {
@@ -1202,7 +1402,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             if let Some(t) = asked {
                 // One more frame, so the chip shows before the load ends.
                 target = t;
-                p.shared.dirty.store(true, Ordering::Release);
+                p.shared.wake_editor();
             }
             if let Action::Scale(scale) = action {
                 let logical = ui
@@ -1348,7 +1548,11 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 }
             }
             let noted = slot.map(|s| (s, action.clone()));
-            let seq = p.shared.request_ui(Edit { slot, action });
+            let seq = p.shared.request_ui(Edit {
+                slot,
+                action,
+                seq: 0,
+            });
             if let Some((slot, action)) = noted {
                 let generation = slot_gens
                     .iter()
@@ -1398,7 +1602,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             });
         }
         drop(drag);
-        dropping.shared.dirty.store(true, Ordering::Release);
+        dropping.shared.wake_editor();
         let library = paths.iter().any(|p| is_dropped(p));
         let instruments: Vec<_> = paths.iter().filter(|p| is_instrument(p)).cloned().collect();
         // A UVI bank holds many programs: it is added like a folder.
@@ -1425,10 +1629,10 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         }
         library || !instruments.is_empty() || !folders.is_empty()
     })
-    // Telemetry, the tick's copies and async completions move outside the
-    // window: poll for them. A poll that finds nothing builds nothing; a
-    // repaint deadline here rebuilt the tree 8 times a second while idle.
-    .poll(std::time::Duration::from_millis(50))
+    // Interactive edits, script responses, and decoded pictures all wake the
+    // window immediately via `EditorWaker`. Keep only a low-frequency fallback
+    // poll for background library-scan progress while audio is suspended.
+    .poll(std::time::Duration::from_millis(250))
     .changed({
         let previous = std::sync::atomic::AtomicU64::new(u64::MAX);
         let last_scan_wake = std::sync::atomic::AtomicU64::new(0);
@@ -1466,7 +1670,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     .on_win32_parent(move |hwnd| owner.shared.folder.set_owner(hwnd))
     .on_cancel(move |_| {
         on_cancelled.store(true, Ordering::Release);
-        cancel_params.shared.dirty.store(true, Ordering::Release);
+        cancel_params.shared.wake_editor();
     })
     .on_log(move |line| {
         eprintln!("[kontra editor] {line}");
@@ -1483,6 +1687,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     });
     #[cfg(target_os = "linux")]
     let editor = editor.on_x11_window(move |xid| x11_owner.shared.folder.set_x11_parent(xid));
+    waker_params.shared.set_waker(Some(editor.waker()));
     editor.into_editor()
 }
 
@@ -1699,13 +1904,15 @@ mod tests {
                 face: Some(face(&tree, None)),
                 ..Part::default()
             });
-            kept.shown.parts.push((7, 3, None));
+            kept.shown.slots.push(0);
+            kept.shown.parts.insert(0, (7, 3, None));
         }
         assert!(lock(&params.shared.editor).is_some(), "closing keeps it");
         let kept = Kept::take(&params);
         assert!(lock(&params.shared.editor).is_none());
         assert!(kept.app.parts.first().is_some_and(|p| p.face.is_some()));
-        assert_eq!(kept.shown.parts, [(7, 3, None)]);
+        assert_eq!(kept.shown.slots, [0]);
+        assert_eq!(kept.shown.parts.get(&0), Some(&(7, 3, None)));
         assert_eq!(FACES.load(Ordering::Relaxed), faces + 1, "made once");
         assert_eq!(kept.app.build.version, crate::BUILD.version);
     }
@@ -1743,7 +1950,9 @@ mod tests {
             path: None,
             source: None,
             tree: None,
+            patches: Vec::new(),
             revision: 0,
+            applied_seq: 0,
             sounds: Default::default(),
             name: String::new(),
             library: String::new(),
@@ -1791,15 +2000,17 @@ mod tests {
         assert_eq!(drawn(&app), Some(-3.), "the rack's own change shows");
     }
 
-    /// Rack slot 2 at load 7, its interface at `revision`.
-    fn slot_two(revision: u64) -> Vec<PartView> {
+    /// Rack slot 2 at load 7, its interface at `revision` and audio-acknowledged `applied_seq`.
+    fn slot_two(revision: u64, applied_seq: u64) -> Vec<PartView> {
         vec![PartView {
             slot: 2,
             generation: 7,
             path: None,
             source: None,
             tree: None,
+            patches: Vec::new(),
             revision,
+            applied_seq,
             sounds: Default::default(),
             name: String::new(),
             library: String::new(),
@@ -1824,7 +2035,8 @@ mod tests {
 
     /// A library control the player drags keeps its last move over every
     /// copy of the rack for as long as the press lasts, however late the
-    /// script answers; let go, the script's answer to the last move shows.
+    /// script answers; let go, it holds until the audio thread echoes
+    /// `applied_seq >= seq` (or falls back after `HOLD` if no reply arrives).
     #[test]
     fn a_dragged_control_holds_until_the_script_answers_its_release() {
         let (mut mine, t) = (Mine::default(), Instant::now());
@@ -1846,27 +2058,38 @@ mod tests {
         assert_eq!(shows(&mine), [Set::Value(0.5)], "one entry per control");
         // Pressed: late copies, and copies that carried the move out, never
         // take it back, long after any timer.
-        for (k, applied) in [1, 2, 2, 2].into_iter().enumerate() {
+        for (k, applied_seq) in [1, 2, 2, 2].into_iter().enumerate() {
             mine.keep(2, 7);
             let late = t + Duration::from_secs(10 * k as u64);
-            mine.prune(&slot_two(10 + k as u64), applied, late);
+            mine.prune(&slot_two(10 + k as u64, applied_seq), 2, late);
             assert_eq!(shows(&mine), [Set::Value(0.5)], "copy {k} mid-drag");
         }
-        // Let go: the copy that carried the last move out still holds it,
-        // and the script's answer, the next copy, shows.
-        mine.prune(&slot_two(13), 2, t);
-        assert_eq!(shows(&mine), [Set::Value(0.5)]);
-        mine.prune(&slot_two(14), 2, t);
-        assert!(shows(&mine).is_empty(), "the release's echo shows");
-        // A script that answers nothing visible: HOLD after it was carried out.
+        // Let go, Tick enqueued seq=2, but audio has NOT executed seq=2 yet
+        // (`applied_seq = 1 < 2`): hold stays active!
+        mine.prune(&slot_two(13, 1), 2, t);
+        assert_eq!(
+            shows(&mine),
+            [Set::Value(0.5)],
+            "must hold until audio thread echoes applied_seq >= seq"
+        );
+        // Audio executes seq=2 and echoes `applied_seq = 2` in LookFrame: releases immediately!
+        let released = mine.prune(&slot_two(14, 2), 2, t);
+        assert!(shows(&mine).is_empty(), "audio ACK releases hold");
+        assert_eq!(released, [(2, 3)]);
+        // Suspended audio (no LookFrame reply): holds while Tick hasn't dispatched,
+        // then falls back after HOLD once Tick dispatched it.
         mine.note(2, 7, 3, &moved(0.6));
-        mine.prune(&slot_two(14), 2, t + HOLD * 9);
-        assert_eq!(shows(&mine), [Set::Value(0.6)], "not carried out yet");
-        mine.prune(&slot_two(14), 3, t);
-        mine.prune(&slot_two(14), 3, t + HOLD / 2);
+        mine.prune(&slot_two(14, 2), 2, t + HOLD * 9);
+        assert_eq!(
+            shows(&mine),
+            [Set::Value(0.6)],
+            "not dispatched by Tick yet"
+        );
+        mine.prune(&slot_two(14, 2), 3, t);
+        mine.prune(&slot_two(14, 2), 3, t + HOLD / 2);
         assert_eq!(shows(&mine), [Set::Value(0.6)]);
-        mine.prune(&slot_two(14), 3, t + HOLD);
-        assert!(shows(&mine).is_empty());
+        mine.prune(&slot_two(14, 2), 3, t + HOLD);
+        assert!(shows(&mine).is_empty(), "fallback timeout releases hold");
         // Another load of the part drops what the last one held.
         mine.note(2, 7, 4, &moved(0.7));
         assert!(mine.held(2, 8).is_empty() && mine.held(1, 7).is_empty());
@@ -2014,5 +2237,239 @@ mod tests {
         assert!(txt.contains("Could not read (1):"));
         let none = format_diagnostics_report(&App::default());
         assert!(none.contains("No library folder: none added and none found."));
+    }
+
+    /// AC5(b): Removing part 0 must preserve part 1's `open`, `tab`, `look`,
+    /// `face`, and `Mine` holds without positional Vec-index aliasing.
+    #[test]
+    fn lifecycle_removing_part_zero_preserves_part_one_state_and_holds() {
+        let make_part = |slot: usize, generation: u64, name: &str| {
+            let mut tree = Interface::default();
+            tree.widgets.push(kontra_ui_model::Widget::new(
+                name,
+                kontra_ui_model::PageRef(0),
+                kontra_ui_model::Rect::new(0, 0, 40, 40),
+                kontra_ui_model::Kind::Slider {
+                    range: kontra_ui_model::Range {
+                        min: 0.,
+                        max: 100.,
+                        default: 0.,
+                        step: Some(1.),
+                    },
+                    orientation: kontra_ui_model::Orientation::Vertical,
+                },
+            ));
+            PartView {
+                slot,
+                generation,
+                path: None,
+                source: None,
+                tree: Some(tree),
+                patches: Vec::new(),
+                revision: 0,
+                applied_seq: 0,
+                sounds: Default::default(),
+                name: name.to_owned(),
+                library: String::new(),
+                preset: None,
+                modified: false,
+                mix: Mix::DEFAULT,
+                solo: false,
+                mute: false,
+                level: Vec::new(),
+                diag_count: 0,
+                needs: Arc::default(),
+                diag_visible: Arc::default(),
+                diag_latent: Arc::default(),
+            }
+        };
+        let mut snap = Snapshot {
+            parts: vec![make_part(0, 10, "$a"), make_part(1, 20, "$b")],
+            ..Snapshot::default()
+        };
+        let (mut app, mut shown, mut mine) = (App::default(), Shown::default(), Mine::default());
+        snap.fill(&mut app, &mut shown, &mine);
+        assert_eq!(app.parts.len(), 2);
+        app.parts[0].open = false;
+        app.parts[0].tab = app::PartTab::Sound;
+        app.parts[0].look = Some(kontra_ui_model::Presentation::Kontra);
+        app.parts[1].open = true;
+        app.parts[1].tab = app::PartTab::Mapping;
+        app.parts[1].look = Some(kontra_ui_model::Presentation::Original);
+        mine.note(
+            0,
+            10,
+            1,
+            &Action::Control {
+                part: 0,
+                widget: 0,
+                cell: None,
+                value: 25.,
+                keys: Default::default(),
+            },
+        );
+        mine.note(
+            1,
+            20,
+            2,
+            &Action::Control {
+                part: 1,
+                widget: 0,
+                cell: None,
+                value: 75.,
+                keys: Default::default(),
+            },
+        );
+        let part1_widgets_ptr = app.parts[1]
+            .face
+            .as_ref()
+            .expect("part 1 face")
+            .tree
+            .widgets
+            .as_ptr();
+        // Remove part 0; part 1 shifts from Vec index 1 to Vec index 0.
+        snap.parts.remove(0);
+        let released = mine.prune(&snap.parts, 0, Instant::now());
+        snap.fill_with(&mut app, &mut shown, &mine, &released, None);
+        assert_eq!(app.parts.len(), 1);
+        assert_eq!(shown.slots, [1]);
+        assert!(app.parts[0].open, "part 1 open state preserved");
+        assert_eq!(
+            app.parts[0].tab,
+            app::PartTab::Mapping,
+            "part 1 tab preserved (not overwritten by part 0's Sound tab)"
+        );
+        assert_eq!(
+            app.parts[0].look,
+            Some(kontra_ui_model::Presentation::Original),
+            "part 1 look preserved"
+        );
+        assert_eq!(
+            app.parts[0]
+                .face
+                .as_ref()
+                .expect("part 1 face")
+                .tree
+                .widgets
+                .as_ptr(),
+            part1_widgets_ptr,
+            "part 1 kept its existing face without rebuilding"
+        );
+        assert!(mine.held(0, 10).is_empty(), "removed part 0 hold pruned");
+        assert_eq!(
+            mine.held(1, 20).len(),
+            1,
+            "part 1 held drag edit preserved across part 0 removal"
+        );
+        assert_eq!(
+            app.parts[0]
+                .face
+                .as_ref()
+                .map(|f| f.tree.widgets[0].name.as_str()),
+            Some("$b")
+        );
+    }
+
+    /// AC4: Single-slider drags patch only the changed widgets in place with
+    /// zero full-tree `layout::resolve(0..N)` passes (`RESOLVES` delta = 0).
+    #[test]
+    fn lifecycle_incremental_drag_performs_zero_full_resolves() {
+        use kontra_host::rack::{Rack, Store, StoreConfig, ir};
+        let store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let (mut rack, mut audio) = Rack::new(48_000, store, 256);
+        let mut inst = ir::Instrument {
+            name: "DragInc".into(),
+            ..ir::Instrument::DEFAULT
+        };
+        inst.scripts.push(ir::Script {
+            name: "main".into(),
+            slot: 0,
+            dialect: ir::Dialect::Ksp,
+            source: "on init
+                make_perfview
+                declare ui_slider $s (0, 100)
+                declare ui_label $lbl (1, 1)
+                declare ui_knob $k1 (0, 100, 1)
+                declare ui_knob $k2 (0, 100, 1)
+                declare ui_knob $k3 (0, 100, 1)
+                declare ui_knob $k4 (0, 100, 1)
+                declare ui_knob $k5 (0, 100, 1)
+                declare ui_knob $k6 (0, 100, 1)
+                declare ui_knob $k7 (0, 100, 1)
+                declare ui_knob $k8 (0, 100, 1)
+                set_text($lbl, \"0\")
+            end on
+            on ui_control ($s)
+                set_text($lbl, $s)
+            end on"
+                .into(),
+            saved: Vec::new(),
+            data: Vec::new(),
+            links: Vec::new(),
+            container: None,
+            player: false,
+        });
+        rack.load_ir(0, inst, None).unwrap();
+        for _ in 0..2 {
+            rack.tick();
+            audio.process(64, &[]);
+        }
+        rack.tick();
+        let browser = Browser::open(None, None);
+        let (mut snap, mut app, mut shown, mine) = (
+            Snapshot::default(),
+            App::default(),
+            Shown::default(),
+            Mine::default(),
+        );
+        snap.refresh(&rack, &browser, Vec::new());
+        snap.fill(&mut app, &mut shown, &mine);
+        let resolves_before = RESOLVES.load(Ordering::Relaxed);
+        let slider = app.parts[0]
+            .face
+            .as_ref()
+            .unwrap()
+            .tree
+            .widgets
+            .iter()
+            .position(|w| w.name == "$s")
+            .unwrap();
+        let label = app.parts[0]
+            .face
+            .as_ref()
+            .unwrap()
+            .tree
+            .widgets
+            .iter()
+            .position(|w| w.name == "$lbl")
+            .unwrap();
+        for step in 1..=5u64 {
+            rack.control_with_seq(
+                0,
+                slider,
+                None,
+                (step * 15) as f64,
+                Default::default(),
+                step,
+            );
+            rack.tick();
+            audio.process(64, &[]);
+            assert!(
+                audio.take_wake(),
+                "audio must wake Tick on LookFrame return"
+            );
+            rack.tick();
+            snap.refresh(&rack, &browser, Vec::new());
+            snap.fill(&mut app, &mut shown, &mine);
+            assert_eq!(snap.parts[0].applied_seq, step);
+            let tree = &app.parts[0].face.as_ref().unwrap().tree;
+            assert_eq!(tree.widgets[slider].number(), (step * 15) as f64);
+            assert_eq!(tree.widgets[label].text, format!("{}", step * 15));
+        }
+        assert_eq!(
+            RESOLVES.load(Ordering::Relaxed),
+            resolves_before,
+            "single-slider drags must perform 0 full-tree layout::resolve passes"
+        );
     }
 }

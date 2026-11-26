@@ -61,14 +61,16 @@ fn probe(name: &str, path: PathBuf, browser_hidden: bool) {
         let t0 = Instant::now();
         let load = {
             let view = lock(&params.shared.view);
-            for (part, v) in app.parts.iter().zip(&view.parts) {
-                if part.face.as_ref().is_some_and(|f| f.gesture.held()) {
-                    mine.keep(v.slot, v.generation);
+            for (part, &slot) in app.parts.iter().zip(&shown.slots) {
+                if part.face.as_ref().is_some_and(|f| f.gesture.held())
+                    && let Some(&(generation, ..)) = shown.parts.get(&slot)
+                {
+                    mine.keep(slot, generation);
                 }
             }
             let now = Instant::now();
-            mine.prune(&view.parts, view.applied, now);
-            view.fill(app, shown, mine);
+            let released = mine.prune(&view.parts, view.applied, now);
+            view.fill_with(app, shown, mine, &released, None);
             view.parts.first().map_or(0, |p| p.generation)
         };
         let t1 = Instant::now();
@@ -89,6 +91,7 @@ fn probe(name: &str, path: PathBuf, browser_hidden: bool) {
                 let seq = params.shared.request_ui(Edit {
                     slot: Some(0),
                     action: action.clone(),
+                    seq: 0,
                 });
                 mine.note(0, load, seq, &action);
                 sent += 1;
@@ -146,6 +149,8 @@ fn probe(name: &str, path: PathBuf, browser_hidden: bool) {
     );
     let (mut sum_move, mut sum_echo) = (Duration::ZERO, Duration::ZERO);
     let moves = 20;
+    let resolves_before = RESOLVES.load(Ordering::Relaxed);
+    let built_before = kontra_ui::view::widgets_built();
     for k in 1..=moves {
         let p = Point::new(from.x, from.y - 3. * f64::from(k));
         let (fill, view, ui_frame, stats, sent) =
@@ -180,10 +185,13 @@ fn probe(name: &str, path: PathBuf, browser_hidden: bool) {
             shown_now(&app),
         );
     }
+    let resolves_delta = RESOLVES.load(Ordering::Relaxed) - resolves_before;
+    let built_delta = kontra_ui::view::widgets_built() - built_before;
     println!(
-        "{name}: mean move frame {:.2} ms, mean echo frame {:.2} ms",
+        "{name}: mean move frame {:.2} ms, mean echo frame {:.2} ms, full resolves={resolves_delta}, widgets_built={built_delta} ({:.1}/move)",
         ms(sum_move) / f64::from(moves),
-        ms(sum_echo) / f64::from(moves)
+        ms(sum_echo) / f64::from(moves),
+        built_delta as f64 / f64::from(moves),
     );
     if let Some(tree) = lock(&params.shared.view).parts[0].tree.clone() {
         let t = Instant::now();
@@ -199,6 +207,18 @@ fn probe(name: &str, path: PathBuf, browser_hidden: bool) {
 #[ignore = "real libraries; prints a drag's per-frame cost"]
 fn a_drag_on_a_real_page_frame_by_frame() {
     for hidden in [false, true] {
+        probe(
+            "Analog Strings",
+            PathBuf::from(crate::tests::KONTAKT)
+                .join("ANALOG STRINGS/Instruments/ANALOG STRINGS.nki"),
+            hidden,
+        );
+        probe(
+            "Conflux",
+            PathBuf::from(crate::tests::KONTAKT)
+                .join("Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki"),
+            hidden,
+        );
         probe(
             "VWinds",
             PathBuf::from("/data/main/Libraries/UVI")

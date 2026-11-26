@@ -11,11 +11,19 @@ use kontra_dsp_core::{Biquad, Side, high_pass, shelf};
 mod choir;
 mod comb;
 mod comb_bank;
+mod gater;
+mod mangling;
 mod scanner;
 mod shifter;
+pub mod slice_buf;
 pub use choir::{CHOIR_MAX_S, CHOIR_VOICES, Choir, ChoirSettings};
 pub use comb::{Comb, line_frames};
 pub use comb_bank::{COMB_VOICES, CombBank, CombSettings, ScanShape};
+pub use gater::{Gater, GaterSettings};
+pub use mangling::{
+    BeatMasher, BeatMasherSettings, BeatSlicer, BeatSlicerSettings, ReverseGrain,
+    ReverseGrainSettings, TransposeStretch, TransposeStretchSettings,
+};
 pub use scanner::{SCANNER_SECTIONS, SCANNER_TAPS, Scanner, ScannerSettings};
 pub use shifter::{SHIFTER_MAX_MS, Shifter, ShifterSettings};
 

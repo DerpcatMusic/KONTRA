@@ -2305,6 +2305,32 @@ fn a_uvi_note_sounds_only_when_the_script_posts_it() {
     assert!((level(&mut e, &[off(60)]) - 0.5).abs() < 1e-3);
 }
 
+/// A UVI release reports the key-up velocity, not the key-down one.
+#[test]
+fn a_uvi_release_reports_its_own_velocity() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let source = "function onNote(e) postEvent(e) end
+        function onRelease(e) print(e.velocity) end";
+    let mut e = lua_engine(&mut store, source);
+    level(&mut e, &[on(60)]);
+    for released in [1u8, 40, 127] {
+        let pattern = HostPattern {
+            port: 0,
+            channel: 0,
+            key: 60,
+            id: -1,
+            clap: true,
+        };
+        let up = Timed {
+            at: SampleTime(0),
+            body: Event::NoteOffVelocity(pattern, f64::from(released) / 127.0),
+        };
+        level(&mut e, &[up]);
+        assert_eq!(e.last_message(), released.to_string());
+        level(&mut e, &[on(60)]);
+    }
+}
+
 /// A UVI script's own gated note ends without reaching its `onRelease`
 /// (Augmented Orchestra's arpeggiator: a step's gate on the held key once
 /// released every layer's held note and stopped the arpeggio).
