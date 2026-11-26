@@ -185,7 +185,18 @@ impl Store {
     /// saves "2" and reads back 30). A menu without entries yet reads 0 and
     /// selects the saved entry when `add_menu_item` adds it (Kontakt 8.13.1,
     /// probes/b2/reload.lua: saved 2, read before its entries 0, 2 after).
-    pub fn saved_value(&mut self, c: &Controls, slot: u8, cell: u32, value: i64) -> i64 {
+    /// That 0 is what `read_persistent_var` reads (`early`); a restore after
+    /// `on init` or a recall keeps the saved number until the entry arrives,
+    /// since a menu that never gets entries saved its number as it was
+    /// (`Engine::script_saved_in`).
+    pub fn saved_value(
+        &mut self,
+        c: &Controls,
+        slot: u8,
+        cell: u32,
+        value: i64,
+        early: bool,
+    ) -> i64 {
         let n = c.of_cell(cell);
         let index = usize::try_from(value).ok();
         let menu = n.filter(|&n| c.menus.binary_search(&(n as u32)).is_ok());
@@ -193,7 +204,7 @@ impl Store {
             && self.menu(slot, Some(n)).is_empty()
         {
             self.wait_for(slot, n, index);
-            return 0;
+            return if early { 0 } else { value };
         }
         n.zip(index)
             .and_then(|(n, index)| self.pick(slot, n, index))

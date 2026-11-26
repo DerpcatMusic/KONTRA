@@ -299,7 +299,10 @@ mod tests {
     #[test]
     fn a_library_view_fits_the_rack_or_keeps_its_chosen_scale() {
         assert!((fit(0., (900., 500.), (730., 700.)) - 500. / 700.).abs() < 1e-9);
-        assert!((fit(0., (900., 1000.), (730., 700.)) - 900. / 730.).abs() < 1e-9);
+        // Above 1:1 it snaps down to a half step: 900 / 730 is 1.23, so 1.
+        assert_eq!(fit(0., (900., 1000.), (730., 700.)), 1.);
+        assert_eq!(fit(0., (1500., 1500.), (730., 700.)), 2.);
+        assert_eq!(fit(0., (5000., 5000.), (730., 700.)), 3.);
         assert!((fit(0., (200., 500.), (730., 700.)) - 200. / 730.).abs() < 1e-9);
         assert_eq!(fit(0., (0., 0.), (730., 700.)), 1.);
         assert_eq!(fit(1.5, (900., 500.), (730., 700.)), 1.5);

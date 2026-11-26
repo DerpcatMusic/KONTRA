@@ -911,7 +911,7 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         section("Master").shrink(0),
         gain.el,
         caption(kit::wedge_text(app.master))
-            .reserve("200% · -inf dB")
+            .reserve("188% · -88.8 dB")
             .lines(1)
             .shrink(0),
         meter(ui, "master-level", app.level)

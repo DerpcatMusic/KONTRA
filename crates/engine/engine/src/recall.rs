@@ -101,7 +101,7 @@ impl Engine {
             }
         } else {
             for &(cell, value) in in_range(ints, &range) {
-                let value = self.saved_value(slot, cell, value);
+                let value = self.saved_value(slot, cell, value, true);
                 if let Some(c) = cells.get_mut(cell as usize) {
                     *c = value;
                 }
@@ -137,7 +137,7 @@ impl Engine {
     /// back to its value).
     pub(crate) fn write_saved(&mut self, slot: u8, ints: &[(u32, i64)], texts: &[(u32, Text)]) {
         for &(cell, value) in ints {
-            let value = self.saved_value(slot, cell, value);
+            let value = self.saved_value(slot, cell, value, false);
             if let Some(vm) = self.vm_mut(slot) {
                 vm.set_cell(cell as usize, value);
             }

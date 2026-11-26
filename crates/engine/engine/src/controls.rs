@@ -15,10 +15,11 @@ impl Engine {
         Some((&script.controls, &mut self.ui, slot))
     }
 
-    /// What saved `value` restores in `cell` of script `slot`.
-    pub(crate) fn saved_value(&mut self, slot: u8, cell: u32, value: i64) -> i64 {
+    /// What saved `value` restores in `cell` of script `slot`; `early` for
+    /// `read_persistent_var` (see [`kontra_script_ui::Store::saved_value`]).
+    pub(crate) fn saved_value(&mut self, slot: u8, cell: u32, value: i64, early: bool) -> i64 {
         match self.plan.scripts.get(usize::from(slot)) {
-            Some(s) => self.ui.saved_value(&s.controls, slot, cell, value),
+            Some(s) => self.ui.saved_value(&s.controls, slot, cell, value, early),
             None => value,
         }
     }
