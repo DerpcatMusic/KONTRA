@@ -81,39 +81,60 @@ impl Huovilainen {
 
     /// Filters `io` in place after the input `gain`.
     pub fn process(&mut self, io: &mut [[f32; 2]], gain: f64) {
+        if io.is_empty() {
+            return;
+        }
+        if self.state.iter().flatten().all(|&s| s == 0.0)
+            && self.halfband.as_ref().is_none_or(Halfband::is_silent)
+            && io.iter().all(|f| f[0] == 0.0 && f[1] == 0.0)
+        {
+            return;
+        }
         let (g1, g2, h) = (self.g / 1.3, 0.3 * self.g / 1.3, 1.0 - self.g);
         let k = 4.0 * self.feedback;
-        let lift = 1.0 + k * self.fat;
-        let w = self.weights;
-        let state = &mut self.state;
+        let lift_in = (1.0 + k * self.fat) * gain;
+        let makeup = 1.0 / saturate(gain).max(1e-9);
+        let [w0, w1, w2, w3, w4] = self.weights;
+        let [s_l, s_r] = &mut self.state;
+        let [mut l0, mut l1, mut l2, mut l3, mut l4] = *s_l;
+        let [mut r0, mut r1, mut r2, mut r3, mut r4] = *s_r;
         let mut run = |frame: [f32; 2]| {
-            let mut out = [0.0; 2];
-            for ((o, x), s) in out.iter_mut().zip(frame).zip(state.iter_mut()) {
-                let t = saturate(f64::from(x) * lift - k * s[4]);
-                let (mut mix, mut v) = (w[0] * t, t);
-                for (si, wi) in s[..4].iter_mut().zip(&w[1..]) {
-                    let y = v * g1 + *si;
-                    *si = h * y + v * g2;
-                    v = y;
-                    mix += wi * y;
-                }
-                s[4] = v;
-                *o = mix as f32;
-            }
-            out
+            let tl = saturate(f64::from(frame[0]) * lift_in - k * l4);
+            let tr = saturate(f64::from(frame[1]) * lift_in - k * r4);
+
+            let yl0 = tl * g1 + l0;
+            let yr0 = tr * g1 + r0;
+            l0 = h * yl0 + tl * g2;
+            r0 = h * yr0 + tr * g2;
+
+            let yl1 = yl0 * g1 + l1;
+            let yr1 = yr0 * g1 + r1;
+            l1 = h * yl1 + yl0 * g2;
+            r1 = h * yr1 + yr0 * g2;
+
+            let yl2 = yl1 * g1 + l2;
+            let yr2 = yr1 * g1 + r2;
+            l2 = h * yl2 + yl1 * g2;
+            r2 = h * yr2 + yr1 * g2;
+
+            let yl3 = yl2 * g1 + l3;
+            let yr3 = yr2 * g1 + r3;
+            l3 = h * yl3 + yl2 * g2;
+            r3 = h * yr3 + yr2 * g2;
+
+            l4 = yl3;
+            r4 = yr3;
+
+            let ml = w0 * tl + w1 * yl0 + w2 * yl1 + w3 * yl2 + w4 * yl3;
+            let mr = w0 * tr + w1 * yr0 + w2 * yr1 + w3 * yr2 + w4 * yr3;
+            [(ml * makeup) as f32, (mr * makeup) as f32]
         };
-        let input = gain as f32;
-        for frame in io.iter_mut() {
-            *frame = frame.map(|x| x * input);
-        }
         match &mut self.halfband {
-            Some(halfband) => halfband.process(io, run),
+            Some(halfband) => halfband.process(io, &mut run),
             None => io.iter_mut().for_each(|frame| *frame = run(*frame)),
         }
-        let makeup = (1.0 / saturate(gain).max(1e-9)) as f32;
-        for frame in io.iter_mut() {
-            *frame = frame.map(|x| x * makeup);
-        }
+        *s_l = [l0, l1, l2, l3, l4];
+        *s_r = [r0, r1, r2, r3, r4];
         flush(self.state.as_flattened_mut());
     }
 

@@ -25,13 +25,18 @@ pub struct Halfband {
 }
 
 /// Every allpass pair one step, all four lanes at once.
+#[inline(always)]
 fn step(coefs: &[Lanes], mem: &mut [[Lanes; 2]], mut v: Lanes) -> Lanes {
     for (c, [x, y]) in coefs.iter().zip(mem) {
-        let mut t = [0.0; 4];
-        for (t, (((v, y), c), x)) in t.iter_mut().zip(v.iter().zip(&*y).zip(c).zip(&*x)) {
-            *t = (v - y) * c + x;
-        }
-        (*x, *y, v) = (v, t, t);
+        let t = [
+            (v[0] - y[0]) * c[0] + x[0],
+            (v[1] - y[1]) * c[1] + x[1],
+            (v[2] - y[2]) * c[2] + x[2],
+            (v[3] - y[3]) * c[3] + x[3],
+        ];
+        *x = v;
+        *y = t;
+        v = t;
     }
     v
 }
@@ -70,9 +75,14 @@ impl Halfband {
 
     /// `io` at twice the rate: `f` runs on each frame's two stereo samples,
     /// the earlier first.
+    #[inline]
     pub fn process(&mut self, io: &mut [[f32; 2]], mut f: impl FnMut([f32; 2]) -> [f32; 2]) {
-        let coefs = self.coefs.get(..self.pairs).unwrap_or_default();
-        let (up, down) = (&mut self.up[..], &mut self.down[..]);
+        let pairs = self.pairs.min(PAIRS);
+        let coefs = self.coefs.get(..pairs).unwrap_or_default();
+        let (up, down) = (
+            self.up.get_mut(..pairs).unwrap_or_default(),
+            self.down.get_mut(..pairs).unwrap_or_default(),
+        );
         for frame in io.iter_mut() {
             let [l, r] = *frame;
             let [a0, a1, b0, b1] = step(coefs, up, [l, r, l, r]);
@@ -80,17 +90,24 @@ impl Halfband {
             let [a0, a1, b0, b1] = step(coefs, down, [b0, b1, a0, a1]);
             *frame = [0.5 * (a0 + b0), 0.5 * (a1 + b1)];
         }
-        for v in self
-            .up
-            .iter_mut()
-            .chain(self.down.iter_mut())
-            .flatten()
-            .flatten()
-        {
+        for v in up.iter_mut().chain(down.iter_mut()).flatten().flatten() {
             if v.abs() < 1e-20 {
                 *v = 0.0;
             }
         }
+    }
+
+    /// Whether all allpass states have decayed below `-200 dB`.
+    #[must_use]
+    pub fn is_silent(&self) -> bool {
+        let pairs = self.pairs.min(PAIRS);
+        let up = self.up.get(..pairs).unwrap_or_default();
+        let down = self.down.get(..pairs).unwrap_or_default();
+        up.iter()
+            .chain(down.iter())
+            .flatten()
+            .flatten()
+            .all(|v| v.abs() < 1e-10)
     }
 
     pub fn reset(&mut self) {

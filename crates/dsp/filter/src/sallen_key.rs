@@ -47,40 +47,96 @@ impl SallenKey {
 
     /// Filters `io` in place, driving the circuit with `gain` (made up after).
     pub fn process(&mut self, io: &mut [[f32; 2]], gain: f64) {
+        if io.is_empty() {
+            return;
+        }
+        if self.state.iter().flatten().all(|&s| s == 0.0)
+            && io.iter().all(|f| f[0] == 0.0 && f[1] == 0.0)
+        {
+            return;
+        }
         let gain = gain.max(1e-6);
         let (t, k, [a, b]) = (self.t, self.k, self.curve);
-        for frame in io {
-            for (io, s) in frame.iter_mut().zip(&mut self.state) {
-                let [y1, y2, s1, s2, p1, p2] = s;
-                let x = gain * f64::from(*io);
-                let (in1, in2) = (self.morph * x, (self.morph - 1.0) * x);
-                let mut out = 0.0;
-                for _ in 0..2 {
+        let m_lo = self.morph * gain;
+        let m_hi = (self.morph - 1.0) * gain;
+        let inv_2gain = 0.5 / gain;
+        let c = 1.0 + 0.5 * t;
+        if k == 0.0 {
+            let inv_c = 1.0 / c;
+            let tc = t * inv_c;
+            for frame in io {
+                for (sample, s) in frame.iter_mut().zip(&mut self.state) {
+                    let [y1, y2, s1, s2, p1, p2] = s;
+                    let x = f64::from(*sample);
+                    let (in1, in2) = (m_lo * x, m_hi * x);
+                    // Substep 1: midpoint between previous and current input.
                     let (u1, u2) = (0.5 * (*p1 + in1), 0.5 * (*p2 + in2));
+                    let ny1 = tc * (u1 - *s1);
+                    let v1 = *s1 + 0.5 * ny1;
+                    let ny2 = tc * (v1 - u2 - *s2);
+                    let mut out = u2 + *s2 + 0.5 * ny2;
+                    *s1 += ny1;
+                    *s2 += ny2;
+                    // Substep 2: current input.
+                    let ny1 = tc * (in1 - *s1);
+                    let v1 = *s1 + 0.5 * ny1;
+                    let ny2 = tc * (v1 - in2 - *s2);
+                    out += in2 + *s2 + 0.5 * ny2;
+                    *s1 += ny1;
+                    *s2 += ny2;
+                    *y1 = ny1;
+                    *y2 = ny2;
+                    *p1 = in1;
+                    *p2 = in2;
+                    *sample = (out * inv_2gain) as f32;
+                }
+            }
+            flush(self.state.as_flattened_mut());
+            return;
+        }
+        let half_k = 0.5 * k;
+        let ab = a * b;
+        let c2 = c * c;
+        let neg_ht = -0.5 * t;
+        for frame in io {
+            for (sample, s) in frame.iter_mut().zip(&mut self.state) {
+                let [y1, y2, s1, s2, p1, p2] = s;
+                let x = f64::from(*sample);
+                let (in1, in2) = (m_lo * x, m_hi * x);
+                let substeps = [(0.5 * (*p1 + in1), 0.5 * (*p2 + in2)), (in1, in2)];
+                let mut out = 0.0;
+                for (u1, u2) in substeps {
+                    let (mut ly1, mut ly2) = (*y1, *y2);
+                    let (ls1, ls2) = (*s1, *s2);
                     for _ in 0..20 {
-                        let (v1, v2) = (0.5 * *y1 + *s1, 0.5 * *y2 + *s2);
+                        let (v1, v2) = (0.5 * ly1 + ls1, 0.5 * ly2 + ls2);
                         let m = k * (u2 + v2);
-                        let nl = m + a * shape(b * m);
-                        let dnl = 0.5 * k * (1.0 + a * b * slope(b * m));
-                        let f1 = *y1 - t * (u1 - nl - v1);
-                        let f2 = *y2 - t * (nl - u2 - v2 + v1);
-                        let (j11, j12) = (1.0 + 0.5 * t, t * dnl);
-                        let (j21, j22) = (-0.5 * t, 1.0 + 0.5 * t - t * dnl);
-                        let det = j11 * j22 - j12 * j21;
-                        let d1 = (f1 * j22 - f2 * j12) / det;
-                        let d2 = (f2 * j11 - f1 * j21) / det;
-                        *y1 -= d1;
-                        *y2 -= d2;
+                        let (sh, sl) = shape_and_slope(b * m);
+                        let nl = m + a * sh;
+                        let dnl = half_k * (1.0 + ab * sl);
+                        let f1 = ly1 - t * (u1 - nl - v1);
+                        let f2 = ly2 - t * (nl - u2 - v2 + v1);
+                        let j12 = t * dnl;
+                        let j22 = c - j12;
+                        // det = c * (c - j12) - j12 * (-0.5 * t) = c^2 - j12
+                        let inv_det = 1.0 / (c2 - j12);
+                        let d1 = (f1 * j22 - f2 * j12) * inv_det;
+                        let d2 = (f2 * c - f1 * neg_ht) * inv_det;
+                        ly1 -= d1;
+                        ly2 -= d2;
                         if d1.abs().max(d2.abs()) < 1e-6 {
                             break;
                         }
                     }
-                    out += u2 + *s2 + 0.5 * *y2;
-                    *s1 += *y1;
-                    *s2 += *y2;
-                    (*p1, *p2) = (in1, in2);
+                    *y1 = ly1;
+                    *y2 = ly2;
+                    out += u2 + ls2 + 0.5 * ly2;
+                    *s1 = ls1 + ly1;
+                    *s2 = ls2 + ly2;
                 }
-                *io = (out / (2.0 * gain)) as f32;
+                *p1 = in1;
+                *p2 = in2;
+                *sample = (out * inv_2gain) as f32;
             }
         }
         flush(self.state.as_flattened_mut());
@@ -96,15 +152,15 @@ impl SallenKey {
     }
 }
 
-fn shape(u: f64) -> f64 {
+/// `P(u) = u(u^2 + 27)/(9u^2 + 27)` and its derivative `((u^2 - 9)/(3u^2 + 9))^2`
+/// computed from a single shared reciprocal.
+#[inline(always)]
+fn shape_and_slope(u: f64) -> (f64, f64) {
     let u2 = u * u;
-    u * (u2 + 27.0) / (9.0 * u2 + 27.0)
-}
-
-/// `shape`'s derivative.
-fn slope(u: f64) -> f64 {
-    let u2 = u * u;
-    ((u2 - 18.0) * u2 + 81.0) / ((9.0 * u2 + 54.0) * u2 + 81.0)
+    let inv = 1.0 / (3.0 * u2 + 9.0);
+    let shape = (1.0 / 3.0) * u * (u2 + 27.0) * inv;
+    let t = (u2 - 9.0) * inv;
+    (shape, t * t)
 }
 
 #[cfg(test)]

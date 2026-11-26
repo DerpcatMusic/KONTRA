@@ -20,8 +20,12 @@ use kontra_dsp_core::flush;
 const FEEDBACK: f64 = 4.16;
 
 /// The correction's fixed gain `R`, its pole at `80/R` Hz.
+static CORRECTION_R: std::sync::LazyLock<f64> =
+    std::sync::LazyLock::new(|| 2f64.powf(1_196.681_396_5 / 60.0 - 20.0));
+
+#[inline]
 fn correction_r() -> f64 {
-    2f64.powf(1_196.681_396_5 / 60.0 - 20.0)
+    *CORRECTION_R
 }
 
 /// Per selector 1..=12: the weights of the input and the four pole taps.
@@ -118,37 +122,83 @@ impl Ladder {
 
     /// Filters `io` in place after the input `gain`.
     pub fn process(&mut self, io: &mut [[f32; 2]], gain: f64) {
+        if io.is_empty() {
+            return;
+        }
+        if self.state.iter().flatten().all(|&s| s == 0.0)
+            && io.iter().all(|f| f[0] == 0.0 && f[1] == 0.0)
+        {
+            return;
+        }
         let (g, k) = (self.g, self.q * FEEDBACK);
-        let a = g / (1.0 + g);
-        let weights = WEIGHTS.get(self.row).copied().unwrap_or_default();
+        let inv_1pg = 1.0 / (1.0 + g);
+        let a = g * inv_1pg;
+        let [w0, w1, w2, w3, w4] = WEIGHTS.get(self.row).copied().unwrap_or_default();
         let out = compensation(self.q, self.row);
         let (gc, r) = (self.gc, correction_r());
-        let a4 = a * a * a * a;
+        let a2 = a * a;
+        let a4 = a2 * a2;
+        let k_inv = k / (1.0 + k * a4);
+        let inv_1pgc = 1.0 / (1.0 + gc);
+        let gcm1 = gc - 1.0;
+        let gc_r2m1 = gc * (r * r - 1.0);
+        let [
+            [mut l0, mut l1, mut l2, mut l3, mut lc],
+            [mut r0, mut r1, mut r2, mut r3, mut rc],
+        ] = self.state;
         for frame in io {
-            for (x, s) in frame.iter_mut().zip(&mut self.state) {
-                let (poles, held_c) = s.split_at_mut(4);
-                // Each pole is `a x + s/(1 + g)`; the four in series give
-                // the last as `a⁴ u + held`, solved with the feedback.
-                let held = poles.iter().fold(0.0, |y, si| a * y + si / (1.0 + g));
-                let input = gain * f64::from(*x);
-                let feedback = k * (a4 * input + held) / (1.0 + k * a4);
-                let mut fb = feedback;
-                if let Some(c) = held_c.first_mut() {
-                    let low = (feedback - *c * (gc - 1.0)) / (1.0 + gc);
-                    fb += (*c + low) * gc * (r * r - 1.0);
-                    *c = low;
-                }
-                let mut v = clip(input - fb);
-                let mut mix = weights[0] * v;
-                for (si, w) in poles.iter_mut().zip(&weights[1..]) {
-                    let step = a * (v - *si);
-                    v = step + *si;
-                    *si = v + step;
-                    mix += w * v;
-                }
-                *x = (mix * out) as f32;
-            }
+            let held_l =
+                (((l0 * inv_1pg) * a + l1 * inv_1pg) * a + l2 * inv_1pg) * a + l3 * inv_1pg;
+            let held_r =
+                (((r0 * inv_1pg) * a + r1 * inv_1pg) * a + r2 * inv_1pg) * a + r3 * inv_1pg;
+            let in_l = gain * f64::from(frame[0]);
+            let in_r = gain * f64::from(frame[1]);
+            let fb_l0 = k_inv * (a4 * in_l + held_l);
+            let fb_r0 = k_inv * (a4 * in_r + held_r);
+            let low_l = (fb_l0 - lc * gcm1) * inv_1pgc;
+            let low_r = (fb_r0 - rc * gcm1) * inv_1pgc;
+            let fb_l = fb_l0 + (lc + low_l) * gc_r2m1;
+            let fb_r = fb_r0 + (rc + low_r) * gc_r2m1;
+            lc = low_l;
+            rc = low_r;
+
+            let vl = clip(in_l - fb_l);
+            let vr = clip(in_r - fb_r);
+
+            let dl0 = a * (vl - l0);
+            let dr0 = a * (vr - r0);
+            let pl0 = dl0 + l0;
+            let pr0 = dr0 + r0;
+            l0 = pl0 + dl0;
+            r0 = pr0 + dr0;
+
+            let dl1 = a * (pl0 - l1);
+            let dr1 = a * (pr0 - r1);
+            let pl1 = dl1 + l1;
+            let pr1 = dr1 + r1;
+            l1 = pl1 + dl1;
+            r1 = pr1 + dr1;
+
+            let dl2 = a * (pl1 - l2);
+            let dr2 = a * (pr1 - r2);
+            let pl2 = dl2 + l2;
+            let pr2 = dr2 + r2;
+            l2 = pl2 + dl2;
+            r2 = pr2 + dr2;
+
+            let dl3 = a * (pl2 - l3);
+            let dr3 = a * (pr2 - r3);
+            let pl3 = dl3 + l3;
+            let pr3 = dr3 + r3;
+            l3 = pl3 + dl3;
+            r3 = pr3 + dr3;
+
+            let mix_l = w0 * vl + w1 * pl0 + w2 * pl1 + w3 * pl2 + w4 * pl3;
+            let mix_r = w0 * vr + w1 * pr0 + w2 * pr1 + w3 * pr2 + w4 * pr3;
+            frame[0] = (mix_l * out) as f32;
+            frame[1] = (mix_r * out) as f32;
         }
+        self.state = [[l0, l1, l2, l3, lc], [r0, r1, r2, r3, rc]];
         flush(self.state.as_flattened_mut());
     }
 

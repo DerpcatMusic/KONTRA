@@ -183,24 +183,63 @@ impl Cascade {
     }
 
     fn run(&mut self, io: &mut [[f32; 2]]) {
-        let (stages, gain, glide) = (self.stages, self.gain, self.glide);
-        for frame in io.iter_mut() {
-            for (x, (s, glided)) in frame.iter_mut().zip(&mut self.state) {
-                let mut y = *x;
-                for (c, st) in stages.iter().zip(s.iter_mut()) {
-                    let [b, l] = *st;
-                    let knee = b.clamp(-4.0, 4.0);
-                    let hp = (KNEE.0 - knee.abs() * KNEE.1) * knee + (y - (b * c.d + l));
-                    let b = hp * c.g + b;
-                    let l = b * c.g + l;
-                    *st = [flush(b), flush(l)];
-                    let mode = b * c.weights[1] + hp * c.weights[2] + l * c.weights[0];
-                    y += (mode - y) * c.wet;
-                }
-                *glided += (gain - *glided) * glide;
-                *x = *glided * y;
+        if io.is_empty() {
+            return;
+        }
+        let ([c0, c1, c2], gain, glide) = (self.stages, self.gain, self.glide);
+        let [(mut sl, mut gl), (mut sr, mut gr)] = self.state;
+        if sl.iter().flatten().all(|&v| v == 0.0)
+            && sr.iter().flatten().all(|&v| v == 0.0)
+            && io.iter().all(|f| f[0] == 0.0 && f[1] == 0.0)
+        {
+            let decay = (1.0 - glide).powi(io.len() as i32);
+            self.state[0].1 = gain + (gl - gain) * decay;
+            self.state[1].1 = gain + (gr - gain) * decay;
+            return;
+        }
+        let settled = (gl + (gain - gl) * glide).to_bits() == gl.to_bits()
+            && (gr + (gain - gr) * glide).to_bits() == gr.to_bits();
+        #[inline(always)]
+        fn step_stage(y: f32, st: &mut [f32; 2], c: Coefficients) -> f32 {
+            let [b, l] = *st;
+            let knee = b.clamp(-4.0, 4.0);
+            let hp = (KNEE.0 - knee.abs() * KNEE.1) * knee + (y - (b * c.d + l));
+            let b = hp * c.g + b;
+            let l = b * c.g + l;
+            *st = [b, l];
+            let mode = b * c.weights[1] + hp * c.weights[2] + l * c.weights[0];
+            y + (mode - y) * c.wet
+        }
+        if settled {
+            for frame in io.iter_mut() {
+                let yl = step_stage(frame[0], &mut sl[0], c0);
+                let yr = step_stage(frame[1], &mut sr[0], c0);
+                let yl = step_stage(yl, &mut sl[1], c1);
+                let yr = step_stage(yr, &mut sr[1], c1);
+                let yl = step_stage(yl, &mut sl[2], c2);
+                let yr = step_stage(yr, &mut sr[2], c2);
+                frame[0] = gl * yl;
+                frame[1] = gr * yr;
+            }
+        } else {
+            for frame in io.iter_mut() {
+                let yl = step_stage(frame[0], &mut sl[0], c0);
+                let yr = step_stage(frame[1], &mut sr[0], c0);
+                let yl = step_stage(yl, &mut sl[1], c1);
+                let yr = step_stage(yr, &mut sr[1], c1);
+                let yl = step_stage(yl, &mut sl[2], c2);
+                let yr = step_stage(yr, &mut sr[2], c2);
+                gl += (gain - gl) * glide;
+                gr += (gain - gr) * glide;
+                frame[0] = gl * yl;
+                frame[1] = gr * yr;
             }
         }
+        for pair in sl.iter_mut().chain(&mut sr) {
+            pair[0] = flush(pair[0]);
+            pair[1] = flush(pair[1]);
+        }
+        self.state = [(sl, gl), (sr, gr)];
     }
 }
 

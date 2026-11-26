@@ -49,6 +49,18 @@ impl Fade {
         None
     }
 
+    /// Whether no fade or pending setting change is in flight.
+    #[inline]
+    pub(crate) fn is_settled(&self) -> bool {
+        self.step == 0.0 && self.pending.is_none()
+    }
+
+    /// Current wet gain.
+    #[inline]
+    pub(crate) fn gain(&self) -> f32 {
+        self.gain
+    }
+
     /// This frame's wet gain, and the pending settings at the bottom of a
     /// fade-out.
     pub(crate) fn tick(&mut self) -> (f32, Option<Settings>) {

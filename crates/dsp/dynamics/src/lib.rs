@@ -13,8 +13,9 @@ pub use limiter::{Limiter, Settings as LimiterSettings};
 pub use transient::{Settings as TransientSettings, Transient};
 
 /// `db` as a linear gain.
+#[inline]
 fn gain(db: f32) -> f32 {
-    10f32.powf(db / 20.0)
+    kontra_dsp_core::math::db_to_gain_f32(db)
 }
 
 /// One-pole coefficient that covers `1 - 1/e` of a step in `ms`.

@@ -22,6 +22,30 @@ impl Levels {
     pub fn mix(&mut self, io: &mut [[f32; 2]], wet: &[[f32; 2]], dry: f32, level: f32) {
         self.glide
             .aim([1.0, 0.0, 0.0, 1.0, dry, level], self.frames);
+        if self.glide.resting() {
+            if dry == 0.0 {
+                if level == 1.0 {
+                    for (x, w) in io.iter_mut().zip(wet) {
+                        *x = *w;
+                    }
+                } else {
+                    for (x, w) in io.iter_mut().zip(wet) {
+                        *x = [w[0] * level, w[1] * level];
+                    }
+                }
+            } else if level == 0.0 {
+                if dry != 1.0 {
+                    for x in io.iter_mut() {
+                        *x = [x[0] * dry, x[1] * dry];
+                    }
+                }
+            } else {
+                for (x, w) in io.iter_mut().zip(wet) {
+                    *x = [x[0] * dry + w[0] * level, x[1] * dry + w[1] * level];
+                }
+            }
+            return;
+        }
         for (x, w) in io.iter_mut().zip(wet) {
             let [.., dry, level] = self.glide.next();
             *x = [x[0] * dry + w[0] * level, x[1] * dry + w[1] * level];
@@ -39,13 +63,31 @@ impl Levels {
     /// `io` through the matrix `[[ll, lr], [rl, rr]]`.
     pub fn matrix(&mut self, io: &mut [[f32; 2]], [[ll, lr], [rl, rr]]: [[f32; 2]; 2]) {
         self.glide.aim([ll, lr, rl, rr, 1.0, 1.0], self.frames);
-        if self.glide.resting() && [ll, lr, rl, rr] == [1.0, 0.0, 0.0, 1.0] {
+        if self.glide.resting() {
+            if [ll, lr, rl, rr] == [1.0, 0.0, 0.0, 1.0] {
+                return;
+            }
+            if lr == 0.0 && rl == 0.0 {
+                for f in io {
+                    *f = [ll * f[0], rr * f[1]];
+                }
+            } else {
+                for f in io {
+                    *f = [ll * f[0] + lr * f[1], rl * f[0] + rr * f[1]];
+                }
+            }
             return;
         }
         for f in io {
             let [ll, lr, rl, rr, ..] = self.glide.next();
             *f = [ll * f[0] + lr * f[1], rl * f[0] + rr * f[1]];
         }
+    }
+
+    /// Advances the matrix glide over `frames` silent frames without touching audio.
+    pub fn idle_matrix(&mut self, [[ll, lr], [rl, rr]]: [[f32; 2]; 2], frames: usize) {
+        self.glide.aim([ll, lr, rl, rr, 1.0, 1.0], self.frames);
+        self.glide.skip(frames);
     }
 }
 
@@ -78,16 +120,35 @@ impl Fader {
         if !self.aimed {
             (self.gain, self.balance, self.aimed) = (gain, balance, true);
         }
-        if [self.gain, gain] == [1.0; 2] && [self.balance, balance] == [[1.0; 2]; 2] {
+        if self.gain == gain && self.balance == balance {
+            if gain == 1.0 && balance == [1.0; 2] {
+                return;
+            }
+            let gl = balance[0] * gain;
+            let gr = balance[1] * gain;
+            for f in io {
+                f[0] *= gl;
+                f[1] *= gr;
+            }
             return;
         }
+        let coef = self.coef;
+        let step = self.step;
+        let mut g = self.gain;
+        let [mut bl, mut br] = self.balance;
+        let [tl, tr] = balance;
         for f in io {
-            self.gain += (gain - self.gain) * self.coef;
-            for ((b, to), x) in self.balance.iter_mut().zip(balance).zip(f.iter_mut()) {
-                *b += (to - *b).clamp(-self.step, self.step);
-                *x *= *b * self.gain;
-            }
+            g += (gain - g) * coef;
+            bl += (tl - bl).clamp(-step, step);
+            br += (tr - br).clamp(-step, step);
+            f[0] *= bl * g;
+            f[1] *= br * g;
         }
+        if (gain - g).abs() <= 1e-7 {
+            g = gain;
+        }
+        self.gain = g;
+        self.balance = [bl, br];
     }
 }
 

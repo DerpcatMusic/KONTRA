@@ -69,6 +69,10 @@ struct RuntimeNode {
     pre_fader: Option<Box<[[f32; 2]]>>,
     /// Sidechain detector buffer allocated only when a node has incoming sidechain edges.
     sidechain: Option<Box<[[f32; 2]]>>,
+    /// High-water length of non-zero audio written into `buffer` this block (0 = guaranteed zero).
+    dirty_len: usize,
+    /// High-water length of non-zero audio written into `sidechain` this block (0 = guaranteed zero).
+    sc_dirty_len: usize,
 }
 
 /// Real-time allocation-free audio DAG executor compiled from [`ir::AudioGraph`].
@@ -201,6 +205,8 @@ impl GraphRuntime {
                 buffer: vec![[0.0; 2]; max_frames].into_boxed_slice(),
                 pre_fader: has_pre_fader.then(|| vec![[0.0; 2]; max_frames].into_boxed_slice()),
                 sidechain: sidechain_in.then(|| vec![[0.0; 2]; max_frames].into_boxed_slice()),
+                dirty_len: 0,
+                sc_dirty_len: 0,
             });
         }
 
@@ -259,13 +265,23 @@ impl GraphRuntime {
 
     /// Clears all node audio and sidechain buffers before injecting group audio for a block.
     pub fn clear(&mut self, frames: usize) {
-        let len = frames.min(self.max_frames);
+        let _ = frames;
         for node in &mut self.nodes {
-            if let Some(buf) = node.buffer.get_mut(..len) {
-                buf.fill([0.0; 2]);
+            if node.dirty_len > 0 {
+                if let Some(buf) = node.buffer.get_mut(..node.dirty_len) {
+                    buf.fill([0.0; 2]);
+                }
+                node.dirty_len = 0;
             }
-            if let Some(sc) = node.sidechain.as_mut().and_then(|b| b.get_mut(..len)) {
-                sc.fill([0.0; 2]);
+            if node.sc_dirty_len > 0 {
+                if let Some(sc) = node
+                    .sidechain
+                    .as_mut()
+                    .and_then(|b| b.get_mut(..node.sc_dirty_len))
+                {
+                    sc.fill([0.0; 2]);
+                }
+                node.sc_dirty_len = 0;
             }
         }
     }
@@ -273,15 +289,22 @@ impl GraphRuntime {
     /// Injects summed stereo audio for `group` into every matching `GroupInput` node.
     pub fn add_group_audio(&mut self, group: u16, audio: &[[f32; 2]]) {
         let len = audio.len().min(self.max_frames);
+        let Some(src) = audio.get(..len) else {
+            return;
+        };
+        if !has_audio(src) {
+            return;
+        }
         for node in &mut self.nodes {
             if let RuntimeNodeKind::GroupInput { group: g } = node.kind
                 && g == group
-                && let (Some(dst), Some(src)) = (node.buffer.get_mut(..len), audio.get(..len))
+                && let Some(dst) = node.buffer.get_mut(..len)
             {
                 for (d, s) in dst.iter_mut().zip(src.iter()) {
                     d[0] += s[0];
                     d[1] += s[1];
                 }
+                node.dirty_len = node.dirty_len.max(len);
             }
         }
     }
@@ -294,15 +317,17 @@ impl GraphRuntime {
         let Some(src) = audio.get(..len) else {
             return false;
         };
+        let nonzero = has_audio(src);
         let mut seen_bus = 0usize;
         for node in &mut self.nodes {
             if matches!(node.kind, RuntimeNodeKind::Bus { .. }) {
                 if seen_bus == bus_index {
-                    if let Some(dst) = node.buffer.get_mut(..len) {
+                    if nonzero && let Some(dst) = node.buffer.get_mut(..len) {
                         for (d, s) in dst.iter_mut().zip(src.iter()) {
                             d[0] += s[0];
                             d[1] += s[1];
                         }
+                        node.dirty_len = node.dirty_len.max(len);
                     }
                     return true;
                 }
@@ -315,9 +340,12 @@ impl GraphRuntime {
                 && usize::from(idx) == bus_index
                 && let Some(dst) = node.buffer.get_mut(..len)
             {
-                for (d, s) in dst.iter_mut().zip(src.iter()) {
-                    d[0] += s[0];
-                    d[1] += s[1];
+                if nonzero {
+                    for (d, s) in dst.iter_mut().zip(src.iter()) {
+                        d[0] += s[0];
+                        d[1] += s[1];
+                    }
+                    node.dirty_len = node.dirty_len.max(len);
                 }
                 delivered = true;
             }
@@ -357,25 +385,46 @@ impl GraphRuntime {
                 continue;
             };
 
+            let was_dirty = node.dirty_len > 0;
             let sidechain_slice = node.sidechain.as_deref().and_then(|s| s.get(..len));
+            let mut post_has_audio = was_dirty;
+            let mut pre_has_audio = was_dirty;
 
             match &mut node.kind {
                 RuntimeNodeKind::GroupInput { .. } => {
-                    if let Some(pre) = node.pre_fader.as_mut().and_then(|b| b.get_mut(..len)) {
+                    if was_dirty
+                        && let Some(pre) = node.pre_fader.as_mut().and_then(|b| b.get_mut(..len))
+                    {
                         pre.copy_from_slice(buf);
                     }
                 }
                 RuntimeNodeKind::Bus { rack, gain, pan } => {
-                    rack.process_with_sidechain(buf, sidechain_slice, &mut [], tempo);
-                    if let Some(pre) = node.pre_fader.as_mut().and_then(|b| b.get_mut(..len)) {
-                        pre.copy_from_slice(buf);
+                    if rack.active() {
+                        rack.process_with_sidechain(buf, sidechain_slice, &mut [], tempo);
+                        pre_has_audio = was_dirty || has_audio(buf);
                     }
-                    apply_gain_pan(buf, *gain, *pan);
+                    if pre_has_audio {
+                        if let Some(pre) = node.pre_fader.as_mut().and_then(|b| b.get_mut(..len)) {
+                            pre.copy_from_slice(buf);
+                        }
+                        apply_gain_pan(buf, *gain, *pan);
+                        post_has_audio = *gain != 0.0;
+                        node.dirty_len = node.dirty_len.max(len);
+                    } else {
+                        post_has_audio = false;
+                    }
                 }
                 RuntimeNodeKind::Rack { rack } => {
-                    rack.process_with_sidechain(buf, sidechain_slice, &mut [], tempo);
-                    if let Some(pre) = node.pre_fader.as_mut().and_then(|b| b.get_mut(..len)) {
-                        pre.copy_from_slice(buf);
+                    if rack.active() {
+                        rack.process_with_sidechain(buf, sidechain_slice, &mut [], tempo);
+                        post_has_audio = was_dirty || has_audio(buf);
+                        pre_has_audio = post_has_audio;
+                    }
+                    if post_has_audio {
+                        if let Some(pre) = node.pre_fader.as_mut().and_then(|b| b.get_mut(..len)) {
+                            pre.copy_from_slice(buf);
+                        }
+                        node.dirty_len = node.dirty_len.max(len);
                     }
                 }
                 RuntimeNodeKind::Split {
@@ -384,24 +433,44 @@ impl GraphRuntime {
                     amp_gain,
                     amp_pan,
                 } => {
-                    pre.process_with_sidechain(buf, sidechain_slice, &mut [], tempo);
-                    if let Some(pre_buf) = node.pre_fader.as_mut().and_then(|b| b.get_mut(..len)) {
-                        pre_buf.copy_from_slice(buf);
+                    if pre.active() {
+                        pre.process_with_sidechain(buf, sidechain_slice, &mut [], tempo);
+                        pre_has_audio = was_dirty || has_audio(buf);
                     }
-                    apply_gain_pan(buf, *amp_gain, *amp_pan);
-                    post.process_with_sidechain(buf, sidechain_slice, &mut [], tempo);
+                    if pre_has_audio {
+                        if let Some(pre_buf) =
+                            node.pre_fader.as_mut().and_then(|b| b.get_mut(..len))
+                        {
+                            pre_buf.copy_from_slice(buf);
+                        }
+                        apply_gain_pan(buf, *amp_gain, *amp_pan);
+                        post_has_audio = *amp_gain != 0.0;
+                    } else {
+                        post_has_audio = false;
+                    }
+                    if post.active() {
+                        post.process_with_sidechain(buf, sidechain_slice, &mut [], tempo);
+                        post_has_audio = post_has_audio || has_audio(buf);
+                    }
+                    if post_has_audio || pre_has_audio {
+                        node.dirty_len = node.dirty_len.max(len);
+                    }
                 }
                 RuntimeNodeKind::Mix { gain, pan } => {
-                    if let Some(pre) = node.pre_fader.as_mut().and_then(|b| b.get_mut(..len)) {
-                        pre.copy_from_slice(buf);
+                    if was_dirty {
+                        if let Some(pre) = node.pre_fader.as_mut().and_then(|b| b.get_mut(..len)) {
+                            pre.copy_from_slice(buf);
+                        }
+                        apply_gain_pan(buf, *gain, *pan);
+                        post_has_audio = *gain != 0.0;
                     }
-                    apply_gain_pan(buf, *gain, *pan);
                 }
                 RuntimeNodeKind::InstrumentBus { .. } => {}
                 RuntimeNodeKind::Output { bus_index } => {
-                    if let Some(out) = outputs
-                        .get_mut(usize::from(*bus_index))
-                        .and_then(|slice| slice.get_mut(..len))
+                    if was_dirty
+                        && let Some(out) = outputs
+                            .get_mut(usize::from(*bus_index))
+                            .and_then(|slice| slice.get_mut(..len))
                     {
                         for (o, s) in out.iter_mut().zip(buf.iter()) {
                             o[0] += s[0];
@@ -409,6 +478,10 @@ impl GraphRuntime {
                         }
                     }
                 }
+            }
+
+            if !post_has_audio && !pre_has_audio {
+                continue;
             }
 
             // Route outgoing edges to downstream nodes (guaranteed `to != idx` in a DAG).
@@ -419,7 +492,15 @@ impl GraphRuntime {
                         Some(e) => (e.to, e.gain, e.post_fader, e.sidechain),
                         None => continue,
                     };
-                if to == idx {
+                if to == idx || gain == 0.0 {
+                    continue;
+                }
+                let use_pre =
+                    !post_fader && self.nodes.get(idx).is_some_and(|n| n.pre_fader.is_some());
+                if use_pre && !pre_has_audio {
+                    continue;
+                }
+                if !use_pre && !post_has_audio {
                     continue;
                 }
                 // Split `self.nodes` cleanly without unsafe code.
@@ -450,9 +531,21 @@ impl GraphRuntime {
                     dst_node.buffer.get_mut(..len)
                 };
                 if let (Some(src), Some(dst)) = (src_slice, dst_slice) {
-                    for (d, s) in dst.iter_mut().zip(src.iter()) {
-                        d[0] += s[0] * gain;
-                        d[1] += s[1] * gain;
+                    if gain == 1.0 {
+                        for (d, s) in dst.iter_mut().zip(src.iter()) {
+                            d[0] += s[0];
+                            d[1] += s[1];
+                        }
+                    } else {
+                        for (d, s) in dst.iter_mut().zip(src.iter()) {
+                            d[0] += s[0] * gain;
+                            d[1] += s[1] * gain;
+                        }
+                    }
+                    if sidechain {
+                        dst_node.sc_dirty_len = dst_node.sc_dirty_len.max(len);
+                    } else {
+                        dst_node.dirty_len = dst_node.dirty_len.max(len);
                     }
                 }
             }
@@ -468,6 +561,9 @@ impl GraphRuntime {
         let Some(mix) = bus.and_then(|b| b.mix.get(..len)) else {
             return;
         };
+        if !has_audio(mix) {
+            return;
+        }
         for ei in 0..self.nodes.get(idx).map_or(0, |n| n.edges.len()) {
             let Some((to, gain, sidechain)) = (self.nodes.get(idx))
                 .and_then(|n| n.edges.get(ei))
@@ -475,20 +571,37 @@ impl GraphRuntime {
             else {
                 continue;
             };
+            if gain == 0.0 {
+                continue;
+            }
             let Some(dst) = self.nodes.get_mut(to) else {
                 continue;
             };
             if matches!(dst.kind, RuntimeNodeKind::InstrumentBus { .. }) {
                 continue;
             }
-            let dst = if sidechain {
-                dst.sidechain.as_deref_mut()
+            let dst_buf = if sidechain {
+                dst.sidechain.as_deref_mut().and_then(|b| b.get_mut(..len))
             } else {
-                Some(&mut dst.buffer[..])
+                dst.buffer.get_mut(..len)
             };
-            for (d, s) in dst.into_iter().flatten().zip(mix) {
-                d[0] += s[0] * gain;
-                d[1] += s[1] * gain;
+            if let Some(dst_buf) = dst_buf {
+                if gain == 1.0 {
+                    for (d, s) in dst_buf.iter_mut().zip(mix) {
+                        d[0] += s[0];
+                        d[1] += s[1];
+                    }
+                } else {
+                    for (d, s) in dst_buf.iter_mut().zip(mix) {
+                        d[0] += s[0] * gain;
+                        d[1] += s[1] * gain;
+                    }
+                }
+                if sidechain {
+                    dst.sc_dirty_len = dst.sc_dirty_len.max(len);
+                } else {
+                    dst.dirty_len = dst.dirty_len.max(len);
+                }
             }
         }
     }
@@ -527,9 +640,24 @@ pub fn lower(plan: &Plan) -> ir::AudioGraph {
     graph
 }
 
+#[inline]
+fn has_audio(buf: &[[f32; 2]]) -> bool {
+    buf.iter().any(|f| f[0] != 0.0 || f[1] != 0.0)
+}
+
 fn apply_gain_pan(buf: &mut [[f32; 2]], gain: f32, pan: f32) {
+    if gain == 1.0 && pan == 0.0 {
+        return;
+    }
+    if gain == 0.0 {
+        buf.fill([0.0; 2]);
+        return;
+    }
     let [[l, _], [_, r]] = effects::balance(pan);
     let (gl, gr) = (gain * l, gain * r);
+    if gl == 1.0 && gr == 1.0 {
+        return;
+    }
     for frame in buf {
         frame[0] *= gl;
         frame[1] *= gr;
@@ -803,5 +931,44 @@ mod tests {
             prog_only[255][0],
             ducked[255][0]
         );
+    }
+
+    #[test]
+    fn graph_runtime_dirty_tracking_handles_silent_to_active_transitions_cleanly() {
+        let mut graph = ir::AudioGraph::default();
+        let g0 = graph.push_node(ir::GraphNodeKind::GroupInput { group: 0 });
+        let g1 = graph.push_node(ir::GraphNodeKind::GroupInput { group: 1 });
+        let mix = graph.push_node(ir::GraphNodeKind::Mix {
+            gain: 0.5,
+            pan: 0.0,
+        });
+        let out = graph.push_node(ir::GraphNodeKind::Output {
+            bus_index: 0,
+            layout: ir::ChannelLayout::Stereo,
+        });
+        graph.connect(g0, mix, 1.0, true);
+        graph.connect(g1, mix, 0.0, true);
+        graph.connect(mix, out, 1.0, true);
+
+        let mut rt = GraphRuntime::new(&graph, 48_000, 64, &[]).unwrap();
+        let mut dst = [[0.0; 2]; 64];
+        // Silent block -> zero output.
+        rt.clear(64);
+        rt.add_group_audio(0, &[[0.0; 2]; 64]);
+        rt.process(64, 120.0, None, &mut [&mut dst]);
+        assert!(dst.iter().flatten().all(|&v| v == 0.0));
+
+        // Active block on g0 (and ignored 0-gain edge on g1) -> exact 0.25.
+        rt.clear(64);
+        rt.add_group_audio(0, &[[0.5; 2]; 64]);
+        rt.add_group_audio(1, &[[1.0; 2]; 64]);
+        rt.process(64, 120.0, None, &mut [&mut dst]);
+        assert!(dst.iter().all(|f| (f[0] - 0.25).abs() < 1e-6));
+
+        // Back to silent -> previous dirty buffer cleared completely.
+        dst.fill([0.0; 2]);
+        rt.clear(64);
+        rt.process(64, 120.0, None, &mut [&mut dst]);
+        assert!(dst.iter().flatten().all(|&v| v == 0.0));
     }
 }

@@ -63,40 +63,94 @@ impl Oscillator {
 
     /// Renders `out.len()` stereo frames using per-frame voice step `step_at(i)`.
     pub fn render(&mut self, step_at: impl Fn(u64) -> f64, out: &mut [[f32; 2]]) {
-        for (i, frame) in out.iter_mut().enumerate() {
-            let dt = (step_at(i as u64) / OSC_PERIOD).clamp(0.0, 0.49) as f32;
-            let t = self.phase as f32;
-            let sample = match self.wave {
-                OscWave::Sine => (t * TAU).sin(),
-                OscWave::Ramp => {
-                    let raw = 2.0 * t - 1.0;
-                    raw - poly_blep(t, dt)
+        const INV_PERIOD: f64 = 1.0 / OSC_PERIOD;
+        let mut phase = self.phase;
+        match self.wave {
+            OscWave::Sine => {
+                for (i, frame) in out.iter_mut().enumerate() {
+                    let dt = (step_at(i as u64) * INV_PERIOD).clamp(0.0, 0.49);
+                    let sample = fast_sin_unit(phase as f32);
+                    *frame = [sample, sample];
+                    phase += dt;
+                    if phase >= 1.0 {
+                        phase -= 1.0;
+                    }
                 }
-                OscWave::Saw => {
-                    let raw = 1.0 - 2.0 * t;
-                    raw + poly_blep(t, dt)
+            }
+            OscWave::Ramp => {
+                for (i, frame) in out.iter_mut().enumerate() {
+                    let dt = (step_at(i as u64) * INV_PERIOD).clamp(0.0, 0.49);
+                    let t = phase as f32;
+                    let sample = (2.0 * t - 1.0) - poly_blep(t, dt as f32);
+                    *frame = [sample, sample];
+                    phase += dt;
+                    if phase >= 1.0 {
+                        phase -= 1.0;
+                    }
                 }
-                OscWave::Square { width } => {
-                    let w = width.clamp(0.01, 0.99);
+            }
+            OscWave::Saw => {
+                for (i, frame) in out.iter_mut().enumerate() {
+                    let dt = (step_at(i as u64) * INV_PERIOD).clamp(0.0, 0.49);
+                    let t = phase as f32;
+                    let sample = (1.0 - 2.0 * t) + poly_blep(t, dt as f32);
+                    *frame = [sample, sample];
+                    phase += dt;
+                    if phase >= 1.0 {
+                        phase -= 1.0;
+                    }
+                }
+            }
+            OscWave::Square { width } => {
+                let w = width.clamp(0.01, 0.99);
+                for (i, frame) in out.iter_mut().enumerate() {
+                    let dt = (step_at(i as u64) * INV_PERIOD).clamp(0.0, 0.49);
+                    let dt32 = dt as f32;
+                    let t = phase as f32;
                     let mut v = if t < w { 1.0 } else { -1.0 };
-                    v += poly_blep(t, dt);
-                    v -= poly_blep((t - w).rem_euclid(1.0), dt);
-                    v
+                    v += poly_blep(t, dt32);
+                    let tw = if t >= w { t - w } else { t - w + 1.0 };
+                    v -= poly_blep(tw, dt32);
+                    *frame = [v, v];
+                    phase += dt;
+                    if phase >= 1.0 {
+                        phase -= 1.0;
+                    }
                 }
-                OscWave::Triangle => {
-                    // Integrate a 50% band-limited square wave with gentle leak to avoid DC drift.
+            }
+            OscWave::Triangle => {
+                let mut tri = self.tri_state;
+                for (i, frame) in out.iter_mut().enumerate() {
+                    let dt = (step_at(i as u64) * INV_PERIOD).clamp(0.0, 0.49);
+                    let dt32 = dt as f32;
+                    let t = phase as f32;
                     let mut sq = if t < 0.5 { 1.0 } else { -1.0 };
-                    sq += poly_blep(t, dt);
-                    sq -= poly_blep((t - 0.5).rem_euclid(1.0), dt);
-                    let leak = (1.0 - dt).clamp(0.95, 0.9999);
-                    self.tri_state = (self.tri_state * leak + 4.0 * dt * sq).clamp(-1.0, 1.0);
-                    self.tri_state
+                    sq += poly_blep(t, dt32);
+                    let tw = if t >= 0.5 { t - 0.5 } else { t + 0.5 };
+                    sq -= poly_blep(tw, dt32);
+                    let leak = (1.0 - dt32).clamp(0.95, 0.9999);
+                    tri = (tri * leak + 4.0 * dt32 * sq).clamp(-1.0, 1.0);
+                    *frame = [tri, tri];
+                    phase += dt;
+                    if phase >= 1.0 {
+                        phase -= 1.0;
+                    }
                 }
-                OscWave::Noise => self.next_noise(),
-            };
-            *frame = [sample, sample];
-            self.phase = (self.phase + f64::from(dt)).rem_euclid(1.0);
+                self.tri_state = tri;
+            }
+            OscWave::Noise => {
+                for (i, frame) in out.iter_mut().enumerate() {
+                    let dt = (step_at(i as u64) * INV_PERIOD).clamp(0.0, 0.49);
+                    let sample = self.next_noise();
+                    *frame = [sample, sample];
+                    phase += dt;
+                    if phase >= 1.0 {
+                        phase -= 1.0;
+                    }
+                }
+            }
         }
+        self.phase = phase;
     }
 
     #[inline]
@@ -110,6 +164,25 @@ impl Oscillator {
         let unit = ((x >> 40) as f32) * (1.0 / ((1u32 << 24) as f32));
         unit * 2.0 - 1.0
     }
+}
+
+/// Quarter-wave Estrin polynomial for `sin(2*pi*t)` with `t in [0, 1)`.
+/// Max absolute error `< 3e-7` (`> 130 dB` SFDR).
+#[inline(always)]
+fn fast_sin_unit(t: f32) -> f32 {
+    let mut u = if t >= 0.5 { t - 1.0 } else { t };
+    if u > 0.25 {
+        u = 0.5 - u;
+    } else if u < -0.25 {
+        u = -0.5 - u;
+    }
+    let x = u * TAU;
+    let x2 = x * x;
+    let x4 = x2 * x2;
+    let lo = (-1.0 / 6.0) * x2 + 1.0;
+    let mid = (-1.0 / 5_040.0) * x2 + (1.0 / 120.0);
+    let hi = (-1.0 / 39_916_800.0) * x2 + (1.0 / 362_880.0);
+    x * (lo + x4 * (mid + x4 * hi))
 }
 
 /// Second-order polynomial band-limited step residual around a discontinuity at `t = 0`.

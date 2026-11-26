@@ -435,6 +435,112 @@ impl Envelope {
         }
     }
 
+    /// Fills `out` with up to `out.len()` consecutive gain frames (equivalent
+    /// to calling [`Self::tick`] repeatedly, stopping right after the frame
+    /// that transitions the envelope to `Stage::Off`). Returns `(written, ended)`.
+    pub fn fill_levels(&mut self, out: &mut [f32]) -> (usize, bool) {
+        let mut written = 0;
+        let total = out.len();
+        while written < total {
+            let Some(rest) = out.get_mut(written..) else {
+                break;
+            };
+            let s = self.settings;
+            match self.stage {
+                Stage::Off => {
+                    if let Some(dst) = rest.first_mut() {
+                        *dst = 0.0;
+                        written += 1;
+                    }
+                    return (written, true);
+                }
+                Stage::Delay(left) => {
+                    let take = (left as usize).min(rest.len());
+                    if let Some(chunk) = rest.get_mut(..take) {
+                        chunk.fill(0.0);
+                    }
+                    written += take;
+                    let rem = left - take as u32;
+                    if rem == 0 {
+                        self.enter_attack();
+                    } else {
+                        self.stage = Stage::Delay(rem);
+                    }
+                }
+                Stage::Sustain if self.wait == 0 => {
+                    self.level = s.sustain;
+                    rest.fill(s.floor + s.depth * s.sustain);
+                    written += rest.len();
+                }
+                Stage::Hold(left) if self.wait == 0 => {
+                    let take = (left as usize).min(rest.len());
+                    self.level = 1.0;
+                    if let Some(chunk) = rest.get_mut(..take) {
+                        chunk.fill(s.floor + s.depth);
+                    }
+                    written += take;
+                    let rem = left - take as u32;
+                    if rem == 0 {
+                        self.enter_decay();
+                    } else {
+                        self.stage = Stage::Hold(rem);
+                    }
+                }
+                Stage::Attack | Stage::Decay | Stage::SustainGlide
+                    if self.wait == 0 && self.segment.left > 1 =>
+                {
+                    let inner = ((self.segment.left - 1) as usize).min(rest.len());
+                    let base = f64::from(s.floor)
+                        + f64::from(s.depth) * (f64::from(self.segment.from) - self.segment.scale);
+                    let scale = f64::from(s.depth) * self.segment.scale;
+                    let step = self.segment.step;
+                    let mut state = self.segment.state;
+                    if let Some(chunk) = rest.get_mut(..inner) {
+                        for dst in chunk {
+                            state *= step;
+                            *dst = (base + scale * state) as f32;
+                        }
+                    }
+                    self.segment.state = state;
+                    self.segment.left -= inner as u32;
+                    self.level =
+                        (f64::from(self.segment.from) + self.segment.scale * (state - 1.0)) as f32;
+                    written += inner;
+                }
+                Stage::Release | Stage::RetriggerAttack
+                    if (self.stage == Stage::Release || self.wait == 0)
+                        && self.segment.left > 1 =>
+                {
+                    let inner = ((self.segment.left - 1) as usize).min(rest.len());
+                    let base = f64::from(self.segment.from) - self.segment.scale;
+                    let scale = self.segment.scale;
+                    let step = self.segment.step;
+                    let mut state = self.segment.state;
+                    if let Some(chunk) = rest.get_mut(..inner) {
+                        for dst in chunk {
+                            state *= step;
+                            *dst = (base + scale * state) as f32;
+                        }
+                    }
+                    self.segment.state = state;
+                    self.segment.left -= inner as u32;
+                    self.level = (base + scale * state) as f32;
+                    written += inner;
+                }
+                _ => {
+                    if let Some(dst) = rest.first_mut() {
+                        *dst = self.tick();
+                    }
+                    written += 1;
+                    if self.stage == Stage::Off {
+                        return (written, true);
+                    }
+                }
+            }
+        }
+        (written, self.stage == Stage::Off)
+    }
+
     /// What every [`Self::tick`] returns while it holds its sustain with no
     /// wait left; None in any other state.
     pub fn held(&self) -> Option<f32> {
@@ -933,5 +1039,73 @@ mod tests {
         assert_eq!(delayed.tick(), 0.0);
         delayed.release();
         assert!(delayed.is_off());
+    }
+
+    #[test]
+    fn fill_levels_matches_frame_by_frame_tick_across_all_stages() {
+        let settings = Ahdsr {
+            delay: 19,
+            attack: 113,
+            lag: 11,
+            hold: 27,
+            decay: 173,
+            sustain: 0.42,
+            release: 97,
+            attack_shape: -0.6,
+            decay_shape: 0.5,
+            release_shape: -0.4,
+            floor: 0.15,
+            depth: 0.85,
+            one_shot: false,
+        };
+        for chunk_size in [1usize, 7, 32, 64, 256] {
+            let mut a = Envelope::new(settings);
+            let mut b = Envelope::new(settings);
+            let mut max_err = 0.0f32;
+            let mut step = 0usize;
+            while step < 700 {
+                if step == 420 {
+                    a.release();
+                    b.release();
+                }
+                if step == 360 {
+                    let moved = Ahdsr {
+                        sustain: 0.65,
+                        ..settings
+                    };
+                    a.update_params(moved);
+                    b.update_params(moved);
+                }
+                let n = chunk_size.min(700 - step);
+                let mut ref_buf = Vec::with_capacity(n);
+                let mut ref_ended = false;
+                for _ in 0..n {
+                    ref_buf.push(a.tick());
+                    if a.is_off() {
+                        ref_ended = true;
+                        break;
+                    }
+                }
+                let mut bulk_buf = vec![0.0f32; n];
+                let (written, bulk_ended) = b.fill_levels(&mut bulk_buf);
+                assert_eq!(
+                    written,
+                    ref_buf.len(),
+                    "chunk={chunk_size} step={step} len mismatch"
+                );
+                assert_eq!(bulk_ended, ref_ended, "chunk={chunk_size} step={step}");
+                for (&x, &y) in ref_buf.iter().zip(bulk_buf.iter().take(written)) {
+                    max_err = max_err.max((x - y).abs());
+                }
+                if ref_ended {
+                    break;
+                }
+                step += n;
+            }
+            assert!(
+                max_err < 1e-6,
+                "chunk={chunk_size} fill_levels diverged by {max_err:e}"
+            );
+        }
     }
 }

@@ -219,7 +219,7 @@ impl Prepared {
             Self::Expand { q } => (x * x + q) * x / (1.0 + q),
             Self::Sine(d) => (d * x).sin(),
             Self::Fold(d) => (d * x).sin().asin(),
-            Self::Tanh(d) => (d * x).tanh(),
+            Self::Tanh(d) => kontra_dsp_core::math::fast_tanh_f32(d * x),
             Self::Atan(d) => (d * x).atan(),
             Self::Saturate(d2) => x / (1.0 + d2 * x * x).sqrt(),
             Self::Table {
@@ -399,6 +399,19 @@ impl Outer {
             f.reset();
         }
     }
+
+    #[must_use]
+    pub fn is_silent(&self) -> bool {
+        self.before
+            .iter()
+            .take(usize::from(self.counts[0]))
+            .all(Biquad::is_silent)
+            && self
+                .after
+                .iter()
+                .take(usize::from(self.counts[1]))
+                .all(Biquad::is_silent)
+    }
 }
 
 /// The shaper's oversampled part: sections, the curve, sections.
@@ -439,21 +452,89 @@ impl Core {
 
     /// Shapes `io` in place.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
-        let curve = &self.curve;
+        if io.is_empty() {
+            return;
+        }
         let [pre, post] = self.counts.map(usize::from);
+        if self.halfband.is_silent()
+            && self.inner.iter().take(pre + post).all(Biquad32::is_silent)
+            && io.iter().all(|f| f[0] == 0.0 && f[1] == 0.0)
+            && self.curve.apply(0.0) == 0.0
+        {
+            return;
+        }
+        let curve = &self.curve;
+        if pre == 0 && post == 0 {
+            match *curve {
+                Prepared::Identity => {
+                    self.halfband.process(io, |f| f);
+                }
+                Prepared::Clip { amount } if amount >= 1.0 => {
+                    self.halfband.process(io, |[l, r]| {
+                        let ml = (amount * l).abs().min(1.0);
+                        let mr = (amount * r).abs().min(1.0);
+                        [
+                            (2.0 * ml - ml * ml).copysign(l),
+                            (2.0 * mr - mr * mr).copysign(r),
+                        ]
+                    });
+                }
+                Prepared::Clip { amount } => {
+                    let dry = 1.0 - amount;
+                    self.halfband.process(io, |[l, r]| {
+                        let ml = l.abs().min(1.0);
+                        let mr = r.abs().min(1.0);
+                        let bl = (2.0 * ml - ml * ml).copysign(l);
+                        let br = (2.0 * mr - mr * mr).copysign(r);
+                        [dry * l + amount * bl, dry * r + amount * br]
+                    });
+                }
+                Prepared::Expand { q } => {
+                    let inv = 1.0 / (1.0 + q);
+                    self.halfband
+                        .process(io, |[l, r]| [(l * l + q) * l * inv, (r * r + q) * r * inv]);
+                }
+                Prepared::Tanh(d) => {
+                    self.halfband.process(io, |[l, r]| {
+                        [
+                            kontra_dsp_core::math::fast_tanh_f32(d * l),
+                            kontra_dsp_core::math::fast_tanh_f32(d * r),
+                        ]
+                    });
+                }
+                Prepared::Saturate(d2) => {
+                    self.halfband.process(io, |[l, r]| {
+                        [l / (1.0 + d2 * l * l).sqrt(), r / (1.0 + d2 * r * r).sqrt()]
+                    });
+                }
+                Prepared::Tube { lower, upper, t } => {
+                    self.halfband.process(io, |[l, r]| {
+                        [
+                            crate::tube::tube(l, lower, upper, t),
+                            crate::tube::tube(r, lower, upper, t),
+                        ]
+                    });
+                }
+                _ => {
+                    self.halfband
+                        .process(io, |[l, r]| [curve.apply(l), curve.apply(r)]);
+                }
+            }
+            return;
+        }
         let (before, rest) = self.inner.split_at_mut(pre.min(INNER));
         let after = rest.get_mut(..post).unwrap_or_default();
         self.halfband.process(io, |mut f| {
             for s in before.iter_mut() {
                 f = s.tick(f);
             }
-            f = f.map(|x| curve.apply(x));
+            f = [curve.apply(f[0]), curve.apply(f[1])];
             for s in after.iter_mut() {
                 f = s.tick(f);
             }
             f
         });
-        for s in &mut self.inner {
+        for s in self.inner.iter_mut().take(pre + post) {
             s.settle();
         }
     }
@@ -479,6 +560,14 @@ impl Core {
         for s in &mut self.inner {
             s.reset();
         }
+    }
+
+    #[must_use]
+    pub fn is_silent(&self) -> bool {
+        let used = usize::from(self.counts[0] + self.counts[1]);
+        self.halfband.is_silent()
+            && self.inner.iter().take(used).all(Biquad32::is_silent)
+            && self.curve.apply(0.0) == 0.0
     }
 }
 
@@ -516,6 +605,15 @@ impl Shaper {
 
     /// Shapes `io` (frames of `[left, right]`) in place.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
+        if io.is_empty() {
+            return;
+        }
+        if self.outer.is_silent()
+            && self.core.is_silent()
+            && io.iter().all(|f| f[0] == 0.0 && f[1] == 0.0)
+        {
+            return;
+        }
         self.outer.before(io);
         self.core.process(io);
         self.outer.after(io);

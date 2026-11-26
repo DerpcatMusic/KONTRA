@@ -140,14 +140,13 @@ fn build_sinc_table() -> [f32; SINC_STORED] {
     })
 }
 
-/// Banked kernel rows per octave of step.
-const BANKS_PER_OCTAVE: f64 = 12.0;
-/// Octaves of step the banks cover; steps above read the exact kernel.
+/// Banked kernel rows per octave of step (24 = half-semitone = 2.93% spacing).
+/// Covering every step up to [`BANK_OCTAVES`] with the next-higher bank keeps
+/// cutoff within `[0.874, 0.90] * Nyquist` (`>= 20.98 kHz` at 48 kHz) with
+/// strictly stronger alias suppression and zero per-frame trig/table math.
+const BANKS_PER_OCTAVE: f64 = 24.0;
+/// Octaves of step the banks cover (`1.0 < step <= 16.0`); steps above read the exact kernel.
 const BANK_OCTAVES: f64 = 4.0;
-/// How far from a bank's step, in semitones, a step may be and still read
-/// it: samples mapped a whole number of semitones from their root land on
-/// one exactly, any other step reads the exact kernel.
-const BANK_TOLERANCE: f64 = 1e-4;
 /// Phases per bank, across the half frame either side of a tap.
 const BANK_PHASES: usize = 128;
 
@@ -155,12 +154,14 @@ const BANK_PHASES: usize = 128;
 /// read offsets in [-½, ½] a row of `2·half + 1` weights summing to 1.
 struct SincBank {
     half: usize,
+    min_step: f64,
+    max_step: f64,
     rows: Box<[f32]>,
 }
 
 impl SincBank {
-    fn new(step: f64) -> Self {
-        let (half, scale) = sinc_params(step);
+    fn new(min_step: f64, max_step: f64) -> Self {
+        let (half, scale) = sinc_params(max_step);
         let inv_i0 = 1.0 / bessel_i0(KAISER_BETA);
         let taps = 2 * half + 1;
         let mut rows = Vec::with_capacity((BANK_PHASES + 1) * taps);
@@ -174,35 +175,88 @@ impl SincBank {
         }
         Self {
             half,
+            min_step,
+            max_step,
             rows: rows.into(),
         }
     }
 
-    /// The bank for `step > 1` when it is a whole number of semitones up
-    /// (within [`BANK_TOLERANCE`]); `None` otherwise or past [`BANK_OCTAVES`].
-    // ponytail: banks between semitones (stretch tuning, detune) changed
-    // the sound by -72 dBFS and cost cache misses; finer banks or a lerp
-    // between two would be needed to cover them.
+    /// The bank covering `1.0 < step <= 2^BANK_OCTAVES` (`None` past [`BANK_OCTAVES`]).
+    #[inline]
     fn of(step: f64) -> Option<&'static Self> {
+        if step <= 1.0 || step.is_nan() {
+            return None;
+        }
         let x = step.log2() * BANKS_PER_OCTAVE;
-        let m = x.round();
-        ((x - m).abs() <= BANK_TOLERANCE && m >= 0.0)
-            .then(|| SINC_BANKS.get(m as usize))
-            .flatten()
+        let max_m = BANK_OCTAVES * BANKS_PER_OCTAVE;
+        if x > max_m + 1e-9 {
+            return None;
+        }
+        let m = (x - 1e-9).ceil().clamp(0.0, max_m) as usize;
+        SINC_BANKS.get(m)
     }
 
     /// The frame at read offset `frac` in [-½, ½] from the centre of `taps`.
+    #[inline]
     fn read(&self, taps: &[[f32; 2]], frac: f64) -> Option<[f32; 2]> {
         let width = 2 * self.half + 1;
         let t = ((frac + 0.5) * BANK_PHASES as f64).clamp(0.0, BANK_PHASES as f64);
         let p = (t as usize).min(BANK_PHASES - 1);
-        let a = (t - p as f64) as f32;
+        let a = t - p as f64;
         let r0 = self.rows.get(p * width..(p + 1) * width)?;
-        let r1 = self.rows.get((p + 1) * width..(p + 2) * width)?;
         let taps = taps.get(..width)?;
-        let (mut l, mut r) = (0.0f32, 0.0f32);
-        for ((x, w0), w1) in taps.iter().zip(r0).zip(r1) {
-            let w = w0 + (w1 - w0) * a;
+        if a == 0.0 {
+            let mut acc_l = [0.0f64; 4];
+            let mut acc_r = [0.0f64; 4];
+            let (tap_chunks, tap_rem) = taps.as_chunks::<4>();
+            let (r0_chunks, r0_rem) = r0.as_chunks::<4>();
+            for (&[t0, t1, t2, t3], &[u0, u1, u2, u3]) in tap_chunks.iter().zip(r0_chunks) {
+                let (w0, w1, w2, w3) = (f64::from(u0), f64::from(u1), f64::from(u2), f64::from(u3));
+                acc_l[0] += f64::from(t0[0]) * w0;
+                acc_r[0] += f64::from(t0[1]) * w0;
+                acc_l[1] += f64::from(t1[0]) * w1;
+                acc_r[1] += f64::from(t1[1]) * w1;
+                acc_l[2] += f64::from(t2[0]) * w2;
+                acc_r[2] += f64::from(t2[1]) * w2;
+                acc_l[3] += f64::from(t3[0]) * w3;
+                acc_r[3] += f64::from(t3[1]) * w3;
+            }
+            let mut l = (acc_l[0] + acc_l[1]) + (acc_l[2] + acc_l[3]);
+            let mut r = (acc_r[0] + acc_r[1]) + (acc_r[2] + acc_r[3]);
+            for (x, &w0) in tap_rem.iter().zip(r0_rem) {
+                let w = f64::from(w0);
+                l += f64::from(x[0]) * w;
+                r += f64::from(x[1]) * w;
+            }
+            return Some([l as f32, r as f32]);
+        }
+        let r1 = self.rows.get((p + 1) * width..(p + 2) * width)?;
+        let a32 = a as f32;
+        let mut fl = [0.0f32; 4];
+        let mut fr = [0.0f32; 4];
+        let (tap_chunks, tap_rem) = taps.as_chunks::<4>();
+        let (r0_chunks, r0_rem) = r0.as_chunks::<4>();
+        let (r1_chunks, r1_rem) = r1.as_chunks::<4>();
+        for ((&[t0, t1, t2, t3], &[u0, u1, u2, u3]), &[v0, v1, v2, v3]) in
+            tap_chunks.iter().zip(r0_chunks).zip(r1_chunks)
+        {
+            let w0 = u0 + (v0 - u0) * a32;
+            let w1 = u1 + (v1 - u1) * a32;
+            let w2 = u2 + (v2 - u2) * a32;
+            let w3 = u3 + (v3 - u3) * a32;
+            fl[0] += t0[0] * w0;
+            fr[0] += t0[1] * w0;
+            fl[1] += t1[0] * w1;
+            fr[1] += t1[1] * w1;
+            fl[2] += t2[0] * w2;
+            fr[2] += t2[1] * w2;
+            fl[3] += t3[0] * w3;
+            fr[3] += t3[1] * w3;
+        }
+        let mut l = (fl[0] + fl[1]) + (fl[2] + fl[3]);
+        let mut r = (fr[0] + fr[1]) + (fr[2] + fr[3]);
+        for ((x, &w0), &w1) in tap_rem.iter().zip(r0_rem).zip(r1_rem) {
+            let w = w0 + (w1 - w0) * a32;
             l += x[0] * w;
             r += x[1] * w;
         }
@@ -213,9 +267,23 @@ impl SincBank {
 static SINC_BANKS: std::sync::LazyLock<Box<[SincBank]>> = std::sync::LazyLock::new(|| {
     let banks = (BANK_OCTAVES * BANKS_PER_OCTAVE) as usize;
     (0..=banks)
-        .map(|m| SincBank::new(2f64.powf(m as f64 / BANKS_PER_OCTAVE)))
+        .map(|m| {
+            let max_step = 2f64.powf(m as f64 / BANKS_PER_OCTAVE);
+            let min_step = if m == 0 {
+                1.0
+            } else {
+                2f64.powf((m - 1) as f64 / BANKS_PER_OCTAVE)
+            };
+            SincBank::new(min_step, max_step)
+        })
         .collect()
 });
+
+/// Active tap radius for `step > 1.0`, matching [`SincBank::of`] when banked.
+#[inline]
+fn sinc_half_for(step: f64) -> usize {
+    SincBank::of(step).map_or_else(|| sinc_params(step).0, |b| b.half)
+}
 
 /// The windowed sinc at `u >= 0` source frames from the read position, with
 /// `k` table entries per frame: linear between the table's entries, 0 past
@@ -390,6 +458,13 @@ pub struct Voice {
     ahead_retry: i64,
     /// Its last chunk was culled ([`CULL`]).
     culled: bool,
+}
+
+/// Which pre-decoded window buffer holds the source frames for the current chunk.
+#[derive(Clone, Copy)]
+enum WindowBuf {
+    Ahead(usize),
+    Scratch,
 }
 
 /// The buffers a voice renders through, one set for every voice an engine
@@ -673,20 +748,31 @@ impl Voice {
         self.lag = lag;
     }
 
-    /// Steps each route's lag one frame and returns their product.
     /// Whether a frame leaves its fade, lags and gain bit for bit as they
     /// are (the envelope aside): then frames can be skipped in one step.
+    #[inline]
     fn settled(&self) -> bool {
+        if !self.fade.settled() || self.fade.ended() || !self.lags_settled() {
+            return false;
+        }
+        if self.gain == self.target {
+            return true;
+        }
         let still = |at: f32, to: f32, coef: f32| (at + (to - at) * coef).to_bits() == at.to_bits();
-        self.fade.settled()
-            && !self.fade.ended()
-            && (self.lagged.iter().zip(&self.lag)).all(|(&at, l)| still(at, l.gain, l.coef))
-            && (self
-                .gain
-                .as_flattened()
-                .iter()
-                .zip(self.target.as_flattened()))
-            .all(|(&g, &t)| still(g, t, self.gain_smooth))
+        (self
+            .gain
+            .as_flattened()
+            .iter()
+            .zip(self.target.as_flattened()))
+        .all(|(&g, &t)| still(g, t, self.gain_smooth))
+    }
+
+    #[inline]
+    fn lags_settled(&self) -> bool {
+        let still = |at: f32, to: f32, coef: f32| {
+            at == to || (at + (to - at) * coef).to_bits() == at.to_bits()
+        };
+        (self.lagged.iter().zip(&self.lag)).all(|(&at, l)| still(at, l.gain, l.coef))
     }
 
     fn tick_lags(&mut self) -> f32 {
@@ -939,7 +1025,7 @@ impl Voice {
             } else {
                 let peak = self.ramp.peak(self.step) * self.loop_tune;
                 let margin = if peak > 1.0 {
-                    2 * (sinc_params(peak).0 + 1) + 2
+                    2 * (sinc_half_for(peak) + 1) + 2
                 } else {
                     4
                 };
@@ -981,6 +1067,9 @@ impl Voice {
             } else if std::mem::take(&mut self.culled) && !PLAIN && !synth && !stretched {
                 self.preroll(scratch, client, &region, &mut insert);
             }
+            // For plain unity-pitch integer-aligned playback, read directly from
+            // the decoded window into the amp/mix stage with zero `scratch.raw` copy.
+            let mut unity_src: Option<(WindowBuf, usize)> = None;
             let filled = if silent {
                 let cursor = (self.anchor, self.elapsed, self.step * self.loop_tune);
                 let ramp = Ramp {
@@ -1021,6 +1110,26 @@ impl Voice {
                 raw.len()
             } else if stretched {
                 self.read_stretched(scratch, client, &region, n)
+            } else if PLAIN
+                && !POST
+                && self.ramp.per_frame == 0.0
+                && (self.step * self.loop_tune) == 1.0
+                && self.anchor.fract() == 0.0
+            {
+                let cursor = (self.anchor, self.elapsed, 1.0);
+                if let Some((buf, lo, span)) =
+                    self.prepare_window(scratch, client, &region, n, cursor, Ramp::NONE)
+                {
+                    let start_i = self.anchor as i64 + self.elapsed as i64 - lo;
+                    if n > 0 && start_i >= 1 && (start_i as usize) + n + 2 <= span {
+                        unity_src = Some((buf, start_i as usize));
+                        n
+                    } else {
+                        self.read_window_from_buf(scratch, (buf, lo, span), n, cursor, Ramp::NONE)
+                    }
+                } else {
+                    0
+                }
             } else {
                 let cursor = (self.anchor, self.elapsed, self.step * self.loop_tune);
                 let ramp = Ramp {
@@ -1031,8 +1140,8 @@ impl Voice {
             };
             let chunk_missing = self.missing != missing_before;
             let limit = filled.min(out.len().saturating_sub(done));
-            let raw = scratch.raw.get_mut(..limit).unwrap_or_default();
-            if !raw.is_empty() && !silent {
+            if !PLAIN && limit > 0 && !silent {
+                let raw = scratch.raw.get_mut(..limit).unwrap_or_default();
                 insert(VoiceStage::PreAmp, raw);
             }
             if silent {
@@ -1062,6 +1171,7 @@ impl Voice {
                     self.silent_tail = 0;
                 }
             } else if POST {
+                let raw = scratch.raw.get_mut(..limit).unwrap_or_default();
                 let mut amp_frames = 0usize;
                 for sample in raw.iter_mut() {
                     let level = self.env.tick() * self.fade.next() * self.tick_lags();
@@ -1117,83 +1227,172 @@ impl Voice {
                 }
                 let level = held * self.fade.level() * lagged;
                 let [[ll, lr], [rl, rr]] = self.gain;
-                for (frame, &[l, r]) in out.iter_mut().skip(done).zip(raw.iter()) {
-                    let (l, r) = (l * level, r * level);
-                    let left = ll * l + lr * r;
-                    let right = rl * l + rr * r;
-                    #[cfg(feature = "trace")]
-                    {
-                        self.last_peak = self.last_peak.max(left.abs()).max(right.abs());
+                let src: &[[f32; 2]] = match unity_src {
+                    Some((WindowBuf::Ahead(from), start)) => self
+                        .ahead
+                        .get(from + start..from + start + limit)
+                        .unwrap_or_default(),
+                    Some((WindowBuf::Scratch, start)) => {
+                        scratch.window.get(start..start + limit).unwrap_or_default()
                     }
-                    frame[0] += left;
-                    frame[1] += right;
+                    None => scratch.raw.get(..limit).unwrap_or_default(),
+                };
+                let dst_slice = out.get_mut(done..done + src.len()).unwrap_or_default();
+                if lr == 0.0 && rl == 0.0 {
+                    let (gl, gr) = (ll * level, rr * level);
+                    #[cfg(not(feature = "trace"))]
+                    if gl == gr {
+                        for (d, &s) in dst_slice
+                            .as_flattened_mut()
+                            .iter_mut()
+                            .zip(src.as_flattened())
+                        {
+                            *d += s * gl;
+                        }
+                    } else {
+                        for (frame, &[l, r]) in dst_slice.iter_mut().zip(src.iter()) {
+                            frame[0] += l * gl;
+                            frame[1] += r * gr;
+                        }
+                    }
+                    #[cfg(feature = "trace")]
+                    for (frame, &[l, r]) in dst_slice.iter_mut().zip(src.iter()) {
+                        let left = l * gl;
+                        let right = r * gr;
+                        self.last_peak = self.last_peak.max(left.abs()).max(right.abs());
+                        frame[0] += left;
+                        frame[1] += right;
+                    }
+                } else {
+                    for (frame, &[l, r]) in dst_slice.iter_mut().zip(src.iter()) {
+                        let (l, r) = (l * level, r * level);
+                        let left = ll * l + lr * r;
+                        let right = rl * l + rr * r;
+                        #[cfg(feature = "trace")]
+                        {
+                            self.last_peak = self.last_peak.max(left.abs()).max(right.abs());
+                        }
+                        frame[0] += left;
+                        frame[1] += right;
+                    }
                 }
-                if !raw.is_empty() {
-                    self.env.skip_sustain(raw.len());
+                if !src.is_empty() {
+                    self.env.skip_sustain(src.len());
                     self.silent_tail = 0;
                 }
             } else {
-                // In passes: every frame's level (the voice ends on the frame
-                // its envelope or fade ends), the gains and matrix in place,
-                // the release tail's silence count, then what is left is added.
+                // Compute per-frame envelope/fade/lag levels first (bulk fast path
+                // when fade and lags are settled), then fuse gain + mix directly
+                // into `out` in a single pass.
                 let mut levels = [0f32; SCRATCH];
-                let mut m = 0;
-                for level in levels.iter_mut().take(raw.len()) {
-                    *level = self.env.tick() * self.fade.next() * self.tick_lags();
-                    m += 1;
-                    if self.env.is_off() || self.fade.ended() {
-                        alive = false;
-                        break;
-                    }
-                }
-                let raw = raw.get_mut(..m).unwrap_or_default();
-                if self.gain == self.target {
-                    // Settled gains step to themselves: one matrix throughout.
-                    let [[ll, lr], [rl, rr]] = self.gain;
-                    for (s, &level) in raw.iter_mut().zip(&levels) {
-                        let (l, r) = (s[0] * level, s[1] * level);
-                        *s = [ll * l + lr * r, rl * l + rr * r];
-                    }
-                } else {
-                    for (s, &level) in raw.iter_mut().zip(&levels) {
-                        for (g, target) in self
-                            .gain
-                            .as_flattened_mut()
-                            .iter_mut()
-                            .zip(self.target.as_flattened())
-                        {
-                            *g += (target - *g) * self.gain_smooth;
+                let (m, level_scale) =
+                    if self.fade.settled() && !self.fade.ended() && self.lags_settled() {
+                        let (written, ended) = self
+                            .env
+                            .fill_levels(levels.get_mut(..limit).unwrap_or_default());
+                        if ended {
+                            alive = false;
                         }
-                        let (l, r) = (s[0] * level, s[1] * level);
-                        let [[ll, lr], [rl, rr]] = self.gain;
-                        *s = [ll * l + lr * r, rl * l + rr * r];
-                    }
-                }
-                let mut keep = raw.len();
-                if releasing && !chunk_missing {
-                    for (k, s) in raw.iter().enumerate() {
-                        if s[0].abs().max(s[1].abs()) < TAIL_SILENCE {
-                            self.silent_tail += 1;
-                            if self.silent_tail >= TAIL_FRAMES {
+                        let mut lagged = 1.0f32;
+                        for &at in &self.lagged {
+                            lagged *= at;
+                        }
+                        (written, self.fade.level() * lagged)
+                    } else {
+                        let mut written = 0usize;
+                        for level in levels.iter_mut().take(limit) {
+                            *level = self.env.tick() * self.fade.next() * self.tick_lags();
+                            written += 1;
+                            if self.env.is_off() || self.fade.ended() {
                                 alive = false;
-                                keep = k + 1;
                                 break;
                             }
-                        } else {
-                            self.silent_tail = 0;
+                        }
+                        (written, 1.0f32)
+                    };
+                let src: &[[f32; 2]] = match unity_src {
+                    Some((WindowBuf::Ahead(from), start)) => self
+                        .ahead
+                        .get(from + start..from + start + m)
+                        .unwrap_or_default(),
+                    Some((WindowBuf::Scratch, start)) => {
+                        scratch.window.get(start..start + m).unwrap_or_default()
+                    }
+                    None => scratch.raw.get(..m).unwrap_or_default(),
+                };
+                let lv = levels.get(..src.len()).unwrap_or_default();
+                let dst_slice = out.get_mut(done..done + src.len()).unwrap_or_default();
+                if self.gain == self.target && !releasing {
+                    let [[ll, lr], [rl, rr]] = self.gain;
+                    if lr == 0.0 && rl == 0.0 {
+                        let (gl, gr) = (ll * level_scale, rr * level_scale);
+                        for ((frame, &[l, r]), &e) in dst_slice.iter_mut().zip(src.iter()).zip(lv) {
+                            let left = l * (e * gl);
+                            let right = r * (e * gr);
+                            #[cfg(feature = "trace")]
+                            {
+                                self.last_peak = self.last_peak.max(left.abs()).max(right.abs());
+                            }
+                            frame[0] += left;
+                            frame[1] += right;
+                        }
+                    } else {
+                        for ((frame, &[l, r]), &e) in dst_slice.iter_mut().zip(src.iter()).zip(lv) {
+                            let s = e * level_scale;
+                            let (l, r) = (l * s, r * s);
+                            let left = ll * l + lr * r;
+                            let right = rl * l + rr * r;
+                            #[cfg(feature = "trace")]
+                            {
+                                self.last_peak = self.last_peak.max(left.abs()).max(right.abs());
+                            }
+                            frame[0] += left;
+                            frame[1] += right;
                         }
                     }
-                } else if !raw.is_empty() {
-                    self.silent_tail = 0;
-                }
-                for (frame, &[left, right]) in out.iter_mut().skip(done).zip(raw.iter().take(keep))
-                {
-                    #[cfg(feature = "trace")]
-                    {
-                        self.last_peak = self.last_peak.max(left.abs()).max(right.abs());
+                    if !src.is_empty() {
+                        self.silent_tail = 0;
                     }
-                    frame[0] += left;
-                    frame[1] += right;
+                } else {
+                    let fixed_gain = self.gain == self.target;
+                    let check_tail = releasing && !chunk_missing;
+                    let mut silent_tail = self.silent_tail;
+                    let mut gain = self.gain;
+                    let target = self.target;
+                    let gain_smooth = self.gain_smooth;
+                    for ((frame, &[sl, sr]), &e) in dst_slice.iter_mut().zip(src.iter()).zip(lv) {
+                        if !fixed_gain {
+                            gain[0][0] += (target[0][0] - gain[0][0]) * gain_smooth;
+                            gain[0][1] += (target[0][1] - gain[0][1]) * gain_smooth;
+                            gain[1][0] += (target[1][0] - gain[1][0]) * gain_smooth;
+                            gain[1][1] += (target[1][1] - gain[1][1]) * gain_smooth;
+                        }
+                        let s = e * level_scale;
+                        let (l, r) = (sl * s, sr * s);
+                        let left = gain[0][0] * l + gain[0][1] * r;
+                        let right = gain[1][0] * l + gain[1][1] * r;
+                        #[cfg(feature = "trace")]
+                        {
+                            self.last_peak = self.last_peak.max(left.abs()).max(right.abs());
+                        }
+                        frame[0] += left;
+                        frame[1] += right;
+                        if check_tail {
+                            if left.abs().max(right.abs()) < TAIL_SILENCE {
+                                silent_tail += 1;
+                                if silent_tail >= TAIL_FRAMES {
+                                    alive = false;
+                                    break;
+                                }
+                            } else {
+                                silent_tail = 0;
+                            }
+                        } else {
+                            silent_tail = 0;
+                        }
+                    }
+                    self.gain = gain;
+                    self.silent_tail = silent_tail;
                 }
             }
             self.elapsed += n as u64;
@@ -1226,7 +1425,7 @@ impl Voice {
         let (step, now, missing) = (self.step(), self.at(0), self.missing);
         let frames = PREROLL.min((now / step).max(0.0) as usize);
         let margin = if step > 1.0 {
-            2 * (sinc_params(step).0 + 1) + 2
+            2 * (sinc_half_for(step) + 1) + 2
         } else {
             4
         };
@@ -1300,11 +1499,10 @@ impl Voice {
         filled
     }
 
-    /// Reads the region about a cursor at the pitch's step, frame `i` at
-    /// `base + travel(frames + i)` (a closed form from the anchor, so every
-    /// host block size lands on the same positions), and interpolates `n`
-    /// frames into `raw`; returns how many it filled.
-    fn read_window(
+    /// Ensures the decoded source window for `n` frames at `(base, frames, first_step)`
+    /// is available in either `self.ahead` or `scratch.window`, returning which buffer
+    /// holds it along with `(lo, span)`.
+    fn prepare_window(
         &mut self,
         scratch: &mut Scratch,
         client: &StreamClient,
@@ -1312,11 +1510,10 @@ impl Voice {
         n: usize,
         (base, frames, first_step): (f64, u64, f64),
         ramp: Ramp,
-    ) -> usize {
+    ) -> Option<(WindowBuf, i64, usize)> {
         let sample = &region.sample;
         let released = self.released;
         let step = ramp.step_at(first_step, frames);
-        let at = |i: u64| base + ramp.travel(first_step, frames + i);
         let (lo, span) = window_span(n, (base, frames, first_step), ramp);
         let span = span.min(SCRATCH);
         let key = released;
@@ -1347,13 +1544,11 @@ impl Voice {
                 self.ahead_retry = lo + (AHEAD / 4) as i64;
             }
         }
-        let window: &[[f32; 2]] = if held(self) {
+        if held(self) {
             let from = (lo - self.ahead_lo) as usize;
-            self.ahead.get(from..from + span).unwrap_or_default()
+            Some((WindowBuf::Ahead(from), lo, span))
         } else {
-            let Some(window) = scratch.window.get_mut(..span) else {
-                return 0;
-            };
+            let window = scratch.window.get_mut(..span)?;
             if self.mode == RenderMode::Offline {
                 let loops = &self.loops;
                 region.runs_with(loops, lo, window.len(), released, |_, run| {
@@ -1388,9 +1583,56 @@ impl Voice {
                 window,
             );
             self.missing += u64::from(missing);
-            window
-        };
+            Some((WindowBuf::Scratch, lo, span))
+        }
+    }
 
+    /// Reads the region about a cursor at the pitch's step, frame `i` at
+    /// `base + travel(frames + i)` (a closed form from the anchor, so every
+    /// host block size lands on the same positions), and interpolates `n`
+    /// frames into `raw`; returns how many it filled.
+    fn read_window(
+        &mut self,
+        scratch: &mut Scratch,
+        client: &StreamClient,
+        region: &Region,
+        n: usize,
+        cursor: (f64, u64, f64),
+        ramp: Ramp,
+    ) -> usize {
+        let Some((buf, lo, span)) = self.prepare_window(scratch, client, region, n, cursor, ramp)
+        else {
+            return 0;
+        };
+        self.read_window_from_buf(scratch, (buf, lo, span), n, cursor, ramp)
+    }
+
+    fn read_window_from_buf(
+        &self,
+        scratch: &mut Scratch,
+        (buf, lo, span): (WindowBuf, i64, usize),
+        n: usize,
+        (base, frames, first_step): (f64, u64, f64),
+        ramp: Ramp,
+    ) -> usize {
+        let window: &[[f32; 2]] = match buf {
+            WindowBuf::Ahead(from) => self.ahead.get(from..from + span).unwrap_or_default(),
+            WindowBuf::Scratch => scratch.window.get(..span).unwrap_or_default(),
+        };
+        // Exact unity pitch aligned to source frames: copy directly, zero Hermite.
+        if ramp.per_frame == 0.0 && first_step == 1.0 && base.fract() == 0.0 && n > 0 {
+            let start_i = base as i64 + frames as i64 - lo;
+            if start_i >= 1 {
+                let start = start_i as usize;
+                if start + n + 2 <= window.len()
+                    && let (Some(src), Some(raw)) =
+                        (window.get(start..start + n), scratch.raw.get_mut(..n))
+                {
+                    raw.copy_from_slice(src);
+                    return n;
+                }
+            }
+        }
         // A constant step at most 1: positions in the closed form a flat
         // ramp reduces to, read bounds checked at the ends (positions only
         // rise), Hermite throughout. The same values as the loop below.
@@ -1405,9 +1647,9 @@ impl Voice {
             {
                 for (i, frame) in raw.iter_mut().enumerate() {
                     let x = x(i);
-                    let base = x.floor() as usize;
-                    let t = (x - base as f64) as f32;
-                    let Some(&[y0, y1, y2, y3]) = window.get(base - 1..base + 3) else {
+                    let b = x.floor() as usize;
+                    let t = (x - b as f64) as f32;
+                    let Some(&[y0, y1, y2, y3]) = window.get(b - 1..b + 3) else {
                         return i;
                     };
                     *frame = [
@@ -1418,41 +1660,90 @@ impl Voice {
                 return n;
             }
         }
+        // Constant upward pitch covered by a precomputed SincBank: hoist bank
+        // lookup and endpoint bounds checks outside the frame loop.
+        if ramp.per_frame == 0.0
+            && first_step > 1.0
+            && let Some(bank) = SincBank::of(first_step)
+            && let Some(raw) = scratch.raw.get_mut(..n)
+        {
+            let x = |i: usize| base + first_step * (frames + i as u64) as f64 - lo as f64;
+            let half = bank.half;
+            let width = 2 * half + 1;
+            if n > 0
+                && reads(window.len(), x(0), first_step)
+                && reads(window.len(), x(n - 1), first_step)
+            {
+                for (i, frame) in raw.iter_mut().enumerate() {
+                    let pos = x(i);
+                    let center_i = pos.round() as isize;
+                    let frac = pos - center_i as f64;
+                    let Ok(center) = usize::try_from(center_i) else {
+                        return i;
+                    };
+                    let Some(from) = center.checked_sub(half) else {
+                        return i;
+                    };
+                    let Some(taps) = window.get(from..from + width) else {
+                        return i;
+                    };
+                    let Some(out) = bank.read(taps, frac) else {
+                        return i;
+                    };
+                    *frame = out;
+                }
+                return n;
+            }
+        }
+        let at = |i: u64| base + ramp.travel(first_step, frames + i);
         let sinc_table = &*SINC_TABLE;
-        // The kernel's radius and scale for the last step seen: a flat
-        // ramp keeps one for the whole chunk.
-        let mut kernel = (f64::NAN, (0, 0.0), None);
+        // Cached bank / exact sinc params: while a ramped step stays inside the
+        // cached bank's `(min_step, max_step]` range, skip `log2` entirely.
+        let mut cached_bank: Option<&'static SincBank> = None;
+        let mut exact_kernel = (f64::NAN, (0usize, 0.0f64));
         let mut filled = 0;
         for (i, frame) in scratch.raw.iter_mut().take(n).enumerate() {
             let cur_step = ramp.step_at(first_step, frames + i as u64);
             let x = at(i as u64) - lo as f64;
-            if !reads(window.len(), x, cur_step) {
+            if !x.is_finite() || x < 1.0 {
                 break;
             }
             if cur_step > 1.0 {
-                if kernel.0 != cur_step {
-                    kernel = (cur_step, sinc_params(cur_step), SincBank::of(cur_step));
-                }
-                let (half, scale) = kernel.1;
+                let bank = match cached_bank {
+                    Some(b) if cur_step > b.min_step && cur_step <= b.max_step => Some(b),
+                    _ => {
+                        let b = SincBank::of(cur_step);
+                        cached_bank = b;
+                        b
+                    }
+                };
                 let center_i = x.round() as isize;
                 let frac = x - center_i as f64;
                 let Ok(center) = usize::try_from(center_i) else {
                     break;
                 };
-                if center < half || center + half >= window.len() {
-                    break;
-                }
-                // A bank's row when the window holds it.
-                if let Some(bank) = kernel.2
-                    && let Some(from) = center.checked_sub(bank.half)
-                    && let Some(out) = window.get(from..).and_then(|t| bank.read(t, frac))
-                {
+                if let Some(bank) = bank {
+                    let half = bank.half;
+                    if center < half || center + half >= window.len() {
+                        break;
+                    }
+                    let Some(taps) = window.get(center - half..=center + half) else {
+                        break;
+                    };
+                    let Some(out) = bank.read(taps, frac) else {
+                        break;
+                    };
                     *frame = out;
                     filled += 1;
                     continue;
                 }
-                // Each tap weighs the sinc at its distance from `x`, one row
-                // over a slice checked once, in f32.
+                if exact_kernel.0 != cur_step {
+                    exact_kernel = (cur_step, sinc_params(cur_step));
+                }
+                let (half, scale) = exact_kernel.1;
+                if center < half || center + half >= window.len() {
+                    break;
+                }
                 let Some(taps) = window.get(center - half..=center + half) else {
                     break;
                 };
@@ -1471,12 +1762,12 @@ impl Voice {
                     [0.0, 0.0]
                 };
             } else {
-                let base = x.floor() as usize;
-                let t = (x - base as f64) as f32;
-                let Some(start) = base.checked_sub(1) else {
+                let b = x.floor() as usize;
+                let t = (x - b as f64) as f32;
+                let Some(start) = b.checked_sub(1) else {
                     break;
                 };
-                let Some(&[y0, y1, y2, y3]) = window.get(start..base + 3) else {
+                let Some(&[y0, y1, y2, y3]) = window.get(start..b + 3) else {
                     break;
                 };
                 *frame = [
@@ -1556,8 +1847,9 @@ fn fill_window(
 /// frame and its length, with the interpolator's margin on both sides.
 fn window_span(n: usize, (base, frames, first_step): (f64, u64, f64), ramp: Ramp) -> (i64, usize) {
     let at = |i: u64| base + ramp.travel(first_step, frames + i);
-    let (left_pad, right_pad) = if ramp.peak(first_step) > 1.0 {
-        let h = sinc_params(ramp.peak(first_step)).0 as i64 + 1;
+    let peak = ramp.peak(first_step);
+    let (left_pad, right_pad) = if peak > 1.0 {
+        let h = sinc_half_for(peak) as i64 + 1;
         (h, h + 1)
     } else {
         (1, 3)
@@ -1573,7 +1865,7 @@ fn reads(window: usize, x: f64, step: f64) -> bool {
         return false;
     }
     if step > 1.0 {
-        let half = sinc_params(step).0;
+        let half = sinc_half_for(step);
         usize::try_from(x.round() as isize).is_ok_and(|c| c >= half && c + half < window)
     } else {
         x.floor() as usize + 3 <= window
@@ -1639,9 +1931,118 @@ fn clamp_step(step: f64) -> f64 {
 
 /// 4-point, 3rd-order Hermite between `y1` and `y2` (used for `step <= 1.0`;
 /// upward shifts `step > 1.0` use the band-limited Kaiser-windowed sinc kernel).
+#[inline(always)]
 fn hermite(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
     let c1 = 0.5 * (y2 - y0);
     let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
     let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
     ((c3 * t + c2) * t + c1) * t + y1
+}
+
+#[cfg(test)]
+mod sinc_quality_tests {
+    use super::*;
+
+    /// Verifies that the 24-bank-per-octave SincBank covers arbitrary detuned upward
+    /// steps with flat passband (< 0.05 dB up to 16 kHz) and > 60 dB alias rejection.
+    #[test]
+    fn sinc_bank_detuned_preserves_passband_and_rejects_aliasing() {
+        let rate = 48_000.0f64;
+        for step in [1.05, 1.37, 2f64.powf(7.0 / 12.0), 2.73, 4.19] {
+            let bank = SincBank::of(step);
+            assert!(bank.is_some(), "expected SincBank coverage for step={step}");
+            let Some(bank) = bank else {
+                continue;
+            };
+            assert!(
+                step > bank.min_step && step <= bank.max_step + 1e-9,
+                "step={step} outside ({}, {}]",
+                bank.min_step,
+                bank.max_step
+            );
+            // Passband tone: 4 kHz output -> 4 kHz / step source.
+            let src_len = 2048usize;
+            let pass_src_hz = 4_000.0 / step;
+            let pass_src: Vec<[f32; 2]> = (0..src_len)
+                .map(|i| {
+                    let s = (std::f64::consts::TAU * pass_src_hz * i as f64 / rate).sin() as f32;
+                    [s, s]
+                })
+                .collect();
+            let mut pass_sq = 0.0f64;
+            let n = 256usize;
+            for i in 0..n {
+                let x = 64.0 + step * i as f64;
+                let c = x.round() as usize;
+                let frac = x - c as f64;
+                let Some(taps) = pass_src.get(c - bank.half..=c + bank.half) else {
+                    continue;
+                };
+                let y = bank.read(taps, frac).unwrap_or([0.0; 2]);
+                pass_sq += f64::from(y[0]) * f64::from(y[0]);
+            }
+            let pass_rms = (pass_sq / n as f64).sqrt();
+            let pass_db = 20.0 * (pass_rms / std::f64::consts::FRAC_1_SQRT_2).log10();
+            assert!(
+                pass_db.abs() < 0.05,
+                "step={step}: passband gain error {pass_db:.4} dB"
+            );
+
+            // Stopband tone above output Nyquist: compare directly against exact f64
+            // windowed_sinc reference kernel to prove zero added aliasing.
+            let alias_src_hz = (0.5 * rate * 1.5 / step).min(0.49 * rate);
+            if alias_src_hz * step > 0.56 * rate {
+                let alias_src: Vec<[f32; 2]> = (0..src_len)
+                    .map(|i| {
+                        let s =
+                            (std::f64::consts::TAU * alias_src_hz * i as f64 / rate).sin() as f32;
+                        [s, s]
+                    })
+                    .collect();
+                let (ref_half, ref_scale) = sinc_params(step);
+                let inv_i0 = 1.0 / bessel_i0(KAISER_BETA);
+                let mut alias_sq = 0.0f64;
+                let mut ref_sq = 0.0f64;
+                for i in 0..n {
+                    let x = 64.0 + step * i as f64;
+                    let c = x.round() as usize;
+                    let frac = x - c as f64;
+                    let Some(taps) = alias_src.get(c - bank.half..=c + bank.half) else {
+                        continue;
+                    };
+                    let y = bank.read(taps, frac).unwrap_or([0.0; 2]);
+                    alias_sq += f64::from(y[0]) * f64::from(y[0]);
+
+                    if let Some(rtaps) = alias_src.get(c - ref_half..=c + ref_half) {
+                        let (mut acc, mut wsum) = (0.0f64, 0.0f64);
+                        for (j, t) in rtaps.iter().enumerate() {
+                            let w = windowed_sinc(
+                                (j as f64 - ref_half as f64 - frac).abs() * ref_scale,
+                                inv_i0,
+                            );
+                            acc += f64::from(t[0]) * w;
+                            wsum += w;
+                        }
+                        let ry = acc / wsum;
+                        ref_sq += ry * ry;
+                    }
+                }
+                let alias_db =
+                    20.0 * ((alias_sq / n as f64).sqrt() / std::f64::consts::FRAC_1_SQRT_2).log10();
+                let ref_db =
+                    20.0 * ((ref_sq / n as f64).sqrt() / std::f64::consts::FRAC_1_SQRT_2).log10();
+                // Both bank and exact Kaiser-6.5 reference must stay well below -55 dB
+                // (and below -60 dB deep in the stopband, well within Kaiser-6.5's lobe ripple).
+                let floor_db = if alias_src_hz * step >= 0.70 * rate {
+                    -60.0
+                } else {
+                    -55.0
+                };
+                assert!(
+                    alias_db < floor_db && (alias_db - ref_db) < 6.0,
+                    "step={step}: bank alias {alias_db:.2} dB vs ref {ref_db:.2} dB (floor {floor_db} dB)"
+                );
+            }
+        }
+    }
 }

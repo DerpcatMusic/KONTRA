@@ -77,50 +77,82 @@ impl Transient {
 
     /// Shapes `io` in place.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
+        if io.is_empty() {
+            return;
+        }
+        if self.detect == [[0.0; 2]; 2]
+            && self.out == [[0.0; 2]; 2]
+            && self.attack_hp == [0.0; 2]
+            && self.e == [0.0; 6]
+            && io.iter().all(|f| f[0] == 0.0 && f[1] == 0.0)
+        {
+            return;
+        }
         let [k1u, k1d, k2u, k2d, k3d, k4d, k5u, k6u, k6d] = self.k;
-        let step = |env: f32, target: f32, up: f32, down: f32| {
+        #[inline(always)]
+        fn step(env: f32, target: f32, up: f32, down: f32) -> f32 {
             let d = target - env;
             (if d > 0.0 { up } else { down }) * d + env
-        };
-        let (c, s) = (self.dc, self.s);
+        }
+        let ([c0, c1, c2], s) = (self.dc, self.s);
+        let [h0, h1, h2] = self.sub;
+        let [mut e0, mut e1, mut e2, mut e3, mut e4, mut e5] = self.e;
+        let [mut ah0, mut ah1] = self.attack_hp;
+        let [[mut dl0, mut dl1], [mut dr0, mut dr1]] = self.detect;
+        let [[mut ol0, mut ol1], [mut or0, mut or1]] = self.out;
+        let attack_coef = s.attack - s.sustain * 0.33;
         for frame in io {
-            let mut det = 0.0f32;
-            for (x, f) in frame.iter().zip(&mut self.detect) {
-                let y = (x * c[0] + c[1] * f[0]) - c[2] * f[1];
-                *f = [*x, y];
-                det = det.max(y.abs());
-            }
-            let l = det.powf(0.1) * 0.7;
-            let e = &mut self.e;
-            e[0] = step(e[0], l, k1u, k1d);
-            e[1] = step(e[1], l, k2u, k2d);
-            let mut v = e[0] - e[1];
+            let xl = frame[0];
+            let xr = frame[1];
+            let yl = (xl * c0 + c1 * dl0) - c2 * dl1;
+            let yr = (xr * c0 + c1 * dr0) - c2 * dr1;
+            dl0 = xl;
+            dl1 = yl;
+            dr0 = xr;
+            dr1 = yr;
+            let det = yl.abs().max(yr.abs());
+            let l = kontra_dsp_core::math::fast_powf_pos_f32(det, 0.1) * 0.7;
+            e0 = step(e0, l, k1u, k1d);
+            e1 = step(e1, l, k2u, k2d);
+            let mut v = e0 - e1;
             if v > 0.0744 {
                 v *= 1.1417;
             }
             let w = (v - 0.0504).clamp(0.0, 0.12);
-            let h = self.sub;
-            let y = (h[1] * self.attack_hp[0] + w * h[0]) - h[2] * self.attack_hp[1];
-            self.attack_hp = [w, y];
-            let d = y.abs() - e[2];
-            e[2] = if d <= 0.0 { d * k3d + e[2] } else { y.abs() };
-            let d = l - e[3];
-            e[3] = if d <= 0.0 { d * k4d + e[3] } else { l };
-            e[4] = step(e[4], l, k5u, k4d);
-            let held = (e[3] - e[4] - 0.04).clamp(0.0, 10_000.0);
-            e[5] = step(e[5], l, k6u, k6d);
-            let sustain = (e[5] - e[4] - held).clamp(0.0, 10_000.0);
-            let attack = e[2];
-            let db =
-                sustain * s.sustain - s.sustain * 0.33 * attack + attack * s.attack + s.gain_db;
-            let g = 10f32.powf(db / 20.0);
-            for (x, f) in frame.iter_mut().zip(&mut self.out) {
-                let u = g * *x;
-                let y = (u * c[0] + c[1] * f[0]) - f[1] * c[2];
-                *f = [u, y];
-                *x = if s.clip { y.clamp(-0.9999, 0.9999) } else { y };
+            let y = (h1 * ah0 + w * h0) - h2 * ah1;
+            ah0 = w;
+            ah1 = y;
+            let ya = y.abs();
+            let d = ya - e2;
+            e2 = if d <= 0.0 { d * k3d + e2 } else { ya };
+            let d = l - e3;
+            e3 = if d <= 0.0 { d * k4d + e3 } else { l };
+            e4 = step(e4, l, k5u, k4d);
+            let held = (e3 - e4 - 0.04).clamp(0.0, 10_000.0);
+            e5 = step(e5, l, k6u, k6d);
+            let sustain = (e5 - e4 - held).clamp(0.0, 10_000.0);
+            let db = sustain * s.sustain + e2 * attack_coef + s.gain_db;
+            let g = kontra_dsp_core::math::db_to_gain_f32(db);
+            let ul = g * xl;
+            let ur = g * xr;
+            let out_l = (ul * c0 + c1 * ol0) - ol1 * c2;
+            let out_r = (ur * c0 + c1 * or0) - or1 * c2;
+            ol0 = ul;
+            ol1 = out_l;
+            or0 = ur;
+            or1 = out_r;
+            if s.clip {
+                frame[0] = out_l.clamp(-0.9999, 0.9999);
+                frame[1] = out_r.clamp(-0.9999, 0.9999);
+            } else {
+                frame[0] = out_l;
+                frame[1] = out_r;
             }
         }
+        self.e = [e0, e1, e2, e3, e4, e5];
+        self.attack_hp = [ah0, ah1];
+        self.detect = [[dl0, dl1], [dr0, dr1]];
+        self.out = [[ol0, ol1], [or0, or1]];
         // The followers decay toward zero in silence; flush them too.
         for v in self
             .attack_hp

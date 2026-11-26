@@ -167,16 +167,21 @@ impl Formant {
     }
 
     fn run(&mut self, io: &mut [[f32; 2]]) {
-        for frame in io {
-            let x = *frame;
-            *frame = [0.0; 2];
-            for band in &mut self.bands {
-                let mut y = [x];
-                band.process(&mut y);
-                frame[0] += y[0][0];
-                frame[1] += y[0][1];
-            }
+        if io.is_empty() {
+            return;
         }
+        let [b0, b1, b2] = &mut self.bands;
+        for frame in io {
+            let (xl, xr) = (f64::from(frame[0]), f64::from(frame[1]));
+            let (l0, r0) = b0.tick_f64(xl, xr);
+            let (l1, r1) = b1.tick_f64(xl, xr);
+            let (l2, r2) = b2.tick_f64(xl, xr);
+            frame[0] = (l0 + l1 + l2) as f32;
+            frame[1] = (r0 + r1 + r2) as f32;
+        }
+        b0.settle();
+        b1.settle();
+        b2.settle();
     }
 
     /// Whether its bands have rung out.

@@ -2,6 +2,8 @@
 //! feedback design), a soft-knee static curve, attack and release on the
 //! gain reduction, make-up and a dry mix.
 
+use kontra_dsp_core::math::{db_to_gain_f32, gain_to_db_f32};
+
 use crate::{gain, pole};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -105,36 +107,126 @@ impl Compressor {
     }
 
     fn process_inner(&mut self, io: &mut [[f32; 2]], sidechain: Option<&[[f32; 2]]>) {
+        if io.is_empty() {
+            return;
+        }
         if self.s.detector == Detector::Trigger {
             self.trigger_inner(io, sidechain);
             return;
         }
+        if self.reduction == [0.0; 2]
+            && self.keyed == [[0.0; 2]; 2]
+            && io.iter().all(|f| f[0] == 0.0 && f[1] == 0.0)
+            && sidechain.is_none_or(|sc| sc.iter().all(|f| f[0] == 0.0 && f[1] == 0.0))
+        {
+            return;
+        }
         let mix = self.s.mix.clamp(0.0, 1.0);
+        let slope = 1.0 - 1.0 / self.s.ratio.max(1.0);
+        let w = self.s.knee_db.max(0.0);
+        let half_w = 0.5 * w;
+        let inv_2w = if w > 0.0 { 0.5 / w } else { 0.0 };
+        let thresh_db = self.s.threshold_db;
+        let lin_knee_lo = db_to_gain_f32(thresh_db - half_w);
+        let attack = self.attack;
+        let release = self.release;
+        let makeup = self.makeup;
+        let has_hp = self.key != 0.0;
+        let is_fb = self.s.detector == Detector::Output && sidechain.is_none();
+
+        #[inline(always)]
+        fn target_red(
+            level: f32,
+            lin_knee_lo: f32,
+            thresh_db: f32,
+            half_w: f32,
+            inv_2w: f32,
+            slope: f32,
+        ) -> f32 {
+            if level <= lin_knee_lo {
+                return 0.0;
+            }
+            let db = gain_to_db_f32(level.max(1e-9));
+            let over = db - thresh_db;
+            let into = if over <= -half_w {
+                0.0
+            } else if over < half_w {
+                let t = over + half_w;
+                t * t * inv_2w
+            } else {
+                over
+            };
+            into * slope
+        }
+
+        // Fast path: stereo-linked feed-forward without external sidechain.
+        // Evaluates one detector and one dB-to-gain conversion per stereo frame.
+        if self.s.link && !is_fb && sidechain.is_none() {
+            let mut red = self.reduction[0].max(self.reduction[1]);
+            let same_red = self.reduction[0] == self.reduction[1];
+            if same_red {
+                let dry = 1.0 - mix;
+                let wet_makeup = mix * makeup;
+                for frame in io.iter_mut() {
+                    let key = if has_hp {
+                        self.highpass(*frame)
+                    } else {
+                        *frame
+                    };
+                    let level = key[0].abs().max(key[1].abs());
+                    let target = target_red(level, lin_knee_lo, thresh_db, half_w, inv_2w, slope);
+                    let k = if target > red { attack } else { release };
+                    red += (target - red) * k;
+                    if red < 1e-6 {
+                        red = 0.0;
+                    }
+                    let gr = if red == 0.0 {
+                        1.0
+                    } else {
+                        db_to_gain_f32(-red)
+                    };
+                    let total_g = dry + wet_makeup * gr;
+                    frame[0] *= total_g;
+                    frame[1] *= total_g;
+                }
+                self.reduction = [red, red];
+                return;
+            }
+        }
+
+        let dry = 1.0 - mix;
+        let wet_makeup = mix * makeup;
         for (i, frame) in io.iter_mut().enumerate() {
             let det_in = sidechain.and_then(|k| k.get(i).copied()).unwrap_or(*frame);
-            let key = self.highpass(det_in);
-            let [l, r] = if self.s.detector == Detector::Output && sidechain.is_none() {
-                let ([a, b], [ra, rb]) = (key, self.reduction);
-                [(a * gain(-ra)).abs(), (b * gain(-rb)).abs()]
+            let key = if has_hp {
+                self.highpass(det_in)
             } else {
-                key.map(f32::abs)
+                det_in
+            };
+            let [l, r] = if is_fb {
+                let ([a, b], [ra, rb]) = (key, self.reduction);
+                [
+                    (a * if ra == 0.0 { 1.0 } else { db_to_gain_f32(-ra) }).abs(),
+                    (b * if rb == 0.0 { 1.0 } else { db_to_gain_f32(-rb) }).abs(),
+                ]
+            } else {
+                [key[0].abs(), key[1].abs()]
             };
             let levels = if self.s.link { [l.max(r); 2] } else { [l, r] };
             for ((x, level), reduction) in frame.iter_mut().zip(levels).zip(&mut self.reduction) {
-                let db = 20.0 * level.max(1e-9).log10();
-                let target = curve(&self.s, db - self.s.threshold_db);
-                let k = if target > *reduction {
-                    self.attack
-                } else {
-                    self.release
-                };
+                let target = target_red(level, lin_knee_lo, thresh_db, half_w, inv_2w, slope);
+                let k = if target > *reduction { attack } else { release };
                 *reduction += (target - *reduction) * k;
                 // Released to silence: no subnormal tail.
                 if *reduction < 1e-6 {
                     *reduction = 0.0;
                 }
-                let wet = *x * gain(-*reduction) * self.makeup;
-                *x += (wet - *x) * mix;
+                let gr = if *reduction == 0.0 {
+                    1.0
+                } else {
+                    db_to_gain_f32(-*reduction)
+                };
+                *x *= dry + wet_makeup * gr;
             }
         }
     }
@@ -212,19 +304,3 @@ const REARM: f32 = 0.985;
 /// Below the first, a hold that has outrun its envelope restarts at
 /// `envelope·second + (second − 1)`, `second = 1/0.985`.
 const CATCH: (f32, f32) = (0.97, 1.015_228_4);
-
-/// The static curve: dB of reduction for a level `over` dB past the
-/// threshold.
-fn curve(s: &Settings, over: f32) -> f32 {
-    let slope = 1.0 - 1.0 / s.ratio.max(1.0);
-    let w = s.knee_db.max(0.0);
-    let into = if 2.0 * over <= -w {
-        0.0
-    } else if 2.0 * over < w {
-        let t = over + w / 2.0;
-        t * t / (2.0 * w)
-    } else {
-        over
-    };
-    into * slope
-}

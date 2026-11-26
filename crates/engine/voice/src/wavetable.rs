@@ -448,16 +448,56 @@ impl Table {
                 (a, b, blend)
             }
         };
-        let cycle = |data: &[i16], c: usize, q: f32| {
-            let a = self.hermite(data, c * LEVELS + l0, q);
-            a + (self.hermite(data, c * LEVELS + l1, q) - a) * blend
+        let scale = self.scale;
+        let data = &self.data[..];
+        let spans = &self.spans;
+        fn span_slice<'a>(spans: &[(u32, u32)], src: &'a [i16], span: usize) -> &'a [i16] {
+            spans
+                .get(span)
+                .and_then(|&(first, len)| {
+                    let start = first as usize;
+                    src.get(start..start + len as usize)
+                })
+                .unwrap_or(&[])
+        }
+        let read_level = |slice: &[i16], q: f32| -> f32 {
+            let len = slice.len();
+            if len == 0 {
+                return 0.0;
+            }
+            let mask = len - 1;
+            let at = len as f32 * q;
+            let i = at as usize;
+            let f = at - i as f32;
+            let tap = |k: usize| f32::from(slice.get(k & mask).copied().unwrap_or(0)) * scale;
+            if lofi {
+                let a = tap(i);
+                let b = tap(i + 1);
+                return a + (b - a) * f;
+            }
+            crate::hermite(tap(i.wrapping_sub(1)), tap(i), tap(i + 1), tap(i + 2), f)
         };
-        let read = |data: &[i16], q: f32| {
-            let a = cycle(data, c0, q);
-            if morph == 0.0 {
-                a
+        let s00 = span_slice(spans, data, c0 * LEVELS + l0);
+        let s01 = span_slice(spans, data, c0 * LEVELS + l1);
+        let s10 = span_slice(spans, data, c1 * LEVELS + l0);
+        let s11 = span_slice(spans, data, c1 * LEVELS + l1);
+        let read_main = |q: f32| -> f32 {
+            let a0 = read_level(s00, q);
+            let c0_v = if blend == 0.0 {
+                a0
             } else {
-                a + (cycle(data, c1, q) - a) * morph
+                a0 + (read_level(s01, q) - a0) * blend
+            };
+            if morph == 0.0 {
+                c0_v
+            } else {
+                let b0 = read_level(s10, q);
+                let c1_v = if blend == 0.0 {
+                    b0
+                } else {
+                    b0 + (read_level(s11, q) - b0) * blend
+                };
+                c0_v + (c1_v - c0_v) * morph
             }
         };
         let osc = self.read.modosc;
@@ -469,29 +509,109 @@ impl Table {
         let gain = self.read.gain;
         let fir = self.read.quality.fir();
         let mut st = self.osc;
+        let phase_base = f64::from(self.read.phase);
+        let inv_period = 1.0 / PERIOD;
+        let has_warps = w1.shape != Shape::Off
+            || w2.shape != Shape::Off
+            || w1.shaper != Shaper::Off
+            || w2.shaper != Shaper::Off;
+
+        // Fast path: standard wavetable playback without ModOsc, inharmonic stretch, or warps.
+        // Skips redundant per-sample sin(), warp/shape dispatch, and fmod calls.
+        if osc.kind == ModOscKind::Off && quad.is_none() && !has_warps {
+            let base = phase_base + st.offset;
+            match fir {
+                Some((fa, fc)) => {
+                    let center = 1.0 - 2.0 * (fa + fc);
+                    for (i, frame) in out.iter_mut().enumerate() {
+                        let raw_p = cursor_at(i as u64) * inv_period + base;
+                        let p = (raw_p - raw_p.floor()) as f32;
+                        let s = read_main(p) * gain;
+                        st.last = s;
+                        let [x1, x2, x3, x4] = st.tail;
+                        st.tail = [s, x1, x2, x3];
+                        let y = fc * (s + x4) + fa * (x1 + x3) + center * x2;
+                        *frame = [y, y];
+                    }
+                }
+                None => {
+                    for (i, frame) in out.iter_mut().enumerate() {
+                        let raw_p = cursor_at(i as u64) * inv_period + base;
+                        let p = (raw_p - raw_p.floor()) as f32;
+                        let s = read_main(p) * gain;
+                        st.last = s;
+                        *frame = [s, s];
+                    }
+                }
+            }
+            let ph = st.phase + mod_step * out.len() as f64;
+            st.phase = ph - ph.floor();
+            self.osc = st;
+            return;
+        }
+
+        let q00 = quad.map_or(&[][..], |q| span_slice(spans, q, c0 * LEVELS + l0));
+        let q01 = quad.map_or(&[][..], |q| span_slice(spans, q, c0 * LEVELS + l1));
+        let q10 = quad.map_or(&[][..], |q| span_slice(spans, q, c1 * LEVELS + l0));
+        let q11 = quad.map_or(&[][..], |q| span_slice(spans, q, c1 * LEVELS + l1));
+        let read_quad = |q: f32| -> f32 {
+            let a0 = read_level(q00, q);
+            let c0_v = if blend == 0.0 {
+                a0
+            } else {
+                a0 + (read_level(q01, q) - a0) * blend
+            };
+            if morph == 0.0 {
+                c0_v
+            } else {
+                let b0 = read_level(q10, q);
+                let c1_v = if blend == 0.0 {
+                    b0
+                } else {
+                    b0 + (read_level(q11, q) - b0) * blend
+                };
+                c0_v + (c1_v - c0_v) * morph
+            }
+        };
+        let uses_mod_wave = !matches!(
+            osc.kind,
+            ModOscKind::Off | ModOscKind::PmFeedback | ModOscKind::FmFeedback
+        );
+
         for (i, frame) in out.iter_mut().enumerate() {
-            let cursor = cursor_at(i as u64) / PERIOD;
-            let m = osc.wave_at(st.phase);
+            let cursor = cursor_at(i as u64) * inv_period;
+            let m = if uses_mod_wave {
+                osc.wave_at(st.phase)
+            } else {
+                0.0
+            };
             let y = f64::from(st.last);
             let pm_pre = match osc.kind {
                 ModOscKind::Pm => a64 * m,
                 ModOscKind::PmFeedback => FEEDBACK * a64 * y,
                 _ => 0.0,
             };
-            let p = (cursor * rate + f64::from(self.read.phase) + st.offset + pm_pre)
-                .rem_euclid(1.0) as f32;
-            let warped = warp(w2, warp(w1, p));
+            let raw_p = cursor * rate + phase_base + st.offset + pm_pre;
+            let p = (raw_p - raw_p.floor()) as f32;
+            let warped = if has_warps { warp(w2, warp(w1, p)) } else { p };
             let q = match osc.kind {
-                ModOscKind::PmPost => (f64::from(warped) + a64 * m).rem_euclid(1.0) as f32,
+                ModOscKind::PmPost => {
+                    let rq = f64::from(warped) + a64 * m;
+                    (rq - rq.floor()) as f32
+                }
                 _ => warped,
             };
-            let mut s = read(&self.data, q);
-            if let Some(quad) = quad {
+            let mut s = read_main(q);
+            if quad.is_some() {
                 let (sin, cos) =
                     (std::f64::consts::TAU * (cursor * (1.0 - stretch)).fract()).sin_cos();
-                s = s * cos as f32 - read(quad, q) * sin as f32;
+                s = s * cos as f32 - read_quad(q) * sin as f32;
             }
-            let s = shape(w2, p, shape(w1, p, s)) * gain;
+            let s = if has_warps {
+                shape(w2, p, shape(w1, p, s)) * gain
+            } else {
+                s * gain
+            };
             st.last = s;
             let m32 = m as f32;
             let s = match osc.kind {
@@ -501,18 +621,21 @@ impl Table {
                 ModOscKind::Blend => s + (gain * m32 - s) * a,
                 _ => s,
             };
-            st.offset = (st.offset
-                + match osc.kind {
-                    ModOscKind::Fm => hz * a64 * m,
-                    ModOscKind::FmFeedback => FM_FEEDBACK * hz * a64 * f64::from(st.last),
-                    _ => 0.0,
-                })
-            .rem_euclid(1.0);
+            let off_delta = match osc.kind {
+                ModOscKind::Fm => hz * a64 * m,
+                ModOscKind::FmFeedback => FM_FEEDBACK * hz * a64 * f64::from(st.last),
+                _ => 0.0,
+            };
+            if off_delta != 0.0 {
+                let ro = st.offset + off_delta;
+                st.offset = ro - ro.floor();
+            }
             let by = match osc.kind {
                 ModOscKind::FmBy => 2.0 * hz * a64 * f64::from(st.last),
                 _ => 0.0,
             };
-            st.phase = (st.phase + mod_step + by).rem_euclid(1.0);
+            let rp = st.phase + mod_step + by;
+            st.phase = rp - rp.floor();
             let s = match fir {
                 Some((a, c)) => {
                     let [x1, x2, x3, x4] = st.tail;
@@ -524,24 +647,6 @@ impl Table {
             *frame = [s, s];
         }
         self.osc = st;
-    }
-
-    /// The level at `span` read at phase `q`, wrapping within it.
-    fn hermite(&self, data: &[i16], span: usize, q: f32) -> f32 {
-        let Some(&(first, len)) = self.spans.get(span) else {
-            return 0.0;
-        };
-        let at = len as f32 * q;
-        let i = at as u32;
-        let tap = |k: u32| {
-            let at = first + (i.wrapping_add(k).wrapping_sub(1) & (len - 1));
-            f32::from(data.get(at as usize).copied().unwrap_or(0)) * self.scale
-        };
-        if self.read.quality == Quality::Lofi {
-            let (a, b) = (tap(1), tap(2));
-            return a + (b - a) * at.fract();
-        }
-        crate::hermite(tap(0), tap(1), tap(2), tap(3), at.fract())
     }
 }
 

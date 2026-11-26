@@ -41,9 +41,10 @@ const MAX_MODULATION_MS: f32 = 5.0;
 /// Gains, shelf and width glide over about this long.
 const GLIDE_S: f32 = 0.01;
 
-/// A delay line allocated for `max` samples; its read length moves within that.
+/// A power-of-two delay line allocated for `max` samples; its read length moves within that.
 struct Delay {
     buf: Box<[f32]>,
+    mask: usize,
     at: usize,
     len: usize,
 }
@@ -52,42 +53,52 @@ impl Delay {
     /// Not real-time: allocates. Two spare samples keep reads clear of the write.
     fn new(max: usize) -> Self {
         let max = max.max(1);
+        let cap = (max + 2).next_power_of_two();
         Self {
-            buf: vec![0.0; max + 2].into(),
+            buf: vec![0.0; cap].into(),
+            mask: cap - 1,
             at: 0,
             len: max,
         }
     }
 
-    /// Reads `len` samples back from now; never allocates.
-    fn set_len(&mut self, len: usize) {
-        self.len = len.clamp(1, self.buf.len().saturating_sub(2));
+    /// Reads `len` samples back from now; never allocates. Returns `true` if `len` increased.
+    fn set_len(&mut self, len: usize) -> bool {
+        let next = len.clamp(1, self.buf.len().saturating_sub(2));
+        let grew = next > self.len;
+        self.len = next;
+        grew
     }
 
     /// The sample written `len` samples ago.
+    #[inline(always)]
     fn read(&self) -> f32 {
-        let n = self.buf.len();
         self.buf
-            .get((self.at + n - self.len) % n)
+            .get(self.at.wrapping_sub(self.len) & self.mask)
             .copied()
             .unwrap_or(0.0)
     }
 
     /// `len + offset` samples ago (`offset` ≥ 0), linearly interpolated.
+    #[inline(always)]
     fn read_late(&self, offset: f32) -> f32 {
-        let n = self.buf.len();
-        let back = (self.len as f32 + offset).min((n - 2) as f32);
+        let max_back = (self.buf.len().saturating_sub(2)) as f32;
+        let back = (self.len as f32 + offset).min(max_back);
         let whole = back as usize;
         let t = back - whole as f32;
-        let at = |k: usize| self.buf.get((self.at + n - k) % n).copied().unwrap_or(0.0);
-        at(whole) + t * (at(whole + 1) - at(whole))
+        let idx0 = self.at.wrapping_sub(whole) & self.mask;
+        let idx1 = idx0.wrapping_sub(1) & self.mask;
+        let a = self.buf.get(idx0).copied().unwrap_or(0.0);
+        let b = self.buf.get(idx1).copied().unwrap_or(0.0);
+        a + t * (b - a)
     }
 
+    #[inline(always)]
     fn write(&mut self, x: f32) {
         if let Some(s) = self.buf.get_mut(self.at) {
             *s = x;
         }
-        self.at = (self.at + 1) % self.buf.len();
+        self.at = self.at.wrapping_add(1) & self.mask;
     }
 }
 
@@ -126,6 +137,11 @@ pub struct Fdn {
     /// keeps the line lengths moves them over about one fade, not at once.
     to: Glide,
     ease: f32,
+    /// Silence-sleep tracking: starts asleep (all lines zero); re-enters sleep
+    /// once both input and internal lines stay below -140 dB for the full
+    /// maximum active delay length.
+    asleep: bool,
+    quiet_frames: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -170,8 +186,12 @@ impl Fdn {
                 stereo: 0.0,
             },
             ease: coeff(GLIDE_S * rate),
+            asleep: true,
+            quiet_frames: 0,
         };
         fdn.apply(s);
+        fdn.asleep = true;
+        fdn.quiet_frames = 0;
         (fdn.gains, fdn.shelf_gain, fdn.stereo) = (fdn.to.gains, fdn.to.shelf_gain, fdn.to.stereo);
         fdn
     }
@@ -188,13 +208,20 @@ impl Fdn {
         let rate = self.rate;
         let size = s.size.clamp(0.25, MAX_SIZE);
         let seconds = s.seconds.max(0.05);
+        let mut grew = false;
         for ((line, &ms), g) in self.lines.iter_mut().zip(&LINES_MS).zip(&mut self.to.gains) {
             let len = samples(ms * size, rate);
-            line.set_len(len);
+            grew |= line.set_len(len);
             *g = 10f32.powf(-3.0 * len as f32 / (seconds * rate));
         }
-        self.predelay
+        grew |= self
+            .predelay
             .set_len(samples(s.predelay_ms.clamp(0.0, MAX_PREDELAY_MS), rate));
+        if grew {
+            // A longer delay window may expose earlier non-zero buffer slots: wake to flush naturally.
+            self.asleep = false;
+            self.quiet_frames = 0;
+        }
         self.diffusion = 0.7 * s.diffusion.clamp(0.0, 1.0);
         self.damp = 0.85 * s.damping.clamp(0.0, 1.0);
         self.high_cut = pole(s.high_cut_hz, rate);
@@ -215,84 +242,254 @@ impl Fdn {
         g
     }
 
+    #[inline]
+    fn glides_settled(&self) -> bool {
+        let k = self.ease;
+        let still = |a: f32, b: f32| (a + (b - a) * k).to_bits() == a.to_bits();
+        still(self.shelf_gain, self.to.shelf_gain)
+            && still(self.stereo, self.to.stereo)
+            && self
+                .gains
+                .iter()
+                .zip(self.to.gains)
+                .all(|(&g, to)| still(g, to))
+    }
+
     /// Replaces `io` with the reverb of its mono sum (the wet path only).
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
-        for frame in io {
-            let wet = self.duck();
-            let k = self.ease;
-            for (g, to) in self.gains.iter_mut().zip(self.to.gains) {
-                *g += (to - *g) * k;
+        if io.is_empty() {
+            return;
+        }
+        let input_silent = io.iter().all(|f| f[0].abs() < 1e-7 && f[1].abs() < 1e-7);
+        if self.asleep && input_silent {
+            if !self.fade.is_settled() {
+                for _ in 0..io.len() {
+                    self.duck();
+                }
             }
-            self.shelf_gain += (self.to.shelf_gain - self.shelf_gain) * k;
-            self.stereo += (self.to.stereo - self.stereo) * k;
+            if !self.glides_settled() {
+                let decay = (1.0 - self.ease).powi(io.len() as i32);
+                for (g, to) in self.gains.iter_mut().zip(self.to.gains) {
+                    *g = to + (*g - to) * decay;
+                }
+                self.shelf_gain =
+                    self.to.shelf_gain + (self.shelf_gain - self.to.shelf_gain) * decay;
+                self.stereo = self.to.stereo + (self.stereo - self.to.stereo) * decay;
+            }
+            self.cycle = (self.cycle + self.cycle_step * io.len() as f64).fract();
+            io.fill([0.0; 2]);
+            return;
+        }
+        self.asleep = false;
+
+        let settled = self.fade.is_settled() && self.glides_settled();
+        let fixed_wet = self.fade.gain();
+        let modulated = self.swing > 0.0;
+        let (mut sin_p, mut cos_p) = if modulated {
+            (std::f64::consts::TAU * self.cycle).sin_cos()
+        } else {
+            (0.0, 1.0)
+        };
+        let (step_s, step_c) = if modulated {
+            (std::f64::consts::TAU * self.cycle_step).sin_cos()
+        } else {
+            (0.0, 1.0)
+        };
+        let mut block_peak = 0.0f32;
+        for frame in io.iter_mut() {
+            let wet = if settled {
+                fixed_wet
+            } else {
+                let w = self.duck();
+                let k = self.ease;
+                for (g, to) in self.gains.iter_mut().zip(self.to.gains) {
+                    *g += (to - *g) * k;
+                }
+                self.shelf_gain += (self.to.shelf_gain - self.shelf_gain) * k;
+                self.stereo += (self.to.stereo - self.stereo) * k;
+                w
+            };
             let [l, r] = *frame;
             let mut x = self.predelay.read();
             self.predelay.write(0.5 * (l + r));
             // Schroeder allpasses: y = −g·x + d, d' = x + g·y.
+            let diff = self.diffusion;
             for d in &mut self.diffusers {
-                let y = d.read() - self.diffusion * x;
-                d.write(flush(x + self.diffusion * y));
+                let y = d.read() - diff * x;
+                d.write(flush(x + diff * y));
                 x = y;
             }
             let mut y = [0.0f32; 8];
-            // Two quadrature swings, 0..=1 of the peak-to-peak depth; read
-            // only while the lines swing.
-            let swings = match self.swing > 0.0 {
-                true => {
-                    let (sin, cos) = (std::f64::consts::TAU * self.cycle).sin_cos();
-                    [0.0, 0.5 + 0.5 * sin as f32, 0.5 + 0.5 * cos as f32]
+            let damp = self.damp;
+            if modulated {
+                let s1 = self.swing * (0.5 + 0.5 * sin_p as f32);
+                let s2 = self.swing * (0.5 + 0.5 * cos_p as f32);
+                let next_s = sin_p * step_c + cos_p * step_s;
+                let next_c = cos_p * step_c - sin_p * step_s;
+                sin_p = next_s;
+                cos_p = next_c;
+                let offsets = [0.0, s2, s1, s2, s1, s2, s1, s2];
+                for (i, ((v, (line, low)), (g, off))) in y
+                    .iter_mut()
+                    .zip(self.lines.iter().zip(&mut self.lows))
+                    .zip(self.gains.into_iter().zip(offsets))
+                    .enumerate()
+                {
+                    let out = if i == 0 {
+                        line.read()
+                    } else {
+                        line.read_late(off)
+                    };
+                    *low = out + damp * (*low - out);
+                    *v = *low * g;
                 }
-                false => [0.0; 3],
-            };
-            self.cycle = (self.cycle + self.cycle_step).fract();
-            let lines = self.lines.iter().zip(&mut self.lows).zip(self.gains);
-            for (i, (v, ((line, low), g))) in y.iter_mut().zip(lines).enumerate() {
-                let out = if self.swing > 0.0 {
-                    let phase = if i == 0 { 0 } else { 1 + i % 2 };
-                    line.read_late(self.swing * swings.get(phase).copied().unwrap_or(0.0))
-                } else {
-                    line.read()
-                };
-                *low = out + self.damp * (*low - out);
-                *v = *low * g;
+            } else {
+                for ((v, (line, low)), g) in y
+                    .iter_mut()
+                    .zip(self.lines.iter().zip(&mut self.lows))
+                    .zip(self.gains)
+                {
+                    let out = line.read();
+                    *low = out + damp * (*low - out);
+                    *v = *low * g;
+                }
             }
             let [a, b, c, d, e, f, g, h] = y;
             let (left, right) = (a - c + e - g, b - d + f - h);
             hadamard(&mut y);
-            for ((line, v), sign) in self.lines.iter_mut().zip(y).zip([1.0, -1.0].iter().cycle()) {
-                let w = v + sign * x;
-                line.write(flush(w));
+            const SIGNS: [f32; 8] = [1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0];
+            for ((line, v), sign) in self.lines.iter_mut().zip(y).zip(SIGNS) {
+                let w = flush(v + sign * x);
+                block_peak = block_peak.max(w.abs());
+                line.write(w);
             }
             let (mid, side) = (0.5 * (left + right), 0.5 * (left - right) * self.stereo);
-            for ((o, [cut, low]), v) in frame
-                .iter_mut()
-                .zip(&mut self.out)
-                .zip([mid + side, mid - side])
-            {
-                *cut = v + self.high_cut * (*cut - v);
-                *low = *cut + self.shelf * (*low - *cut);
-                *o = wet * 0.5 * (*cut + self.shelf_gain * *low);
-            }
+            let hc = self.high_cut;
+            let sh = self.shelf;
+            let sg = self.shelf_gain;
+            let wet_half = wet * 0.5;
+            let vl = mid + side;
+            let vr = mid - side;
+            let cut_l = vl + hc * (self.out[0][0] - vl);
+            let low_l = cut_l + sh * (self.out[0][1] - cut_l);
+            self.out[0] = [cut_l, low_l];
+            let cut_r = vr + hc * (self.out[1][0] - vr);
+            let low_r = cut_r + sh * (self.out[1][1] - cut_r);
+            self.out[1] = [cut_r, low_r];
+            let out_l = wet_half * (cut_l + sg * low_l);
+            let out_r = wet_half * (cut_r + sg * low_r);
+            block_peak = block_peak.max(out_l.abs()).max(out_r.abs());
+            *frame = [out_l, out_r];
         }
+        self.cycle = (self.cycle + self.cycle_step * io.len() as f64).fract();
         for s in self.lows.iter_mut().chain(self.out.as_flattened_mut()) {
             if s.abs() < 1e-20 {
                 *s = 0.0;
             }
         }
+        if input_silent
+            && block_peak < 1e-7
+            && self.lows.iter().all(|v| v.abs() < 1e-7)
+            && self.out.iter().flatten().all(|v| v.abs() < 1e-7)
+        {
+            self.quiet_frames = self.quiet_frames.saturating_add(io.len());
+            let max_line = self.lines.iter().map(|l| l.len).max().unwrap_or(0);
+            let diff_sum: usize = self.diffusers.iter().map(|d| d.len).sum();
+            let max_mem = self.predelay.len + diff_sum + max_line + self.swing.ceil() as usize + 8;
+            if self.quiet_frames >= max_mem {
+                self.asleep = true;
+            }
+        } else {
+            self.quiet_frames = 0;
+        }
     }
 }
 
-/// The orthonormal 8-point Walsh–Hadamard transform, in place.
+/// The orthonormal 8-point Walsh–Hadamard transform, in place (unrolled 3-stage butterfly).
+#[inline(always)]
 fn hadamard(v: &mut [f32; 8]) {
-    for h in [1, 2, 4] {
-        for pair in v.chunks_exact_mut(2 * h) {
-            let (lo, hi) = pair.split_at_mut(h);
-            for (a, b) in lo.iter_mut().zip(hi) {
-                (*a, *b) = (*a + *b, *a - *b);
-            }
+    let [a0, a1, a2, a3, a4, a5, a6, a7] = *v;
+    let (b0, b1) = (a0 + a1, a0 - a1);
+    let (b2, b3) = (a2 + a3, a2 - a3);
+    let (b4, b5) = (a4 + a5, a4 - a5);
+    let (b6, b7) = (a6 + a7, a6 - a7);
+
+    let (c0, c2) = (b0 + b2, b0 - b2);
+    let (c1, c3) = (b1 + b3, b1 - b3);
+    let (c4, c6) = (b4 + b6, b4 - b6);
+    let (c5, c7) = (b5 + b7, b5 - b7);
+
+    const SCALE: f32 = std::f32::consts::FRAC_1_SQRT_2 * 0.5;
+    *v = [
+        (c0 + c4) * SCALE,
+        (c1 + c5) * SCALE,
+        (c2 + c6) * SCALE,
+        (c3 + c7) * SCALE,
+        (c0 - c4) * SCALE,
+        (c1 - c5) * SCALE,
+        (c2 - c6) * SCALE,
+        (c3 - c7) * SCALE,
+    ];
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_settings() -> Settings {
+        Settings {
+            seconds: 0.4,
+            size: 0.6,
+            damping: 0.5,
+            diffusion: 0.7,
+            predelay_ms: 5.0,
+            high_cut_hz: 8_000.0,
+            low_shelf_db: 0.0,
+            stereo: 1.0,
+            modulation_ms: 0.8,
+            modulation_hz: 0.7,
         }
     }
-    for x in v {
-        *x *= std::f32::consts::FRAC_1_SQRT_2 * 0.5;
+
+    #[test]
+    fn fdn_sleeps_on_silence_and_wakes_within_120db_of_always_awake() {
+        let rate = 48_000u32;
+        let s = test_settings();
+        let mut sleeping = Fdn::new(s, rate);
+        let mut awake = Fdn::new(s, rate);
+        assert!(sleeping.asleep, "fresh Fdn starts asleep");
+
+        // Feed burst -> 2.5s silence (enters sleep) -> second burst.
+        let total = 3 * rate as usize;
+        let mut buf_a = vec![[0.0f32; 2]; total];
+        for (i, frame) in buf_a.iter_mut().enumerate() {
+            if i < 2048 || (i >= 2 * rate as usize + 24_000 && i < 2 * rate as usize + 26_048) {
+                let x = (i as f32 * 0.13).sin() * 0.5;
+                *frame = [x, -x * 0.7];
+            }
+        }
+        let mut buf_b = buf_a.clone();
+        let mut saw_sleep = false;
+        for (ca, cb) in buf_a.chunks_mut(256).zip(buf_b.chunks_mut(256)) {
+            sleeping.process(ca);
+            if sleeping.asleep {
+                saw_sleep = true;
+            }
+            awake.asleep = false;
+            awake.quiet_frames = 0;
+            awake.process(cb);
+        }
+        assert!(saw_sleep, "Fdn should enter sleep after tail decays");
+        let worst = buf_a
+            .iter()
+            .flatten()
+            .zip(buf_b.iter().flatten())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        let peak = buf_b.iter().flatten().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(
+            peak > 0.05 && worst < 1e-5 * peak,
+            "sleep/wake null error {worst:e} (peak {peak:e})"
+        );
     }
 }

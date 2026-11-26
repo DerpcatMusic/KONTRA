@@ -343,6 +343,7 @@ impl CombBank {
             lfo_pole: pole(LFO_SMOOTH_HZ),
             scan_pole: pole(SCAN_SMOOTH_HZ),
         };
+        let ring_len = (2 * longest as usize + 8).next_power_of_two();
         Self {
             rate,
             longest,
@@ -351,7 +352,7 @@ impl CombBank {
             left: 0,
             glide: ((GLIDE_S * rate) as u32).max(1),
             now,
-            ring: vec![[[0.0; 2]; COMB_VOICES]; 2 * longest as usize + 8].into(),
+            ring: vec![[[0.0; 2]; COMB_VOICES]; ring_len].into(),
             at: 0,
             voices: [Voice {
                 feedback: [0.0; 2],
@@ -403,61 +404,83 @@ impl CombBank {
             self.glide();
             self.clock.tick(&self.now);
         }
-        self.at = (self.at + frames) % self.ring.len().max(1);
+        let mask = self.ring.len().saturating_sub(1);
+        self.at = self.at.wrapping_add(frames) & mask;
     }
 
     /// The input shelf on `x` ([ref], a trapezoidal SVF).
+    #[inline(always)]
     fn shelve(&mut self, x: [f32; 2]) -> [f32; 2] {
         let [g, a, low, band] = self.now.shelf;
-        let [s1s, s2s] = &mut self.shelf;
-        let mut out = x;
-        for ((y, s1), s2) in out.iter_mut().zip(s1s.iter_mut()).zip(s2s.iter_mut()) {
-            let v1 = (*s1 + g * (*y - *s2)) * a;
-            let lp = *s2 + g * v1;
-            *s1 = flush(2.0 * v1 - *s1);
-            *s2 = flush(*s2 + 2.0 * g * v1);
-            *y += low * lp + band * v1;
-        }
-        out
+        let [s1l, s1r] = self.shelf[0];
+        let [s2l, s2r] = self.shelf[1];
+        let v1l = (s1l + g * (x[0] - s2l)) * a;
+        let v1r = (s1r + g * (x[1] - s2r)) * a;
+        let lpl = s2l + g * v1l;
+        let lpr = s2r + g * v1r;
+        self.shelf[0] = [flush(2.0 * v1l - s1l), flush(2.0 * v1r - s1r)];
+        self.shelf[1] = [flush(s2l + 2.0 * g * v1l), flush(s2r + 2.0 * g * v1r)];
+        [x[0] + low * lpl + band * v1l, x[1] + low * lpr + band * v1r]
     }
 
     /// The 4-point Catmull-Rom read of voice `v`, `back` frames behind
     /// the newest.
+    #[inline(always)]
     fn read(&self, v: usize, back: f32) -> [f32; 2] {
         let n = self.ring.len();
+        let mask = n.saturating_sub(1);
         let back = back.max(1.0).min(n.saturating_sub(3) as f32);
         let whole = back as usize;
         let t = back - whole as f32;
-        let at = |b: usize| {
-            let i = self.at + n - b;
-            self.ring
-                .get(if i >= n { i - n } else { i })
-                .and_then(|f| f.get(v))
-                .copied()
-                .unwrap_or([0.0; 2])
-        };
-        let [ym1, y0, y1, y2] = [at(whole - 1), at(whole), at(whole + 1), at(whole + 2)];
-        let cr = |ym1: f32, y0: f32, y1: f32, y2: f32| {
-            let a = 1.5 * (y0 - y1) + 0.5 * (y2 - ym1);
-            let b = ym1 - 2.5 * y0 + 2.0 * y1 - 0.5 * y2;
-            ((a * t + b) * t + 0.5 * (y1 - ym1)) * t + y0
-        };
+        let base_idx = self.at.wrapping_sub(whole);
+        let ym1 = self
+            .ring
+            .get(base_idx.wrapping_add(1) & mask)
+            .and_then(|f| f.get(v))
+            .copied()
+            .unwrap_or([0.0; 2]);
+        let y0 = self
+            .ring
+            .get(base_idx & mask)
+            .and_then(|f| f.get(v))
+            .copied()
+            .unwrap_or([0.0; 2]);
+        let y1 = self
+            .ring
+            .get(base_idx.wrapping_sub(1) & mask)
+            .and_then(|f| f.get(v))
+            .copied()
+            .unwrap_or([0.0; 2]);
+        let y2 = self
+            .ring
+            .get(base_idx.wrapping_sub(2) & mask)
+            .and_then(|f| f.get(v))
+            .copied()
+            .unwrap_or([0.0; 2]);
+        let al = 1.5 * (y0[0] - y1[0]) + 0.5 * (y2[0] - ym1[0]);
+        let ar = 1.5 * (y0[1] - y1[1]) + 0.5 * (y2[1] - ym1[1]);
+        let bl = ym1[0] - 2.5 * y0[0] + 2.0 * y1[0] - 0.5 * y2[0];
+        let br = ym1[1] - 2.5 * y0[1] + 2.0 * y1[1] - 0.5 * y2[1];
         [
-            cr(ym1[0], y0[0], y1[0], y2[0]),
-            cr(ym1[1], y0[1], y1[1], y2[1]),
+            ((al * t + bl) * t + 0.5 * (y1[0] - ym1[0])) * t + y0[0],
+            ((ar * t + br) * t + 0.5 * (y1[1] - ym1[1])) * t + y0[1],
         ]
     }
 
     /// Replaces `io` with the output: the wet sum and the input's share.
-    ///
-    /// ponytail: one frame at a time, ~100 µs per 512 frames at 48 kHz
-    /// (half a 2 % budget). Upgrade: the four voices as one 4-lane SIMD
-    /// pass (smoother, clip, cubic reads), the clock and heads in spans,
-    /// `Derived` only while gliding.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
         let mut written = 0.0f32;
+        let mask = self.ring.len().saturating_sub(1);
+        let fixed_gain = if self.left == 0 && self.now.s.scan == 0.0 {
+            let total: f32 = self.now.level.iter().sum();
+            Some(self.now.wet / total.max(1e-12).sqrt())
+        } else {
+            None
+        };
         for frame in io {
-            self.glide();
+            if self.left > 0 {
+                self.glide();
+            }
             let lfo = self.clock.tick(&self.now);
             let d = self.now;
             let s = d.s;
@@ -465,16 +488,22 @@ impl CombBank {
             let xf = self.shelve(x);
             let feed = scale(d.input, xf);
             // The lines: input and clipped feedback through the smoother.
-            self.at = (self.at + 1) % self.ring.len().max(1);
+            self.at = self.at.wrapping_add(1) & mask;
             let [outer, next, centre] = d.fir;
             let mut column = [[0.0f32; 2]; COMB_VOICES];
             for (voice, y) in self.voices.iter_mut().zip(column.iter_mut()) {
-                voice.smoother.rotate_right(1);
-                voice.smoother[0] = add(feed, voice.feedback.map(soft_clip));
-                let [h0, h1, h2, h3, h4] = voice.smoother;
-                let sides = add(scale(outer, add(h0, h4)), scale(next, add(h1, h3)));
-                *y = add(sides, scale(centre, h2)).map(flush);
-                written = y.iter().fold(written, |m, v| m.max(v.abs()));
+                let [h0, h1, h2, h3, _] = voice.smoother;
+                let fresh = [
+                    feed[0] + soft_clip(voice.feedback[0]),
+                    feed[1] + soft_clip(voice.feedback[1]),
+                ];
+                voice.smoother = [fresh, h0, h1, h2, h3];
+                let yl =
+                    flush(outer * (fresh[0] + h3[0]) + next * (h0[0] + h2[0]) + centre * h1[0]);
+                let yr =
+                    flush(outer * (fresh[1] + h3[1]) + next * (h0[1] + h2[1]) + centre * h1[1]);
+                *y = [yl, yr];
+                written = written.max(yl.abs()).max(yr.abs());
             }
             if let Some(f) = self.ring.get_mut(self.at) {
                 *f = column;
@@ -483,27 +512,43 @@ impl CombBank {
             let levels = self.clock.levels;
             let (mut sum, mut total) = ([0.0f32; 2], 0.0f32);
             let mut feedback = [[0.0f32; 2]; COMB_VOICES];
+            let has_mirror = d.mirror != 0.0;
+            let has_tz = s.thru_zero != 0.0;
+            let [cos, sin] = d.cross;
+            let [pc, ps] = d.pan;
+            let one_minus_mirror = 1.0 - d.mirror;
+            let one_minus_scan = 1.0 - s.scan;
             let per_voice = d.base.iter().zip(d.still).zip(d.feedback).zip(d.level);
-            for (v, ((((&base, still), gain), level), (fb, scan))) in
+            for (v, ((((&base, still), gain), d_level), (fb_slot, scan))) in
                 per_voice.zip(feedback.iter_mut().zip(levels)).enumerate()
             {
+                let level = s.scan * scan + one_minus_scan * d_level;
                 let swing = d.depth * lfo * (base - FLOOR);
                 // The head sits one past the newest frame.
                 let a = self.read(v, base + swing - 1.0);
-                let b = self.read(v, base - swing - 1.0);
-                let c = self.read(v, still - 1.0);
-                let [cos, sin] = d.cross;
                 let turn = if v % 2 == 0 { [cos, -sin] } else { [cos, sin] };
-                *fb = rotate(turn, a).map(|y| flush(s.polarity * gain * y));
+                let fb = rotate(turn, a).map(|y| flush(s.polarity * gain * y));
+                *fb_slot = fb;
+                if level == 0.0 {
+                    continue;
+                }
                 // The input with the new, unclipped feedback; through zero
                 // folds in the still head (and, inverted, cancels the input).
-                let x0 = add(feed, *fb);
-                let t = add(x0, scale(s.thru_zero, add(scale(s.polarity, x0), c)));
-                let [pc, ps] = d.pan;
+                let x0 = add(feed, fb);
+                let t = if has_tz {
+                    let c = self.read(v, still - 1.0);
+                    add(x0, scale(s.thru_zero, add(scale(s.polarity, x0), c)))
+                } else {
+                    x0
+                };
                 let ya = rotate([pc, -ps], add(scale(s.polarity, a), t));
-                let yb = rotate([pc, ps], add(scale(s.polarity, b), t));
-                let level = s.scan * scan + (1.0 - s.scan) * level;
-                let y = add(scale(1.0 - d.mirror, ya), scale(d.mirror, yb));
+                let y = if has_mirror {
+                    let b = self.read(v, base - swing - 1.0);
+                    let yb = rotate([pc, ps], add(scale(s.polarity, b), t));
+                    add(scale(one_minus_mirror, ya), scale(d.mirror, yb))
+                } else {
+                    ya
+                };
                 sum = add(sum, scale(level, y));
                 total += level;
             }
@@ -511,8 +556,9 @@ impl CombBank {
                 voice.feedback = fb;
             }
             // `M·(0.5 − 0.25·tz)/√Σ level` and the input's `1 − M`.
-            let gain = d.wet / total.max(1e-12).sqrt();
-            *frame = add(scale(gain, sum), scale(1.0 - s.mix, x));
+            let gain = fixed_gain.unwrap_or_else(|| d.wet / total.max(1e-12).sqrt());
+            let dry = 1.0 - s.mix;
+            *frame = [gain * sum[0] + dry * x[0], gain * sum[1] + dry * x[1]];
         }
         let held = self
             .voices

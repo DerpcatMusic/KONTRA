@@ -5,8 +5,6 @@
 //! Real-time safe: pre-allocated power-of-two delay lines, zero heap
 //! allocations on [`Rotary::process`], and per-sample parameter smoothing.
 
-use std::f32::consts::{PI, TAU};
-
 use moose_dsp::svf::{Svf, SvfCoeffs};
 
 /// Settings for [`Rotary`] in physical units.
@@ -234,6 +232,107 @@ impl Rotary {
         let sm = self.smooth_coeff;
 
         let mut peak = 0.0f32;
+        let still = |a: f32, b: f32, k: f32| (a + (b - a) * k).to_bits() == a.to_bits();
+        let params_settled = still(self.balance, bal_target, sm)
+            && still(self.distance, dist_target, sm)
+            && still(self.mix, mix_target, sm);
+        let speeds_settled = still(self.horn_hz, horn_target, horn_alpha)
+            && still(self.drum_hz, drum_target, drum_alpha);
+
+        // When rotor speeds and mic parameters are settled (steady-state), use
+        // complex phasor rotation + angle-sum identities (zero trig calls per frame).
+        if params_settled && speeds_settled {
+            let closeness = 1.0 - 0.65 * self.distance;
+            let half_stereo_cycles = 0.25 * (0.5 - 0.36 * self.distance);
+            let (st_sin, st_cos) =
+                kontra_dsp_core::math::fast_sin_cos_cycles_f32(half_stereo_cycles);
+            let h_depth = HORN_DOPPLER_MS * closeness * ms_to_frames;
+            let d_depth = DRUM_DOPPLER_MS * closeness * ms_to_frames;
+            let h_am_scale = closeness * 0.45;
+            let d_am_scale = closeness * 0.28;
+            let horn_gain = (2.0 * self.balance).min(1.0) * (0.75 + 0.25 * self.balance);
+            let drum_gain = (2.0 * (1.0 - self.balance)).min(1.0) * (1.0 - 0.25 * self.balance);
+            let m = self.mix;
+
+            let h_step = f64::from(self.horn_hz) * inv_rate_f64;
+            let d_step = f64::from(self.drum_hz) * inv_rate_f64;
+            let (mut h_sin, mut h_cos) =
+                (std::f64::consts::TAU * (self.horn_phase + h_step)).sin_cos();
+            let (mut d_sin, mut d_cos) =
+                (std::f64::consts::TAU * (self.drum_phase + d_step)).sin_cos();
+            let (hs_sin, hs_cos) = (std::f64::consts::TAU * h_step).sin_cos();
+            let (ds_sin, ds_cos) = (std::f64::consts::TAU * d_step).sin_cos();
+
+            for frame in io.iter_mut() {
+                let [dry_l, dry_r] = *frame;
+                let mono = 0.5 * (dry_l + dry_r);
+                peak = peak.max(mono.abs());
+
+                let lp1 = self.xover_a.tick(mono, &self.xover_coeffs).low;
+                let low = self.xover_b.tick(lp1, &self.xover_coeffs).low;
+                let high = mono - low;
+                self.horn_line.push(high);
+                self.drum_line.push(low);
+
+                let (hs, hc) = (h_sin as f32, h_cos as f32);
+                let (ds, dc) = (d_sin as f32, d_cos as f32);
+                // Angle-sum identities:
+                // cos(a - s) = ca*cs + sa*ss, cos(a + s) = ca*cs - sa*ss
+                // sin(a - s) = sa*cs - ca*ss, sin(a + s) = sa*cs + ca*ss
+                let h_cos_l = hc * st_cos + hs * st_sin;
+                let h_cos_r = hc * st_cos - hs * st_sin;
+                let h_sin_l = hs * st_cos - hc * st_sin;
+                let h_sin_r = hs * st_cos + hc * st_sin;
+
+                let d_cos_l = dc * st_cos - ds * st_sin;
+                let d_cos_r = dc * st_cos + ds * st_sin;
+                let d_sin_l = ds * st_cos + dc * st_sin;
+                let d_sin_r = ds * st_cos - dc * st_sin;
+
+                let horn_raw_l = self.horn_line.read(base_frames + h_depth * h_cos_l);
+                let horn_raw_r = self.horn_line.read(base_frames + h_depth * h_cos_r);
+                let drum_raw_l = self.drum_line.read(base_frames + d_depth * d_cos_l);
+                let drum_raw_r = self.drum_line.read(base_frames + d_depth * d_cos_r);
+
+                let h_front_l = 0.5 + 0.5 * h_sin_l;
+                let h_front_r = 0.5 + 0.5 * h_sin_r;
+                let h_am_l = 1.0 - h_am_scale * (1.0 - h_front_l);
+                let h_am_r = 1.0 - h_am_scale * (1.0 - h_front_r);
+                let d_am_l = 1.0 - d_am_scale * (0.5 - 0.5 * d_sin_l);
+                let d_am_r = 1.0 - d_am_scale * (0.5 - 0.5 * d_sin_r);
+
+                let lp_g_l = (0.25 + 0.72 * h_front_l).clamp(0.1, 0.99);
+                let lp_g_r = (0.25 + 0.72 * h_front_r).clamp(0.1, 0.99);
+                self.horn_lp[0] = flush(self.horn_lp[0] + (horn_raw_l - self.horn_lp[0]) * lp_g_l);
+                self.horn_lp[1] = flush(self.horn_lp[1] + (horn_raw_r - self.horn_lp[1]) * lp_g_r);
+
+                let wet_l = self.horn_lp[0] * h_am_l * horn_gain + drum_raw_l * d_am_l * drum_gain;
+                let wet_r = self.horn_lp[1] * h_am_r * horn_gain + drum_raw_r * d_am_r * drum_gain;
+
+                *frame = [
+                    flush(dry_l + (wet_l - dry_l) * m),
+                    flush(dry_r + (wet_r - dry_r) * m),
+                ];
+
+                let next_hs = h_sin * hs_cos + h_cos * hs_sin;
+                let next_hc = h_cos * hs_cos - h_sin * hs_sin;
+                h_sin = next_hs;
+                h_cos = next_hc;
+                let next_ds = d_sin * ds_cos + d_cos * ds_sin;
+                let next_dc = d_cos * ds_cos - d_sin * ds_sin;
+                d_sin = next_ds;
+                d_cos = next_dc;
+            }
+            let n = io.len() as f64;
+            let hp = self.horn_phase + h_step * n;
+            self.horn_phase = hp - hp.floor();
+            let dp = self.drum_phase + d_step * n;
+            self.drum_phase = dp - dp.floor();
+            self.xover_a.flush(1e-20);
+            self.xover_b.flush(1e-20);
+            self.written = peak;
+            return;
+        }
 
         for frame in io {
             let [dry_l, dry_r] = *frame;
@@ -268,34 +367,39 @@ impl Rotary {
 
             // Stereo mic angle narrows as distance grows: close = 90 deg, far = 25 deg.
             let closeness = 1.0 - 0.65 * self.distance;
-            let stereo_rad = (0.5 - 0.36 * self.distance) * PI;
+            let half_stereo_cycles = 0.25 * (0.5 - 0.36 * self.distance);
+            let (st_sin, st_cos) =
+                kontra_dsp_core::math::fast_sin_cos_cycles_f32(half_stereo_cycles);
+            let (hs, hc) = kontra_dsp_core::math::fast_sin_cos_cycles_f32(self.horn_phase as f32);
+            let (ds, dc) = kontra_dsp_core::math::fast_sin_cos_cycles_f32(self.drum_phase as f32);
 
-            let h_ang = (self.horn_phase as f32) * TAU;
-            let d_ang = (self.drum_phase as f32) * TAU;
+            let h_cos_l = hc * st_cos + hs * st_sin;
+            let h_cos_r = hc * st_cos - hs * st_sin;
+            let h_sin_l = hs * st_cos - hc * st_sin;
+            let h_sin_r = hs * st_cos + hc * st_sin;
 
-            // Left/Right mic angles symmetrically placed around 0.
-            let h_l = h_ang - 0.5 * stereo_rad;
-            let h_r = h_ang + 0.5 * stereo_rad;
-            let d_l = d_ang + 0.5 * stereo_rad;
-            let d_r = d_ang - 0.5 * stereo_rad;
+            let d_cos_l = dc * st_cos - ds * st_sin;
+            let d_cos_r = dc * st_cos + ds * st_sin;
+            let d_sin_l = ds * st_cos + dc * st_sin;
+            let d_sin_r = ds * st_cos - dc * st_sin;
 
             // Doppler delay modulation (cosine of angle -> derivative gives sine FM).
             let h_depth = HORN_DOPPLER_MS * closeness * ms_to_frames;
             let d_depth = DRUM_DOPPLER_MS * closeness * ms_to_frames;
 
-            let horn_raw_l = self.horn_line.read(base_frames + h_depth * h_l.cos());
-            let horn_raw_r = self.horn_line.read(base_frames + h_depth * h_r.cos());
-            let drum_raw_l = self.drum_line.read(base_frames + d_depth * d_l.cos());
-            let drum_raw_r = self.drum_line.read(base_frames + d_depth * d_r.cos());
+            let horn_raw_l = self.horn_line.read(base_frames + h_depth * h_cos_l);
+            let horn_raw_r = self.horn_line.read(base_frames + h_depth * h_cos_r);
+            let drum_raw_l = self.drum_line.read(base_frames + d_depth * d_cos_l);
+            let drum_raw_r = self.drum_line.read(base_frames + d_depth * d_cos_r);
 
             // Directional AM + mild horn off-axis HF damping.
-            let h_front_l = 0.5 + 0.5 * h_l.sin();
-            let h_front_r = 0.5 + 0.5 * h_r.sin();
+            let h_front_l = 0.5 + 0.5 * h_sin_l;
+            let h_front_r = 0.5 + 0.5 * h_sin_r;
             let h_am_l = 1.0 - closeness * 0.45 * (1.0 - h_front_l);
             let h_am_r = 1.0 - closeness * 0.45 * (1.0 - h_front_r);
 
-            let d_am_l = 1.0 - closeness * 0.28 * (0.5 - 0.5 * d_l.sin());
-            let d_am_r = 1.0 - closeness * 0.28 * (0.5 - 0.5 * d_r.sin());
+            let d_am_l = 1.0 - closeness * 0.28 * (0.5 - 0.5 * d_sin_l);
+            let d_am_r = 1.0 - closeness * 0.28 * (0.5 - 0.5 * d_sin_r);
 
             // Off-axis horn dulling via lightweight 1-pole low-pass modulated by angle.
             let lp_g_l = (0.25 + 0.72 * h_front_l).clamp(0.1, 0.99);
@@ -352,6 +456,8 @@ fn flush(x: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use std::f32::consts::TAU;
+
     use super::*;
 
     fn default_settings(fast: bool) -> RotarySettings {

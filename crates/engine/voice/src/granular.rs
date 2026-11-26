@@ -5,8 +5,6 @@
 //! a [`Region`]'s resident/streamed [`kontra_stream::Sample`] pages via
 //! caller-provided scratch buffers, allocating nothing on the audio thread.
 
-use std::f32::consts::TAU;
-
 use kontra_stream::{Decoded, Mix, StreamClient};
 
 use crate::zone::Region;
@@ -200,24 +198,37 @@ impl Granular {
                     .read_cached(client, lo, win, mix, Some(decoded))
                     .missing;
 
-                let inv_len = 1.0 / grain.len as f32;
-                for k in 0..count {
-                    let rel = grain.pos - lo as f64;
-                    let idx0 = (rel.floor() as usize).min(span.saturating_sub(1));
-                    let idx1 = (idx0 + 1).min(span.saturating_sub(1));
+                // Incremental double-precision complex phasor for Hann window:
+                // zero per-sample `cos()` calls, exact to < 1e-12 across the chunk.
+                let d_angle = std::f64::consts::TAU / f64::from(grain.len);
+                let (sin_d, cos_d) = d_angle.sin_cos();
+                let (mut sin_p, mut cos_p) = (f64::from(grain.age) * d_angle).sin_cos();
+                let gain_l = 0.5 * norm * grain.pan_l;
+                let gain_r = 0.5 * norm * grain.pan_r;
+                let lo_f64 = lo as f64;
+                let last_idx = span.saturating_sub(1);
+                let dst_slice = out
+                    .get_mut(block_pos..block_pos + count)
+                    .unwrap_or_default();
+                for dst in dst_slice {
+                    let rel = grain.pos - lo_f64;
+                    let idx0 = (rel.floor() as usize).min(last_idx);
+                    let idx1 = (idx0 + 1).min(last_idx);
                     let frac = (rel - rel.floor()).clamp(0.0, 1.0) as f32;
                     let s0 = win.get(idx0).copied().unwrap_or([0.0; 2]);
                     let s1 = win.get(idx1).copied().unwrap_or(s0);
                     let sl = s0[0] + (s1[0] - s0[0]) * frac;
                     let sr = s0[1] + (s1[1] - s0[1]) * frac;
 
-                    // Hann window: zero at grain boundaries, smooth overlap-add.
-                    let phase = grain.age as f32 * inv_len;
-                    let w = 0.5 * (1.0 - (TAU * phase).cos()) * norm;
-                    if let Some(dst) = out.get_mut(block_pos + k) {
-                        dst[0] += sl * w * grain.pan_l;
-                        dst[1] += sr * w * grain.pan_r;
-                    }
+                    // Hann window: 0.5 * (1 - cos(2*pi*age/len)), pre-scaled by norm * pan.
+                    let hann = 1.0 - cos_p as f32;
+                    dst[0] += sl * (hann * gain_l);
+                    dst[1] += sr * (hann * gain_r);
+
+                    let next_cos = cos_p * cos_d - sin_p * sin_d;
+                    let next_sin = sin_p * cos_d + cos_p * sin_d;
+                    cos_p = next_cos;
+                    sin_p = next_sin;
 
                     grain.pos += grain_step;
                     if grain.pos >= max_pos {
@@ -284,6 +295,7 @@ impl Granular {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    use std::f32::consts::TAU;
     use std::sync::Arc;
 
     use kontra_stream::{BlobKey, Encoding, LoadRequest, MemSource, SampleFmt, Store, StoreConfig};

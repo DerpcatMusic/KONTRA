@@ -63,17 +63,20 @@ pub struct NotchSettings {
 }
 
 /// One channel's coefficients at this frame's LFO: the stages' corner `g`,
-/// `h` and `k = 4R`; the loop band-pass's `gb`, `kb`, `hb` and its upper
-/// share.
+/// `h`, `k = 4R`, `pass = 1 - g*h*k`, `pass_pow = pass^stages`; the loop
+/// band-pass's `gb`, `kb`, `hb`, its upper share, and `loop_gain`.
 #[derive(Clone, Copy, Debug, Default)]
 struct Coeffs {
     g: f64,
     h: f64,
     k: f64,
+    pass: f64,
+    pass_pow: f64,
     gb: f64,
     kb: f64,
     hb: f64,
     share: f64,
+    loop_gain: f64,
 }
 
 /// Everything but the resampler.
@@ -134,6 +137,12 @@ impl Core {
             .exp2();
         let h = 1.0 / (1.0 + 2.0 * r * g + g * g);
         let k = 4.0 * r;
+        let pass = 1.0 - g * h * k;
+        let stages = usize::from(s.stages).clamp(1, MAX_STAGES);
+        let mut pass_pow = 1.0;
+        for _ in 0..stages {
+            pass_pow *= pass;
+        }
         // The loop band-pass: edges `g/a` and `min(g·a, top)`, centred
         // between them, unity at its peak, scaled by the upper share.
         let wide = f64::from(s.loop_width) * r;
@@ -143,18 +152,23 @@ impl Core {
         let kb = (low + high) / gb;
         let hb = 1.0 / (1.0 + kb * gb + gb * gb);
         let share = high / (low + high);
+        let loop_gain = f64::from(s.sign) * share * hb * gb * kb;
         Coeffs {
             g,
             h,
             k,
+            pass,
+            pass_pow,
             gb,
             kb,
             hb,
             share,
+            loop_gain,
         }
     }
 
     /// One frame at the running rate.
+    #[inline]
     fn tick(&mut self, frame: [f32; 2]) -> [f32; 2] {
         let s = self.s;
         let stages = usize::from(s.stages).clamp(1, MAX_STAGES);
@@ -162,73 +176,74 @@ impl Core {
         let mix = f64::from(s.mix);
         let level = self.level;
         let sign = f64::from(s.sign);
+        let lfo_inc = f64::from(s.lfo_hz) / self.rate;
         if self.until == 0 {
             // At the middle of the ticks it holds for.
-            let mid = self.cycle + f64::from(CONTROL - 1) / 2.0 * f64::from(s.lfo_hz) / self.rate;
+            let mid = self.cycle + f64::from(CONTROL - 1) / 2.0 * lfo_inc;
             let lfo = [1.0, -1.0].map(|side| self.lfo(mid + side * f64::from(s.phase)));
             self.held = lfo.map(|lfo| self.coeffs(lfo));
             self.until = CONTROL;
         }
         self.until -= 1;
-        let c = self.held;
-        let x = frame.map(f64::from);
+        let [c0, c1] = self.held;
+        let [x0, x1] = [f64::from(frame[0]), f64::from(frame[1])];
         let used = self.stages.get_mut(..stages).unwrap_or_default();
-        // The cascade as `A·u + B`.
-        let (mut gain, mut offset) = ([1.0f64; 2], [0.0f64; 2]);
+        // The cascade as `A·u + B` (`A = pass_pow` precomputed per control tick).
+        let (mut off0, mut off1) = (0.0f64, 0.0f64);
         for stage in used.iter() {
-            for (((a, b), [i1, i2]), c) in gain.iter_mut().zip(&mut offset).zip(stage).zip(&c) {
-                let pass = 1.0 - c.g * c.h * c.k;
-                (*a, *b) = (*a * pass, *b * pass - c.h * (i1 - c.g * i2));
-            }
+            off0 = off0 * c0.pass - c0.h * (stage[0][0] - c0.g * stage[0][1]);
+            off1 = off1 * c1.pass - c1.h * (stage[1][0] - c1.g * stage[1][1]);
         }
         // The loop solved for `u`, then the stages run on it.
-        let mut u = [0.0f64; 2];
-        let solve = (u.iter_mut().zip(&x).zip(&self.band).zip(&c)).zip(gain.iter().zip(&offset));
-        for ((((u, &x), [b1, b2]), c), (&gain, &offset)) in solve {
-            let loop_gain = sign * c.share * c.hb * c.gb * c.kb;
-            *u = (x + fb * ((b1 - c.gb * b2) * c.hb + loop_gain * offset))
-                / (1.0 - fb * loop_gain * gain);
-        }
-        let mut tail = u;
+        let [b0_1, b0_2] = self.band[0];
+        let [b1_1, b1_2] = self.band[1];
+        let u0 = (x0 + fb * ((b0_1 - c0.gb * b0_2) * c0.hb + c0.loop_gain * off0))
+            / (1.0 - fb * c0.loop_gain * c0.pass_pow);
+        let u1 = (x1 + fb * ((b1_1 - c1.gb * b1_2) * c1.hb + c1.loop_gain * off1))
+            / (1.0 - fb * c1.loop_gain * c1.pass_pow);
+        let (mut t0, mut t1) = (u0, u1);
         for stage in used.iter_mut() {
-            for ((tail, [i1, i2]), c) in tail.iter_mut().zip(stage).zip(&c) {
-                let v = ((*tail * c.k - *i2) * c.g + *i1) * c.h;
-                *tail -= v;
-                *i1 = 2.0 * v - *i1;
-                *i2 += 2.0 * c.g * v;
-            }
+            let v0 = ((t0 * c0.k - stage[0][1]) * c0.g + stage[0][0]) * c0.h;
+            t0 -= v0;
+            let s00 = 2.0 * v0 - stage[0][0];
+            let s01 = stage[0][1] + 2.0 * c0.g * v0;
+            stage[0][0] = if s00.abs() < 1e-20 { 0.0 } else { s00 };
+            stage[0][1] = if s01.abs() < 1e-20 { 0.0 } else { s01 };
+
+            let v1 = ((t1 * c1.k - stage[1][1]) * c1.g + stage[1][0]) * c1.h;
+            t1 -= v1;
+            let s10 = 2.0 * v1 - stage[1][0];
+            let s11 = stage[1][1] + 2.0 * c1.g * v1;
+            stage[1][0] = if s10.abs() < 1e-20 { 0.0 } else { s10 };
+            stage[1][1] = if s11.abs() < 1e-20 { 0.0 } else { s11 };
         }
-        let mut out = [0.0f32; 2];
-        let rest = (out
-            .iter_mut()
-            .zip(&x)
-            .zip(&mut self.band)
-            .zip(&mut self.low))
-        .zip(c.iter().zip(u.iter().zip(&tail)));
-        for ((((y, &x), band), low), (c, (&u, &tail))) in rest {
-            let tail = sign * tail;
-            let [b1, b2] = *band;
-            let v = ((c.share * tail * c.kb - b2) * c.gb + b1) * c.hb;
-            *band = [2.0 * v - b1, b2 + 2.0 * c.gb * v];
-            let wet = 0.5 * (u + tail);
-            let sum = (x + (wet - x) * mix) * level;
-            // The high-pass: what a trapezoidal one-pole low-pass leaves.
-            let d = (sum - *low) * self.low_cut;
-            let lp = d + *low;
-            *low = d + lp;
-            self.written = self.written.max(u.abs() as f32);
-            *y = (sum - lp) as f32;
-        }
-        // Only the stages in use move; the rest were flushed when they ran.
-        let moved = used.as_flattened_mut().as_flattened_mut();
-        for v in moved.iter_mut().chain(self.band.as_flattened_mut()) {
-            if v.abs() < 1e-20 {
-                *v = 0.0;
-            }
-        }
-        let next = self.cycle + f64::from(s.lfo_hz) / self.rate;
+        let tail0 = sign * t0;
+        let tail1 = sign * t1;
+        let vb0 = ((c0.share * tail0 * c0.kb - b0_2) * c0.gb + b0_1) * c0.hb;
+        let vb1 = ((c1.share * tail1 * c1.kb - b1_2) * c1.gb + b1_1) * c1.hb;
+        let nb00 = 2.0 * vb0 - b0_1;
+        let nb01 = b0_2 + 2.0 * c0.gb * vb0;
+        let nb10 = 2.0 * vb1 - b1_1;
+        let nb11 = b1_2 + 2.0 * c1.gb * vb1;
+        self.band[0][0] = if nb00.abs() < 1e-20 { 0.0 } else { nb00 };
+        self.band[0][1] = if nb01.abs() < 1e-20 { 0.0 } else { nb01 };
+        self.band[1][0] = if nb10.abs() < 1e-20 { 0.0 } else { nb10 };
+        self.band[1][1] = if nb11.abs() < 1e-20 { 0.0 } else { nb11 };
+
+        let wet0 = 0.5 * (u0 + tail0);
+        let wet1 = 0.5 * (u1 + tail1);
+        let sum0 = (x0 + (wet0 - x0) * mix) * level;
+        let sum1 = (x1 + (wet1 - x1) * mix) * level;
+        let d0 = (sum0 - self.low[0]) * self.low_cut;
+        let d1 = (sum1 - self.low[1]) * self.low_cut;
+        let lp0 = d0 + self.low[0];
+        let lp1 = d1 + self.low[1];
+        self.low[0] = d0 + lp0;
+        self.low[1] = d1 + lp1;
+        self.written = self.written.max(u0.abs() as f32).max(u1.abs() as f32);
+        let next = self.cycle + lfo_inc;
         self.cycle = next - next.floor();
-        out
+        [(sum0 - lp0) as f32, (sum1 - lp1) as f32]
     }
 
     fn set(&mut self, s: NotchSettings) {

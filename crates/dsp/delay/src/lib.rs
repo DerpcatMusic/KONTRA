@@ -571,32 +571,106 @@ impl Phaser {
 
     /// Replaces `io` with the wet signal.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
+        if io.is_empty() {
+            return;
+        }
         let s = self.s;
         let step = f64::from(s.lfo_hz / self.rate);
-        let offsets = [0.0, f64::from(s.phase)];
-        let scale = std::f32::consts::PI / self.rate;
         let stages = usize::from(s.stages).clamp(1, MAX_STAGES);
-        let shape = if s.triangle { triangle } else { lfo };
-        for frame in io {
-            let states = self.x.iter_mut().zip(self.y.iter_mut());
-            for ((v, offset), (xs, ys)) in frame.iter_mut().zip(offsets).zip(states) {
-                let sweep = s.spread_hz * ((s.exponent * shape(self.cycle + offset)).exp() - 1.0);
-                let w = ((s.hz + sweep) * scale).clamp(1e-5, 0.99);
-                let a = (1.0 - w) / (1.0 + w);
-                let (Some(xs), Some(ys)) = (xs.get_mut(..stages), ys.get_mut(..stages)) else {
-                    continue;
-                };
-                let mut input = *v + s.feedback * ys.last().copied().unwrap_or(0.0);
-                for (x, y) in xs.iter_mut().zip(ys.iter_mut()) {
-                    let out = flush((input + *y) * a - *x);
-                    *x = input;
-                    *y = out;
-                    input = out;
-                }
-                *v = input;
-            }
-            self.cycle = fract(self.cycle + step);
+        if self
+            .x
+            .iter()
+            .all(|ch| ch.iter().take(stages).all(|&v| v == 0.0))
+            && self
+                .y
+                .iter()
+                .all(|ch| ch.iter().take(stages).all(|&v| v == 0.0))
+            && io.iter().all(|f| f[0] == 0.0 && f[1] == 0.0)
+        {
+            self.cycle = fract(self.cycle + step * io.len() as f64);
+            return;
         }
+        let offset_r = f64::from(s.phase);
+        let scale = std::f32::consts::PI / self.rate;
+        let fb = s.feedback;
+        let same_phase = s.phase == 0.0;
+        let [xs_l, xs_r] = &mut self.x;
+        let [ys_l, ys_r] = &mut self.y;
+        let (Some(xs_l), Some(xs_r), Some(ys_l), Some(ys_r)) = (
+            xs_l.get_mut(..stages),
+            xs_r.get_mut(..stages),
+            ys_l.get_mut(..stages),
+            ys_r.get_mut(..stages),
+        ) else {
+            return;
+        };
+        let mut cycle = self.cycle;
+        #[inline(always)]
+        fn coeff_from_lfo(s: PhaserSettings, scale: f32, lfo_val: f32) -> f32 {
+            let sweep = s.spread_hz * ((s.exponent * lfo_val).exp() - 1.0);
+            let w = ((s.hz + sweep) * scale).clamp(1e-5, 0.99);
+            (1.0 - w) / (1.0 + w)
+        }
+        if s.triangle {
+            for frame in io {
+                let al = coeff_from_lfo(s, scale, triangle(cycle));
+                let ar = if same_phase {
+                    al
+                } else {
+                    coeff_from_lfo(s, scale, triangle(cycle + offset_r))
+                };
+                let mut in_l = frame[0] + fb * ys_l.last().copied().unwrap_or(0.0);
+                let mut in_r = frame[1] + fb * ys_r.last().copied().unwrap_or(0.0);
+                for (((xl, yl), xr), yr) in xs_l
+                    .iter_mut()
+                    .zip(ys_l.iter_mut())
+                    .zip(xs_r.iter_mut())
+                    .zip(ys_r.iter_mut())
+                {
+                    let ol = flush((in_l + *yl) * al - *xl);
+                    let or = flush((in_r + *yr) * ar - *xr);
+                    *xl = in_l;
+                    *yl = ol;
+                    *xr = in_r;
+                    *yr = or;
+                    in_l = ol;
+                    in_r = or;
+                }
+                frame[0] = in_l;
+                frame[1] = in_r;
+                cycle = fract(cycle + step);
+            }
+        } else {
+            for frame in io {
+                let al = coeff_from_lfo(s, scale, lfo(cycle));
+                let ar = if same_phase {
+                    al
+                } else {
+                    coeff_from_lfo(s, scale, lfo(cycle + offset_r))
+                };
+                let mut in_l = frame[0] + fb * ys_l.last().copied().unwrap_or(0.0);
+                let mut in_r = frame[1] + fb * ys_r.last().copied().unwrap_or(0.0);
+                for (((xl, yl), xr), yr) in xs_l
+                    .iter_mut()
+                    .zip(ys_l.iter_mut())
+                    .zip(xs_r.iter_mut())
+                    .zip(ys_r.iter_mut())
+                {
+                    let ol = flush((in_l + *yl) * al - *xl);
+                    let or = flush((in_r + *yr) * ar - *xr);
+                    *xl = in_l;
+                    *yl = ol;
+                    *xr = in_r;
+                    *yr = or;
+                    in_l = ol;
+                    in_r = or;
+                }
+                frame[0] = in_l;
+                frame[1] = in_r;
+                cycle = fract(cycle + step);
+            }
+        }
+        self.cycle = cycle;
     }
 }
 

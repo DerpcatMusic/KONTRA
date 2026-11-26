@@ -424,32 +424,54 @@ impl Rack {
     ) {
         let slots = self.slots.iter().zip(self.dsp.iter_mut());
         let slots = slots.zip(self.levels.iter_mut()).zip(self.quiet.iter_mut());
+        let has_mods = !self.mods.is_empty();
+        let mut io_silent = is_silent(io);
         for (n, (((slot, dsp), levels), quiet)) in slots.enumerate() {
             let Some(base) = slot.as_ref().filter(|e| !e.bypass) else {
                 continue;
             };
             let mut modulated = None;
-            for (m, &amount) in self.mods.iter().zip(self.amounts.iter()) {
-                if let ir::ModRoute {
-                    target: ir::ParamAddr::EffectParam { insert, param },
-                    ..
-                } = *m
-                    && usize::from(insert) == n
-                {
-                    param.add_to(modulated.get_or_insert_with(|| base.clone()), amount);
+            if has_mods {
+                for (m, &amount) in self.mods.iter().zip(self.amounts.iter()) {
+                    if let ir::ModRoute {
+                        target: ir::ParamAddr::EffectParam { insert, param },
+                        ..
+                    } = *m
+                        && usize::from(insert) == n
+                    {
+                        param.add_to(modulated.get_or_insert_with(|| base.clone()), amount);
+                    }
                 }
             }
             let e = modulated.as_ref().unwrap_or(base);
             match (dsp, &e.kind) {
-                (Dsp::Eq(f), _) => filters::run(f, io),
+                (Dsp::Eq(f), _) => {
+                    if io_silent && f.iter().all(filters::Stage::is_silent) {
+                        levels.idle_matrix(effects::matrix(e), io.len());
+                        continue;
+                    }
+                    filters::run(f, io);
+                    io_silent = is_silent(io);
+                }
                 (Dsp::Filter(svf), ir::EffectKind::Filter(f)) => {
                     svf.retune(filters::shape(f), self.rate);
+                    if io_silent && svf.is_silent() {
+                        levels.idle_matrix(effects::matrix(e), io.len());
+                        continue;
+                    }
                     svf.process(io);
+                    io_silent = is_silent(io);
                 }
                 // ponytail: retuned once a span; per-sample if a sweep zippers.
                 (Dsp::Bells(eq), ir::EffectKind::Eq(bells)) => {
                     eq.retune(*bells, self.rate);
-                    eq.process(io);
+                    if !io_silent || !eq.is_silent() {
+                        eq.process(io);
+                        io_silent = is_silent(io);
+                    } else {
+                        levels.idle_matrix(effects::matrix(e), io.len());
+                        continue;
+                    }
                 }
                 // The wet path from the input, then the dry level, then the wet at the output gain.
                 (Dsp::Wet(processor, wet), kind) => {
@@ -459,6 +481,7 @@ impl Rack {
                     if max_chunk == 0 {
                         continue;
                     }
+                    let mut all_out_silent = true;
                     let mut offset = 0;
                     while offset < io.len() {
                         let end = (offset + max_chunk).min(io.len());
@@ -472,14 +495,18 @@ impl Rack {
                         // silence stored for longer than it remembers: its state is
                         // silent, so its clocks move on alone.
                         let deaf = processor.deaf();
+                        let chunk_silent = io_silent || is_silent(io_chunk);
                         let key_silent = key_chunk.is_none_or(is_silent);
-                        let still = deaf || (is_silent(io_chunk) && key_silent);
+                        let still = deaf || (chunk_silent && key_silent);
                         if still && processor.memory().is_some_and(|m| *quiet >= m) {
                             processor.idle(wet_chunk);
                             if deaf {
                                 // The input still passes at the dry level.
                                 wet_chunk.fill([0.0; 2]);
                                 levels.mix(io_chunk, wet_chunk, e.dry, e.output);
+                                if !chunk_silent {
+                                    all_out_silent = false;
+                                }
                             } else {
                                 levels.idle(e.dry, e.output, io_chunk.len());
                             }
@@ -495,18 +522,28 @@ impl Rack {
                         // Its state, not only what it let out: a closed filter or
                         // a zero output may hide a tail still ringing inside.
                         let settled = processor.written() < SILENT;
-                        *quiet = if still && settled && is_silent(wet_chunk) {
+                        let wet_silent = is_silent(wet_chunk);
+                        *quiet = if still && settled && wet_silent {
                             quiet.saturating_add(io_chunk.len())
                         } else {
                             0
                         };
-                        levels.mix(io_chunk, wet_chunk, e.dry, e.output);
+                        if !(chunk_silent && wet_silent) {
+                            levels.mix(io_chunk, wet_chunk, e.dry, e.output);
+                            all_out_silent = false;
+                        } else {
+                            levels.idle(e.dry, e.output, io_chunk.len());
+                        }
                         offset = end;
                     }
+                    io_silent = all_out_silent;
                     continue;
                 }
-                (_, ir::EffectKind::Sends(levels)) => {
-                    for (tap, &level) in taps.iter_mut().zip(levels) {
+                (_, ir::EffectKind::Sends(send_levels)) if !io_silent => {
+                    for (tap, &level) in taps.iter_mut().zip(send_levels) {
+                        if level == 0.0 {
+                            continue;
+                        }
                         for (t, x) in tap.iter_mut().zip(io.iter()) {
                             t[0] += x[0] * level;
                             t[1] += x[1] * level;
@@ -515,7 +552,11 @@ impl Rack {
                 }
                 _ => {}
             }
-            levels.matrix(io, effects::matrix(e));
+            if io_silent {
+                levels.idle_matrix(effects::matrix(e), io.len());
+            } else {
+                levels.matrix(io, effects::matrix(e));
+            }
         }
     }
 

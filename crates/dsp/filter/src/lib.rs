@@ -130,6 +130,7 @@ pub struct Svf {
     shape: Shape,
     hz: f32,
     g: f64,
+    one_pole_a: f64,
     /// Per stage and channel, the two integrator states.
     state: [[[f64; 2]; 2]; 3],
     rate: f64,
@@ -146,6 +147,7 @@ impl Svf {
             shape,
             hz: 0.0,
             g: 0.0,
+            one_pole_a: 1.0,
             state: [[[0.0; 2]; 2]; 3],
             rate: 1.0,
             ladder: None,
@@ -189,15 +191,19 @@ impl Svf {
     pub fn set_cutoff(&mut self, hz: f32, rate: u32) {
         let rate = f64::from(rate.max(1));
         let hz = f64::from(hz).max(1.0).min(0.49 * rate);
-        // Same cutoff and rate give the same `g`; `tan` is the cost.
+        // Same cutoff and rate give the same `g` and `one_pole_a`; trig/exp is the cost.
         if self.hz != hz as f32 || self.rate != rate || self.g == 0.0 {
             self.g = (std::f64::consts::PI * hz / rate).tan();
+            self.one_pole_a = (-std::f64::consts::TAU * hz / rate).exp();
         }
         self.hz = hz as f32;
         self.rate = rate;
     }
 
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
+        if io.is_empty() {
+            return;
+        }
         let (g, gain) = (self.g, f64::from(self.shape.gain));
         if let Some(ladder) = &mut self.ladder {
             let last = usize::from(self.shape.stages.clamp(1, 3) - 1);
@@ -205,19 +211,31 @@ impl Svf {
             let (hz, r) = (f64::from(self.hz), 1.0 - f64::from(k) / 2.0);
             match ladder {
                 Kernel::OnePole(state) => {
-                    let a = (-std::f64::consts::TAU * hz / self.rate).exp();
-                    for frame in io {
-                        for (sample, s) in frame.iter_mut().zip(state.iter_mut()) {
-                            let x = f64::from(*sample);
-                            *s += (x - *s) * (1.0 - a);
-                            let y = if self.shape.pass == Pass::High {
-                                x - *s
-                            } else {
-                                *s
-                            };
-                            *sample = (y * gain) as f32;
+                    if *state == [0.0; 2] && io.iter().all(|f| f[0] == 0.0 && f[1] == 0.0) {
+                        return;
+                    }
+                    let one_minus_a = 1.0 - self.one_pole_a;
+                    let [mut sl, mut sr] = *state;
+                    if self.shape.pass == Pass::High {
+                        for frame in io {
+                            let xl = f64::from(frame[0]);
+                            let xr = f64::from(frame[1]);
+                            sl += (xl - sl) * one_minus_a;
+                            sr += (xr - sr) * one_minus_a;
+                            frame[0] = ((xl - sl) * gain) as f32;
+                            frame[1] = ((xr - sr) * gain) as f32;
+                        }
+                    } else {
+                        for frame in io {
+                            let xl = f64::from(frame[0]);
+                            let xr = f64::from(frame[1]);
+                            sl += (xl - sl) * one_minus_a;
+                            sr += (xr - sr) * one_minus_a;
+                            frame[0] = (sl * gain) as f32;
+                            frame[1] = (sr * gain) as f32;
                         }
                     }
+                    *state = [sl, sr];
                     flush(state);
                 }
                 Kernel::ZeroDelay(l) => {
@@ -235,47 +253,152 @@ impl Svf {
             }
             return;
         }
+        if self.state.iter().flatten().flatten().all(|&s| s == 0.0)
+            && io.iter().all(|f| f[0] == 0.0 && f[1] == 0.0)
+        {
+            return;
+        }
         let stages = usize::from(self.shape.stages);
+        let pass = self.shape.pass;
+        if stages == 0 {
+            let g_norm = g / (1.0 + g);
+            let mut sl = self.state[0][0][0];
+            let mut sr = self.state[0][1][0];
+            if pass == Pass::High {
+                for frame in io {
+                    let vl = f64::from(frame[0]);
+                    let vr = f64::from(frame[1]);
+                    let low_l = (vl - sl) * g_norm + sl;
+                    let low_r = (vr - sr) * g_norm + sr;
+                    sl = 2.0 * low_l - sl;
+                    sr = 2.0 * low_r - sr;
+                    frame[0] = ((vl - low_l) * gain) as f32;
+                    frame[1] = ((vr - low_r) * gain) as f32;
+                }
+            } else {
+                for frame in io {
+                    let vl = f64::from(frame[0]);
+                    let vr = f64::from(frame[1]);
+                    let low_l = (vl - sl) * g_norm + sl;
+                    let low_r = (vr - sr) * g_norm + sr;
+                    sl = 2.0 * low_l - sl;
+                    sr = 2.0 * low_r - sr;
+                    frame[0] = (low_l * gain) as f32;
+                    frame[1] = (low_r * gain) as f32;
+                }
+            }
+            self.state[0][0][0] = sl;
+            self.state[0][1][0] = sr;
+            flush(self.state.as_flattened_mut().as_flattened_mut());
+            return;
+        }
+        #[inline(always)]
+        fn svf_stage(
+            pass: Pass,
+            v: [f64; 2],
+            ic1: &mut [f64; 2],
+            ic2: &mut [f64; 2],
+            [k, a1, a2, a3]: [f64; 4],
+        ) -> [f64; 2] {
+            let v3_l = v[0] - ic2[0];
+            let v3_r = v[1] - ic2[1];
+            let band_l = a1 * ic1[0] + a2 * v3_l;
+            let band_r = a1 * ic1[1] + a2 * v3_r;
+            let low_l = ic2[0] + a2 * ic1[0] + a3 * v3_l;
+            let low_r = ic2[1] + a2 * ic1[1] + a3 * v3_r;
+            ic1[0] = 2.0 * band_l - ic1[0];
+            ic1[1] = 2.0 * band_r - ic1[1];
+            ic2[0] = 2.0 * low_l - ic2[0];
+            ic2[1] = 2.0 * low_r - ic2[1];
+            match pass {
+                Pass::Low => [low_l, low_r],
+                Pass::Band => [band_l, band_r],
+                Pass::High => [v[0] - k * band_l - low_l, v[1] - k * band_r - low_r],
+                Pass::Notch => [v[0] - k * band_l, v[1] - k * band_r],
+            }
+        }
         // Per stage: k, then the TPT gains a1, a2, a3.
-        let coefficients = self.shape.damping.map(|k| {
+        let c = self.shape.damping.map(|k| {
             let k = f64::from(k);
             let a1 = 1.0 / (1.0 + g * (g + k));
             [k, a1, g * a1, g * g * a1]
         });
-        for frame in io {
-            for (c, x) in frame.iter_mut().enumerate() {
-                let mut v = f64::from(*x);
-                if stages == 0
-                    && let Some([s, _]) = self.state.first_mut().and_then(|st| st.get_mut(c))
-                {
-                    let low = (v - *s) * g / (1.0 + g) + *s;
-                    *s = 2.0 * low - *s;
-                    v = if self.shape.pass == Pass::High {
-                        v - low
-                    } else {
-                        low
-                    };
-                }
-                for (st, &[k, a1, a2, a3]) in self.state.iter_mut().zip(&coefficients).take(stages)
-                {
-                    let Some([ic1, ic2]) = st.get_mut(c) else {
-                        continue;
-                    };
-                    let v3 = v - *ic2;
-                    let band = a1 * *ic1 + a2 * v3;
-                    let low = *ic2 + a2 * *ic1 + a3 * v3;
-                    *ic1 = 2.0 * band - *ic1;
-                    *ic2 = 2.0 * low - *ic2;
-                    let high = v - k * band - low;
-                    v = match self.shape.pass {
-                        Pass::Low => low,
-                        Pass::High => high,
-                        Pass::Band => band,
-                        Pass::Notch => low + high,
-                    };
-                }
-                *x = (v * gain) as f32;
+        let run_1 = |io: &mut [[f32; 2]], state: &mut [[[f64; 2]; 2]; 3], pass: Pass| {
+            let mut ic1 = [state[0][0][0], state[0][1][0]];
+            let mut ic2 = [state[0][0][1], state[0][1][1]];
+            let c0 = c[0];
+            for frame in io {
+                let v = svf_stage(
+                    pass,
+                    [f64::from(frame[0]), f64::from(frame[1])],
+                    &mut ic1,
+                    &mut ic2,
+                    c0,
+                );
+                frame[0] = (v[0] * gain) as f32;
+                frame[1] = (v[1] * gain) as f32;
             }
+            state[0] = [[ic1[0], ic2[0]], [ic1[1], ic2[1]]];
+        };
+        let run_2 = |io: &mut [[f32; 2]], state: &mut [[[f64; 2]; 2]; 3], pass: Pass| {
+            let mut ic1_0 = [state[0][0][0], state[0][1][0]];
+            let mut ic2_0 = [state[0][0][1], state[0][1][1]];
+            let mut ic1_1 = [state[1][0][0], state[1][1][0]];
+            let mut ic2_1 = [state[1][0][1], state[1][1][1]];
+            let (c0, c1) = (c[0], c[1]);
+            for frame in io {
+                let v = svf_stage(
+                    pass,
+                    [f64::from(frame[0]), f64::from(frame[1])],
+                    &mut ic1_0,
+                    &mut ic2_0,
+                    c0,
+                );
+                let v = svf_stage(pass, v, &mut ic1_1, &mut ic2_1, c1);
+                frame[0] = (v[0] * gain) as f32;
+                frame[1] = (v[1] * gain) as f32;
+            }
+            state[0] = [[ic1_0[0], ic2_0[0]], [ic1_0[1], ic2_0[1]]];
+            state[1] = [[ic1_1[0], ic2_1[0]], [ic1_1[1], ic2_1[1]]];
+        };
+        let run_3 = |io: &mut [[f32; 2]], state: &mut [[[f64; 2]; 2]; 3], pass: Pass| {
+            let mut ic1_0 = [state[0][0][0], state[0][1][0]];
+            let mut ic2_0 = [state[0][0][1], state[0][1][1]];
+            let mut ic1_1 = [state[1][0][0], state[1][1][0]];
+            let mut ic2_1 = [state[1][0][1], state[1][1][1]];
+            let mut ic1_2 = [state[2][0][0], state[2][1][0]];
+            let mut ic2_2 = [state[2][0][1], state[2][1][1]];
+            let (c0, c1, c2) = (c[0], c[1], c[2]);
+            for frame in io {
+                let v = svf_stage(
+                    pass,
+                    [f64::from(frame[0]), f64::from(frame[1])],
+                    &mut ic1_0,
+                    &mut ic2_0,
+                    c0,
+                );
+                let v = svf_stage(pass, v, &mut ic1_1, &mut ic2_1, c1);
+                let v = svf_stage(pass, v, &mut ic1_2, &mut ic2_2, c2);
+                frame[0] = (v[0] * gain) as f32;
+                frame[1] = (v[1] * gain) as f32;
+            }
+            state[0] = [[ic1_0[0], ic2_0[0]], [ic1_0[1], ic2_0[1]]];
+            state[1] = [[ic1_1[0], ic2_1[0]], [ic1_1[1], ic2_1[1]]];
+            state[2] = [[ic1_2[0], ic2_2[0]], [ic1_2[1], ic2_2[1]]];
+        };
+        match (stages, pass) {
+            (1, Pass::Low) => run_1(io, &mut self.state, Pass::Low),
+            (1, Pass::High) => run_1(io, &mut self.state, Pass::High),
+            (1, Pass::Band) => run_1(io, &mut self.state, Pass::Band),
+            (1, Pass::Notch) => run_1(io, &mut self.state, Pass::Notch),
+            (2, Pass::Low) => run_2(io, &mut self.state, Pass::Low),
+            (2, Pass::High) => run_2(io, &mut self.state, Pass::High),
+            (2, Pass::Band) => run_2(io, &mut self.state, Pass::Band),
+            (2, Pass::Notch) => run_2(io, &mut self.state, Pass::Notch),
+            (_, Pass::Low) => run_3(io, &mut self.state, Pass::Low),
+            (_, Pass::High) => run_3(io, &mut self.state, Pass::High),
+            (_, Pass::Band) => run_3(io, &mut self.state, Pass::Band),
+            (_, Pass::Notch) => run_3(io, &mut self.state, Pass::Notch),
         }
         flush(self.state.as_flattened_mut().as_flattened_mut());
     }

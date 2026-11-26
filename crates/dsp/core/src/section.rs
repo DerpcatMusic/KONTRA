@@ -52,23 +52,31 @@ impl Biquad32 {
     }
 
     /// One stereo frame.
+    #[inline(always)]
     #[must_use]
     pub fn tick(&mut self, frame: [f32; 2]) -> [f32; 2] {
         let Coeffs { b0, b1, b2, a1, a2 } = self.c;
-        let mut out = frame;
-        for (x, s) in out.iter_mut().zip(&mut self.state) {
-            let input = *x;
-            let y = b0 * input + s[0];
-            s[0] = b1 * input - a1 * y + s[1];
-            s[1] = b2 * input - a2 * y;
-            *x = y;
-        }
-        out
+        let xl = frame[0];
+        let xr = frame[1];
+        let yl = b0 * xl + self.state[0][0];
+        let yr = b0 * xr + self.state[1][0];
+        self.state[0][0] = b1 * xl - a1 * yl + self.state[0][1];
+        self.state[1][0] = b1 * xr - a1 * yr + self.state[1][1];
+        self.state[0][1] = b2 * xl - a2 * yl;
+        self.state[1][1] = b2 * xr - a2 * yr;
+        [yl, yr]
     }
 
     /// Takes `from`'s coefficients and keeps this section's state.
     pub fn retune(&mut self, from: &Self) {
         self.c = from.c;
+    }
+
+    /// Whether both channels' state has decayed below `-200 dB`.
+    #[inline]
+    #[must_use]
+    pub fn is_silent(&self) -> bool {
+        self.state.iter().flatten().all(|&s| s.abs() < 1e-10)
     }
 
     /// Zeroes state that has decayed into the denormal range.

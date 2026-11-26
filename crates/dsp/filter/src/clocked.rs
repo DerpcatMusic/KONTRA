@@ -163,32 +163,85 @@ impl Clocked {
     }
 
     fn run(&mut self, io: &mut [[f32; 2]]) {
-        let law = self.law;
-        for frame in io.iter_mut() {
-            for (v, st) in frame.iter_mut().zip(&mut self.state) {
-                *v = match law {
-                    Law::Allpass { a, feedback } => {
-                        let [xs, ys] = st;
-                        let mut stage = feedback * ys[3] + *v;
-                        for (x, y) in xs.iter_mut().zip(ys.iter_mut()) {
-                            let out = (stage + *y) * a - *x;
-                            *x = stage;
-                            *y = out;
-                            stage = out;
-                        }
-                        (stage + *v) * 0.5
-                    }
-                    Law::Vowel(sections) => {
-                        let mut sum = 0.0;
-                        for (c, s) in sections.iter().zip(st.iter_mut()) {
-                            let [x1, x2, y1, y2] = *s;
-                            let y = c.c1 * y1 + c.c2 * y2 + c.b2 * x2 + c.b1 * x1 + c.b0 * *v;
-                            *s = [*v, x1, y, y1];
-                            sum += y;
-                        }
-                        sum
-                    }
-                };
+        if io.is_empty() {
+            return;
+        }
+        if self.state.iter().flatten().flatten().all(|&v| v == 0.0)
+            && io.iter().all(|f| f[0] == 0.0 && f[1] == 0.0)
+        {
+            return;
+        }
+        match self.law {
+            Law::Allpass { a, feedback } => {
+                let [[mut lx, mut ly], [mut rx, mut ry]] = self.state;
+                for frame in io.iter_mut() {
+                    let vl = frame[0];
+                    let vr = frame[1];
+                    let mut sl = feedback * ly[3] + vl;
+                    let mut sr = feedback * ry[3] + vr;
+
+                    let ol0 = (sl + ly[0]) * a - lx[0];
+                    let or0 = (sr + ry[0]) * a - rx[0];
+                    lx[0] = sl;
+                    rx[0] = sr;
+                    ly[0] = ol0;
+                    ry[0] = or0;
+                    sl = ol0;
+                    sr = or0;
+
+                    let ol1 = (sl + ly[1]) * a - lx[1];
+                    let or1 = (sr + ry[1]) * a - rx[1];
+                    lx[1] = sl;
+                    rx[1] = sr;
+                    ly[1] = ol1;
+                    ry[1] = or1;
+                    sl = ol1;
+                    sr = or1;
+
+                    let ol2 = (sl + ly[2]) * a - lx[2];
+                    let or2 = (sr + ry[2]) * a - rx[2];
+                    lx[2] = sl;
+                    rx[2] = sr;
+                    ly[2] = ol2;
+                    ry[2] = or2;
+                    sl = ol2;
+                    sr = or2;
+
+                    let ol3 = (sl + ly[3]) * a - lx[3];
+                    let or3 = (sr + ry[3]) * a - rx[3];
+                    lx[3] = sl;
+                    rx[3] = sr;
+                    ly[3] = ol3;
+                    ry[3] = or3;
+
+                    frame[0] = (ol3 + vl) * 0.5;
+                    frame[1] = (or3 + vr) * 0.5;
+                }
+                self.state = [[lx, ly], [rx, ry]];
+            }
+            Law::Vowel([c0, c1]) => {
+                let [[mut l0, mut l1], [mut r0, mut r1]] = self.state;
+                for frame in io.iter_mut() {
+                    let vl = frame[0];
+                    let vr = frame[1];
+                    let yl0 =
+                        c0.c1 * l0[2] + c0.c2 * l0[3] + c0.b2 * l0[1] + c0.b1 * l0[0] + c0.b0 * vl;
+                    l0 = [vl, l0[0], yl0, l0[2]];
+                    let yr0 =
+                        c0.c1 * r0[2] + c0.c2 * r0[3] + c0.b2 * r0[1] + c0.b1 * r0[0] + c0.b0 * vr;
+                    r0 = [vr, r0[0], yr0, r0[2]];
+
+                    let yl1 =
+                        c1.c1 * l1[2] + c1.c2 * l1[3] + c1.b2 * l1[1] + c1.b1 * l1[0] + c1.b0 * vl;
+                    l1 = [vl, l1[0], yl1, l1[2]];
+                    let yr1 =
+                        c1.c1 * r1[2] + c1.c2 * r1[3] + c1.b2 * r1[1] + c1.b1 * r1[0] + c1.b0 * vr;
+                    r1 = [vr, r1[0], yr1, r1[2]];
+
+                    frame[0] = yl0 + yl1;
+                    frame[1] = yr0 + yr1;
+                }
+                self.state = [[l0, l1], [r0, r1]];
             }
         }
         for v in self.state.as_flattened_mut().as_flattened_mut() {

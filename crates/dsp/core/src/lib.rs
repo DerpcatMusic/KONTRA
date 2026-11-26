@@ -2,6 +2,7 @@
 
 mod glide;
 mod halfband;
+pub mod math;
 mod section;
 
 pub use glide::{Fader, Levels};
@@ -39,15 +40,40 @@ impl Biquad {
     #[inline]
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
         let Coeffs { b0, b1, b2, a1, a2 } = self.c;
+        let [mut s0l, mut s1l] = self.state[0];
+        let [mut s0r, mut s1r] = self.state[1];
         for frame in io {
-            for (x, s) in frame.iter_mut().zip(&mut self.state) {
-                let input = f64::from(*x);
-                let y = b0 * input + s[0];
-                s[0] = b1 * input - a1 * y + s[1];
-                s[1] = b2 * input - a2 * y;
-                *x = y as f32;
-            }
+            let xl = f64::from(frame[0]);
+            let xr = f64::from(frame[1]);
+            let yl = b0 * xl + s0l;
+            let yr = b0 * xr + s0r;
+            s0l = b1 * xl - a1 * yl + s1l;
+            s0r = b1 * xr - a1 * yr + s1r;
+            s1l = b2 * xl - a2 * yl;
+            s1r = b2 * xr - a2 * yr;
+            *frame = [yl as f32, yr as f32];
         }
+        self.state = [[s0l, s1l], [s0r, s1r]];
+        flush(self.state.as_flattened_mut());
+    }
+
+    /// Filters a single stereo `f64` frame without flushing subnormals yet.
+    /// Call [`Self::settle`] once at the end of the block.
+    #[inline]
+    pub fn tick_f64(&mut self, xl: f64, xr: f64) -> (f64, f64) {
+        let Coeffs { b0, b1, b2, a1, a2 } = self.c;
+        let [s0l, s1l] = self.state[0];
+        let [s0r, s1r] = self.state[1];
+        let yl = b0 * xl + s0l;
+        let yr = b0 * xr + s0r;
+        self.state[0] = [b1 * xl - a1 * yl + s1l, b2 * xl - a2 * yl];
+        self.state[1] = [b1 * xr - a1 * yr + s1r, b2 * xr - a2 * yr];
+        (yl, yr)
+    }
+
+    /// Zeroes subnormal state after a run of [`Self::tick_f64`] calls.
+    #[inline]
+    pub fn settle(&mut self) {
         flush(self.state.as_flattened_mut());
     }
 

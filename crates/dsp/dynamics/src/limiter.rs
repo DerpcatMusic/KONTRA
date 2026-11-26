@@ -15,6 +15,8 @@
 
 use std::collections::VecDeque;
 
+use kontra_dsp_core::math::{db_to_gain_f32, gain_to_db_f32};
+
 use crate::gain;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -42,6 +44,8 @@ pub struct Limiter {
     ceiling_db: f32,
     ceiling: f32,
     knee: f32,
+    /// Linear amplitude below which `over()` is guaranteed to return `0.0`.
+    knee_floor: f32,
     clip: bool,
     /// Largest fall of the held peak per frame, dB.
     step: f32,
@@ -54,8 +58,10 @@ pub struct Limiter {
     smooth: [f32; 3],
     /// The audio waiting for its gain, and the window's falling maxima.
     delay: Vec<[f32; 2]>,
+    delay_pos: usize,
     maxima: VecDeque<(usize, f32)>,
     frame: usize,
+    quiet_frames: usize,
 }
 
 impl Limiter {
@@ -66,6 +72,7 @@ impl Limiter {
             ceiling_db: 0.0,
             ceiling: 1.0,
             knee: 0.0,
+            knee_floor: 1.0,
             clip: true,
             step: f32::INFINITY,
             attack: 0.0,
@@ -75,8 +82,10 @@ impl Limiter {
             held: 0.0,
             smooth: [0.0; 3],
             delay: Vec::new(),
+            delay_pos: 0,
             maxima: VecDeque::with_capacity(2),
             frame: 0,
+            quiet_frames: usize::MAX,
         };
         l.set(s, rate);
         l
@@ -98,6 +107,7 @@ impl Limiter {
         };
         self.ceiling = gain(self.ceiling_db);
         self.knee = s.knee_db.max(0.0);
+        self.knee_floor = db_to_gain_f32(self.ceiling_db - self.knee);
         self.clip = s.clip;
         let release = frames(s.release_ms);
         self.step = if release > 0.0 {
@@ -113,14 +123,20 @@ impl Limiter {
         let window = 2 * (frames(s.lookahead_ms) * 0.5) as usize;
         if window != self.delay.len() {
             self.delay = vec![[0.0; 2]; window];
+            self.delay_pos = 0;
             self.maxima = VecDeque::with_capacity(window + 2);
             self.frame = 0;
+            self.quiet_frames = usize::MAX;
         }
     }
 
     /// dB over the ceiling of a level, through the knee.
+    #[inline(always)]
     fn over(&self, level: f32) -> f32 {
-        let x = 20.0 * level.max(1e-10).log10() - self.ceiling_db;
+        if level <= self.knee_floor {
+            return 0.0;
+        }
+        let x = gain_to_db_f32(level.max(1e-10)) - self.ceiling_db;
         let k = self.knee;
         if x <= -k {
             0.0
@@ -132,10 +148,15 @@ impl Limiter {
     }
 
     /// The reduction in dB after the held peak and the smoother.
+    #[inline(always)]
     fn reduction(&mut self, over: f32) -> f32 {
         self.held = over.max(self.held - self.step);
         let [fast, slow, out] = &mut self.smooth;
         let x = self.held;
+        if x == 0.0 && *fast == 0.0 && *slow == 0.0 {
+            *out = 0.0;
+            return 0.0;
+        }
         let (cf, cs) = if x >= *out {
             (self.attack, self.attack)
         } else {
@@ -144,10 +165,11 @@ impl Limiter {
         *fast = cf * *fast + (1.0 - cf) * x;
         *slow = cs * *slow + (1.0 - cs) * x;
         // Released to silence: no subnormal tail.
-        for v in [&mut *fast, &mut *slow] {
-            if *v < 1e-6 {
-                *v = 0.0;
-            }
+        if *fast < 1e-6 {
+            *fast = 0.0;
+        }
+        if *slow < 1e-6 {
+            *slow = 0.0;
         }
         *out = *fast + (*slow - *fast) * self.blend;
         *out
@@ -155,34 +177,70 @@ impl Limiter {
 
     /// Limits `io` in place.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
-        let c = self.ceiling;
+        if io.is_empty() {
+            return;
+        }
         let window = self.delay.len();
-        for frame in io {
-            let x = frame.map(|v| v * self.input);
+        let input_zero = io.iter().all(|f| f[0] == 0.0 && f[1] == 0.0);
+        if input_zero
+            && self.quiet_frames >= window
+            && self.held == 0.0
+            && self.smooth == [0.0; 3]
+            && self.maxima.front().is_none_or(|&(_, v)| v == 0.0)
+        {
+            self.frame += io.len();
+            if window > 0 {
+                self.delay_pos = (self.delay_pos + io.len()) % window;
+            }
+            self.maxima.clear();
+            return;
+        }
+        let c = self.ceiling;
+        let input_gain = self.input;
+        let clip = self.clip;
+        let mut delay_pos = self.delay_pos;
+        let mut frame_idx = self.frame;
+        for frame in io.iter_mut() {
+            let x = [frame[0] * input_gain, frame[1] * input_gain];
             let r = self.reduction(self.over(x[0].abs().max(x[1].abs())));
             // The largest reduction over this frame and the `window` before.
             while self.maxima.back().is_some_and(|&(_, v)| v <= r) {
                 self.maxima.pop_back();
             }
-            self.maxima.push_back((self.frame, r));
+            self.maxima.push_back((frame_idx, r));
             if self
                 .maxima
                 .front()
-                .is_some_and(|&(t, _)| t + window < self.frame)
+                .is_some_and(|&(t, _)| t + window < frame_idx)
             {
                 self.maxima.pop_front();
             }
             let r = self.maxima.front().map_or(0.0, |&(_, v)| v);
-            let x = match self.delay.get_mut(self.frame % window.max(1)) {
-                Some(slot) => std::mem::replace(slot, x),
-                None => x,
+            let delayed = if let Some(slot) = self.delay.get_mut(delay_pos) {
+                delay_pos += 1;
+                if delay_pos == window {
+                    delay_pos = 0;
+                }
+                std::mem::replace(slot, x)
+            } else {
+                x
             };
-            self.frame += 1;
-            let g = if r > 0.0 { gain(-r) } else { 1.0 };
-            *frame = x.map(|v| v * g);
-            if self.clip {
-                *frame = frame.map(|v| v.clamp(-c, c));
+            frame_idx += 1;
+            let g = if r > 0.0 { db_to_gain_f32(-r) } else { 1.0 };
+            let mut l = delayed[0] * g;
+            let mut r_ch = delayed[1] * g;
+            if clip {
+                l = l.clamp(-c, c);
+                r_ch = r_ch.clamp(-c, c);
             }
+            *frame = [l, r_ch];
+        }
+        self.delay_pos = delay_pos;
+        self.frame = frame_idx;
+        if input_zero {
+            self.quiet_frames = self.quiet_frames.saturating_add(io.len());
+        } else {
+            self.quiet_frames = 0;
         }
     }
 }

@@ -9,4 +9,5 @@ publish = false
 workspace = true
 
 [dependencies]
+kontra-dsp-core = { path = "../core" }
 kontra-law = { path = "../../base/law" }
