@@ -1091,6 +1091,12 @@ function Element.setParameter(self, name, value)
 		host_call("ImpulseKnob", fx[1], fx[2], fx[3], knob, math.floor(tonumber(value) * 1e6 + 0.5))
 	end
 	write_effect_knobs(fx[1], fx[2], fx[3], fields.knobs, name, value)
+	if fields.dynamic and runtime_connected() then
+		local n = to_param_number(value)
+		if n ~= nil then
+			__runtime_effect_param(fx[1], fx[2], fx[3], name, n)
+		end
+	end
 end
 
 local element
@@ -1158,6 +1164,7 @@ local function reindex_inserts(list, parent)
 		local f = fields_of(child)
 		f.index = i
 		f.parent = parent
+		f.dynamic = true
 		if f.fx and tk ~= nil and f.fx[1] == tk and f.fx[2] == ti then
 			f.fx[3] = i - 1
 		end
@@ -1178,7 +1185,9 @@ function Element.insertEffect(self, effectType, index)
 	end
 	local tk, ti = effect_target_of(self)
 	if tk ~= nil then
-		fields_of(fx).fx = { tk, ti, pos - 1 }
+		local f = fields_of(fx)
+		f.fx = { tk, ti, pos - 1 }
+		f.dynamic = true
 		if runtime_connected() then
 			__runtime_effect_op(tk, ti, 0, pos - 1, 0, name)
 		end

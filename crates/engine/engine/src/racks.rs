@@ -5,10 +5,278 @@ use std::sync::Arc;
 
 use kontra_ir as ir;
 
-use crate::Engine;
+use crate::{Engine, Plan};
 pub(crate) use kontra_effects::processors::{Dsp, Responses, convolver, processor};
 use kontra_effects::stem;
 pub(crate) use kontra_racks::rack::{Live, Rack};
+
+/// Pre-built per-group chain and voice-rack buffers prepared off the audio thread.
+struct PreparedGroupRacks {
+    mutated: Vec<(usize, Vec<Option<ir::Effect>>)>,
+    voice_units: Box<[Arc<[crate::voice_rack::Unit]>]>,
+    group_split: Box<[Option<usize>]>,
+    chains: Vec<crate::filters::Chain>,
+    group_chain: Box<[Option<u16>]>,
+    group_private: Box<[Option<u16>]>,
+    group_moved: Box<[bool]>,
+    voice_racks: Vec<Vec<crate::voice_rack::Unit>>,
+    voice_comb_lines: Vec<Vec<[f32; 2]>>,
+    most_units: usize,
+    comb_frames: usize,
+}
+
+/// Off-thread pre-built rack replacements for live insert-chain edits (insert,
+/// remove, reorder, or parameter update) on program, bus, or group chains.
+///
+/// [`Engine::swap_racks`] swaps these into the live engine with zero
+/// allocations on the audio thread; replaced racks, chains, and buffers move
+/// back into this struct so they drop on the control thread.
+#[derive(Default)]
+pub struct PreparedRacks {
+    program: Option<Rack>,
+    buses: Vec<(usize, Rack)>,
+    groups: Option<PreparedGroupRacks>,
+    knobs: Option<Vec<(ir::RackAt, u8, kontra_behaviour::Positions)>>,
+    dirty_knobs: Vec<ir::RackAt>,
+}
+
+impl PreparedRacks {
+    /// Builds replacement racks and chains from `plan` at `rate` for the dirty
+    /// targets (`program`, `dirty_buses`, `dirty_groups`). Not real-time.
+    #[must_use]
+    pub fn build(
+        plan: &Plan,
+        rate: u32,
+        program: bool,
+        dirty_buses: &[usize],
+        dirty_groups: &[usize],
+    ) -> Self {
+        let rate = rate.max(1);
+        let impulses = Responses(&plan.impulses, &[]);
+        let mut dirty_knobs = Vec::new();
+
+        let prog_rack = if program {
+            dirty_knobs.push(ir::RackAt::Inserts);
+            Some(Rack::new(&plan.inserts, rate, &plan.impulses))
+        } else {
+            None
+        };
+
+        let mut bus_racks = Vec::new();
+        for &b in dirty_buses {
+            if bus_racks.iter().any(|(idx, _)| *idx == b) {
+                continue;
+            }
+            if let Some(bus) = plan.buses.get(b) {
+                if let Some(bus_slot) = b.checked_sub(1).and_then(|v| u8::try_from(v).ok()) {
+                    dirty_knobs.push(ir::RackAt::Bus(bus_slot));
+                }
+                let rack = Rack::routed(&bus.inserts, rate, impulses, &bus.mods, &bus.blends)
+                    .with_lfos(&bus.lfos);
+                bus_racks.push((b, rack));
+            }
+        }
+
+        let groups = if dirty_groups.is_empty() {
+            None
+        } else {
+            let mut mutated = Vec::new();
+            for &g in dirty_groups {
+                if mutated.iter().any(|(idx, _)| *idx == g) {
+                    continue;
+                }
+                if let Some(group) = plan.groups.get(g) {
+                    if let Ok(gid) = u32::try_from(g) {
+                        dirty_knobs.push(ir::RackAt::Group(gid));
+                    }
+                    mutated.push((g, group.inserts.clone()));
+                }
+            }
+            if mutated.is_empty() {
+                None
+            } else {
+                let voice_units: Box<[Arc<[crate::voice_rack::Unit]>]> = plan
+                    .groups
+                    .iter()
+                    .map(|g| crate::voice_rack::template(g, rate))
+                    .collect();
+                let has_graph = plan.graph.as_ref().is_some_and(|g| {
+                    g.nodes
+                        .iter()
+                        .any(|n| matches!(n.kind, ir::GraphNodeKind::GroupInput { .. }))
+                });
+                let built = crate::filters::build_chains_for(
+                    &plan.groups,
+                    &voice_units,
+                    &plan.impulses,
+                    plan.buses.len(),
+                    has_graph,
+                    rate,
+                );
+                let most_units = voice_units.iter().map(|u| u.len()).max().unwrap_or(0);
+                let comb_frames = voice_units
+                    .iter()
+                    .map(|u| crate::voice_rack::combs(u))
+                    .max()
+                    .unwrap_or(0)
+                    * crate::voice_rack::comb_line(rate);
+                let pool = 2 * plan.voices + 1;
+                let voice_racks = if most_units > 0 {
+                    (0..pool).map(|_| Vec::with_capacity(most_units)).collect()
+                } else {
+                    Vec::new()
+                };
+                let voice_comb_lines = if comb_frames > 0 {
+                    (0..pool).map(|_| vec![[0.0; 2]; comb_frames]).collect()
+                } else {
+                    Vec::new()
+                };
+                Some(PreparedGroupRacks {
+                    mutated,
+                    voice_units,
+                    group_split: built.group_split,
+                    chains: built.chains,
+                    group_chain: built.group_chain,
+                    group_private: built.group_private,
+                    group_moved: built.group_moved,
+                    voice_racks,
+                    voice_comb_lines,
+                    most_units,
+                    comb_frames,
+                })
+            }
+        };
+
+        let mut knobs = Vec::with_capacity(plan.slot_models.len() + crate::fx_types::REQUESTS * 2);
+        for (at, slot, model) in &plan.slot_models {
+            knobs.push((*at, *slot, kontra_behaviour::positions(model)));
+        }
+
+        Self {
+            program: prog_rack,
+            buses: bus_racks,
+            groups,
+            knobs: Some(knobs),
+            dirty_knobs,
+        }
+    }
+
+    /// Whether any rack or chain update is carried.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.program.is_none() && self.buses.is_empty() && self.groups.is_none()
+    }
+}
+
+impl Engine {
+    /// Atomically installs off-thread pre-built rack/chain replacements with
+    /// zero allocations on the audio thread. Replaced processors and buffers
+    /// swap back into `racks` to be dropped on the control thread.
+    pub fn swap_racks(&mut self, racks: &mut PreparedRacks) {
+        if let Some(prog) = &mut racks.program {
+            std::mem::swap(&mut self.rack, prog);
+        }
+        for (b, rack) in &mut racks.buses {
+            if let Some(bus) = self.buses.get_mut(*b) {
+                std::mem::swap(&mut bus.rack, rack);
+            }
+        }
+        if let Some(g) = &mut racks.groups {
+            for (idx, inserts) in &mut g.mutated {
+                if let Some(group) = self.groups.get_mut(*idx) {
+                    std::mem::swap(&mut group.inserts, inserts);
+                }
+            }
+            std::mem::swap(&mut self.voice_units, &mut g.voice_units);
+            std::mem::swap(&mut self.group_split, &mut g.group_split);
+            std::mem::swap(&mut self.chains, &mut g.chains);
+            std::mem::swap(&mut self.group_chain, &mut g.group_chain);
+            std::mem::swap(&mut self.group_private, &mut g.group_private);
+            std::mem::swap(&mut self.group_moved, &mut g.group_moved);
+
+            // Preserve any prior live edits on groups not in `g.mutated` by
+            // flagging them for `follow_groups` on the next span.
+            for gi in 0..self.groups.len() {
+                if g.mutated.iter().any(|(m, _)| *m == gi) {
+                    continue;
+                }
+                let differs = self
+                    .groups
+                    .get(gi)
+                    .zip(self.plan.groups.get(gi))
+                    .is_some_and(|(live, planned)| live.inserts != planned.inserts);
+                if differs {
+                    self.group_written(gi);
+                }
+            }
+
+            // Grow per-voice scratch capacity using pre-allocated buffers when needed.
+            for i in 0..self.voices.len() {
+                let Some(slot) = self.voices.get_mut(i) else {
+                    continue;
+                };
+                if g.most_units > slot.rack.capacity()
+                    && let Some(buf) = g.voice_racks.get_mut(i)
+                {
+                    buf.clear();
+                    buf.extend_from_slice(&slot.rack);
+                    std::mem::swap(&mut slot.rack, buf);
+                }
+                if g.comb_frames > slot.comb_lines.len()
+                    && let Some(buf) = g.voice_comb_lines.get_mut(i)
+                {
+                    let n = slot.comb_lines.len().min(buf.len());
+                    if let (Some(dst), Some(src)) = (buf.get_mut(..n), slot.comb_lines.get(..n)) {
+                        dst.copy_from_slice(src);
+                    }
+                    std::mem::swap(&mut slot.comb_lines, buf);
+                }
+            }
+
+            // Re-sync currently sounding voices in mutated groups so live notes
+            // immediately run the updated per-voice effect chain.
+            let plan = Arc::clone(&self.plan);
+            for i in 0..self.voices.len() {
+                let active_in_mutated = self
+                    .voices
+                    .get(i)
+                    .filter(|s| s.voice.is_active())
+                    .and_then(|s| {
+                        let zone = plan.zones.get(s.zone)?;
+                        let group = zone.group as usize;
+                        g.mutated.iter().any(|(m, _)| *m == group).then_some((
+                            s.zone,
+                            s.note?,
+                            self.slot_timing(s),
+                        ))
+                    });
+                if let Some((zone_idx, note_ref, age)) = active_in_mutated
+                    && let (Some(zone), Some(note)) =
+                        (plan.zones.get(zone_idx), self.notes.get(note_ref).copied())
+                {
+                    self.start_rack(i, zone, &note, age);
+                }
+            }
+        }
+
+        if let Some(knobs) = &mut racks.knobs {
+            for (at, slot, pos) in knobs.iter_mut() {
+                if !racks.dirty_knobs.contains(at)
+                    && let Some((_, _, live)) = self
+                        .behaviour
+                        .knobs
+                        .iter()
+                        .find(|(a, s, _)| a == at && s == slot)
+                {
+                    *pos = *live;
+                }
+            }
+            std::mem::swap(&mut self.behaviour.knobs, knobs);
+        }
+
+        self.refresh_all(None);
+    }
+}
 
 impl Engine {
     /// `load_ir_sample`: the library response `name` (its extension and

@@ -900,6 +900,9 @@ impl RackAudio {
                     && p.generation == generation
                 {
                     p.engine.swap_plan(&mut swap.plan, &swap.edits);
+                    if let Some(racks) = &mut swap.racks {
+                        p.engine.swap_racks(racks);
+                    }
                 }
                 if let Err(swap) = self.channels.zones.done.send(swap) {
                     // Checked for room first; if it ever fails, it frees here.

@@ -87,6 +87,7 @@ pub use plan::{
     RoundRobin, RrCounter, SustainPedal, Trigger, Zone,
 };
 pub use queue::Timed;
+pub use racks::PreparedRacks;
 pub use script::{
     Callbacks, CcLink, Controls, KnobModPlan, LookPars, ParLaw, ParRead, ParWrite, ScriptPlan,
 };

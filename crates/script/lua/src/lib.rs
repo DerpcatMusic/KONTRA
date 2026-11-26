@@ -555,6 +555,28 @@ fn register_runtime(lua: &Lua, rt: &Arc<RuntimeChannel>) -> mlua::Result<()> {
     {
         let rt = Arc::clone(rt);
         g.set(
+            "__runtime_effect_param",
+            lua.create_function(
+                move |_, (target_kind, target_idx, slot, name, value): (u8, u32, u16, Value, f64)| {
+                    let Some(target) = EffectTarget::from_parts(target_kind, target_idx) else {
+                        return Ok(false);
+                    };
+                    let Some(name) = value_text(&name) else {
+                        return Ok(false);
+                    };
+                    Ok(rt.push_request(RuntimeRequest::EffectParam {
+                        target,
+                        slot,
+                        name,
+                        value,
+                    }))
+                },
+            )?,
+        )?;
+    }
+    {
+        let rt = Arc::clone(rt);
+        g.set(
             "__runtime_poll",
             lua.create_function(move |_, slices_out: Option<Table>| {
                 let Some(reply) = rt.pop_reply() else {

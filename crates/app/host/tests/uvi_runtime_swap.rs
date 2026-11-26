@@ -761,3 +761,189 @@ fn augmented_orchestra_real_four_sound_replacement_when_installed() {
         "expected saved AO script state to reflect all 4 replaced layers (no Bartok remaining)"
     );
 }
+
+/// Goertzel DFT magnitude at `target_hz` over `samples` (used to verify
+/// distortion harmonics and filter attenuation audibly).
+fn dft_mag(samples: &[f32], target_hz: f64) -> f64 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let w = 2.0 * std::f64::consts::PI * target_hz / f64::from(RATE);
+    let (mut re, mut im) = (0.0f64, 0.0f64);
+    for (i, &s) in samples.iter().enumerate() {
+        let phase = w * i as f64;
+        re += f64::from(s) * phase.cos();
+        im -= f64::from(s) * phase.sin();
+    }
+    2.0 * (re * re + im * im).sqrt() / samples.len() as f64
+}
+
+fn verify_empty_chain_live_effect_growth(tag: &str, target_expr: &str) {
+    let root = make_temp_dir(tag);
+    write_sine_wav(
+        &root.join("Samples/tone_2000.wav"),
+        2000.0,
+        0.75,
+        24_000,
+        &[],
+        None,
+    );
+
+    let uvip = root.join("EmptyChain.uvip");
+    let xml = format!(
+        r#"<UVI4><Program Name="EmptyChain">
+      <Scripts><ScriptProcessor Name="Main" Bypass="0"><script><![CDATA[
+        local target = {target_expr}
+        local ws, lp
+        local b_add_ws = Button("AddWS")
+        b_add_ws.changed = function()
+            ws = target:insertEffect("WaveShaper", 1)
+            ws:setParameter("Mode", 2)
+            ws:setParameter("Amount", 0.5)
+            ws:setParameter("Mix", 1.0)
+        end
+        local b_add_lp = Button("AddLP")
+        b_add_lp.changed = function()
+            lp = target:insertEffect("OnePole", 2)
+            lp:setParameter("Freq", 300)
+            lp:setParameter("Mode", 0)
+        end
+        local b_move = Button("MoveLPFirst")
+        b_move.changed = function()
+            target:moveEffect(2, 1)
+        end
+        local b_clear = Button("ClearFx")
+        b_clear.changed = function()
+            target:removeEffect(1)
+            target:removeEffect(1)
+        end
+      ]]></script></ScriptProcessor></Scripts>
+      <Layers><Layer Name="L1"><Keygroups>
+        <Keygroup Name="KG1" LowKey="0" HighKey="127">
+          <Oscillators><SamplePlayer SamplePath="Samples/tone_2000.wav" BaseNote="60"/></Oscillators>
+        </Keygroup>
+      </Keygroups></Layer></Layers>
+    </Program></UVI4>"#
+    );
+    std::fs::write(&uvip, xml).expect("write uvip");
+
+    let (mut rack, mut audio) = new_rack();
+    rack.load(0, &uvip).expect("load uvip");
+    pump(&mut rack, &mut audio, 4);
+
+    // 1. Baseline: initially 0 inserts everywhere -> clean 2000 Hz sine, negligible 6000 Hz 3rd harmonic.
+    let base = render_note(&mut rack, &mut audio, 60, 100, 16);
+    let base_win = &base[1024..3072];
+    let base_rms = rms(base_win);
+    let base_f1 = dft_mag(base_win, 2000.0);
+    let base_f3 = dft_mag(base_win, 6000.0);
+    assert!(base_rms > 1e-3, "{tag}: baseline silent ({base_rms})");
+    assert!(
+        base_f3 / base_f1.max(1e-9) < 0.01,
+        "{tag}: baseline should be clean sine, f3/f1 = {}",
+        base_f3 / base_f1
+    );
+
+    // 2. insertEffect("WaveShaper") on initially empty chain -> audible odd-harmonic distortion.
+    let spills_before = kontra_lua::alloc::spills();
+    rack.control(
+        0,
+        widget_index(&rack, "AddWS"),
+        None,
+        1.0,
+        UiModifiers::default(),
+    );
+    pump(&mut rack, &mut audio, 8);
+    let ws_audio = render_note(&mut rack, &mut audio, 60, 100, 16);
+    let ws_win = &ws_audio[1024..3072];
+    let ws_f1 = dft_mag(ws_win, 2000.0);
+    let ws_f3 = dft_mag(ws_win, 6000.0);
+    let ws_thd = ws_f3 / ws_f1.max(1e-9);
+    assert!(
+        ws_thd > 0.10,
+        "{tag}: WaveShaper inserted into empty chain must audibly distort (f3/f1={ws_thd:.4}, f1={ws_f1:.4}, f3={ws_f3:.4})"
+    );
+
+    // 3. insertEffect("OnePole", 2) with Freq=300 AFTER WaveShaper -> strong lowpass roll-off.
+    rack.control(
+        0,
+        widget_index(&rack, "AddLP"),
+        None,
+        1.0,
+        UiModifiers::default(),
+    );
+    pump(&mut rack, &mut audio, 8);
+    let ws_then_lp = render_note(&mut rack, &mut audio, 60, 100, 16);
+    let ws_lp_win = &ws_then_lp[1024..3072];
+    let ws_lp_rms = rms(ws_lp_win);
+    let ws_lp_f1 = dft_mag(ws_lp_win, 2000.0);
+    let ws_lp_f3 = dft_mag(ws_lp_win, 6000.0);
+    let ws_lp_ratio = ws_lp_f3 / ws_lp_f1.max(1e-9);
+    assert!(
+        ws_lp_rms < rms(ws_win) * 0.35,
+        "{tag}: OnePole(300Hz) must strongly roll off 2kHz signal (before={}, after={ws_lp_rms})",
+        rms(ws_win)
+    );
+
+    // 4. moveEffect(2, 1): OnePole(300Hz) BEFORE WaveShaper -> order changes nonlinear output!
+    // Putting OnePole before WaveShaper attenuates input before tanh, leaving post-shaper
+    // harmonics unfiltered (higher f3/f1 ratio or higher overall level than post-filtered tanh).
+    rack.control(
+        0,
+        widget_index(&rack, "MoveLPFirst"),
+        None,
+        1.0,
+        UiModifiers::default(),
+    );
+    pump(&mut rack, &mut audio, 8);
+    let lp_then_ws = render_note(&mut rack, &mut audio, 60, 100, 16);
+    let lp_ws_win = &lp_then_ws[1024..3072];
+    let lp_ws_f1 = dft_mag(lp_ws_win, 2000.0);
+    let lp_ws_f3 = dft_mag(lp_ws_win, 6000.0);
+    let lp_ws_ratio = lp_ws_f3 / lp_ws_f1.max(1e-9);
+    let order_diff = (rms(lp_ws_win) - ws_lp_rms).abs() + (lp_ws_ratio - ws_lp_ratio).abs();
+    assert!(
+        order_diff > 0.03,
+        "{tag}: moveEffect(2, 1) must audibly change WaveShaper/OnePole order (ws->lp rms={ws_lp_rms:.4} f3/f1={ws_lp_ratio:.4} vs lp->ws rms={:.4} f3/f1={lp_ws_ratio:.4})",
+        rms(lp_ws_win)
+    );
+
+    // 5. removeEffect(1) twice -> clean baseline audio restored!
+    rack.control(
+        0,
+        widget_index(&rack, "ClearFx"),
+        None,
+        1.0,
+        UiModifiers::default(),
+    );
+    pump(&mut rack, &mut audio, 8);
+    let restored = render_note(&mut rack, &mut audio, 60, 100, 16);
+    let rest_win = &restored[1024..3072];
+    let rest_rms = rms(rest_win);
+    let rest_f1 = dft_mag(rest_win, 2000.0);
+    let rest_f3 = dft_mag(rest_win, 6000.0);
+    assert!(
+        (rest_rms - base_rms).abs() < base_rms * 0.05,
+        "{tag}: removeEffect must restore baseline level (base={base_rms:.4}, restored={rest_rms:.4})"
+    );
+    assert!(
+        rest_f3 / rest_f1.max(1e-9) < 0.01,
+        "{tag}: removeEffect must remove distortion harmonics (f3/f1={:.4})",
+        rest_f3 / rest_f1
+    );
+
+    assert_eq!(
+        kontra_lua::alloc::spills(),
+        spills_before,
+        "{tag}: dynamic insertEffect/moveEffect/removeEffect spilled Luau audio arena"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn live_empty_chain_effect_growth_remove_and_reorder_on_keygroup_bus_and_program() {
+    verify_empty_chain_live_effect_growth("empty-kg", "Program.layers[1].keygroups[1]");
+    verify_empty_chain_live_effect_growth("empty-bus", "Program.layers[1]");
+    verify_empty_chain_live_effect_growth("empty-prog", "Program");
+}

@@ -163,6 +163,12 @@ pub enum RuntimeRequest {
         target: EffectTarget,
         op: EffectOp,
     },
+    EffectParam {
+        target: EffectTarget,
+        slot: u16,
+        name: Text,
+        value: f64,
+    },
 }
 
 /// Completion reply pushed by the control thread after the updated `Plan` or

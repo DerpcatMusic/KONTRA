@@ -29,22 +29,29 @@ pub fn decode_program_text(bytes: &[u8]) -> Option<String> {
         .or_else(|| String::from_utf8(bytes.to_vec()).ok())
 }
 
-/// Constructs a default [`ir::Effect`] for a registered UVI module tag name.
+/// A default [`ir::Effect`] and its [`ir::KnobModel`] for a registered UVI
+/// module tag name (`DigitalEq` carries no knob model).
 #[must_use]
-pub fn build_effect_by_type(effect_type: &str) -> Option<ir::Effect> {
+pub fn build_effect_by_type(effect_type: &str) -> Option<(ir::Effect, Option<ir::KnobModel>)> {
     program::models::register_all();
     let m =
         (program::models::ALL.iter().copied()).find(|m| m.tag.eq_ignore_ascii_case(effect_type))?;
-    if !m.attrs.is_empty() {
-        let defaults: Vec<f32> = m.attrs.iter().map(|a| a.default).collect();
-        return m.build_fresh(&defaults);
+    if m.attrs.is_empty() {
+        // DigitalEq, addressed per band: all-zero shapes build four flat bells.
+        return m.build_fresh(&[0.0; 17]).map(|e| (e, None));
     }
-    (m.tag == "DigitalEq").then_some(ir::Effect {
-        kind: ir::EffectKind::Eq([ir::Bell::FLAT; 4]),
-        bypass: false,
-        output: 1.0,
-        dry: 0.0,
-    })
+    let defaults: Vec<f32> = m.attrs.iter().map(|a| a.default).collect();
+    Some((
+        m.build_fresh(&defaults)?,
+        Some(m.knob_model(defaults.len(), &defaults)),
+    ))
+}
+
+/// The knob index of UVI attribute `name` in model `id`'s saved values.
+#[must_use]
+pub fn attr_index(id: ir::ModelId, name: &str) -> Option<usize> {
+    let m = (program::models::ALL.iter()).find(|m| m.id == id)?;
+    m.attrs.iter().position(|a| a.name == name)
 }
 
 /// UVI format implementation for [`kontra_format::Registry`].

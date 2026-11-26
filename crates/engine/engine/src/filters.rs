@@ -25,123 +25,158 @@ pub(crate) use kontra_racks::chain::{Chain, on_bus};
 /// sanity ceiling (about 10 MB) far past the largest library's groups.
 const PRIVATE_CHAINS: usize = 4096;
 
+/// Pre-built summed filter chains and per-group routing indices.
+pub(crate) struct BuiltChains {
+    pub(crate) group_split: Box<[Option<usize>]>,
+    pub(crate) chains: Vec<Chain>,
+    pub(crate) group_chain: Box<[Option<u16>]>,
+    pub(crate) group_private: Box<[Option<u16>]>,
+    pub(crate) group_moved: Box<[bool]>,
+}
+
+/// Builds the summed filter chains and private spares for `groups` given their
+/// pre-built per-voice `voice_units`. Runs off the audio thread.
+pub(crate) fn build_chains_for(
+    groups: &[crate::Group],
+    voice_units: &[Arc<[crate::voice_rack::Unit]>],
+    impulses: &[Option<crate::Response>],
+    bus_count: usize,
+    has_graph: bool,
+    rate: u32,
+) -> BuiltChains {
+    let group_split: Box<[Option<usize>]> = groups
+        .iter()
+        .zip(voice_units)
+        .map(|(g, units)| group_racks::split(g, units))
+        .collect();
+    let shared: Vec<Vec<(u8, ir::Effect)>> = groups
+        .iter()
+        .zip(voice_units)
+        .zip(&group_split)
+        .map(|((g, units), split)| {
+            let per_voice = |n: usize| units.iter().any(|u| usize::from(u.insert) == n);
+            (g.inserts.iter().enumerate())
+                // The group's rack runs those from the split on.
+                .take(split.unwrap_or(usize::MAX))
+                .filter(|&(n, _)| !per_voice(n))
+                .filter_map(|(n, e)| Some((u8::try_from(n).ok()?, e.clone()?)))
+                .filter(|(_, e)| summed(e))
+                .collect()
+        })
+        .collect();
+    let mut chains: Vec<Chain> = Vec::new();
+    let group_chain: Box<[Option<u16>]> = (0..groups.len())
+        .map(|g| {
+            let sections = shared.get(g)?.clone();
+            let split = group_split.get(g).copied().flatten();
+            if !sections.iter().any(|(_, e)| sounds(e)) && split.is_none() {
+                return None;
+            }
+            if has_graph {
+                // In graph mode every group with inserts owns a dedicated chain
+                // feeding `group_mix[g]` (`bus = usize::MAX`), so groups stay
+                // isolated before `GroupInput { group: g }` and `effect_mut`
+                // updates follow in place.
+                let group = split.zip(groups.get(g)).map(|(from, group)| {
+                    let slots = group_racks::slots(group, from);
+                    (g, Rack::new(&slots, rate, impulses))
+                });
+                let mut chain = Chain::new(usize::MAX, sections, group, rate);
+                chain.graph_group = Some(g);
+                chain.to_graph_group = true;
+                chains.push(chain);
+                return u16::try_from(chains.len() - 1).ok();
+            }
+            let bus = groups.get(g).map_or(0, |g| g.bus);
+            let own = split.map(|_| g);
+            let at = chains
+                .iter()
+                .position(|c| c.bus == bus && c.sections == sections && c.owner() == own)
+                .unwrap_or_else(|| {
+                    let group = split.zip(groups.get(g)).map(|(from, group)| {
+                        let slots = group_racks::slots(group, from);
+                        (g, Rack::new(&slots, rate, impulses))
+                    });
+                    chains.push(Chain::new(bus, sections, group, rate));
+                    chains.len() - 1
+                });
+            u16::try_from(at).ok()
+        })
+        .collect();
+    // A twin of each chain on every other bus, so a script that moves a
+    // group (or redirects a note) to another bus allocates nothing on the audio thread.
+    for n in 0..chains.len() {
+        let Some((sections, own, graph_group)) = chains
+            .get(n)
+            .map(|c| (c.sections.clone(), c.owner(), c.graph_group))
+        else {
+            continue;
+        };
+        for bus in 0..bus_count {
+            if !chains
+                .iter()
+                .any(|c| c.bus == bus && c.sections == sections && c.owner() == own)
+            {
+                let group = own.and_then(|g| {
+                    let from = group_split.get(g).copied().flatten()?;
+                    let slots = group_racks::slots(groups.get(g)?, from);
+                    Some((g, Rack::new(&slots, rate, impulses)))
+                });
+                let mut twin = Chain::new(bus, sections.clone(), group, rate);
+                twin.graph_group = graph_group;
+                chains.push(twin);
+            }
+        }
+    }
+    // Each group on a shared chain (or none) gets its private one, up to
+    // PRIVATE_CHAINS per instrument (about 2.5 KB each), built here at
+    // load so a write after init allocates nothing.
+    let mut left = PRIVATE_CHAINS;
+    let group_private: Box<[Option<u16>]> = (0..groups.len())
+        .map(|g| {
+            if has_graph {
+                return None;
+            }
+            let sections = shared.get(g).filter(|s| !s.is_empty())?;
+            if group_split.get(g).copied().flatten().is_some() {
+                return None;
+            }
+            left = left.checked_sub(1)?;
+            let bus = groups.get(g).map_or(0, |g| g.bus);
+            let mut chain = Chain::new(bus, sections.clone(), None, rate);
+            chain.private = true;
+            chains.push(chain);
+            u16::try_from(chains.len() - 1).ok()
+        })
+        .collect();
+    let group_moved = vec![false; groups.len()].into();
+    BuiltChains {
+        group_split,
+        chains,
+        group_chain,
+        group_private,
+        group_moved,
+    }
+}
+
 impl Engine {
     /// One chain per distinct (sections, bus) the zones' groups carry, less
     /// the inserts that run per voice.
     pub(crate) fn build_chains(&mut self) {
         self.build_voice_racks();
-        self.group_split = self
-            .groups
-            .iter()
-            .zip(&self.voice_units)
-            .map(|(g, units)| group_racks::split(g, units))
-            .collect();
-        let shared: Vec<Vec<(u8, ir::Effect)>> = self
-            .groups
-            .iter()
-            .zip(&self.voice_units)
-            .zip(&self.group_split)
-            .map(|((g, units), split)| {
-                let per_voice = |n: usize| units.iter().any(|u| usize::from(u.insert) == n);
-                (g.inserts.iter().enumerate())
-                    // The group's rack runs those from the split on.
-                    .take(split.unwrap_or(usize::MAX))
-                    .filter(|&(n, _)| !per_voice(n))
-                    .filter_map(|(n, e)| Some((u8::try_from(n).ok()?, e.clone()?)))
-                    .filter(|(_, e)| summed(e))
-                    .collect()
-            })
-            .collect();
-        let mut chains: Vec<Chain> = Vec::new();
-        let rate = self.rate;
-        let plan = Arc::clone(&self.plan);
-        let has_graph = self.graph_groups();
-        self.group_chain = (0..self.groups.len())
-            .map(|g| {
-                let sections = shared.get(g)?.clone();
-                let split = self.group_split.get(g).copied().flatten();
-                if !sections.iter().any(|(_, e)| sounds(e)) && split.is_none() {
-                    return None;
-                }
-                if has_graph {
-                    // In graph mode every group with inserts owns a dedicated chain
-                    // feeding `group_mix[g]` (`bus = usize::MAX`), so groups stay
-                    // isolated before `GroupInput { group: g }` and `effect_mut`
-                    // updates follow in place.
-                    let group = split.zip(self.groups.get(g)).map(|(from, group)| {
-                        let slots = group_racks::slots(group, from);
-                        (g, Rack::new(&slots, rate, &plan.impulses))
-                    });
-                    let mut chain = Chain::new(usize::MAX, sections, group, rate);
-                    chain.graph_group = Some(g);
-                    chain.to_graph_group = true;
-                    chains.push(chain);
-                    return u16::try_from(chains.len() - 1).ok();
-                }
-                let bus = self.groups.get(g).map_or(0, |g| g.bus);
-                let own = split.map(|_| g);
-                let at = chains
-                    .iter()
-                    .position(|c| c.bus == bus && c.sections == sections && c.owner() == own)
-                    .unwrap_or_else(|| {
-                        let group = split.zip(self.groups.get(g)).map(|(from, group)| {
-                            let slots = group_racks::slots(group, from);
-                            (g, Rack::new(&slots, rate, &plan.impulses))
-                        });
-                        chains.push(Chain::new(bus, sections, group, rate));
-                        chains.len() - 1
-                    });
-                u16::try_from(at).ok()
-            })
-            .collect();
-        // A twin of each chain on every other bus, so a script that moves a
-        // group (or redirects a note) to another bus allocates nothing on the audio thread.
-        for n in 0..chains.len() {
-            let Some((sections, own, graph_group)) = chains
-                .get(n)
-                .map(|c| (c.sections.clone(), c.owner(), c.graph_group))
-            else {
-                continue;
-            };
-            for bus in 0..self.buses.len() {
-                if !chains
-                    .iter()
-                    .any(|c| c.bus == bus && c.sections == sections && c.owner() == own)
-                {
-                    let group = own.and_then(|g| {
-                        let from = self.group_split.get(g).copied().flatten()?;
-                        let slots = group_racks::slots(self.groups.get(g)?, from);
-                        Some((g, Rack::new(&slots, rate, &plan.impulses)))
-                    });
-                    let mut twin = Chain::new(bus, sections.clone(), group, rate);
-                    twin.graph_group = graph_group;
-                    chains.push(twin);
-                }
-            }
-        }
-        // Each group on a shared chain (or none) gets its private one, up to
-        // PRIVATE_CHAINS per instrument (about 2.5 KB each), built here at
-        // load so a write after init allocates nothing.
-        let mut left = PRIVATE_CHAINS;
-        self.group_private = (0..self.groups.len())
-            .map(|g| {
-                if has_graph {
-                    return None;
-                }
-                let sections = shared.get(g).filter(|s| !s.is_empty())?;
-                if self.group_split.get(g).copied().flatten().is_some() {
-                    return None;
-                }
-                left = left.checked_sub(1)?;
-                let bus = self.groups.get(g).map_or(0, |g| g.bus);
-                let mut chain = Chain::new(bus, sections.clone(), None, rate);
-                chain.private = true;
-                chains.push(chain);
-                u16::try_from(chains.len() - 1).ok()
-            })
-            .collect();
-        self.group_moved = vec![false; self.groups.len()].into();
-        self.chains = chains;
+        let built = build_chains_for(
+            &self.groups,
+            &self.voice_units,
+            &self.plan.impulses,
+            self.buses.len(),
+            self.graph_groups(),
+            self.rate,
+        );
+        self.group_split = built.group_split;
+        self.chains = built.chains;
+        self.group_chain = built.group_chain;
+        self.group_private = built.group_private;
+        self.group_moved = built.group_moved;
     }
 
     /// Marks group `g`'s inserts as written: the next span's chains follow.

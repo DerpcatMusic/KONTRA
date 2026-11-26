@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use kontra_engine::{Ahdsr, Engine, Loop, Prepared, Region, Zone, ZoneEdit, ir};
+use kontra_engine::{Engine, Loop, Prepared, PreparedRacks, Region, Zone, ZoneEdit, ir};
 use kontra_format::io::{ReadAt, SliceReader, TransformedReader};
 use kontra_lua::{
     EffectOp, EffectTarget, KeygroupParamKind, MAX_INLINE_SLICES, OscParamKind, RuntimeChannel,
@@ -67,6 +67,9 @@ impl PartLuaRuntime {
 pub struct ZoneSwap {
     pub plan: Arc<Plan>,
     pub edits: Box<[(ZoneEdit, bool)]>,
+    /// Optional off-thread pre-built rack/chain replacements swapped in
+    /// atomically alongside `plan`.
+    pub racks: Option<PreparedRacks>,
 }
 
 /// One or more purged groups whose heads were read in a batch.
@@ -266,9 +269,11 @@ impl Rack {
             }
 
             // Step 3: Apply all requests to a lazily cloned `Plan`, collecting
-            // replies and any live keygroup insert commands (`Command::Sound`).
+            // replies and tracking which effect racks/chains need live swaps.
             let mut edited_plan: Option<Plan> = None;
-            let mut sound_cmds: Vec<(usize, Ahdsr, usize, ir::Effect)> = Vec::new();
+            let mut program_dirty = false;
+            let mut dirty_buses: Vec<usize> = Vec::new();
+            let mut dirty_groups: Vec<usize> = Vec::new();
             let mut replies: Vec<(usize, RuntimeReply)> = Vec::new();
             let mut superseded_replies: Vec<(usize, u32, u32, u16)> = Vec::new();
 
@@ -455,7 +460,30 @@ impl Rack {
                     }
                     RuntimeRequest::EffectChain { target, op } => {
                         let plan = edited_plan.get_or_insert_with(|| (*base_plan).clone());
-                        apply_effect_chain(plan, target, op, &mut sound_cmds);
+                        apply_effect_chain(
+                            plan,
+                            target,
+                            op,
+                            &mut program_dirty,
+                            &mut dirty_buses,
+                            &mut dirty_groups,
+                        );
+                    }
+                    RuntimeRequest::EffectParam {
+                        target,
+                        slot,
+                        name,
+                        value,
+                    } => {
+                        let plan = edited_plan.get_or_insert_with(|| (*base_plan).clone());
+                        if apply_effect_param(plan, target, slot, name.as_str(), value) {
+                            mark_effect_target_dirty(
+                                target,
+                                &mut program_dirty,
+                                &mut dirty_buses,
+                                &mut dirty_groups,
+                            );
+                        }
                     }
                 }
             }
@@ -474,6 +502,17 @@ impl Rack {
 
             let plan_swapped = edited_plan.is_some();
             if let Some(plan) = edited_plan {
+                let racks = (program_dirty || !dirty_buses.is_empty() || !dirty_groups.is_empty())
+                    .then(|| {
+                        PreparedRacks::build(
+                            &plan,
+                            self.rate,
+                            program_dirty,
+                            &dirty_buses,
+                            &dirty_groups,
+                        )
+                    })
+                    .filter(|r| !r.is_empty());
                 let plan = Arc::new(plan);
                 if let Some(Some(p)) = self.parts.get_mut(part)
                     && p.script.generation == generation
@@ -485,6 +524,7 @@ impl Rack {
                 let swap = Box::new(ZoneSwap {
                     plan,
                     edits: Box::default(),
+                    racks,
                 });
                 self.send(Command::Zones {
                     part,
@@ -496,16 +536,6 @@ impl Rack {
             {
                 p.script.look_needed = true;
                 p.script.capture_needed = true;
-            }
-
-            for (group, envelope, slot, effect) in sound_cmds {
-                self.send(Command::Sound {
-                    part,
-                    generation,
-                    group,
-                    envelope,
-                    insert: Box::new(Some((slot, effect))),
-                });
             }
 
             if plan_swapped || self.pending.is_empty() {
@@ -543,6 +573,7 @@ impl Rack {
             let swap = Box::new(ZoneSwap {
                 plan,
                 edits: Box::default(),
+                racks: None,
             });
             self.send(Command::Zones {
                 part,
@@ -627,6 +658,7 @@ impl Rack {
                 let swap = Box::new(ZoneSwap {
                     plan: grown,
                     edits: Box::default(),
+                    racks: None,
                 });
                 self.send(Command::Zones {
                     part,
@@ -755,6 +787,7 @@ impl Rack {
             let swap = Box::new(ZoneSwap {
                 plan,
                 edits: edits.into(),
+                racks: None,
             });
             self.send(Command::Zones {
                 part,
@@ -1384,9 +1417,9 @@ fn apply_playback_options(
     (ok, frames, rate)
 }
 
-fn build_uvi_effect(effect_type: &str) -> ir::Effect {
-    if let Some(e) = kontra_format_uvi::build_effect_by_type(effect_type) {
-        return e;
+fn build_uvi_effect(effect_type: &str) -> (ir::Effect, Option<ir::KnobModel>) {
+    if let Some(pair) = kontra_format_uvi::build_effect_by_type(effect_type) {
+        return pair;
     }
     let kind = match effect_type.to_ascii_lowercase().as_str() {
         "onepole" => ir::EffectKind::Filter(ir::Filter {
@@ -1421,33 +1454,127 @@ fn build_uvi_effect(effect_type: &str) -> ir::Effect {
         "gain" | "gainmatrix" => ir::EffectKind::Gain(1.0),
         _ => ir::EffectKind::Other,
     };
-    ir::Effect {
-        kind,
-        bypass: false,
-        output: 1.0,
-        dry: 0.0,
+    (
+        ir::Effect {
+            kind,
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        },
+        None,
+    )
+}
+
+fn target_rack_at(target: EffectTarget) -> Option<ir::RackAt> {
+    match target {
+        EffectTarget::Keygroup(g) => Some(ir::RackAt::Group(g)),
+        EffectTarget::Bus(b) => b
+            .checked_sub(1)
+            .and_then(|v| u8::try_from(v).ok())
+            .map(ir::RackAt::Bus),
+        EffectTarget::Program => Some(ir::RackAt::Inserts),
     }
 }
 
-fn bypassed_placeholder() -> ir::Effect {
-    ir::Effect {
-        kind: ir::EffectKind::Other,
-        bypass: true,
-        output: 1.0,
-        dry: 0.0,
+fn mark_effect_target_dirty(
+    target: EffectTarget,
+    program_dirty: &mut bool,
+    dirty_buses: &mut Vec<usize>,
+    dirty_groups: &mut Vec<usize>,
+) {
+    match target {
+        EffectTarget::Keygroup(g) => {
+            let idx = g as usize;
+            if !dirty_groups.contains(&idx) {
+                dirty_groups.push(idx);
+            }
+        }
+        EffectTarget::Bus(b) => {
+            let idx = b as usize;
+            if !dirty_buses.contains(&idx) {
+                dirty_buses.push(idx);
+            }
+        }
+        EffectTarget::Program => *program_dirty = true,
     }
 }
 
-fn mutate_insert_vec(inserts: &mut Vec<Option<ir::Effect>>, op: EffectOp) {
+fn sync_slot_models(
+    models: &mut Vec<(ir::RackAt, u8, ir::KnobModel)>,
+    at: ir::RackAt,
+    op: &EffectOp,
+    inserted: Option<(usize, ir::KnobModel)>,
+    prev_len: usize,
+) {
+    match *op {
+        EffectOp::Insert { index, .. } => {
+            let pos = usize::from(index).min(prev_len);
+            for (m_at, slot, _) in models.iter_mut() {
+                if *m_at == at && usize::from(*slot) >= pos {
+                    *slot = slot.saturating_add(1);
+                }
+            }
+            if let Some((slot_idx, model)) = inserted
+                && let Ok(slot_u8) = u8::try_from(slot_idx)
+            {
+                models.push((at, slot_u8, model));
+            }
+        }
+        EffectOp::Remove { index } => {
+            let pos = usize::from(index);
+            if pos < prev_len {
+                models.retain(|(m_at, slot, _)| !(*m_at == at && usize::from(*slot) == pos));
+                for (m_at, slot, _) in models.iter_mut() {
+                    if *m_at == at && usize::from(*slot) > pos {
+                        *slot = slot.saturating_sub(1);
+                    }
+                }
+            }
+        }
+        EffectOp::Move { from, to } => {
+            let (f, t) = (usize::from(from), usize::from(to));
+            if f < prev_len && t < prev_len && f != t {
+                for (m_at, slot, _) in models.iter_mut() {
+                    if *m_at != at {
+                        continue;
+                    }
+                    let s = usize::from(*slot);
+                    let next = if s == f {
+                        t
+                    } else if f < t && s > f && s <= t {
+                        s - 1
+                    } else if t < f && s >= t && s < f {
+                        s + 1
+                    } else {
+                        s
+                    };
+                    if let Ok(next_u8) = u8::try_from(next) {
+                        *slot = next_u8;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn mutate_insert_vec(
+    inserts: &mut Vec<Option<ir::Effect>>,
+    op: EffectOp,
+) -> (bool, Option<(usize, ir::KnobModel)>) {
     match op {
         EffectOp::Insert { index, effect_type } => {
             let pos = usize::from(index).min(inserts.len());
-            inserts.insert(pos, Some(build_uvi_effect(effect_type.as_str())));
+            let (effect, model) = build_uvi_effect(effect_type.as_str());
+            inserts.insert(pos, Some(effect));
+            (true, model.map(|m| (pos, m)))
         }
         EffectOp::Remove { index } => {
             let pos = usize::from(index);
             if pos < inserts.len() {
                 inserts.remove(pos);
+                (true, None)
+            } else {
+                (false, None)
             }
         }
         EffectOp::Move { from, to } => {
@@ -1455,6 +1582,9 @@ fn mutate_insert_vec(inserts: &mut Vec<Option<ir::Effect>>, op: EffectOp) {
             if f < inserts.len() && t < inserts.len() && f != t {
                 let item = inserts.remove(f);
                 inserts.insert(t, item);
+                (true, None)
+            } else {
+                (false, None)
             }
         }
     }
@@ -1464,35 +1594,157 @@ fn apply_effect_chain(
     plan: &mut Plan,
     target: EffectTarget,
     op: EffectOp,
-    sound_cmds: &mut Vec<(usize, Ahdsr, usize, ir::Effect)>,
+    program_dirty: &mut bool,
+    dirty_buses: &mut Vec<usize>,
+    dirty_groups: &mut Vec<usize>,
 ) {
-    match target {
+    let (prev_len, changed, inserted) = match target {
         EffectTarget::Keygroup(g) => {
-            let group_idx = g as usize;
-            let Some(group) = plan.groups.get_mut(group_idx) else {
+            let Some(group) = plan.groups.get_mut(g as usize) else {
                 return;
             };
-            let prev_len = group.inserts.len();
-            mutate_insert_vec(&mut group.inserts, op);
-            let envelope = group.envelope;
-            let sync_slots = prev_len.max(group.inserts.len());
-            for slot in 0..sync_slots {
-                let eff = group
-                    .inserts
-                    .get(slot)
-                    .and_then(Clone::clone)
-                    .unwrap_or_else(bypassed_placeholder);
-                sound_cmds.push((group_idx, envelope, slot, eff));
-            }
+            let prev = group.inserts.len();
+            let (changed, inserted) = mutate_insert_vec(&mut group.inserts, op);
+            (prev, changed, inserted)
         }
         EffectTarget::Bus(b) => {
-            if let Some(bus) = plan.buses.get_mut(b as usize) {
-                mutate_insert_vec(&mut bus.inserts, op);
-            }
+            let Some(bus) = plan.buses.get_mut(b as usize) else {
+                return;
+            };
+            let prev = bus.inserts.len();
+            let (changed, inserted) = mutate_insert_vec(&mut bus.inserts, op);
+            (prev, changed, inserted)
         }
         EffectTarget::Program => {
-            mutate_insert_vec(&mut plan.inserts, op);
+            let prev = plan.inserts.len();
+            let (changed, inserted) = mutate_insert_vec(&mut plan.inserts, op);
+            (prev, changed, inserted)
         }
+    };
+    if changed {
+        if let Some(at) = target_rack_at(target) {
+            sync_slot_models(&mut plan.slot_models, at, &op, inserted, prev_len);
+        }
+        mark_effect_target_dirty(target, program_dirty, dirty_buses, dirty_groups);
+    }
+}
+
+/// Writes UVI attribute `name` into `model`'s saved knobs and rebuilds
+/// `effect` through its registered model; `false` when either refuses.
+fn set_model_param(
+    model: &mut ir::KnobModel,
+    name: &str,
+    value: f32,
+    effect: &mut ir::Effect,
+) -> bool {
+    let Some(idx) = kontra_format_uvi::attr_index(model.id, name) else {
+        return false;
+    };
+    let mut saved = model.saved.to_vec();
+    let Some(slot) = saved.get_mut(idx) else {
+        return false;
+    };
+    *slot = value;
+    let Some(built) = ir::model(model.id).and_then(|m| m.build_effect(&saved, effect)) else {
+        return false;
+    };
+    model.saved = saved.into();
+    *effect = built;
+    true
+}
+
+fn apply_effect_param(
+    plan: &mut Plan,
+    target: EffectTarget,
+    slot: u16,
+    name: &str,
+    value: f64,
+) -> bool {
+    let slot_idx = usize::from(slot);
+    let effect = match target {
+        EffectTarget::Keygroup(g) => plan
+            .groups
+            .get_mut(g as usize)
+            .and_then(|grp| grp.inserts.get_mut(slot_idx))
+            .and_then(Option::as_mut),
+        EffectTarget::Bus(b) => plan
+            .buses
+            .get_mut(b as usize)
+            .and_then(|bus| bus.inserts.get_mut(slot_idx))
+            .and_then(Option::as_mut),
+        EffectTarget::Program => plan.inserts.get_mut(slot_idx).and_then(Option::as_mut),
+    };
+    let Some(effect) = effect else {
+        return false;
+    };
+    if name == "Bypass" {
+        effect.bypass = value != 0.0;
+        return true;
+    }
+    if name == "Volume"
+        && let ir::EffectKind::Gain(g) = &mut effect.kind
+    {
+        *g = (value as f32).max(0.0);
+        return true;
+    }
+    if let Some(at) = target_rack_at(target)
+        && let Ok(slot_u8) = u8::try_from(slot_idx)
+        && let Some((_, _, model)) = plan
+            .slot_models
+            .iter_mut()
+            .find(|(m_at, s, _)| *m_at == at && *s == slot_u8)
+        && set_model_param(model, name, value as f32, effect)
+    {
+        return true;
+    }
+    match &mut effect.kind {
+        ir::EffectKind::Filter(f) => match name {
+            "Freq" => {
+                f.hz = (value as f32).clamp(20.0, 20_000.0);
+                true
+            }
+            "Mode" => {
+                f.pass = if (value - 1.0).abs() < 0.5 {
+                    ir::Pass::High
+                } else {
+                    ir::Pass::Low
+                };
+                true
+            }
+            "Q" => {
+                let q = (value as f32).clamp(0.0, 1.0);
+                f.damping = [2.0 * (1.0 - q); 3];
+                true
+            }
+            "Morph" => {
+                if let Some(ir::Ladder::SallenKey { morph, .. }) = &mut f.ladder {
+                    *morph = (value as f32).clamp(0.0, 1.0);
+                    return true;
+                }
+                false
+            }
+            "ReferenceVoltage" => {
+                f.gain = (value as f32).max(0.01);
+                true
+            }
+            _ => false,
+        },
+        ir::EffectKind::Comb(c) => match name {
+            "Freq" => {
+                c.hz = (value as f32).clamp(ir::COMB_LOWEST_HZ, 20_000.0);
+                true
+            }
+            "Q" => {
+                c.feedback = (value as f32).clamp(0.0, 0.999);
+                true
+            }
+            "Mode" => {
+                c.forward = (value - 1.0).abs() < 0.5;
+                true
+            }
+            _ => false,
+        },
+        _ => false,
     }
 }
 
