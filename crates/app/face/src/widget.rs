@@ -288,13 +288,20 @@ pub(super) fn widget(
     w.z = p.int("$CONTROL_PAR_Z_LAYER").unwrap_or(0);
     let hide = p.int("$CONTROL_PAR_HIDE").unwrap_or(0);
     w.hidden = hide & HIDE_WHOLE_CONTROL != 0;
-    // move_control(x, y) places on Kontakt's grid; (0, 0) hides. It sets
-    // the GRID_X and GRID_Y cells (probe/grid.ksp).
+    // move_control(x, y) places on Kontakt's grid; (0, 0) hides. A subsequent
+    // pixel move (`move_control_px` / `$CONTROL_PAR_POS_X`/`_Y`) keeps the grid
+    // cells for readback but positions the widget at the pixel coordinates.
     if let (Some(column), Some(row)) = (p.int("$CONTROL_PAR_GRID_X"), p.int("$CONTROL_PAR_GRID_Y"))
     {
         match (u32::try_from(column), u32::try_from(row)) {
             (Ok(column @ 1..), Ok(row @ 1..)) => {
-                w.placement = ui::Placement::Grid { column, row };
+                let grid_x = (column as i32 - 1).saturating_mul(92);
+                let grid_y = (row as i32 - 1).saturating_mul(21);
+                let moved_px = p.int("$CONTROL_PAR_POS_X").is_some_and(|x| x != grid_x)
+                    || p.int("$CONTROL_PAR_POS_Y").is_some_and(|y| y != grid_y);
+                if !moved_px {
+                    w.placement = ui::Placement::Grid { column, row };
+                }
             }
             _ => w.hidden = true,
         }
@@ -476,19 +483,30 @@ pub(super) fn widget(
         }
         w.images.push(image);
     }
-    // A pad's cursor pictures: each its own (`set_control_par_str_arr`);
-    // a plain `set_control_par_str` pictures the first cursor only, the
-    // rest keep the stock square (Kontakt 8 oracle, probe/xy2.ksp).
-    if let ui::Kind::Xy { cursors, .. } = w.kind {
-        for i in 0..cursors {
-            let own = p.entry("$CONTROL_PAR_CURSOR_PICTURE", i as i32);
-            let name = own.or_else(|| p.text("$CONTROL_PAR_CURSOR_PICTURE").filter(|_| i == 0));
-            if let Some(asset) = name.and_then(|n| bld.asset(n)) {
-                let mut cursor = ui::ImageUse::new(asset, ui::Role::Handle);
-                cursor.part = i;
-                w.images.push(cursor);
+    // Cursor pictures: an XY pad gets one per cursor (`set_control_par_str_arr`,
+    // or a plain `set_control_par_str` for cursor 0); buttons and switches can
+    // also carry a hover/cursor picture (`$CONTROL_PAR_CURSOR_PICTURE`).
+    match w.kind {
+        ui::Kind::Xy { cursors, .. } => {
+            for i in 0..cursors {
+                let own = p.entry("$CONTROL_PAR_CURSOR_PICTURE", i as i32);
+                let name = own.or_else(|| p.text("$CONTROL_PAR_CURSOR_PICTURE").filter(|_| i == 0));
+                if let Some(asset) = name.and_then(|n| bld.asset(n)) {
+                    let mut cursor = ui::ImageUse::new(asset, ui::Role::Handle);
+                    cursor.part = i;
+                    w.images.push(cursor);
+                }
             }
         }
+        ui::Kind::Button { .. } | ui::Kind::Switch => {
+            if let Some(asset) = p
+                .text("$CONTROL_PAR_CURSOR_PICTURE")
+                .and_then(|n| bld.asset(n))
+            {
+                w.images.push(ui::ImageUse::new(asset, ui::Role::Handle));
+            }
+        }
+        _ => {}
     }
     w
 }

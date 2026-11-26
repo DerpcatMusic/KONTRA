@@ -1,0 +1,59 @@
+# Kontakt 8.13: picture, cursor, alignment, colour and text-shifting parameters, unset and after a
+# set, and the type and geometry each control reads.
+# A cursor picture set to a name no resource holds reads empty, so only unset reads are kept.
+# Run: ksp_probe.py "ANALOG STRINGS.nki" this-file > control_pars_13.measured
+# KONTRA replays it: crates/app/host/tests/oracle_probes.rs.
+S declare ui_button $bt
+S declare ui_switch $sw
+S declare ui_xy ?xy[2]
+S declare ui_table %tb[8](2, 2, 100)
+S declare ui_value_edit $ve(0, 100, 1)
+S declare ui_waveform $wf(100, 50)
+S declare ui_text_edit @tx
+S declare ui_label $lb(1, 1)
+S declare ui_file_selector $fs
+S declare ui_wavetable $wt
+S declare ui_panel $pn
+T button_cursor get_control_par_str(get_ui_id($bt), $CONTROL_PAR_CURSOR_PICTURE)
+R button_shift get_control_par(get_ui_id($bt), $CONTROL_PAR_DISABLE_TEXT_SHIFTING)
+S set_control_par(get_ui_id($bt), $CONTROL_PAR_DISABLE_TEXT_SHIFTING, 1)
+R button_shift_set get_control_par(get_ui_id($bt), $CONTROL_PAR_DISABLE_TEXT_SHIFTING)
+T switch_cursor get_control_par_str(get_ui_id($sw), $CONTROL_PAR_CURSOR_PICTURE)
+R xy_state get_control_par(get_ui_id(?xy), $CONTROL_PAR_PICTURE_STATE)
+R xy_end_alpha get_control_par(get_ui_id(?xy), $CONTROL_PAR_WAVETABLE_END_ALPHA)
+S set_control_par(get_ui_id(?xy), $CONTROL_PAR_WAVETABLE_END_ALPHA, 50)
+R xy_end_alpha_set get_control_par(get_ui_id(?xy), $CONTROL_PAR_WAVETABLE_END_ALPHA)
+R table_behaviour get_control_par(get_ui_id(%tb), $CONTROL_PAR_MOUSE_BEHAVIOUR)
+R table_state get_control_par(get_ui_id(%tb), $CONTROL_PAR_PICTURE_STATE)
+S set_control_par(get_ui_id(%tb), $CONTROL_PAR_MOUSE_BEHAVIOUR, -500)
+R table_behaviour_set get_control_par(get_ui_id(%tb), $CONTROL_PAR_MOUSE_BEHAVIOUR)
+R value_edit_state get_control_par(get_ui_id($ve), $CONTROL_PAR_PICTURE_STATE)
+R value_edit_zero_line get_control_par(get_ui_id($ve), $CONTROL_PAR_ZERO_LINE_COLOR)
+S set_control_par(get_ui_id($ve), $CONTROL_PAR_ZERO_LINE_COLOR, 0ff0000h)
+R value_edit_zero_line_set get_control_par(get_ui_id($ve), $CONTROL_PAR_ZERO_LINE_COLOR)
+R waveform_valuepos get_control_par(get_ui_id($wf), $CONTROL_PAR_VALUEPOS_Y)
+S set_control_par(get_ui_id($wf), $CONTROL_PAR_VALUEPOS_Y, 12)
+R waveform_valuepos_set get_control_par(get_ui_id($wf), $CONTROL_PAR_VALUEPOS_Y)
+R text_edit_align get_control_par(get_ui_id(@tx), $CONTROL_PAR_TEXT_ALIGNMENT)
+S set_control_par(get_ui_id(@tx), $CONTROL_PAR_TEXT_ALIGNMENT, 2)
+R text_edit_align_set get_control_par(get_ui_id(@tx), $CONTROL_PAR_TEXT_ALIGNMENT)
+R label_state get_control_par(get_ui_id($lb), $CONTROL_PAR_PICTURE_STATE)
+R button_type get_control_par(get_ui_id($bt), $CONTROL_PAR_TYPE)
+R switch_type get_control_par(get_ui_id($sw), $CONTROL_PAR_TYPE)
+R xy_type get_control_par(get_ui_id(?xy), $CONTROL_PAR_TYPE)
+R table_type get_control_par(get_ui_id(%tb), $CONTROL_PAR_TYPE)
+R value_edit_type get_control_par(get_ui_id($ve), $CONTROL_PAR_TYPE)
+R waveform_type get_control_par(get_ui_id($wf), $CONTROL_PAR_TYPE)
+R text_edit_type get_control_par(get_ui_id(@tx), $CONTROL_PAR_TYPE)
+R label_type get_control_par(get_ui_id($lb), $CONTROL_PAR_TYPE)
+R file_selector_type get_control_par(get_ui_id($fs), $CONTROL_PAR_TYPE)
+R wavetable_type get_control_par(get_ui_id($wt), $CONTROL_PAR_TYPE)
+R panel_type get_control_par(get_ui_id($pn), $CONTROL_PAR_TYPE)
+R xy_width get_control_par(get_ui_id(?xy), $CONTROL_PAR_WIDTH)
+R xy_height get_control_par(get_ui_id(?xy), $CONTROL_PAR_HEIGHT)
+R waveform_width get_control_par(get_ui_id($wf), $CONTROL_PAR_WIDTH)
+R waveform_height get_control_par(get_ui_id($wf), $CONTROL_PAR_HEIGHT)
+R file_selector_width get_control_par(get_ui_id($fs), $CONTROL_PAR_WIDTH)
+R wavetable_height get_control_par(get_ui_id($wt), $CONTROL_PAR_HEIGHT)
+R panel_width get_control_par(get_ui_id($pn), $CONTROL_PAR_WIDTH)
+R text_edit_pos_x get_control_par(get_ui_id(@tx), $CONTROL_PAR_POS_X)

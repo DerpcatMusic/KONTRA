@@ -353,6 +353,8 @@ struct Compiler<'a> {
     text_depth: usize,
     max_stack: usize,
     controls: Vec<Control>,
+    /// By control, which declaration parameters are constants (bit i: parameter i).
+    constant_params: Vec<u32>,
     symbols: Vec<Box<str>>,
     symbol_ids: HashMap<&'a str, i32>,
     /// Script::shows.

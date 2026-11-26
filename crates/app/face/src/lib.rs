@@ -62,11 +62,25 @@ impl Face {
                 Some((c.clone(), v.name.clone(), v.cells))
             })
             .collect();
+        // Canonicalize KSP `$`-prefixed catalog symbols to uppercase once at
+        // load so case-insensitive scripts (`$control_par_*`) match every table
+        // with zero per-refresh allocation.
+        let symbols = script
+            .symbols
+            .iter()
+            .map(|s| {
+                if s.starts_with('$') {
+                    s.to_ascii_uppercase().into_boxed_str()
+                } else {
+                    s.clone()
+                }
+            })
+            .collect();
         Self {
             controls,
             shows: script.shows.clone(),
             picks: script.picks.clone(),
-            symbols: script.symbols.clone(),
+            symbols,
             view: crate::perf_view::find(data).map(|(_, view)| view),
             native: nui::Native::of(data),
             player: false,
@@ -128,8 +142,8 @@ const COLORS: [(&str, ColorSlot); 13] = [
 
 /// The parameters the tree carries; any other a script set is reported.
 /// Control parameters the engine stores and reads back with no look of their
-/// own: a control's custom id, list ids, the modifier keys a click held and a
-/// text line added through a parameter.
+/// own: custom id, list ids, modifier keys, text-line append, drag/MIDI export
+/// metadata, read-only identity/type and the `$CONTROL_PAR_NONE` sentinel.
 const CARRIED: &[&str] = &[
     // Stored as set and read back (Conflux's effect menus).
     "$CONTROL_PAR_CUSTOM_ID",
@@ -139,6 +153,11 @@ const CARRIED: &[&str] = &[
     "$CONTROL_PAR_KEY_ALT",
     "$CONTROL_PAR_KEY_CONTROL",
     "$CONTROL_PAR_TEXTLINE",
+    "$CONTROL_PAR_DND_BEHAVIOUR",
+    "$CONTROL_PAR_MIDI_EXPORT_AREA_IDX",
+    "$CONTROL_PAR_IDENTIFIER",
+    "$CONTROL_PAR_TYPE",
+    "$CONTROL_PAR_NONE",
 ];
 
 const MAPPED: &[&str] = &[
@@ -222,12 +241,16 @@ const STATE_FONTS: [&str; 6] = [
 
 /// Carried, or accepted without effect: NKS properties map a control for
 /// Komplete Kontrol hardware and have no view or sound of their own.
+/// Matches KSP parameter names case-insensitively.
 pub fn mapped(par: &str) -> bool {
-    MAPPED.contains(&par)
-        || CARRIED.contains(&par)
-        || STATE_FONTS.contains(&par)
-        || COLORS.iter().any(|(c, _)| *c == par)
-        || par.starts_with("$CONTROL_PAR_NKS_")
+    let has = |list: &[&str]| list.iter().any(|p| p.eq_ignore_ascii_case(par));
+    has(MAPPED)
+        || has(CARRIED)
+        || has(&STATE_FONTS)
+        || COLORS.iter().any(|(c, _)| c.eq_ignore_ascii_case(par))
+        || par
+            .get(.."$CONTROL_PAR_NKS_".len())
+            .is_some_and(|p| p.eq_ignore_ascii_case("$CONTROL_PAR_NKS_"))
 }
 
 /// A control's parameters by name, as the script left them.
@@ -319,43 +342,48 @@ impl Builder<'_> {
         let bitmap = bitmap.map(|name| self.font_asset(name));
         let styles = &mut self.ui.styles;
         *self.styles.entry((font, align)).or_insert_with(|| {
-            // Kontakt's factory fonts carry their own colour and size, from
-            // NI's font chart (KSP manual, control parameters).
-            // 26 is white (Kontakt 8 oracle probe; past NI's chart).
-            const COLORS: [u32; 27] = [
-                0xfefefe, 0xfefefe, 0x373733, 0xcccccc, 0xe3c269, 0xe4d182, 0x7d3012, 0x853519,
-                0x48443c, 0x000000, 0xd9d9d9, 0x898c8d, 0x1b1b1a, 0xd2dce1, 0xb9b9b9, 0x5f5f5f,
-                0x000000, 0xfefefe, 0xfefefe, 0x000000, 0x7f7f7f, 0x7f7f7f, 0x000000, 0x7f7f7f,
-                0xffffff, 0x0c2431, 0xfefefe,
+            // Kontakt's 27 factory fonts: `(rgb, size, weight)` from NI's font
+            // chart + Kontakt 8 oracle probes (26 is white, past NI's chart).
+            const FACTORY: [(u32, f32, Option<f32>); 27] = [
+                (0xfefefe, 10.0, None),       // 0
+                (0xfefefe, 12.6, Some(700.)), // 1
+                (0x373733, 10.0, None),       // 2
+                (0xcccccc, 10.0, None),       // 3
+                (0xe3c269, 10.0, None),       // 4
+                (0xe4d182, 12.6, Some(700.)), // 5
+                (0x7d3012, 10.0, None),       // 6
+                (0x853519, 12.6, Some(700.)), // 7
+                (0x48443c, 10.0, None),       // 8
+                (0x000000, 10.0, None),       // 9
+                (0xd9d9d9, 10.0, None),       // 10
+                (0x898c8d, 10.0, None),       // 11
+                (0x1b1b1a, 10.9, Some(600.)), // 12
+                (0xd2dce1, 10.9, Some(600.)), // 13
+                (0xb9b9b9, 10.9, Some(600.)), // 14
+                (0x5f5f5f, 10.0, None),       // 15
+                (0x000000, 12.1, Some(700.)), // 16
+                (0xfefefe, 12.1, Some(700.)), // 17
+                (0xfefefe, 10.9, Some(600.)), // 18
+                (0x000000, 12.6, Some(700.)), // 19
+                (0x7f7f7f, 12.6, Some(700.)), // 20
+                (0x7f7f7f, 12.1, Some(700.)), // 21
+                (0x000000, 11.5, Some(600.)), // 22
+                (0x7f7f7f, 11.5, Some(600.)), // 23
+                (0xffffff, 11.5, Some(600.)), // 24
+                (0x0c2431, 10.9, Some(600.)), // 25
+                (0xfefefe, 10.0, None),       // 26
             ];
-            let factory = usize::try_from(font)
-                .ok()
-                .and_then(|f| COLORS.get(f).map(|&c| (f, c)));
+            let factory = usize::try_from(font).ok().and_then(|f| FACTORY.get(f));
             styles.push(ui::TextStyle {
                 font: bitmap.map_or(ui::Font::Stock(font), ui::Font::Bitmap),
-                // Sizes that run each family as wide as Kontakt 8 draws it
-                // (oracle probe: one line in every font id at 100 % and 150 %;
-                // 20, 21 and 23 measured on a bare page, as they draw grey).
-                size: factory.and_then(|(f, _)| match f {
-                    1 | 5 | 7 | 19 | 20 => Some(12.6),
-                    16 | 17 | 21 => Some(12.1),
-                    22..=24 => Some(11.5),
-                    12 | 13 | 14 | 18 | 25 => Some(10.9),
-                    0 | 2 | 3 | 4 | 6 | 8 | 9 | 10 | 11 | 15 | 26 => Some(10.),
-                    _ => None,
-                }),
-                // Kontakt's stock faces run in their own weights (Kontakt 8 oracle probe).
+                size: factory.map(|&(_, size, _)| size),
                 weight: if bitmap.is_none() {
-                    match font {
-                        1 | 5 | 7 | 16 | 17 | 19 | 20 | 21 => Some(700.),
-                        12..=14 | 18 | 22..=25 => Some(600.),
-                        _ => None,
-                    }
+                    factory.and_then(|&(_, _, w)| w)
                 } else {
                     None
                 },
                 inset: None,
-                color: factory.map_or(ui::Rgba::default(), |(_, c)| ui::Rgba::rgb(c)),
+                color: factory.map_or(ui::Rgba::default(), |&(c, _, _)| ui::Rgba::rgb(c)),
                 align: match align {
                     0 => ui::Align::Left,
                     2 => ui::Align::Right,
@@ -393,15 +421,11 @@ fn color(v: i32) -> ui::Rgba {
 
 fn unit(n: i32) -> &'static str {
     // $KNOB_UNIT_* (constants.tsv).
-    match n {
-        1 => "dB",
-        2 => "Hz",
-        3 => "%",
-        4 => "ms",
-        5 => "oct",
-        6 => "st",
-        _ => "",
-    }
+    const UNITS: [&str; 7] = ["", "dB", "Hz", "%", "ms", "oct", "st"];
+    usize::try_from(n)
+        .ok()
+        .and_then(|i| UNITS.get(i).copied())
+        .unwrap_or("")
 }
 
 /// Where a widget comes from: the script's control and/or the view's, by

@@ -198,8 +198,23 @@ impl TryFrom<&Chunk> for MidiPortMaps {
     fn try_from(chunk: &Chunk) -> Result<Self, Error> {
         expect(chunk, 0x49)?;
         let mut r = Cursor::new(chunk.data.as_slice());
+        // Bank versions < 0x77 store four counted 16-entry port maps; 0x77+ stores one 64-entry map.
+        let first = counted(&mut r, 64)?;
+        if r.position() as usize == chunk.data.len() {
+            let mut maps: [Vec<u32>; 4] = Default::default();
+            for (slot, chunk_vals) in maps.iter_mut().zip(first.chunks(16)) {
+                slot.extend_from_slice(chunk_vals);
+            }
+            return Ok(Self(maps));
+        }
+        if first.len() > 16 {
+            return Err(Error::Generic(format!(
+                "Counted list of {} exceeds 16",
+                first.len()
+            )));
+        }
         let maps = [
-            counted(&mut r, 16)?,
+            first,
             counted(&mut r, 16)?,
             counted(&mut r, 16)?,
             counted(&mut r, 16)?,

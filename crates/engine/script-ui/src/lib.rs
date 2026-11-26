@@ -510,11 +510,20 @@ impl Store {
         self.menus.get_mut(usize::from(slot))?.get_mut(n?)
     }
 
-    /// `set_control_par` on the instrument's wallpaper or icon.
-    fn page_par(&mut self, slot: u8, look: &LookPars, call: &HostCall<'_>) -> Option<HostValue> {
+    /// `set_control_par` / `get_control_par` (and `_str`) on the instrument's
+    /// wallpaper or icon.
+    fn page_par(
+        &mut self,
+        slot: u8,
+        look: &LookPars,
+        call: &mut HostCall<'_>,
+    ) -> Option<HostValue> {
         if !matches!(
             call.action,
-            Action::SetControlPar | Action::SetControlParStr
+            Action::SetControlPar
+                | Action::GetControlPar
+                | Action::SetControlParStr
+                | Action::GetControlParStr
         ) {
             return None;
         }
@@ -527,16 +536,42 @@ impl Store {
         let text = call.texts.first().copied().unwrap_or(Text::EMPTY);
         let wallpaper = id == look.wallpaper;
         let page = self.pages.get_mut(usize::from(slot))?;
-        match (call.action, wallpaper) {
-            (Action::SetControlParStr, true) if par == look.picture => page.wallpaper = text,
-            (Action::SetControlParStr, false) if par == look.picture => page.icon = text,
+        Some(match (call.action, wallpaper) {
+            (Action::SetControlParStr, true) if par == look.picture => {
+                page.wallpaper = text;
+                HostValue::Nothing
+            }
+            (Action::SetControlParStr, false) if par == look.picture => {
+                page.icon = text;
+                HostValue::Nothing
+            }
+            (Action::GetControlParStr, true) if par == look.picture => {
+                *call.text_out = page.wallpaper;
+                HostValue::Text
+            }
+            (Action::GetControlParStr, false) if par == look.picture => {
+                *call.text_out = page.icon;
+                HostValue::Text
+            }
+            (Action::GetControlParStr, _) => {
+                *call.text_out = Text::EMPTY;
+                HostValue::Text
+            }
             (Action::SetControlPar, true) if par == look.picture_state => {
                 page.wallpaper_frame = value;
+                HostValue::Nothing
             }
-            (Action::SetControlPar, false) if par == look.hide => page.icon_hide = value,
-            _ => {}
-        }
-        Some(HostValue::Nothing)
+            (Action::SetControlPar, false) if par == look.hide => {
+                page.icon_hide = value;
+                HostValue::Nothing
+            }
+            (Action::GetControlPar, true) if par == look.picture_state => {
+                HostValue::Int(page.wallpaper_frame)
+            }
+            (Action::GetControlPar, false) if par == look.hide => HostValue::Int(page.icon_hide),
+            (Action::GetControlPar, _) => HostValue::Int(0),
+            _ => HostValue::Nothing,
+        })
     }
 
     /// Answers the menu, control-text, page and keyboard actions of script
@@ -661,12 +696,8 @@ impl Store {
             Action::GetMenuItemVisibility => {
                 HostValue::Int(item(self).map_or(0, |i| i32::from(i.visible)))
             }
-            // A text line is `add_text_line` by another name.
-            Action::SetControlParStr if look.is_some_and(|l| int(1) == l.textline) => {
-                let text_par = look.map_or(0, |l| l.text);
-                self.set_text_par(slot, n, text_par, text, true);
-                HostValue::Nothing
-            }
+            // A text line is `add_text_line` by another name; any other text
+            // parameter replaces its stored text.
             // ponytail: a text parameter first set after init allocates its
             // slot on the audio thread, as `set_control_par` does.
             Action::SetControlParStr => {

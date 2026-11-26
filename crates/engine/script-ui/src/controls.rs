@@ -101,6 +101,8 @@ pub enum ParWrite {
     Within(i32, i32),
     /// At least `lo`: below reads `lo`.
     AtLeast(i32),
+    /// The first write only (a declared range); later writes leave it.
+    Once,
 }
 
 /// The size a control reads before its script sets one: every type answers
@@ -255,7 +257,8 @@ impl Store {
         }
     }
 
-    /// `set_control_par_arr`: a table's step, else index 0 as `set_control_par`.
+    /// `set_control_par_arr`: a table's step, index 0 as `set_control_par`,
+    /// or indexed per-cursor/array entries (e.g. `ui_xy` automation ids).
     pub fn set_control_par_at(
         &mut self,
         c: &Controls,
@@ -263,18 +266,30 @@ impl Store {
         cells: &mut [i64],
         (id, par, value, at): (i32, i32, i32, i32),
     ) {
-        match c.table_step(id, par, at) {
-            Some(cell) => {
-                if let Some(v) = cells.get_mut(cell) {
-                    *v = i64::from(value);
-                }
+        if let Some(cell) = c.table_step(id, par, at) {
+            if let Some(v) = cells.get_mut(cell) {
+                *v = i64::from(value);
             }
-            None if at == 0 => self.set_control_par(c, slot, cells, id, par, value),
-            None => {}
+            return;
+        }
+        if at == 0 {
+            self.set_control_par(c, slot, cells, id, par, value);
+            return;
+        }
+        let key = crate::entry_par(par, at);
+        if key >= 0
+            && let Some(n) = c.index(id)
+        {
+            let value = match apply_write_law(c.law(n, par), value) {
+                Some(v) => v,
+                None => return,
+            };
+            self.keep(slot, n, key, value);
         }
     }
 
-    /// `get_control_par_arr`: a table's step, else the parameter itself.
+    /// `get_control_par_arr`: a table's step, index 0 as `get_control_par`,
+    /// or an indexed per-cursor/array entry.
     pub fn control_par_at(
         &mut self,
         c: &Controls,
@@ -282,10 +297,20 @@ impl Store {
         cells: &[i64],
         (id, par, at): (i32, i32, i32),
     ) -> i32 {
-        match c.table_step(id, par, at) {
-            Some(cell) => cells.get(cell).map_or(0, |&v| v as i32),
-            None => self.control_par(c, slot, cells, id, par),
+        if let Some(cell) = c.table_step(id, par, at) {
+            return cells.get(cell).map_or(0, |&v| v as i32);
         }
+        if at <= 0 {
+            return self.control_par(c, slot, cells, id, par);
+        }
+        let key = crate::entry_par(par, at);
+        let Some(n) = (key >= 0).then(|| c.index(id)).flatten() else {
+            return 0;
+        };
+        self.pars(slot, n)
+            .iter()
+            .find(|(p, _)| *p == key)
+            .map_or_else(|| c.unset(n, par), |&(_, v)| v)
     }
 
     /// `set_control_par` of control `id` of script `slot`, whose cells are `cells`.
@@ -308,18 +333,24 @@ impl Store {
         let picked = entry.map_or(0, |i| i.value);
         let value = if menu { picked } else { value };
         match c.control(id, par) {
-            Some((_, Some(cell))) => {
+            Some((n, Some(cell))) => {
+                // A switch's value is on or off (control_pars_14: 5 reads 1).
+                let flag = c.law(n, par).is_some_and(|l| l.write == ParWrite::Flag);
+                let value = if flag { i32::from(value != 0) } else { value };
                 if let Some(v) = cells.get_mut(cell) {
                     *v = i64::from(value);
                 }
             }
             Some((n, None)) => {
-                let value = match c.law(n, par).map(|l| l.write) {
-                    Some(ParWrite::Byte) => value & 0xff,
-                    Some(ParWrite::Flag) => i32::from(value != 0),
-                    Some(ParWrite::Within(lo, hi)) if !(lo..=hi).contains(&value) => return,
-                    Some(ParWrite::AtLeast(lo)) => value.max(lo),
-                    _ => value,
+                let law = c.law(n, par);
+                // A write-once parameter keeps its first value.
+                if matches!(law.map(|l| l.write), Some(ParWrite::Once))
+                    && self.pars(slot, n).iter().any(|p| p.0 == par)
+                {
+                    return;
+                }
+                let Some(value) = apply_write_law(law, value) else {
+                    return;
                 };
                 // A grid cell moves the control there and below 1 is cell 1; a
                 // pixel move leaves the cell (reference 8.13 oracle,
@@ -412,6 +443,12 @@ impl Store {
                     *call.text_out = Text::from_str_cut(name).0;
                     return Some(HostValue::Text);
                 }
+            }
+            // An xy pad has no label: a set one reads empty (control_pars_12).
+            Action::SetControlParStr
+                if a == look.label && n.and_then(|n| c.kinds.get(n)) == Some(&XY) =>
+            {
+                return Some(HostValue::Nothing);
             }
             // A file selector keeps a path under its basepath (script
             // manual); with none set, the reference ignores it (control_pars_7).
@@ -533,12 +570,26 @@ impl Store {
     }
 }
 
+/// `$NI_CONTROL_TYPE_XY`, what an xy pad's `$CONTROL_PAR_TYPE` reads.
+const XY: u8 = 13;
+
 /// `$HIDE_WHOLE_CONTROL`, the bit `move_control` sets and clears.
 const HIDE_WHOLE_CONTROL: i32 = 16;
 
 /// Where a waveform keeps its table's values among its parameters: slice n
 /// under `WF_TABLE + n`, below every catalog constant and symbol id.
 const WF_TABLE: i32 = -0x4000_0000;
+
+/// Applies a parameter's write law, returning `None` when a write is rejected.
+fn apply_write_law(law: Option<&ParLaw>, value: i32) -> Option<i32> {
+    Some(match law.map(|l| l.write) {
+        Some(ParWrite::Byte) => value & 0xff,
+        Some(ParWrite::Flag) => i32::from(value != 0),
+        Some(ParWrite::Within(lo, hi)) if !(lo..=hi).contains(&value) => return None,
+        Some(ParWrite::AtLeast(lo)) => value.max(lo),
+        _ => value,
+    })
+}
 
 /// Where grid cell `cell` (from 1) of `pitch` reads.
 fn grid_pos(cell: i32, pitch: i32) -> i32 {

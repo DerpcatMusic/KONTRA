@@ -130,10 +130,14 @@ impl<'a> Compiler<'a> {
                     ));
                 }
                 let mut params = Vec::with_capacity(d.params.len());
-                for p in &d.params {
+                let mut constant = 0;
+                for (i, p) in d.params.iter().enumerate() {
                     // A range read from variables is set when on init reaches the declaration.
-                    params.push(self.fold_int(p).unwrap_or(0));
+                    let folded = self.fold_int(p).ok();
+                    constant |= u32::from(folded.is_some()) << i.min(31);
+                    params.push(folded.unwrap_or(0));
                 }
+                self.constant_params.push(constant);
                 let index = self.controls.len() as u32;
                 self.controls.push(Control {
                     kind,
@@ -198,6 +202,7 @@ impl<'a> Compiler<'a> {
             }
         };
         let index = self.controls.len() as u32;
+        self.constant_params.push(u32::MAX);
         self.controls.push(Control {
             kind,
             variable: self.vars.len() as u32,
@@ -331,27 +336,30 @@ impl<'a> Compiler<'a> {
     /// Every knob, slider and value edit's constant range, set as `on init`
     /// starts: `get_control_par` reads it as `$CONTROL_PAR_MIN_VALUE` and
     /// `MAX_VALUE` (Conflux loops its wavetables up to a view knob's max).
-    /// A range from variables is set again where its declaration runs.
+    /// A bound from variables is set where its declaration runs instead, so
+    /// each bound is written once: Kontakt keeps the declared range and
+    /// ignores a script's later writes (control_pars_12).
     pub(super) fn declared_ranges(&mut self) {
         const RANGE: [&str; 2] = ["$CONTROL_PAR_MIN_VALUE", "$CONTROL_PAR_MAX_VALUE"];
-        let ranges: Vec<(u32, i32, i32)> = (self.controls.iter())
-            .filter(|c| ranged(c.kind))
-            .filter_map(|c| match c.params.as_slice() {
-                &[lo, hi, ..] => Some((c.variable, lo, hi)),
-                _ => None,
+        let bounds: Vec<(u32, usize, i32)> = (self.controls.iter())
+            .zip(&self.constant_params)
+            .filter(|(c, _)| ranged(c.kind))
+            .flat_map(|(c, &constant)| {
+                (c.params.iter().take(2).enumerate())
+                    .filter(move |&(i, _)| constant & (1 << i) != 0)
+                    .map(|(i, &v)| (c.variable, i, v))
             })
             .collect();
-        if ranges.is_empty() {
+        if bounds.is_empty() {
             return;
         }
         let pars = RANGE.map(|p| self.symbol(p));
-        for (variable, lo, hi) in ranges {
-            for (par, value) in pars.into_iter().zip([lo, hi]) {
-                self.emit(Op::Int(super::ui_id(variable as usize)));
-                self.emit(Op::Int(par));
-                self.emit(Op::Int(value));
-                self.host(Action::SetControlPar, 3, 0, Returns::Nothing);
-            }
+        for (variable, par, value) in bounds {
+            let Some(&par) = pars.get(par) else { continue };
+            self.emit(Op::Int(super::ui_id(variable as usize)));
+            self.emit(Op::Int(par));
+            self.emit(Op::Int(value));
+            self.host(Action::SetControlPar, 3, 0, Returns::Nothing);
         }
     }
 

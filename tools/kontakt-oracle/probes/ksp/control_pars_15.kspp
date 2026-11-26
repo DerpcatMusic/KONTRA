@@ -1,0 +1,63 @@
+# Kontakt 8.13: which modifier keys each control reads as held in on init (no click yet).
+# Run: ksp_probe.py "ANALOG STRINGS.nki" this-file > control_pars_15.measured
+# KONTRA replays it: crates/app/host/tests/oracle_probes.rs.
+S declare ui_button $bt
+S declare ui_file_selector $fs
+S declare ui_knob $kn (0, 100, 1)
+S declare ui_label $lb (1, 1)
+S declare ui_level_meter $lm
+S declare ui_menu $mn
+S declare ui_mouse_area $ma
+S declare ui_panel $pn
+S declare ui_slider $sl (0, 100)
+S declare ui_switch $sw
+S declare ui_table %tb[8] (2, 2, 100)
+S declare ui_text_edit @tx
+S declare ui_value_edit $ve (0, 100, 1)
+S declare ui_waveform $wf (6, 6)
+S declare ui_wavetable $wt
+S declare ui_xy ?xy[2]
+S add_menu_item($mn, "a", 0)
+S add_menu_item($mn, "b", 7)
+R bt_key_shift get_control_par(get_ui_id($bt), $CONTROL_PAR_KEY_SHIFT)
+R bt_key_alt get_control_par(get_ui_id($bt), $CONTROL_PAR_KEY_ALT)
+R bt_key_control get_control_par(get_ui_id($bt), $CONTROL_PAR_KEY_CONTROL)
+R fs_key_shift get_control_par(get_ui_id($fs), $CONTROL_PAR_KEY_SHIFT)
+R fs_key_alt get_control_par(get_ui_id($fs), $CONTROL_PAR_KEY_ALT)
+R fs_key_control get_control_par(get_ui_id($fs), $CONTROL_PAR_KEY_CONTROL)
+R kn_key_shift get_control_par(get_ui_id($kn), $CONTROL_PAR_KEY_SHIFT)
+R kn_key_alt get_control_par(get_ui_id($kn), $CONTROL_PAR_KEY_ALT)
+R kn_key_control get_control_par(get_ui_id($kn), $CONTROL_PAR_KEY_CONTROL)
+R mn_key_shift get_control_par(get_ui_id($mn), $CONTROL_PAR_KEY_SHIFT)
+R mn_key_alt get_control_par(get_ui_id($mn), $CONTROL_PAR_KEY_ALT)
+R mn_key_control get_control_par(get_ui_id($mn), $CONTROL_PAR_KEY_CONTROL)
+R ma_key_shift get_control_par(get_ui_id($ma), $CONTROL_PAR_KEY_SHIFT)
+R ma_key_alt get_control_par(get_ui_id($ma), $CONTROL_PAR_KEY_ALT)
+R ma_key_control get_control_par(get_ui_id($ma), $CONTROL_PAR_KEY_CONTROL)
+R pn_key_shift get_control_par(get_ui_id($pn), $CONTROL_PAR_KEY_SHIFT)
+R pn_key_alt get_control_par(get_ui_id($pn), $CONTROL_PAR_KEY_ALT)
+R pn_key_control get_control_par(get_ui_id($pn), $CONTROL_PAR_KEY_CONTROL)
+R sl_key_shift get_control_par(get_ui_id($sl), $CONTROL_PAR_KEY_SHIFT)
+R sl_key_alt get_control_par(get_ui_id($sl), $CONTROL_PAR_KEY_ALT)
+R sl_key_control get_control_par(get_ui_id($sl), $CONTROL_PAR_KEY_CONTROL)
+R sw_key_shift get_control_par(get_ui_id($sw), $CONTROL_PAR_KEY_SHIFT)
+R sw_key_alt get_control_par(get_ui_id($sw), $CONTROL_PAR_KEY_ALT)
+R sw_key_control get_control_par(get_ui_id($sw), $CONTROL_PAR_KEY_CONTROL)
+R tb_key_shift get_control_par(get_ui_id(%tb), $CONTROL_PAR_KEY_SHIFT)
+R tb_key_alt get_control_par(get_ui_id(%tb), $CONTROL_PAR_KEY_ALT)
+R tb_key_control get_control_par(get_ui_id(%tb), $CONTROL_PAR_KEY_CONTROL)
+R tx_key_shift get_control_par(get_ui_id(@tx), $CONTROL_PAR_KEY_SHIFT)
+R tx_key_alt get_control_par(get_ui_id(@tx), $CONTROL_PAR_KEY_ALT)
+R tx_key_control get_control_par(get_ui_id(@tx), $CONTROL_PAR_KEY_CONTROL)
+R ve_key_shift get_control_par(get_ui_id($ve), $CONTROL_PAR_KEY_SHIFT)
+R ve_key_alt get_control_par(get_ui_id($ve), $CONTROL_PAR_KEY_ALT)
+R ve_key_control get_control_par(get_ui_id($ve), $CONTROL_PAR_KEY_CONTROL)
+R wf_key_shift get_control_par(get_ui_id($wf), $CONTROL_PAR_KEY_SHIFT)
+R wf_key_alt get_control_par(get_ui_id($wf), $CONTROL_PAR_KEY_ALT)
+R wf_key_control get_control_par(get_ui_id($wf), $CONTROL_PAR_KEY_CONTROL)
+R wt_key_shift get_control_par(get_ui_id($wt), $CONTROL_PAR_KEY_SHIFT)
+R wt_key_alt get_control_par(get_ui_id($wt), $CONTROL_PAR_KEY_ALT)
+R wt_key_control get_control_par(get_ui_id($wt), $CONTROL_PAR_KEY_CONTROL)
+R xy_key_shift get_control_par(get_ui_id(?xy), $CONTROL_PAR_KEY_SHIFT)
+R xy_key_alt get_control_par(get_ui_id(?xy), $CONTROL_PAR_KEY_ALT)
+R xy_key_control get_control_par(get_ui_id(?xy), $CONTROL_PAR_KEY_CONTROL)

@@ -390,8 +390,8 @@ fn controls(script: &Script) -> Controls {
 /// `tools/kontakt-oracle/probes/ksp/control_pars_*.kspp`).
 #[rustfmt::skip]
 const LAWS: &[(&str, Option<ControlKind>, i32, ParWrite, Read)] = {
-    use ControlKind::{Knob, LevelMeter, Slider, Switch, Waveform, Wavetable, Xy};
-    use ParWrite::{AtLeast, Byte, Flag, Keep, Within};
+    use ControlKind::{Knob, LevelMeter, Slider, Switch, Table, ValueEdit, Waveform, Wavetable, Xy};
+    use ParWrite::{AtLeast, Byte, Flag, Keep, Once, Within};
     use Read::{Cell, Inherit, Opaque, Stored, Unset};
     &[
         // Measured on a knob, a switch, a label, a slider and a wavetable.
@@ -413,7 +413,32 @@ const LAWS: &[(&str, Option<ControlKind>, i32, ParWrite, Read)] = {
         ("$CONTROL_PAR_ALLOW_AUTOMATION", Some(Slider), 1, Flag, Stored),
         ("$CONTROL_PAR_ALLOW_AUTOMATION", Some(Switch), 1, Flag, Stored),
         ("$CONTROL_PAR_ALLOW_AUTOMATION", None, 0, Flag, Stored),
+        // Kept, but these getters read what they read unset (control_pars_12, _13).
+        ("$CONTROL_PAR_AUTOMATION_ID", Some(Xy), 0, Keep, Unset),
+        ("$CONTROL_PAR_WAVETABLE_END_ALPHA", Some(Xy), 0, Keep, Unset),
+        ("$CONTROL_PAR_RECEIVE_DRAG_EVENTS", Some(Slider), 0, Keep, Unset),
+        ("$CONTROL_PAR_MOUSE_BEHAVIOUR", Some(Table), 0, Keep, Unset),
+        ("$CONTROL_PAR_ZERO_LINE_COLOR", Some(ValueEdit), 0, Keep, Unset),
+        ("$CONTROL_PAR_VALUEPOS_Y", Some(Waveform), 0, Keep, Unset),
+        ("$CONTROL_PAR_PICTURE_STATE", Some(Slider), 0, Keep, Unset),
         ("$CONTROL_PAR_AUTOMATION_ID", None, 0, Within(0, 2047), Stored),
+        // control_pars_14: a table's colours read white until set, a value
+        // edit shows its arrows, a switch's value is on or off.
+        ("$CONTROL_PAR_ZERO_LINE_COLOR", Some(Table), -1, Keep, Stored),
+        ("$CONTROL_PAR_BAR_COLOR", Some(Table), -1, Keep, Stored),
+        ("$CONTROL_PAR_SHOW_ARROWS", Some(ValueEdit), 1, Keep, Stored),
+        ("$CONTROL_PAR_VALUE", Some(Switch), 0, Flag, Stored),
+        // A knob, slider or value edit keeps its declared range; a later write
+        // leaves it, and the default reads the minimum until set (control_pars_12).
+        ("$CONTROL_PAR_MIN_VALUE", None, 0, Once, Stored),
+        ("$CONTROL_PAR_MAX_VALUE", None, 0, Once, Stored),
+        (
+            "$CONTROL_PAR_DEFAULT_VALUE",
+            None,
+            0,
+            Keep,
+            Inherit("$CONTROL_PAR_DEFAULT_VALUE", "$CONTROL_PAR_MIN_VALUE", false),
+        ),
         ("$CONTROL_PAR_DISABLE_TEXT_SHIFTING", None, 0, Flag, Stored),
         ("$CONTROL_PAR_UNIT", None, 0, Within(0, 6), Stored),
         ("$CONTROL_PAR_VALUEPOS_Y", None, 0, AtLeast(0), Stored),

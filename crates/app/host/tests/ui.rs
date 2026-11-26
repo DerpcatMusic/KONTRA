@@ -484,6 +484,31 @@ fn waveform_text_lines_custom_ids_and_messages_reach_the_tree() {
     assert_eq!(ui.unsupported, []);
 }
 
+/// A range from variables is the declared one too: a later MIN/MAX write
+/// leaves it, read and drawn, and the default reads the minimum until set
+/// (Kontakt 8.13, control_pars_12).
+#[test]
+fn a_declared_range_from_variables_ignores_later_writes() {
+    let ui = tree(
+        "on init
+            declare $lo := 5
+            declare $hi := 80
+            declare ui_knob $k ($lo, $hi, 1)
+            set_control_par(get_ui_id($k), $CONTROL_PAR_MIN_VALUE, 20)
+            set_control_par(get_ui_id($k), $CONTROL_PAR_MAX_VALUE, 200)
+            declare ui_label $echo (1, 1)
+            set_text($echo, get_control_par(get_ui_id($k), $CONTROL_PAR_MIN_VALUE))
+            add_text_line($echo, get_control_par(get_ui_id($k), $CONTROL_PAR_MAX_VALUE))
+            add_text_line($echo, get_control_par(get_ui_id($k), $CONTROL_PAR_DEFAULT_VALUE))
+        end on",
+    );
+    assert_eq!(widget(&ui, "$echo").text, "5\n80\n5");
+    let ui::Kind::Knob { range, .. } = &widget(&ui, "$k").kind else {
+        panic!("a knob");
+    };
+    assert_eq!((range.min, range.max, range.default), (5., 80., 5.));
+}
+
 /// `get_ui_wf_property` reads back what `set_ui_wf_property` stored.
 #[test]
 fn a_waveform_property_reads_back_as_set() {

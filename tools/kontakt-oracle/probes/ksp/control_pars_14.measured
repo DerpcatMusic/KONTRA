@@ -1,0 +1,70 @@
+kn_type	2
+sl_type	9
+mn_type	3
+ma_type	15
+lm_type	14
+fs_height	18
+fs_width	87
+lm_height	18
+lm_width	87
+sl_height	18
+sl_width	87
+tx_height	18
+tx_width	87
+pn_height	18
+pn_width	87
+wt_height	18
+wt_width	87
+fs_pos_x	-1
+fs_pos_y	-1
+lm_pos_x	-1
+lm_pos_y	-1
+tx_pos_x	-1
+tx_pos_y	-1
+wf_pos_x	-1
+wf_pos_y	-1
+xy_pos_x	-1
+xy_pos_y	-1
+wt_pos_x	-1
+wt_pos_y	-1
+fs_file_type	0
+ma_dnd_accept_audio	0
+ma_dnd_accept_audio_set	1
+ma_dnd_accept_midi	0
+ma_dnd_accept_midi_set	1
+ma_dnd_accept_array	0
+ma_dnd_accept_array_set	1
+lb_bg_color	0
+lb_textpos_y	0
+lb_textpos_y_set	5
+sl_picture_state	0
+sl_picture_state_set	0
+sw_hide	0
+sw_hide_set	1
+tx_font_type	0
+tx_font_type_set	3
+tb_zero_line_color	-1
+tb_zero_line_color_set	16711680
+ve_show_arrows	1
+ve_show_arrows_set	0
+xy_mouse_mode	0
+xy_mouse_mode_set	1
+bt_value	0
+bt_value_set	1
+sw_value	0
+sw_value_set	1
+mn_value	0
+mn_value_set	1
+bt_parent_panel	0
+pn_parent_panel	0
+bt_font_type	0
+bt_text_alignment	0
+bt_textpos_y	0
+tb_bar_color	-1
+bt_picture	
+lb_picture	
+sl_picture	
+sw_picture	
+ve_picture	
+mn_picture	
+xy_cursor_picture	

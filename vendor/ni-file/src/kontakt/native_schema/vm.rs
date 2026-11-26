@@ -1074,7 +1074,7 @@ impl<'a> Machine<'a> {
         if body.is_empty() {
             return Ok(());
         }
-        match nested_decode(sertype, ver, private, body) {
+        match nested_decode(sertype, Some(ver), private, body) {
             Ok(d) => self.merge(d, at),
             Err(e) => hide(&mut self.opaque, Some(sertype), cause(&e), body.len()),
         }
@@ -1115,7 +1115,7 @@ impl<'a> Machine<'a> {
         let opaque = body.len();
         // A record Kontakt reads from its chunk header on (curated.rs CURATED_UNFRAMED).
         if CURATED_UNFRAMED.iter().any(|r| r.sertype == id) {
-            match decode_unframed(id, body) {
+            match nested_decode(id, None, false, body) {
                 Ok(d) => self.merge(d, at - 6),
                 Err(e) => hide(&mut self.opaque, Some(id), cause(&e), opaque),
             }
@@ -1560,7 +1560,16 @@ pub fn decode_unframed(id: u16, data: &[u8]) -> Result<Decoded, Undecoded> {
     let reader = CURATED_UNFRAMED.iter().find(|r| r.sertype == id);
     let len = u32::try_from(data.len()).map_err(|_| Undecoded::Rejected)?;
     let chunk = [&id.to_le_bytes()[..], &len.to_le_bytes(), data].concat();
-    decode_inner(reader, 0, &chunk, true)
+    let r = decode_inner(reader, 0, &chunk, true);
+    // Inside an outer decode the memo holds keys into this copy: keep it alive until that
+    // decode ends, so no later copy reuses its address for different bytes.
+    DECODED.with(|n| {
+        let mut n = n.borrow_mut();
+        if n.0 > 0 {
+            n.2.push(chunk);
+        }
+    });
+    r
 }
 
 /// [`decode`] of an object's private block: with its private reader where curated.rs has
@@ -1575,21 +1584,31 @@ pub fn decode_prefix(sertype: u16, version: u16, bytes: &[u8]) -> Result<Decoded
     decode_inner(reader_for(sertype, version), version, bytes, false)
 }
 
-type NestedKey = (u16, u16, bool, usize, usize);
-/// Decode depth, and the nested decodes memoized at it.
-type Memo = (u32, HashMap<NestedKey, Result<Decoded, Undecoded>>);
+/// (SerType, stored version or None for an unframed record, private block, where it lies).
+type NestedKey = (u16, Option<u16>, bool, usize, usize);
+/// Decode depth, the nested decodes memoized at it, and the unframed copies their keys
+/// point into.
+type Memo = (
+    u32,
+    HashMap<NestedKey, Result<Decoded, Undecoded>>,
+    Vec<Vec<u8>>,
+);
 
 std::thread_local! {
-    /// Nested framed objects decoded during the outermost [`decode`]: a parent's host-state
-    /// search replays its stream, and the same bytes always decode the same way.
+    /// Nested objects and unframed records decoded during the outermost [`decode`]: a
+    /// parent's host-state search replays its stream, and the same bytes always decode the
+    /// same way. Unframed records must hit too: their decode copies the chunk, so a miss
+    /// there also misses every object below it, and nested lists (bank, program, group,
+    /// zone) re-decode once per replay of each level above.
     static DECODED: std::cell::RefCell<Memo> =
-        std::cell::RefCell::new((0, HashMap::new()));
+        std::cell::RefCell::new((0, HashMap::new(), Vec::new()));
 }
 
-/// [`decode`] of an object nested in the stream being decoded, memoized by where it lies.
+/// [`decode`] of an object nested in the stream being decoded (`version` None: an unframed
+/// record, [`decode_unframed`]), memoized by where it lies.
 fn nested_decode(
     sertype: u16,
-    version: u16,
+    version: Option<u16>,
     private: bool,
     bytes: &[u8],
 ) -> Result<Decoded, Undecoded> {
@@ -1603,10 +1622,10 @@ fn nested_decode(
     if let Some(hit) = DECODED.with(|n| n.borrow().1.get(&key).cloned()) {
         return hit;
     }
-    let r = if private {
-        decode_private(sertype, version, bytes)
-    } else {
-        decode(sertype, version, bytes)
+    let r = match version {
+        None => decode_unframed(sertype, bytes),
+        Some(v) if private => decode_private(sertype, v, bytes),
+        Some(v) => decode(sertype, v, bytes),
     };
     DECODED.with(|n| n.borrow_mut().1.insert(key, r.clone()));
     r
@@ -1626,6 +1645,7 @@ fn decode_inner(
         n.0 -= 1;
         if n.0 == 0 {
             n.1.clear();
+            n.2.clear();
         }
     });
     r
@@ -1639,8 +1659,18 @@ fn decode_search(
 ) -> Result<Decoded, Undecoded> {
     let mut prefix = Vec::new();
     let mut worst: Option<Undecoded> = None;
+    // The search replays the stream once per host-state guess. Bound the bytes it replays,
+    // not only the guesses: a multi-megabyte record whose loop bounds live in host state
+    // (FNTableImpl v3) would otherwise replay its whole body thousands of times.
+    let mut replay = bytes.len().saturating_mul(16).max(16 << 20);
     for _ in 0..4096 {
         let o = attempt(r, version, Stream::decode(bytes, 0), prefix.clone(), &[]);
+        if o.stop.is_some() || (exact && o.consumed != bytes.len()) {
+            replay = replay.saturating_sub(o.consumed.max(1));
+            if replay == 0 {
+                return Err(Undecoded::Budget);
+            }
+        }
         let err = match o.stop {
             None if o.consumed == bytes.len() || !exact => {
                 return Ok(Decoded {
