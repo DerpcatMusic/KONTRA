@@ -47,12 +47,18 @@ try:
 finally:
     board.SNAP = real_snap
 
-# Verify real board invariants: unmeasured modules grade missing; oracle-verified modules grade tested; all 11 ni-file partial classes appear.
+# Verify real board invariants: absent oracle entries grade missing; host-uninstantiable stubs grade partial;
+# oracle-verified modules grade tested; all 11 ni-file partial classes appear.
+assert board.oracle_row("kontakt.dsp.fake.measured", "utility", "Fake: output vs oracle", "fake", True, {})["status"] == "missing"
 _, _, _, _ = board.build(refresh=False)
 manual, status = board.ksp_inputs()
 dsp_rows = {r["id"]: r for r in board.kontakt_dsp(status)}
-assert dsp_rows["kontakt.dsp.send_levels.measured"]["status"] == "missing", dsp_rows["kontakt.dsp.send_levels.measured"]
-assert dsp_rows["kontakt.dsp.jump.measured"]["status"] == "missing", dsp_rows["kontakt.dsp.jump.measured"]
+assert dsp_rows["kontakt.dsp.core_cell.measured"]["status"] == "partial", dsp_rows["kontakt.dsp.core_cell.measured"]
+assert dsp_rows["kontakt.dsp.send_levels.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.send_levels.measured"]
+assert dsp_rows["kontakt.dsp.jump.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.jump.measured"]
+assert dsp_rows["kontakt.dsp.cry_wah.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.cry_wah.measured"]
+assert dsp_rows["kontakt.dsp.plate_reverb.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.plate_reverb.measured"]
+assert dsp_rows["kontakt.dsp.kolor.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.kolor.measured"]
 assert dsp_rows["kontakt.dsp.solid_g_eq.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.solid_g_eq.measured"]
 assert dsp_rows["kontakt.dsp.lo_fi.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.lo_fi.measured"]
 assert dsp_rows["kontakt.dsp.solid_bus_comp.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.solid_bus_comp.measured"]

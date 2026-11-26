@@ -48,8 +48,8 @@ pub fn cabinet(c: Cabinet) -> ir::Cabinet {
         model: c.cabinet_type.clamp(0, 11) as u8,
         size: c.size.clamp(0.0, 1.0),
         air: c.air.clamp(0.0, 1.0),
-        bass_db: c.bass.clamp(-1.0, 1.0) * 12.0,
-        treble_db: c.treble.clamp(-1.0, 1.0) * 12.0,
+        bass_db: c.bass.clamp(-1.0, 1.0) * 16.0,
+        treble_db: c.treble.clamp(-1.0, 1.0) * 16.0,
     }
 }
 
@@ -110,8 +110,8 @@ mod tests {
         assert!((c.treble + 0.5).abs() < 1e-6);
         let ir_cab = cabinet(c);
         assert_eq!(ir_cab.model, 3);
-        assert!((ir_cab.treble_db + 6.0).abs() < 1e-4);
-        assert!((ir_cab.bass_db - 9.0).abs() < 1e-4);
+        assert!((ir_cab.treble_db + 8.0).abs() < 1e-4);
+        assert!((ir_cab.bass_db - 12.0).abs() < 1e-4);
 
         let m = model(INIT);
         assert_eq!(

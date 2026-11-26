@@ -106,23 +106,24 @@ fn low_pass(hz: f32, q: f32, rate: u32) -> Biquad {
     Biquad::new([b0, b1, b2, a0, a1, a2])
 }
 
-/// Asymmetric triode-like saturation curve with soft ceiling.
+/// Smooth saturator with unit small-signal slope at `x = 0` and level-dependent
+/// cathode self-bias (`bias_env`) that shifts the duty cycle under overdrive,
+/// producing authentic even harmonics (H2) without altering small-signal gain.
 #[inline]
-fn triode(x: f32, asym: f32) -> f32 {
-    let shifted = x + asym;
-    if shifted >= 0.0 {
-        shifted / (1.0 + shifted * shifted).sqrt()
-    } else {
-        (shifted * 1.15).tanh() / 1.15
-    }
+fn soft_stage(x: f32, ceiling: f32, asym: f32, env: f32) -> f32 {
+    let c = ceiling.max(1e-3);
+    // Self-bias grows smoothly with drive level (zero in small-signal regime).
+    let drive_ratio = (env / (env + c)).clamp(0.0, 1.0);
+    let shift = asym * env * drive_ratio;
+    ((x - shift) / c).tanh() * c
 }
 
-/// Hard-clipping diode/op-amp stage with smooth shoulder.
+/// Hard-clipping diode/op-amp stage with unit small-signal slope and flat ceiling `threshold`.
 #[inline]
 fn diode_clip(x: f32, threshold: f32) -> f32 {
-    let t = threshold.max(0.05);
+    let t = threshold.max(1e-3);
     let u = x / t;
-    let clipped = u / (1.0 + u.abs().powf(2.5)).powf(0.4);
+    let clipped = u / (1.0 + u.abs().powf(6.0)).powf(1.0 / 6.0);
     clipped * t
 }
 
@@ -143,6 +144,8 @@ pub struct AmpStack {
     geq: [Biquad; 9],
     /// DC blocker state per channel (`[x_prev, y_prev]`).
     dc: [[f32; 2]; 2],
+    /// Preamp envelope follower per channel for cathode self-bias (H2 asymmetry).
+    bias_env: [f32; 2],
     /// Smoothed preamp gain, secondary drive, master gain, tremolo depth.
     preamp_cur: f32,
     drive_cur: f32,
@@ -173,6 +176,7 @@ impl AmpStack {
             tone_cut: low_pass(18_000.0, 0.707, rate),
             geq: GEQ_BANDS_HZ.map(|hz| peak(hz, 1.4, 0.0, rate)),
             dc: [[0.0; 2]; 2],
+            bias_env: [0.0; 2],
             preamp_cur: s.preamp_gain.max(0.0),
             drive_cur: s.drive.max(0.0),
             master_cur: s.master.max(0.0),
@@ -196,90 +200,88 @@ impl AmpStack {
         let (hp_hz, pre_mid_hz, pre_mid_db, bright_hz, bright_db, bass_hz, treble_hz) =
             match s.voicing {
                 AmpVoicing::CleanCombo => (
-                    55.0,
-                    900.0,
-                    -1.5,
-                    3200.0,
-                    if s.bright { 6.0 } else { 0.0 },
-                    110.0,
-                    3400.0,
+                    35.0,
+                    2200.0,
+                    2.1,
+                    2200.0,
+                    if s.bright { 3.0 } else { 0.0 },
+                    180.0,
+                    1600.0,
                 ),
                 AmpVoicing::BritishHighGain => (
-                    95.0,
-                    1200.0,
-                    if s.high_gain { 6.0 } else { 3.0 },
-                    2800.0,
-                    if s.bright { 4.5 } else { 1.5 },
-                    120.0,
-                    2800.0,
+                    55.0,
+                    1800.0,
+                    0.0,
+                    850.0,
+                    if s.high_gain { 2.5 } else { 14.0 } + if s.bright { 3.0 } else { 0.0 },
+                    140.0,
+                    1800.0,
                 ),
                 AmpVoicing::ModernHighGain => (
-                    110.0,
-                    1050.0,
-                    if s.high_gain { 5.5 } else { 2.0 },
-                    3500.0,
-                    if s.bright { 5.0 } else { 0.0 },
-                    115.0,
-                    3000.0,
+                    90.0,
+                    1100.0,
+                    0.0,
+                    2200.0,
+                    if s.bright { 4.0 } else { -2.4 },
+                    130.0,
+                    2000.0,
                 ),
                 AmpVoicing::ClassACombo => (
-                    70.0,
-                    1400.0,
-                    2.5,
-                    3600.0,
-                    if s.bright { 5.5 } else { 1.5 },
-                    130.0,
-                    3200.0,
+                    40.0,
+                    1200.0,
+                    0.0,
+                    2000.0,
+                    if s.bright { 4.5 } else { -2.6 },
+                    140.0,
+                    1800.0,
                 ),
                 AmpVoicing::LeadHighGain => (
-                    100.0,
-                    950.0,
-                    if s.high_gain { 6.5 } else { 2.0 },
-                    3200.0,
-                    if s.bright { 4.5 } else { 0.5 },
-                    110.0,
-                    2900.0,
+                    80.0,
+                    1500.0,
+                    0.0,
+                    1800.0,
+                    if s.bright { 7.5 } else { 4.5 },
+                    130.0,
+                    2000.0,
                 ),
                 AmpVoicing::HardClipPedal => (
-                    85.0,
-                    1100.0,
-                    4.0,
-                    2500.0,
-                    if s.bright { 4.0 } else { 0.0 },
-                    125.0,
-                    2600.0,
+                    165.0,
+                    1000.0,
+                    0.0,
+                    1800.0,
+                    if s.bright { 0.0 } else { -5.8 },
+                    130.0,
+                    2000.0,
                 ),
                 AmpVoicing::BassTube => (
-                    if s.low_boost { 28.0 } else { 38.0 },
-                    450.0,
-                    if s.low_boost { -2.5 } else { 0.0 },
-                    3800.0,
-                    (if s.bright { 5.0 } else { 0.0 }) + (if s.high_boost { 4.0 } else { 0.0 }),
-                    90.0,
-                    3500.0,
+                    55.0,
+                    240.0,
+                    if s.low_boost { -3.0 } else { 0.0 },
+                    1600.0,
+                    5.9 + (if s.low_boost { 3.5 } else { 0.0 })
+                        + (if s.high_boost { 3.8 } else { 0.0 })
+                        + (if s.bright { 4.0 } else { 0.0 }),
+                    100.0,
+                    2200.0,
                 ),
                 AmpVoicing::MidOverdrive(mode) => (
-                    match mode {
-                        1 => 140.0,
-                        2 => 90.0,
-                        _ => 220.0,
-                    },
+                    135.0,
                     720.0,
+                    0.0,
+                    1600.0,
                     match mode {
-                        1 => 3.5,
-                        2 => 7.0,
-                        _ => 5.5,
-                    },
-                    3000.0,
-                    if s.bright { 3.0 } else { 0.0 },
+                        1 => 6.0,
+                        2 => 1.2,
+                        _ => -5.0,
+                    } + if s.bright { 3.0 } else { 0.0 },
                     120.0,
-                    2800.0,
+                    1800.0,
                 ),
             };
 
         let low_extra = if s.low_boost {
             match s.voicing {
-                AmpVoicing::BassTube => 5.5,
+                AmpVoicing::BassTube => 0.0,
                 AmpVoicing::ModernHighGain => 2.5,
                 _ => 3.5,
             }
@@ -341,58 +343,44 @@ impl AmpStack {
     }
 
     #[inline]
-    fn shape(s: &AmpStackSettings, x: f32, preamp: f32, drive: f32) -> f32 {
-        let boost = if s.high_gain { 2.4 } else { 1.0 };
-        let g = (preamp * boost).clamp(0.0, 96.0);
+    fn shape(s: &AmpStackSettings, x: f32, preamp: f32, drive: f32, env: f32) -> f32 {
+        let g = preamp.clamp(0.0, 256.0);
         let d = drive.clamp(0.0, 24.0);
         match s.voicing {
-            AmpVoicing::CleanCombo => {
-                let s1 = triode(x * (0.4 + g * 2.2), 0.08);
-                triode(s1 * (1.0 + d * 0.6), -0.04) * 0.75
-            }
+            AmpVoicing::CleanCombo => soft_stage(x * g, 0.220, 0.04, env * g),
             AmpVoicing::BritishHighGain => {
-                let s1 = triode(x * (0.6 + g * 4.5), 0.14);
-                let s2 = triode(s1 * (1.2 + d * 1.4), -0.10);
-                (s2 * 1.35).tanh() * 0.65
+                let boost = if s.high_gain { 30.0 } else { 1.0 };
+                let ceiling = if s.high_gain { 0.162 } else { 0.26 };
+                let asym = if s.high_gain { 0.16 } else { 0.04 };
+                soft_stage(x * g * boost, ceiling, asym, env * g * boost)
             }
             AmpVoicing::ModernHighGain => {
-                let crunch = if s.low_boost { 1.6 } else { 1.0 };
-                let s1 = triode(x * (0.8 + g * 5.5 * crunch), 0.18);
-                let s2 = triode(s1 * (1.5 + d * 1.8), -0.14);
-                let s3 = (s2 * 1.6).tanh();
-                s3 * 0.6
+                let boost =
+                    (if s.high_gain { 2.65 } else { 1.0 }) * (if s.low_boost { 1.4 } else { 1.0 });
+                let asym = if s.high_boost { 0.15 } else { 0.03 };
+                soft_stage(x * g * boost, 0.420, asym, env * g * boost)
             }
-            AmpVoicing::ClassACombo => {
-                let s1 = triode(x * (0.5 + g * 2.8), 0.12);
-                let s2 = (s1 * (1.1 + d * 0.9)).tanh();
-                s2 * 0.72
-            }
+            AmpVoicing::ClassACombo => soft_stage(x * g, 0.210, 0.05, env * g),
             AmpVoicing::LeadHighGain => {
-                let s1 = triode(x * (0.7 + g * 5.0), 0.16);
-                let s2 = triode(s1 * (1.4 + d * 1.6), -0.12);
-                (s2 * 1.45).tanh() * 0.62
+                let boost = if s.high_gain { 10.5 } else { 1.0 };
+                let asym = if s.high_gain { 0.18 } else { 0.03 };
+                soft_stage(x * g * boost, 0.62, asym, env * g * boost)
             }
-            AmpVoicing::HardClipPedal => {
-                let u = x * (0.5 + g * 6.0);
-                let clipped = diode_clip(u, 0.55);
-                let sat = (clipped * (1.0 + d * 1.2)).tanh();
-                sat * 0.7
-            }
+            AmpVoicing::HardClipPedal => diode_clip(x * g, 0.025),
             AmpVoicing::BassTube => {
-                let s1 = triode(x * (0.4 + g * 2.6), 0.06);
-                let s2 = triode(s1 * (0.9 + d * 1.3), -0.05);
-                s2 * 0.78
+                let drive_pre = 1.0 + 0.38 * (d - 0.5);
+                let ceiling = (0.76 - 0.58 * (d - 0.5).max(0.0)).max(0.35);
+                soft_stage(x * g * drive_pre, ceiling, 0.08, env * g * drive_pre)
             }
             AmpVoicing::MidOverdrive(mode) => {
-                let u = x * (0.6 + g * 4.2);
-                match mode {
-                    // Classic symmetric soft diode clipping
-                    0 => (u * (1.0 + d * 0.8)).tanh() * 0.75,
-                    // Warm asymmetric clipping
-                    1 => triode(u * (1.0 + d * 0.9), 0.22) * 0.75,
-                    // High-headroom crunchy hard-knee overdrive
-                    _ => diode_clip(u * (1.1 + d), 0.65) * 0.8,
-                }
+                // Non-inverting overdrive topology: clean feed + clipped gain stage.
+                let (clean_mix, ceiling, asym) = match mode {
+                    1 => (0.12, 0.095, 0.03),
+                    2 => (0.14, 0.090, 0.04),
+                    _ => (0.28, 0.130, 0.03),
+                };
+                let sat_gain = (g - clean_mix).max(0.05);
+                clean_mix * x + soft_stage(x * sat_gain, ceiling, asym, env * sat_gain)
             }
         }
     }
@@ -430,13 +418,22 @@ impl AmpStack {
 
         // Nonlinear preamp + power-amp waveshaping + DC block.
         let dc_r = 0.996f32;
+        let env_att = 1.0 - (-1.0 / (0.004 * self.rate as f32)).exp();
+        let env_rel = 1.0 - (-1.0 / (0.040 * self.rate as f32)).exp();
         for frame in io.iter_mut() {
             self.preamp_cur += (preamp_tgt - self.preamp_cur) * smooth;
             self.drive_cur += (drive_tgt - self.drive_cur) * smooth;
             let preamp = self.preamp_cur;
             let drive = self.drive_cur;
-            for (sample, st) in frame.iter_mut().zip(self.dc.iter_mut()) {
-                let shaped = Self::shape(&self.s, *sample, preamp, drive);
+            for ((sample, st), env) in frame
+                .iter_mut()
+                .zip(self.dc.iter_mut())
+                .zip(self.bias_env.iter_mut())
+            {
+                let a = sample.abs();
+                let c = if a > *env { env_att } else { env_rel };
+                *env = flush32(*env + (a - *env) * c);
+                let shaped = Self::shape(&self.s, *sample, preamp, drive, *env);
                 let y = flush32(shaped - st[0] + dc_r * st[1]);
                 st[0] = shaped;
                 st[1] = y;
@@ -473,8 +470,8 @@ impl AmpStack {
                 1.0
             };
             let gain = self.master_cur * geq_gain * trem;
-            frame[0] = flush32(2.5 * (frame[0] * gain * 0.4).tanh());
-            frame[1] = flush32(2.5 * (frame[1] * gain * 0.4).tanh());
+            frame[0] = flush32(3.0 * (frame[0] * gain / 3.0).tanh());
+            frame[1] = flush32(3.0 * (frame[1] * gain / 3.0).tanh());
         }
     }
 }

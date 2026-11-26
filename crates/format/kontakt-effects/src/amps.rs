@@ -106,14 +106,14 @@ pub mod twang {
     pub fn amp(s: Twang) -> ir::AmpStack {
         let vol = unit(s.volume);
         ir::AmpStack {
-            preamp_gain: 0.35 + 4.5 * vol * vol + 0.8 * vol,
-            drive: 0.15 + 0.75 * vol,
-            master: 0.85,
+            preamp_gain: 1.70 * 15.0f32.powf(vol - 0.5),
+            drive: vol,
+            master: 1.0,
             bright: s.bright,
-            bass_db: eq_db(s.bass, 10.0),
-            mid_db: eq_db(s.mid, 9.0),
+            bass_db: eq_db(s.bass, 7.5),
+            mid_db: eq_db(s.mid, 8.0),
             mid_hz: 600.0,
-            treble_db: eq_db(s.treble, 11.0),
+            treble_db: eq_db(s.treble, 9.0),
             mono: s.mono,
             ..base_amp(ir::AmpVoicing::CleanCombo)
         }
@@ -219,15 +219,15 @@ pub mod jump {
         let pre = unit(s.preamp);
         let mst = unit(s.master);
         ir::AmpStack {
-            preamp_gain: 0.5 + 8.5 * pre * pre + 1.5 * pre,
-            drive: 0.25 + 0.70 * pre,
-            master: 0.15 + 1.65 * mst,
+            preamp_gain: 0.097 * 25.0f32.powf(pre - 0.5),
+            drive: pre,
+            master: 2.0 * mst,
             high_gain: s.higain,
-            bass_db: eq_db(s.bass, 11.0),
-            mid_db: eq_db(s.mid, 10.0),
+            bass_db: eq_db(s.bass, 4.0),
+            mid_db: eq_db(s.mid, 6.0),
             mid_hz: 800.0,
-            treble_db: eq_db(s.treble, 11.0),
-            presence_db: eq_db(s.presence, 10.0),
+            treble_db: eq_db(s.treble, 4.0),
+            presence_db: eq_db(s.presence, 6.0),
             mono: s.mono,
             ..base_amp(ir::AmpVoicing::BritishHighGain)
         }
@@ -359,23 +359,23 @@ pub mod van51 {
         } else {
             (rhythm, lead)
         };
-        let channel_mult = if s.lead_channel { 1.45 } else { 1.0 };
+        let channel_mult = if s.lead_channel { 3.8 } else { 1.0 };
         let post = unit(s.postgain);
         ir::AmpStack {
-            preamp_gain: (0.6 + 11.0 * active * active + 2.0 * active) * channel_mult,
-            alt_preamp_gain: 0.6 + 11.0 * alt * alt + 2.0 * alt,
-            drive: ((if s.lead_channel { 0.45 } else { 0.25 }) + 0.55 * active).clamp(0.0, 1.0),
-            master: 0.15 + 1.65 * post,
+            preamp_gain: 16.0 * 8.0f32.powf(active - 0.5) * channel_mult,
+            alt_preamp_gain: 16.0 * 8.0f32.powf(alt - 0.5),
+            drive: active,
+            master: 2.0 * post,
             high_gain: s.higain,
             bright: s.bright,
             low_boost: s.crunch,
             high_boost: s.lead_channel,
-            bass_db: eq_db(s.bass, 12.0),
-            mid_db: eq_db(s.mid, 11.0),
+            bass_db: eq_db(s.bass, 6.0),
+            mid_db: eq_db(s.mid, 7.0),
             mid_hz: 750.0,
-            treble_db: eq_db(s.treble, 12.0),
-            presence_db: eq_db(s.presence, 11.0),
-            resonance_db: eq_db(s.resonance, 10.0),
+            treble_db: eq_db(s.treble, 5.0),
+            presence_db: eq_db(s.presence, 6.0),
+            resonance_db: eq_db(s.resonance, 6.0),
             mono: s.mono,
             ..base_amp(ir::AmpVoicing::ModernHighGain)
         }
@@ -518,16 +518,16 @@ pub mod ac_box {
         let brill = unit(s.brilliant_volume);
         let cut = unit(s.tone_cut);
         ir::AmpStack {
-            preamp_gain: 0.4 + 3.8 * norm + 4.4 * brill,
+            preamp_gain: 0.2 + 1.2 * norm + 1.87 * 15.0f32.powf(brill - 0.5),
             alt_preamp_gain: brill,
-            drive: (0.15 + 0.40 * norm + 0.45 * brill).clamp(0.0, 1.0),
-            master: 0.85,
-            bass_db: eq_db(s.bass, 10.0),
-            mid_db: -1.5,
+            drive: (0.5 * norm + 0.5 * brill).clamp(0.0, 1.0),
+            master: 1.0,
+            bass_db: eq_db(s.bass, 6.0),
+            mid_db: 0.0,
             mid_hz: 700.0,
-            treble_db: eq_db(s.treble, 11.0) + 3.0 * brill,
-            // Higher tone_cut darkens the power amp (rolls down from 14 kHz to 900 Hz).
-            tone_cut_hz: exp_range(1.0 - cut, 900.0, 14_000.0),
+            treble_db: eq_db(s.treble, 12.5),
+            // Higher tone_cut darkens the power amp (rolls down from 18 kHz to 1080 Hz; -10.7 dB @ 2 kHz).
+            tone_cut_hz: exp_range(1.0 - cut, 1_080.0, 18_000.0),
             tremolo_hz: exp_range(s.tremolo_speed, 0.8, 12.0),
             tremolo_depth: unit(s.tremolo_depth),
             mono: s.mono,
@@ -659,17 +659,17 @@ pub mod hot_solo {
         let (active, alt) = if s.overdrive { (od, norm) } else { (norm, od) };
         let mst = unit(s.master);
         ir::AmpStack {
-            preamp_gain: 0.55 + 10.5 * active * active + 1.8 * active,
-            alt_preamp_gain: 0.55 + 10.5 * alt * alt + 1.8 * alt,
-            drive: ((if s.overdrive { 0.45 } else { 0.2 }) + 0.55 * active).clamp(0.0, 1.0),
-            master: 0.15 + 1.65 * mst,
+            preamp_gain: 4.58 * 6.0f32.powf(active - 0.5),
+            alt_preamp_gain: 4.58 * 6.0f32.powf(alt - 0.5),
+            drive: active,
+            master: 2.0 * mst,
             high_gain: s.overdrive,
-            bass_db: eq_db(s.bass, 11.0),
-            mid_db: eq_db(s.mid, 10.0),
+            bass_db: eq_db(s.bass, 6.0),
+            mid_db: eq_db(s.mid, 6.0),
             mid_hz: 720.0,
-            treble_db: eq_db(s.treble, 11.0),
-            presence_db: eq_db(s.presence, 10.0),
-            resonance_db: eq_db(s.depth, 10.0),
+            treble_db: eq_db(s.treble, 5.0),
+            presence_db: eq_db(s.presence, 6.0),
+            resonance_db: eq_db(s.depth, 4.0),
             mono: s.mono,
             ..base_amp(ir::AmpVoicing::LeadHighGain)
         }
@@ -823,16 +823,16 @@ pub mod bass_pro {
         let mst = unit(s.master);
         let geq_db = s.geq_bands.map(|b| eq_db(b, 12.0));
         ir::AmpStack {
-            preamp_gain: 0.4 + 4.8 * g * g + 1.2 * g,
+            preamp_gain: 2.71 * 5.0f32.powf(g - 0.5),
             drive: unit(s.drive),
-            master: 0.15 + 1.65 * mst,
+            master: 2.0 * mst,
             bright: s.bright,
             low_boost: s.ultra_lo,
             high_boost: s.ultra_hi,
-            bass_db: eq_db(s.bass, 12.0),
-            mid_db: eq_db(s.mid, 12.0),
+            bass_db: eq_db(s.bass, 10.0),
+            mid_db: eq_db(s.mid, 10.0),
             mid_hz: exp_range(s.midfreq, 220.0, 3_000.0),
-            treble_db: eq_db(s.treble, 12.0),
+            treble_db: eq_db(s.treble, 10.0),
             geq_enabled: s.geq,
             geq_db,
             geq_gain_db: eq_db(s.geq_volume, 12.0),

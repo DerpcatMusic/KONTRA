@@ -26,33 +26,33 @@ pub struct CabinetSettings {
     pub treble_db: f32,
 }
 
-/// Speaker enclosure acoustic profile:
-/// `[low_cut_hz, body_hz, body_db, body_q, cone_hz, cone_db, cone_q, high_cut_hz]`.
-const PROFILES: [[f32; 8]; 12] = [
-    // 0: 1x12 classic open combo
-    [75.0, 145.0, 4.5, 1.4, 2100.0, 4.0, 1.8, 4800.0],
+/// Speaker enclosure acoustic profiles:
+/// `[low_cut_hz, body_hz, body_db, body_q, cone_hz, cone_db, cone_q, high_cut_hz, trim_db]`.
+const PROFILES: [[f32; 9]; 12] = [
+    // 0: 1x12 classic open combo (-4.6 @100, -1.8 @250, -6.4 @1k, -5.3 @4k, -23.3 @8k, -36.3 @12k)
+    [68.0, 235.0, 4.2, 1.1, 3600.0, 3.8, 1.3, 4650.0, -5.8],
     // 1: 2x12 vintage British
-    [70.0, 130.0, 5.0, 1.3, 2500.0, 5.0, 2.0, 5200.0],
-    // 2: 4x12 closed classic rock
-    [65.0, 115.0, 6.0, 1.5, 1900.0, 4.5, 1.7, 4500.0],
+    [65.0, 190.0, 4.5, 1.2, 2700.0, 4.2, 1.5, 4900.0, -4.5],
+    // 2: 4x12 closed classic rock (-2.2 @100, +2.7 @250, -2.5 @1k, -4.2 @4k, -28.3 @8k, -50.8 @12k)
+    [60.0, 225.0, 5.2, 1.2, 3400.0, 3.2, 1.3, 3750.0, -2.5],
     // 3: 4x12 modern high-gain
-    [60.0, 105.0, 5.5, 1.6, 2800.0, 5.5, 2.2, 5600.0],
+    [58.0, 145.0, 4.5, 1.4, 2800.0, 4.5, 1.8, 5200.0, -3.5],
     // 4: 4x10 bright combo
-    [80.0, 160.0, 3.5, 1.2, 3100.0, 4.5, 1.6, 5800.0],
+    [78.0, 195.0, 3.5, 1.1, 3100.0, 4.0, 1.5, 5500.0, -4.0],
     // 5: 1x10 small studio amp
-    [95.0, 195.0, 4.0, 1.5, 2300.0, 3.5, 1.9, 4400.0],
+    [95.0, 240.0, 4.0, 1.3, 2400.0, 3.2, 1.6, 4400.0, -4.5],
     // 6: 1x8 tiny tweed
-    [120.0, 240.0, 5.0, 1.7, 1750.0, 4.0, 2.1, 3900.0],
+    [120.0, 260.0, 4.5, 1.5, 1850.0, 3.8, 1.8, 3900.0, -4.5],
     // 7: 2x12 jazz clean
-    [65.0, 140.0, 3.0, 1.1, 3400.0, 2.5, 1.3, 6500.0],
+    [62.0, 165.0, 2.8, 1.1, 3400.0, 2.5, 1.2, 6200.0, -3.5],
     // 8: 4x12 scooped vintage
-    [62.0, 110.0, 6.5, 1.4, 1500.0, -3.5, 1.3, 4700.0],
-    // 9: 1x15 bass cabinet
-    [40.0, 82.0, 6.0, 1.4, 950.0, 2.5, 1.4, 3400.0],
+    [60.0, 140.0, 5.5, 1.3, 1500.0, -3.5, 1.3, 4500.0, -3.5],
+    // 9: Horn/tweeter bass cab (+0.5 @100, -2.9 @250, -2.9 @1k, -21.0 @2k notch, -0.2 @4k, +7.1 @8k, +8.6 @12k)
+    [35.0, 100.0, 3.2, 1.0, 2000.0, -18.5, 2.6, 19_000.0, -2.6],
     // 10: 4x10 bass cabinet
-    [45.0, 95.0, 5.0, 1.3, 1800.0, 3.5, 1.5, 4600.0],
+    [45.0, 110.0, 4.5, 1.2, 1800.0, 3.0, 1.4, 4500.0, -3.5],
     // 11: 8x10 stadium bass stack
-    [38.0, 75.0, 7.0, 1.5, 1250.0, 3.0, 1.6, 4100.0],
+    [38.0, 90.0, 5.5, 1.3, 1250.0, 2.8, 1.5, 4100.0, -3.0],
 ];
 
 /// Early-reflection stereo tap times (ms) and gains `[left_gain, right_gain]`.
@@ -113,6 +113,8 @@ pub struct Cabinet {
     lp2: Biquad,
     bass: Biquad,
     treble: Biquad,
+    tweeter: Biquad,
+    trim: f32,
     ring: Box<[[f32; 2]]>,
     write: usize,
     tap_offsets: [usize; 6],
@@ -137,8 +139,10 @@ impl Cabinet {
             cone: peak(2100.0, 1.8, 4.0, rate),
             lp1: low_pass(4800.0, 0.8, rate),
             lp2: low_pass(5800.0, 0.707, rate),
-            bass: shelf(130.0, 0.0, 0.7, Side::Low, rate),
-            treble: shelf(3200.0, 0.0, 0.7, Side::High, rate),
+            bass: shelf(320.0, 0.0, 0.65, Side::Low, rate),
+            treble: shelf(2600.0, 0.0, 0.65, Side::High, rate),
+            tweeter: shelf(5200.0, 0.0, 0.7, Side::High, rate),
+            trim: 1.0,
             ring: vec![[0.0; 2]; frames].into(),
             write: 0,
             tap_offsets,
@@ -166,29 +170,34 @@ impl Cabinet {
             cone_db,
             cone_q,
             lp_hz,
+            trim_db,
         ] = PROFILES.get(idx).copied().unwrap_or(PROFILES[0]);
-        // Larger size shifts resonances downward; smaller shifts upward.
-        let scale = (0.65 * (0.5 - s.size.clamp(0.0, 1.0))).exp2();
+        // Larger size shifts resonances downward; smaller shifts upward (~±0.85 oct).
+        let scale = (0.85 * (0.5 - s.size.clamp(0.0, 1.0))).exp2();
         let r = self.rate;
         self.hp.retune(&high_pass(hp_hz * scale, 0.707, r));
         self.body.retune(&peak(body_hz * scale, body_q, body_db, r));
         self.cone.retune(&peak(cone_hz * scale, cone_q, cone_db, r));
         self.lp1.retune(&low_pass(lp_hz * scale, 0.85, r));
-        self.lp2.retune(&low_pass(lp_hz * scale * 1.25, 0.707, r));
+        self.lp2.retune(&low_pass(lp_hz * scale * 1.18, 0.707, r));
         self.bass.retune(&shelf(
-            130.0,
-            s.bass_db.clamp(-14.0, 14.0),
-            0.7,
+            320.0,
+            s.bass_db.clamp(-18.0, 18.0),
+            0.65,
             Side::Low,
             r,
         ));
         self.treble.retune(&shelf(
-            3200.0,
-            s.treble_db.clamp(-14.0, 14.0),
-            0.7,
+            1450.0,
+            s.treble_db.clamp(-18.0, 18.0),
+            0.65,
             Side::High,
             r,
         ));
+        let tweeter_db = if idx == 9 { 11.2 } else { 0.0 };
+        self.tweeter
+            .retune(&shelf(5200.0, tweeter_db, 0.7, Side::High, r));
+        self.trim = 10.0f32.powf(trim_db / 20.0);
     }
 
     /// Processes stereo audio in place with zero allocations.
@@ -201,15 +210,19 @@ impl Cabinet {
         self.cone.process(io);
         self.lp1.process(io);
         self.lp2.process(io);
+        self.tweeter.process(io);
         self.bass.process(io);
         self.treble.process(io);
 
+        let trim = self.trim;
         let len = self.ring.len();
         let air_tgt = self.s.air.clamp(0.0, 1.0);
         let smooth = self.smooth;
         let damp = 0.35f32;
 
         for frame in io.iter_mut() {
+            frame[0] *= trim;
+            frame[1] *= trim;
             self.air_cur += (air_tgt - self.air_cur) * smooth;
             let [l, r] = *frame;
             if let Some(slot) = self.ring.get_mut(self.write) {

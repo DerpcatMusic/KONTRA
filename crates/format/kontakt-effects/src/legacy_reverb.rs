@@ -72,8 +72,9 @@ pub fn saved(version: u16, public: &[u8]) -> Option<(f32, [f32; 4])> {
     Some((f(0)?, [f(1)?, f(3)?, f(2)?, f(4)?]))
 }
 
-// ponytail: the native lines hold 0x1fff frames, so it drops a predelay past
-// 170 ms at 48 kHz to none; kept as set.
+/// Builds the legacy Reverb IR in physical units. `predelay_ms` is preserved up to
+/// 180 ms for script readback; `Combs` wraps predelays exceeding its 0x1fff-frame
+/// ring (~170.65 ms at 48 kHz) to 0 frames, matching the reference 8.13 behavior.
 pub fn reverb(predelay_ms: f32, knobs: [f32; 4]) -> ir::Reverb {
     let [size, colour, stereo, damping] = knobs.map(|x| x.clamp(0.0, 1.0));
     let feedback = 0.3 * size + 0.65;

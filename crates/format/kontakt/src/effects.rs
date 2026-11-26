@@ -857,6 +857,7 @@ fn replika_model(s: &mut Slot) -> Option<ir::KnobModel> {
     let r = crate::replika::saved(s.version, s.public)?;
     crate::replika::lost(r).for_each(|feature| s.lost(feature));
     *s.knobs = crate::replika::extra_knobs(r);
+    s.built = crate::replika::delay(r).map(ir::EffectKind::Delay);
     Some(crate::replika::model(r))
 }
 

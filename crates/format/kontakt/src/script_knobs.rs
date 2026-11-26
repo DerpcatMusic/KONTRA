@@ -386,7 +386,13 @@ pub fn slot_types() -> Vec<ir::SlotType> {
         ty(11, false, 0, sends, [].into()),
         ir::SlotType {
             model: Some(crate::replika::model(crate::replika::INIT)),
-            ..ty(40, false, 0, replika, [].into())
+            ..ty(
+                40,
+                false,
+                0,
+                replika,
+                crate::replika::extra_knobs(crate::replika::INIT).into(),
+            )
         },
         ty(0, false, 0, None, [].into()),
         ty(7, false, 100, filter, shape_laws(100)),

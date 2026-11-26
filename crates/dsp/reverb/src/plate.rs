@@ -249,7 +249,7 @@ impl Plate {
         // Low shelf gain below 160 Hz (clamped <= 0 dB per pass so feedback stays bounded).
         let low_db = s.low_shelf_db.clamp(-30.0, 6.0);
         // Per-pass shelf scaling derived from low shelf and high damping controls.
-        let low_per_s = (low_db / 6.0).clamp(-4.0, 0.4);
+        let low_per_s = (low_db / 4.2).clamp(-6.5, 0.4);
         let hd = s.damping.clamp(0.0, 1.0);
         let damp_hz = s.high_cut_hz.clamp(1000.0, 0.48 * rate);
         let damp_gain = 10f32.powf((1.0 - hd) * 0.2 - 0.2);
@@ -283,7 +283,7 @@ impl Plate {
 
         let max_pre = self.predelay.len().saturating_sub(2) as f32;
         self.pre_frames =
-            (s.predelay_ms.clamp(0.0, MAX_PREDELAY_MS) * 0.001 * rate).clamp(1.0, max_pre.max(1.0));
+            (s.predelay_ms.clamp(0.0, MAX_PREDELAY_MS) * 0.001 * rate).clamp(0.0, max_pre.max(0.0));
     }
 
     /// Clears all delay lines and filter states.
@@ -390,25 +390,26 @@ impl Plate {
                 early_r += er * *cur_r;
             }
 
-            // Write late stereo into wet predelay ring and read smoothly at `cur_pre_frames`.
+            // Combine early and late stereo reflections, then apply wet predelay to both
+            // (predelay offsets the full wet onset of both early and late paths).
+            let wet_l = OUTPUT_LEVEL * late_l + EARLY_LEVEL * early_l;
+            let wet_r = OUTPUT_LEVEL * late_r + EARLY_LEVEL * early_r;
             if let Some(slot) = self.predelay.get_mut(self.pre_write) {
-                *slot = [late_l, late_r];
+                *slot = [wet_l, wet_r];
             }
-            let d = self.cur_pre_frames.clamp(1.0, (pre_len - 2) as f32);
+            let d = self.cur_pre_frames.clamp(0.0, (pre_len - 2) as f32);
             let i0 = d as usize;
             let frac = d - i0 as f32;
             let r0 = (self.pre_write + pre_len - i0) % pre_len;
             let r1 = (self.pre_write + pre_len - (i0 + 1)) % pre_len;
             let a = self.predelay.get(r0).copied().unwrap_or([0.0; 2]);
             let b = self.predelay.get(r1).copied().unwrap_or([0.0; 2]);
-            let [dl, dr] = [a[0] + frac * (b[0] - a[0]), a[1] + frac * (b[1] - a[1])];
+            let out_l = a[0] + frac * (b[0] - a[0]);
+            let out_r = a[1] + frac * (b[1] - a[1]);
             self.pre_write += 1;
             if self.pre_write >= pre_len {
                 self.pre_write = 0;
             }
-
-            let out_l = OUTPUT_LEVEL * dl + EARLY_LEVEL * early_l;
-            let out_r = OUTPUT_LEVEL * dr + EARLY_LEVEL * early_r;
             *frame = [
                 if out_l.is_finite() { out_l } else { 0.0 },
                 if out_r.is_finite() { out_r } else { 0.0 },

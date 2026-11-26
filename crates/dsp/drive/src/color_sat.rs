@@ -76,61 +76,62 @@ fn db_to_lin(db: f32) -> f32 {
 }
 
 /// Evaluates one of the 10 harmonic transfer curves at input `x` with drive gain `g`.
+/// Ten-character saturation curves across linear gain, H2/H3 harmonics, and ceiling.
 #[inline]
 fn curve(character: u8, x: f32, g: f32) -> f32 {
     let u = x * g;
     match character % 10 {
-        // 0: Solid console — subtle even/odd transformer saturation
-        0 => ((u + 0.12 * u * u.abs()).tanh()) / (1.0 + 0.25 * (g - 1.0).max(0.0)).sqrt(),
+        // 0: Solid console — symmetric soft saturation (~0.47 ceiling, lin200 ~ +10.3 dB)
+        0 => (u / 0.47).tanh() * 0.47,
         // 1: Warm analog aura — smooth algebraic knee
-        1 => u / (1.0 + 0.7 * u * u).sqrt(),
-        // 2: Harmonic control — asymmetric exponential-tanh curve
+        1 => (u * 1.05) / (1.0 + (u * 2.0).powi(2)).sqrt(),
+        // 2: Harmonic control — asymmetric even+odd curve (strong H2 ~ -17 dB, ceiling ~0.46)
         2 => {
-            let y = (u * 0.05) / (0.0025 * u * u + 1.0).sqrt() * 13.726_12;
-            let ey = y.clamp(-12.0, 12.0);
-            let s = (-((-0.75 * ey.abs().sqrt()).exp() + 1.0) * ey)
-                .clamp(-20.0, 20.0)
-                .exp();
-            let ep = ey.exp();
-            let em = (-ey).exp();
-            (ep - s) / (em + ep)
+            let b = 0.32f32;
+            let s = b.cosh();
+            let c = 0.47;
+            ((u * 1.12 * s * s / c + b).tanh() - b.tanh()) * c
         }
         // 3: Full on — dense hard-knee saturation
         3 => {
-            let a = u * 1.8;
-            (a / (1.0 + a.abs().powf(2.2)).powf(1.0 / 2.2)) * 0.85
+            let c = 0.44;
+            let a = u * 1.15 / c;
+            (a / (1.0 + a.abs().powf(2.2)).powf(1.0 / 2.2)) * c
         }
         // 4: Super amp — two-stage asymmetric triode cascade
         4 => {
-            let s1 = (u * 1.4 + 0.15).tanh() - 0.148;
-            (s1 * 1.6 - 0.08).tanh() * 0.8
+            let s1 = (u * 1.2 + 0.18).tanh() - 0.178;
+            (s1 * 1.4 - 0.08).tanh() * 0.46
         }
-        // 5: Smooth fuzz — odd exponential soft clip
+        // 5: Smooth fuzz — pure odd exponential soft clip (H2 < -44 dB, H3 ~ -11 dB, ceiling ~0.42)
         5 => {
-            let e = (-u.abs().min(20.0)).exp();
-            if u < 0.0 { e - 1.0 } else { 1.0 - e }
+            let c = 0.42;
+            let a = u * 1.22 / c;
+            let e = (-a.abs().min(20.0)).exp();
+            let v = if a < 0.0 { e - 1.0 } else { 1.0 - e };
+            v * c
         }
         // 6: Magnetic tape — symmetric soft saturation with 3rd harmonic warmth
-        6 => (u * 1.15).tanh() * 0.92,
+        6 => (u / 0.50).tanh() * 0.50,
         // 7: Crunch — asymmetric push-pull clipping
         7 => {
             let v = if u >= 0.0 {
-                (u * 1.9).tanh()
+                (u * 2.4).tanh()
             } else {
-                (u * 1.35).tanh()
+                (u * 1.7).tanh()
             };
-            v * 0.82
+            v * 0.44
         }
         // 8: Heavy saturator — rich overdrive with mild foldback edge
         8 => {
-            let s = (u * 2.1).tanh();
-            (s - 0.18 * (s * std::f32::consts::PI).sin()) * 0.85
+            let s = (u * 2.4).tanh();
+            (s - 0.14 * (s * std::f32::consts::PI).sin()) * 0.44
         }
-        // 9: Diode bridge — crisp asymmetric diode clipper
+        // 9: Diode bridge — lower-ceiling asymmetric diode clipper (~0.30 ceiling)
         _ => {
-            let t = if u >= 0.0 { 0.45 } else { 0.65 };
-            let r = u / t;
-            (r / (1.0 + r * r).sqrt()) * t * 1.35
+            let t = if u >= 0.0 { 0.27 } else { 0.34 };
+            let r = (u * 1.18) / t;
+            (r / (1.0 + r * r).sqrt()) * t
         }
     }
 }
@@ -191,9 +192,9 @@ impl ColorSat {
     fn retune(&mut self, s: ColorSatSettings) {
         let r = self.rate;
         self.hpf
-            .retune(&high_pass(s.hpf_hz.clamp(18.0, 2500.0), 0.707, r));
+            .retune(&high_pass(s.hpf_hz.clamp(10.0, 0.47 * r as f32), 0.707, r));
         self.lpf
-            .retune(&low_pass(s.lpf_hz.clamp(400.0, 0.47 * r as f32), 0.707, r));
+            .retune(&low_pass(s.lpf_hz.clamp(10.0, 0.47 * r as f32), 0.707, r));
         self.bass.retune(&shelf(
             120.0,
             s.bass_db.clamp(-15.0, 15.0),
@@ -233,7 +234,7 @@ impl ColorSat {
         let smooth = self.smooth;
         let sub_c = self.sub_coeff;
         let dc_r = 0.996f32;
-        let use_hpf = self.s.hpf_hz > 22.0;
+        let use_hpf = self.s.hpf_hz > 11.0;
         let use_lpf = self.s.lpf_hz < 19_500.0;
 
         // Keep dry copies in chunks on the stack (no heap allocation).
@@ -251,7 +252,7 @@ impl ColorSat {
             for frame in chunk.iter_mut() {
                 self.drive_cur += (drive_tgt - self.drive_cur) * smooth;
                 self.saver_cur += (saver_tgt - self.saver_cur) * smooth;
-                let gain = (1.0 + 14.0 * self.drive_cur * self.drive_cur) * boost_lin;
+                let gain = 1.68 * (4.0f32).powf(self.drive_cur) * boost_lin;
                 let saver = self.saver_cur;
                 for ((sample, sub_lp), st) in frame
                     .iter_mut()

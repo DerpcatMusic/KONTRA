@@ -77,6 +77,11 @@ pub struct Combs {
     w: usize,
 }
 
+/// Native comb-network predelay ring capacity mask (8192-frame ring, max 8191
+/// frames / ~170.65 ms at 48 kHz). Predelays past this bound wrap to 0 frames,
+/// matching the reference 8.13 measurement where 180 ms echoes at frame 2914.
+const MAX_PRE_FRAMES: usize = 0x1fff;
+
 impl Combs {
     /// Not real-time: allocates the lines.
     #[must_use]
@@ -85,7 +90,7 @@ impl Combs {
         let frames = |ms: f32| (ms * 0.001 * rate) as usize;
         let channel = |c: f32| {
             let spread = c * law.spread_ms;
-            let mut pre = Line::new(frames(MAX_PREDELAY_MS));
+            let mut pre = Line::new(MAX_PRE_FRAMES);
             pre.delay = 0;
             Channel {
                 pre,
@@ -118,7 +123,7 @@ impl Combs {
         self.input.retune(&butterworth(hz / f64::from(self.rate)));
         let pre = (s.predelay_ms.clamp(0.0, MAX_PREDELAY_MS) * 0.001 * self.rate) as usize;
         for c in &mut self.channels {
-            c.pre.delay = pre.min(c.pre.buf.len() - 1);
+            c.pre.delay = if pre > c.pre.reach() { 0 } else { pre };
         }
     }
 

@@ -54,23 +54,28 @@ pub fn amp(s: SkreamerDeluxe) -> ir::AmpStack {
     let drv = s.drive.clamp(0.0, 1.0);
     let tone = s.tone.clamp(0.0, 1.0);
     let eq = |x: f32, span: f32| (x.clamp(0.0, 1.0) * 2.0 - 1.0) * span;
+    let mode_gain = match mode {
+        1 => 1.15,
+        2 => 1.55,
+        _ => 2.75,
+    };
     ir::AmpStack {
         voicing: ir::AmpVoicing::MidOverdrive(mode),
-        preamp_gain: 0.8 + 8.0 * drv * drv + 1.8 * drv,
+        preamp_gain: mode_gain * 8.5f32.powf(drv - 0.5),
         alt_preamp_gain: 0.0,
         drive: drv,
-        master: 0.9,
+        master: 1.0,
         high_gain: mode == 2,
         bright: false,
         low_boost: false,
         high_boost: false,
-        bass_db: eq(s.bass, 10.0),
-        mid_db: eq(s.mid, 10.0),
+        bass_db: eq(s.bass, 8.0),
+        mid_db: eq(s.mid, 8.0),
         mid_hz: 720.0,
-        treble_db: eq(s.treble, 10.0),
+        treble_db: eq(s.treble, 8.0) + eq(tone, 14.5),
         presence_db: 0.0,
         resonance_db: 0.0,
-        tone_cut_hz: 1_200.0 * (12_000.0f32 / 1_200.0).powf(tone),
+        tone_cut_hz: 1_500.0 * (18_000.0f32 / 1_500.0).powf(tone),
         tremolo_hz: 4.0,
         tremolo_depth: 0.0,
         geq_enabled: false,

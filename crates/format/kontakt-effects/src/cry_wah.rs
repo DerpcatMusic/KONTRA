@@ -60,7 +60,7 @@ pub fn wah(w: CryWah) -> ir::Wah {
         peak_q: 1.0 / (0.210_74 * p + 0.102_27),
         peak_gain: 9.2921 * p2 - 0.2921,
         low_hz: 0.7545 * pitch_index(-153.6096 * p2 + 1_137.428_8),
-        low_gain: (pitch_index(-153.6096 * p2 + 1_031.392_8) - 1.0).max(-0.5),
+        low_gain: pitch_index(-153.6096 * p2 + 1_031.392_8) - 1.0,
         mid_hz: 2000.0,
         mid_gain: 0.231_828_78 - 2.0 * 0.048_911_855 * pm1_4,
         high_hz: 21_536.875 / TAU,

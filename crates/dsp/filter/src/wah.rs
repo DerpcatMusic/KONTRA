@@ -1,8 +1,12 @@
-//! A four-stage resonant wah filter in physical units: a swept band-pass peak,
-//! a low-mid contour stage, a mid vocal stage, and a high presence stage, with
+//! A four-lane staggered bilinear resonant wah filter in physical units, with
 //! optional mono summing and smooth per-sample parameter gliding.
+//!
+//! Lane 0 forms the high-pass first-difference stage prewarped at `high_hz`;
+//! lane 1 carries the pass-through feed; lanes 2 and 3 form the resonant
+//! second-order wah sections tuned by `low_hz`/`high_hz` and `peak_hz`/`peak_q`,
+//! staggered by one sample and blended by `[peak_gain, mid_gain, low_gain, high_gain]`.
 
-use std::f64::consts::{FRAC_1_SQRT_2, PI, SQRT_2};
+use std::f64::consts::{PI, TAU};
 
 use kontra_dsp_core::flush;
 
@@ -19,39 +23,6 @@ pub struct WahSettings {
     pub high_hz: f32,
     pub high_gain: f32,
     pub mono: bool,
-}
-
-/// One mono TPT state-variable stage (two integrator states).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct Stage {
-    ic1: f64,
-    ic2: f64,
-}
-
-impl Stage {
-    #[inline]
-    fn tick(&mut self, x: f64, g: f64, k: f64) -> (f64, f64) {
-        let a1 = 1.0 / (1.0 + g * (g + k));
-        let a2 = g * a1;
-        let a3 = g * a2;
-        let v3 = x - self.ic2;
-        let v1 = a1 * self.ic1 + a2 * v3;
-        let v2 = self.ic2 + a2 * self.ic1 + a3 * v3;
-        self.ic1 = 2.0 * v1 - self.ic1;
-        self.ic2 = 2.0 * v2 - self.ic2;
-        (k * v1, v2)
-    }
-
-    fn flush_denormals(&mut self) {
-        let mut s = [self.ic1, self.ic2];
-        flush(&mut s);
-        [self.ic1, self.ic2] = s;
-    }
-
-    fn reset(&mut self) {
-        self.ic1 = 0.0;
-        self.ic2 = 0.0;
-    }
 }
 
 /// Smoothed scalar state for click-free pedal sweeps.
@@ -71,24 +42,62 @@ impl Smooth {
         self.cur += alpha * (self.target - self.cur);
         self.cur
     }
+
+    #[inline]
+    fn snap(&mut self) {
+        self.cur = self.target;
+    }
 }
 
-/// Four-stage resonant wah processor. Zero allocations in `set`/`process`.
+/// One stereo channel's four-lane staggered bilinear state (`y1`, `y2`, `u`, `v`, `d`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct ChannelState {
+    y1: [f64; 4],
+    y2: [f64; 4],
+    u: [f64; 4],
+    v: [f64; 4],
+    d: [f64; 4],
+}
+
+impl ChannelState {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn flush_denormals(&mut self) {
+        flush(&mut self.y1);
+        flush(&mut self.y2);
+        flush(&mut self.u);
+        flush(&mut self.v);
+        flush(&mut self.d);
+    }
+}
+
+/// Precomputed per-sample coefficients for the four bilinear lanes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Coeffs {
+    p: [f64; 4],
+    c: [f64; 4],
+    fb1: [f64; 4],
+    fb2: [f64; 4],
+    norm: [f64; 4],
+}
+
+/// Four-lane staggered bilinear resonant wah processor. Zero allocations in `set`/`process`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Wah {
     rate: f64,
     alpha: f64,
     peak_hz: Smooth,
-    peak_k: Smooth,
+    peak_q: Smooth,
     peak_gain: Smooth,
     low_hz: Smooth,
     low_gain: Smooth,
-    mid_hz: Smooth,
     mid_gain: Smooth,
     high_hz: Smooth,
     high_gain: Smooth,
     mono: bool,
-    stages: [[Stage; 4]; 2],
+    channels: [ChannelState; 2],
 }
 
 impl Wah {
@@ -96,125 +105,185 @@ impl Wah {
     #[must_use]
     pub fn new(s: WahSettings, rate: u32) -> Self {
         let rate_f = f64::from(rate.max(1));
-        // ~5 ms exponential smoother for click-free live pedal sweeps.
-        let alpha = 1.0 - (-1.0 / (0.005 * rate_f)).exp();
-        let (peak_hz, peak_k, peak_gain, low_hz, low_gain, mid_hz, mid_gain, high_hz, high_gain) =
+        // ~2 ms smoother for click-free live pedal sweeps while settling fast.
+        let alpha = 1.0 - (-1.0 / (0.002 * rate_f)).exp();
+        let (peak_hz, peak_q, peak_gain, low_hz, low_gain, mid_gain, high_hz, high_gain) =
             Self::clamp_params(s, rate_f);
         Self {
             rate: rate_f,
             alpha,
             peak_hz: Smooth::new(peak_hz),
-            peak_k: Smooth::new(peak_k),
+            peak_q: Smooth::new(peak_q),
             peak_gain: Smooth::new(peak_gain),
             low_hz: Smooth::new(low_hz),
             low_gain: Smooth::new(low_gain),
-            mid_hz: Smooth::new(mid_hz),
             mid_gain: Smooth::new(mid_gain),
             high_hz: Smooth::new(high_hz),
             high_gain: Smooth::new(high_gain),
             mono: s.mono,
-            stages: [[Stage::default(); 4]; 2],
+            channels: [ChannelState::default(); 2],
         }
     }
 
-    fn clamp_params(s: WahSettings, rate: f64) -> (f64, f64, f64, f64, f64, f64, f64, f64, f64) {
+    fn clamp_params(s: WahSettings, rate: f64) -> (f64, f64, f64, f64, f64, f64, f64, f64) {
         let nyq = 0.45 * rate;
         let peak_hz = f64::from(s.peak_hz).clamp(20.0, nyq);
         let peak_q = f64::from(s.peak_q).clamp(0.5, 25.0);
-        let peak_k = 1.0 / peak_q;
         let peak_gain = f64::from(s.peak_gain).clamp(-2.0, 12.0);
-        let low_hz = f64::from(s.low_hz).clamp(15.0, nyq);
-        let low_gain = f64::from(s.low_gain).clamp(-1.0, 2.0);
-        let mid_hz = f64::from(s.mid_hz).clamp(20.0, nyq);
+        let low_hz = f64::from(s.low_hz).clamp(0.01, nyq);
+        let low_gain = f64::from(s.low_gain).clamp(-2.0, 2.0);
         let mid_gain = f64::from(s.mid_gain).clamp(0.0, 2.0);
         let high_hz = f64::from(s.high_hz).clamp(20.0, nyq);
         let high_gain = f64::from(s.high_gain).clamp(0.0, 16.0);
         (
-            peak_hz, peak_k, peak_gain, low_hz, low_gain, mid_hz, mid_gain, high_hz, high_gain,
+            peak_hz, peak_q, peak_gain, low_hz, low_gain, mid_gain, high_hz, high_gain,
         )
+    }
+
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    fn build_coeffs(
+        rate: f64,
+        peak_hz: f64,
+        peak_q: f64,
+        peak_gain: f64,
+        low_hz: f64,
+        low_gain: f64,
+        mid_gain: f64,
+        high_hz: f64,
+        high_gain: f64,
+    ) -> Coeffs {
+        let w = (high_hz * TAU).clamp(1.0, 0.9 * PI * rate);
+        let half_w_t = (0.5 / rate) * w;
+        let (sin_w, cos_w) = half_w_t.sin_cos();
+        let k = (cos_w / sin_w.max(1e-9)) * w;
+        let c0 = k / (k + w);
+        let fb1_0 = (k - w) / (k + w);
+        let wk = w * k;
+        let kk = k * k;
+        let ww = w * w;
+
+        let q0 = peak_hz * TAU;
+        let q1 = peak_q;
+        let q2 = low_hz;
+        let q0k = q0 * k;
+        let q0_2 = q0 * q0;
+
+        let a0 = (ww + kk) * q2;
+        let a1 = (kk + q0_2) * q1;
+        let a2 = (ww - kk) * q2;
+        let a3 = (q0_2 - kk) * q1;
+
+        Coeffs {
+            p: [peak_gain, mid_gain, low_gain, high_gain],
+            c: [c0, 0.0, wk, q0k],
+            fb1: [fb1_0, 0.0, -2.0 * a2, -2.0 * a3],
+            fb2: [0.0, 0.0, wk - a0, q0k - a1],
+            norm: [
+                1.0,
+                1.0,
+                1.0 / (a0 + wk).max(1e-12),
+                1.0 / (a1 + q0k).max(1e-12),
+            ],
+        }
+    }
+
+    #[inline]
+    fn tick_channel(st: &mut ChannelState, cf: &Coeffs, x: f64) -> f64 {
+        let [_, u1, u2, u3] = st.u;
+        let [_, v1, v2, v3] = st.v;
+        let [d0, d1, d2, d3] = st.d;
+        let [y10, y11, y12, y13] = st.y1;
+        let [y20, y21, y22, y23] = st.y2;
+        let [c0, c1, c2, c3] = cf.c;
+        let [f10, f11, f12, f13] = cf.fb1;
+        let [f20, f21, f22, f23] = cf.fb2;
+        let [n0, n1, n2, n3] = cf.norm;
+        let [p0, p1, p2, p3] = cf.p;
+
+        let u = [x, u1, u2, u3];
+        let v = [x, v1, v2, v3];
+        let y = [
+            ((x - d0) * c0 + y10 * f10 + y20 * f20) * n0,
+            ((u1 - d1) * c1 + y11 * f11 + y21 * f21) * n1,
+            ((u2 - d2) * c2 + y12 * f12 + y22 * f22) * n2,
+            ((u3 - d3) * c3 + y13 * f13 + y23 * f23) * n3,
+        ];
+        st.y2 = st.y1;
+        st.y1 = y;
+        st.d = v;
+        st.v = u;
+        let u3_scaled = u3 * p1;
+        let t0 = p0 * y[0] + x;
+        let t1 = p1 * y[1] + u1;
+        let t2 = p2 * y[2] + u2;
+        let t3 = p3 * y[3] + u3_scaled;
+        st.u = [t3, t1, t0, t2];
+        t3
     }
 
     /// Updates target filter parameters without allocating.
     pub fn set(&mut self, s: WahSettings) {
-        let (peak_hz, peak_k, peak_gain, low_hz, low_gain, mid_hz, mid_gain, high_hz, high_gain) =
+        let (peak_hz, peak_q, peak_gain, low_hz, low_gain, mid_gain, high_hz, high_gain) =
             Self::clamp_params(s, self.rate);
         self.peak_hz.target = peak_hz;
-        self.peak_k.target = peak_k;
+        self.peak_q.target = peak_q;
         self.peak_gain.target = peak_gain;
         self.low_hz.target = low_hz;
         self.low_gain.target = low_gain;
-        self.mid_hz.target = mid_hz;
         self.mid_gain.target = mid_gain;
         self.high_hz.target = high_hz;
         self.high_gain.target = high_gain;
         self.mono = s.mono;
     }
 
-    /// Resets integrator state and snaps smoothers to their current targets.
+    /// Resets filter state and snaps smoothers to their current targets.
     pub fn reset(&mut self) {
-        for ch in &mut self.stages {
-            for st in ch {
-                st.reset();
-            }
+        for ch in &mut self.channels {
+            ch.reset();
         }
-        self.peak_hz.cur = self.peak_hz.target;
-        self.peak_k.cur = self.peak_k.target;
-        self.peak_gain.cur = self.peak_gain.target;
-        self.low_hz.cur = self.low_hz.target;
-        self.low_gain.cur = self.low_gain.target;
-        self.mid_hz.cur = self.mid_hz.target;
-        self.mid_gain.cur = self.mid_gain.target;
-        self.high_hz.cur = self.high_hz.target;
-        self.high_gain.cur = self.high_gain.target;
+        self.peak_hz.snap();
+        self.peak_q.snap();
+        self.peak_gain.snap();
+        self.low_hz.snap();
+        self.low_gain.snap();
+        self.mid_gain.snap();
+        self.high_hz.snap();
+        self.high_gain.snap();
     }
 
     /// Processes stereo audio in place.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
-        let inv_rate = PI / self.rate;
+        let rate = self.rate;
         let alpha = self.alpha;
         for frame in io {
-            let peak_hz = self.peak_hz.step(alpha);
-            let peak_k = self.peak_k.step(alpha);
-            let peak_gain = self.peak_gain.step(alpha);
-            let low_hz = self.low_hz.step(alpha);
-            let low_gain = self.low_gain.step(alpha);
-            let mid_hz = self.mid_hz.step(alpha);
-            let mid_gain = self.mid_gain.step(alpha);
-            let high_hz = self.high_hz.step(alpha);
-            let high_gain = self.high_gain.step(alpha);
-
-            let g_peak = (peak_hz * inv_rate).tan();
-            let g_low = (low_hz * inv_rate).tan();
-            let g_mid = (mid_hz * inv_rate).tan();
-            let g_high = (high_hz * inv_rate).tan();
-
-            let input = if self.mono {
+            let cf = Self::build_coeffs(
+                rate,
+                self.peak_hz.step(alpha),
+                self.peak_q.step(alpha),
+                self.peak_gain.step(alpha),
+                self.low_hz.step(alpha),
+                self.low_gain.step(alpha),
+                self.mid_gain.step(alpha),
+                self.high_hz.step(alpha),
+                self.high_gain.step(alpha),
+            );
+            if self.mono {
                 let m = 0.5 * (f64::from(frame[0]) + f64::from(frame[1]));
-                [m, m]
+                let y = Self::tick_channel(&mut self.channels[0], &cf, m);
+                let out = if y.is_finite() { y as f32 } else { 0.0 };
+                *frame = [out, out];
             } else {
-                [f64::from(frame[0]), f64::from(frame[1])]
-            };
-
-            let peak_weight = 1.0 + 0.15 * peak_gain;
-            for (out, (&x, [s0, s1, s2, s3])) in
-                frame.iter_mut().zip(input.iter().zip(&mut self.stages))
-            {
-                let (bp, _) = s0.tick(x, g_peak, peak_k);
-                let (_, lp) = s1.tick(x, g_low, SQRT_2);
-                let (mid, _) = s2.tick(x, g_mid, FRAC_1_SQRT_2);
-                let (high, _) = s3.tick(x, g_high, 1.0);
-                let y = mid_gain
-                    * (peak_weight * 4.0 * bp
-                        + 0.5 * low_gain * lp
-                        + mid
-                        + 0.05 * high_gain * high);
-                *out = if y.is_finite() { y as f32 } else { 0.0 };
+                let yl = Self::tick_channel(&mut self.channels[0], &cf, f64::from(frame[0]));
+                let yr = Self::tick_channel(&mut self.channels[1], &cf, f64::from(frame[1]));
+                *frame = [
+                    if yl.is_finite() { yl as f32 } else { 0.0 },
+                    if yr.is_finite() { yr as f32 } else { 0.0 },
+                ];
             }
         }
-        for ch in &mut self.stages {
-            for st in ch {
-                st.flush_denormals();
-            }
+        for ch in &mut self.channels {
+            ch.flush_denormals();
         }
     }
 }
@@ -228,12 +297,12 @@ mod tests {
             peak_hz,
             peak_q,
             peak_gain: 2.0,
-            low_hz: 80.0,
-            low_gain: 0.2,
+            low_hz: 0.25,
+            low_gain: -0.9,
             mid_hz: 2000.0,
-            mid_gain: 0.2,
-            high_hz: 3428.0,
-            high_gain: 6.0,
+            mid_gain: 0.22,
+            high_hz: 21_536.875 / std::f32::consts::TAU,
+            high_gain: 6.3,
             mono,
         }
     }
@@ -251,10 +320,10 @@ mod tests {
 
     #[test]
     fn peak_frequency_boosts_on_resonance_and_attenuates_far_off() {
-        let heel = wah(350.0, 9.0, false);
-        let toe = wah(1600.0, 3.2, false);
-        assert!(tone_rms(heel, 350.0) > 3.0 * tone_rms(heel, 1600.0));
-        assert!(tone_rms(toe, 1600.0) > 2.0 * tone_rms(toe, 350.0));
+        let heel = wah(462.0, 9.78, false);
+        let toe = wah(2217.0, 3.19, false);
+        assert!(tone_rms(heel, 462.0) > 3.0 * tone_rms(heel, 2217.0));
+        assert!(tone_rms(toe, 2217.0) > 2.0 * tone_rms(toe, 462.0));
     }
 
     #[test]

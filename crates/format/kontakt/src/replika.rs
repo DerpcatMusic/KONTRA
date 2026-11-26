@@ -520,9 +520,11 @@ pub(crate) fn delay(r: Replika) -> Option<ir::Delay> {
     })
 }
 
-/// Replika as a script moves it: 24 coupled knobs rebuild the delay from all
-/// of them, and the remaining 6 groove/ducking knobs move the delay via
-/// [`extra_knobs`].
+/// Replika as a script moves it: the 24 coupled timing, feedback, groove,
+/// routing and mode knobs rebuild the delay together through [`REPLIKA_MODEL`],
+/// while the 6 independent filter/rate/ducking controls (`LOWCUT`, `HIGHCUT`,
+/// `RATE`, `DUCKING_*`) update via [`extra_knobs`] and are preserved across
+/// coupled rebuilds in [`ReplikaModel::build_effect`].
 pub(crate) static MODULE: Module = Module {
     id: ids::REPLIKA,
     module_id: 0x5a,
@@ -534,21 +536,62 @@ pub(crate) static MODULE: Module = Module {
     build: |p| delay(from_knobs(p.try_into().ok()?)).map(ir::EffectKind::Delay),
 };
 
-/// `r` as [`MODULE`]'s 24 knobs: mode, TIME ms, the 0..1 controls as saved, the switches
-/// as 0/1, sync unit id, saturation, BBD type, and Diffuse controls.
+struct ReplikaModel;
+
+impl ir::EffectModel for ReplikaModel {
+    fn build(&self, params: &[f32]) -> Option<ir::EffectKind> {
+        delay(from_knobs(params.try_into().ok()?)).map(ir::EffectKind::Delay)
+    }
+
+    fn build_effect(&self, params: &[f32], current: &ir::Effect) -> Option<ir::Effect> {
+        let r = from_knobs(params.try_into().ok()?);
+        let mut d = delay(r)?;
+        if let ir::EffectKind::Delay(cur) = &current.kind {
+            // Preserve the independent SlotLaw controls (`LOWCUT`, `HIGHCUT`,
+            // `RATE`, and live ducking input attenuation) across coupled rebuilds.
+            d.low_cut_hz = cur.low_cut_hz;
+            d.high_shelf = cur.high_shelf;
+            if r.mode != 2 {
+                d.rate = cur.rate;
+            }
+            let cur_in_scale = (cur.input[0][0] + cur.input[0][1])
+                .max(cur.input[1][0] + cur.input[1][1])
+                .clamp(0.0, 1.0);
+            if cur_in_scale > 0.0 && (cur_in_scale - 1.0).abs() > 1e-5 {
+                for row in &mut d.input {
+                    for c in row {
+                        *c *= cur_in_scale;
+                    }
+                }
+            }
+        }
+        Some(ir::Effect {
+            kind: ir::EffectKind::Delay(d),
+            bypass: current.bypass,
+            output: current.output,
+            dry: current.dry,
+        })
+    }
+}
+
+static REPLIKA_MODEL: ReplikaModel = ReplikaModel;
+
+/// `r` as [`MODULE`]'s 24 coupled knobs: mode, TIME ms, feedback, shuffle, feel,
+/// Tape/Vintage/modulation controls, accent, switches, pan/width/offset, sync unit,
+/// saturation, BBD type, and Diffuse controls.
 fn knobs(r: Replika) -> [f32; 24] {
     let on = |b: bool| f32::from(u8::from(b));
     [
         r.mode as f32,
         r.ms,
         r.feedback,
-        r.low_cut,
-        r.high_cut,
+        r.shuffle,
+        r.feel,
         r.tape_age,
         r.flutter,
         r.quality,
         r.depth,
-        r.rate,
+        r.accent,
         on(r.stereo),
         on(r.noise),
         on(r.pingpong),
@@ -567,31 +610,19 @@ fn knobs(r: Replika) -> [f32; 24] {
 }
 
 fn from_knobs(k: [f32; 24]) -> Replika {
-    let [
-        mode,
-        ms,
-        feedback,
-        low_cut,
-        high_cut,
-        tape_age,
-        flutter,
-        quality,
-        depth,
-        rate,
-    ] = [k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7], k[8], k[9]];
     let on = |x: f32| x >= 0.5;
     Replika {
-        mode: mode.round() as i32,
-        ms,
-        feedback,
-        low_cut,
-        high_cut,
+        mode: k[0].round() as i32,
+        ms: k[1],
+        feedback: k[2],
+        low_cut: INIT.low_cut,
+        high_cut: INIT.high_cut,
         saturation: k[18],
-        tape_age,
-        flutter,
-        quality,
-        depth,
-        rate,
+        tape_age: k[5],
+        flutter: k[6],
+        quality: k[7],
+        depth: k[8],
+        rate: INIT.rate,
         stereo: on(k[10]),
         noise: on(k[11]),
         pingpong: on(k[12]),
@@ -602,9 +633,9 @@ fn from_knobs(k: [f32; 24]) -> Replika {
         amount: k[21],
         dense: on(k[22]),
         modulation: k[23],
-        shuffle: 0.0,
-        feel: 0.5,
-        accent: 0.5,
+        shuffle: k[3],
+        feel: k[4],
+        accent: k[9],
         pan: k[14],
         width: k[15],
         offset: k[16],
@@ -616,12 +647,17 @@ fn from_knobs(k: [f32; 24]) -> Replika {
 
 /// `r`'s 24 coupled knobs as a script moves them.
 pub(crate) fn model(r: Replika) -> ir::KnobModel {
-    MODULE.knob_model(&knobs(r))
+    ir::register_model(ids::REPLIKA, &REPLIKA_MODEL);
+    ir::KnobModel {
+        id: ids::REPLIKA,
+        knobs: MODULE.knobs.into(),
+        saved: knobs(r).into(),
+    }
 }
 
-/// Live slot laws for the 6 Replika groove and ducking parameters beyond
+/// Live slot laws for the 6 independent Replika controls beyond
 /// `KnobModel::MAX` (24): `DUCKING_AMOUNT` (24), `DUCKING_RELEASE` (25),
-/// `DUCKING_SENSE` (26), `SHUFFLE` (27), `FEEL` (28), `ACCENT` (29).
+/// `DUCKING_SENSE` (26), `LOWCUT` (27), `HIGHCUT` (28), `RATE` (29).
 pub(crate) fn extra_knobs(r: Replika) -> Vec<crate::script_knobs::SlotKnob> {
     use ir::EffectParam as E;
     use ir::SlotKnob::Knob;
@@ -680,15 +716,44 @@ pub(crate) fn extra_knobs(r: Replika) -> Vec<crate::script_knobs::SlotKnob> {
         }
         Some(ir::EffectKind::Delay(d))
     }));
-    out.extend(sampled(Knob(27), &[E::DelayMs], &|x| {
-        delay(Replika { shuffle: x, ..r }).map(ir::EffectKind::Delay)
-    }));
-    out.extend(sampled(Knob(28), &[E::DelayMs], &|x| {
-        delay(Replika { feel: x, ..r }).map(ir::EffectKind::Delay)
-    }));
-    out.extend(sampled(Knob(29), &loop_cells, &|x| {
-        delay(Replika { accent: x, ..r }).map(ir::EffectKind::Delay)
-    }));
+    // LOWCUT: exact 0 Hz at x=0, 10 * 100^x Hz for x > 0.
+    out.push((
+        Knob(27),
+        E::DelayLowCutHz,
+        ir::Law::Breakpoints(
+            [
+                (0.0, 0.0, 0.0),
+                (
+                    1e-4,
+                    kontra_law::kontakt::REPLIKA_LOW_CUT.eval(1e-4),
+                    4.605_17,
+                ),
+                (1.0, 1000.0, 0.0),
+            ]
+            .into(),
+        ),
+    ));
+    // HIGHCUT: exact 11-point measured corner + open (0 dB) at x = 1.
+    let hc_points: std::sync::Arc<[(f32, f32, f32)]> = HIGH_CUT_HZ
+        .iter()
+        .zip(0u8..)
+        .map(|(&hz, n)| (f32::from(n) / 10.0, hz, 0.0))
+        .collect();
+    out.push((Knob(28), E::DelayShelfHz, ir::Law::Breakpoints(hc_points)));
+    out.push((
+        Knob(28),
+        E::DelayShelfDb,
+        ir::Law::Breakpoints([(0.0, -10.0, 0.0), (0.999, -10.0, 0.0), (1.0, 0.0, 0.0)].into()),
+    ));
+    // RATE: exact 0.1 * 100^x Hz.
+    out.push((
+        Knob(29),
+        E::ModRate,
+        ir::Law::Exp {
+            lo: MODERN_RATE_HZ,
+            hi: MODERN_RATE_HZ * 100.0,
+        },
+    ));
     out
 }
 
@@ -710,13 +775,13 @@ pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 30] {
             },
         ),
         ("$ENGINE_PAR_RDL_FEEDBACK", Slot(Knob(2)), unit()),
-        ("$ENGINE_PAR_RDL_LOWCUT", Slot(Knob(3)), unit()),
-        ("$ENGINE_PAR_RDL_HIGHCUT", Slot(Knob(4)), unit()),
+        ("$ENGINE_PAR_RDL_SHUFFLE", Slot(Knob(3)), unit()),
+        ("$ENGINE_PAR_RDL_FEEL", Slot(Knob(4)), unit()),
         ("$ENGINE_PAR_RDL_TAPEAGE", Slot(Knob(5)), unit()),
         ("$ENGINE_PAR_RDL_FLUTTER", Slot(Knob(6)), unit()),
         ("$ENGINE_PAR_RDL_QUALITY", Slot(Knob(7)), unit()),
         ("$ENGINE_PAR_RDL_DEPTH", Slot(Knob(8)), unit()),
-        ("$ENGINE_PAR_RDL_RATE", Slot(Knob(9)), unit()),
+        ("$ENGINE_PAR_RDL_ACCENT", Slot(Knob(9)), unit()),
         ("$ENGINE_PAR_RDL_STEREO", Slot(Knob(10)), raw()),
         ("$ENGINE_PAR_RDL_NOISE", Slot(Knob(11)), raw()),
         ("$ENGINE_PAR_RDL_PINGPONG", Slot(Knob(12)), raw()),
@@ -734,9 +799,9 @@ pub(crate) fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 30] {
         ("$ENGINE_PAR_RDL_DUCKING_AMOUNT", Slot(Knob(24)), unit()),
         ("$ENGINE_PAR_RDL_DUCKING_RELEASE", Slot(Knob(25)), unit()),
         ("$ENGINE_PAR_RDL_DUCKING_SENSE", Slot(Knob(26)), unit()),
-        ("$ENGINE_PAR_RDL_SHUFFLE", Slot(Knob(27)), unit()),
-        ("$ENGINE_PAR_RDL_FEEL", Slot(Knob(28)), unit()),
-        ("$ENGINE_PAR_RDL_ACCENT", Slot(Knob(29)), unit()),
+        ("$ENGINE_PAR_RDL_LOWCUT", Slot(Knob(27)), unit()),
+        ("$ENGINE_PAR_RDL_HIGHCUT", Slot(Knob(28)), unit()),
+        ("$ENGINE_PAR_RDL_RATE", Slot(Knob(29)), unit()),
     ]
 }
 
@@ -761,8 +826,16 @@ mod tests {
         assert_eq!(build(&k).depth_ms, MODERN_DEPTH_MS * 0.5);
         k[1] = law("$ENGINE_PAR_RDL_TIME").eval(0.125);
         assert_eq!(build(&k).time, ir::DelayTime::Ms(250.0));
-        k[3] = law("$ENGINE_PAR_RDL_LOWCUT").eval(0.0);
-        assert_eq!(build(&k).low_cut_hz, 0.0);
+        // LOWCUT at 0 via extra_knobs is off (0 Hz) exactly; 0.5 is 100 Hz.
+        let lc_law = extra_knobs(INIT)
+            .into_iter()
+            .find(|(knob, field, _)| {
+                *knob == ir::SlotKnob::Knob(27) && *field == ir::EffectParam::DelayLowCutHz
+            })
+            .expect("LOWCUT extra knob")
+            .2;
+        assert_eq!(lc_law.eval(0.0), 0.0);
+        assert!((lc_law.eval(0.5) - 100.0).abs() < 1.0);
         // Saturation drives a non-empty waveshaper curve.
         k[18] = law("$ENGINE_PAR_RDL_SATURATION").eval(0.8);
         assert!(!build(&k).shape.is_empty());
@@ -957,5 +1030,111 @@ mod tests {
                 "missing live SlotLaw for Replika Knob({k})"
             );
         }
+    }
+
+    #[test]
+    fn saved_shuffle_and_live_shuffle_plus_feedback_preserve_54_108ms_echo_timing() {
+        use kontra_effects::processors::{Dsp, Responses, processor};
+
+        // 1. Saved shuffle = 0.8 on a 50 ms mono delay must import with 54 ms timing
+        //    (echoes at 54 ms and 108 ms, not 50 ms and 100 ms).
+        let mut raw = bytes(INIT_RECORD);
+        // ms @ offset 4 = 50.0, feedback @ 8 = 0.5, stereo @ 44 = 0, shuffle @ 77 = 0.8, feel @ 81 = 0.5.
+        raw[4..8].copy_from_slice(&50.0_f32.to_le_bytes());
+        raw[8..12].copy_from_slice(&0.5_f32.to_le_bytes());
+        raw[44] = 0; // mono so L/R have no spread_ms offset
+        raw[77..81].copy_from_slice(&0.8_f32.to_le_bytes());
+        raw[81..85].copy_from_slice(&0.5_f32.to_le_bytes());
+        let parsed = saved(0x12, &raw).expect("parse saved replika");
+        assert!((parsed.shuffle - 0.8).abs() < 1e-6);
+
+        let m = model(parsed);
+        let built = m.build(&m.saved).expect("model build preserves shuffle");
+        let ir::EffectKind::Delay(d) = &built else {
+            panic!("expected Delay");
+        };
+        assert!(
+            matches!(d.time, ir::DelayTime::Ms(ms) if (ms - 54.0).abs() < 1e-4),
+            "expected Ms(54.0), got {:?}",
+            d.time
+        );
+
+        // Render an impulse at 48 kHz and confirm echoes land at 54 ms (~2592) and 108 ms (~5184).
+        let render_peaks = |kind: ir::EffectKind| -> (usize, usize) {
+            let slot = ir::Effect {
+                kind,
+                bypass: false,
+                output: 1.0,
+                dry: 0.0,
+            };
+            let Dsp::Wet(mut unit, _) = processor(Some(&slot), 48_000, &Responses(&[], &[])) else {
+                panic!("replika processor");
+            };
+            let mut io = vec![[0.0_f32; 2]; 8000];
+            io[0] = [1.0, 1.0];
+            for chunk in io.chunks_mut(256) {
+                unit.process(chunk);
+            }
+            let peak_in = |lo: usize, hi: usize| -> usize {
+                (lo..hi)
+                    .max_by(|&a, &b| io[a][0].abs().total_cmp(&io[b][0].abs()))
+                    .unwrap()
+            };
+            (peak_in(2000, 3200), peak_in(4200, 6200))
+        };
+        let (e1, e2) = render_peaks(built);
+        assert!(
+            (e1 as isize - 2592).abs() <= 4 && (e2 as isize - 5184).abs() <= 8,
+            "saved shuffle=0.8 echoes expected near 2592/5184 (54/108 ms), got {e1}/{e2}"
+        );
+
+        // 2. Live KSP sequence: start unshuffled (ms=50, shuffle=0), write shuffle=0.8
+        //    (Knob(3)), write LOWCUT=0.5 (extra Knob(27)), then write feedback=0.6 (Knob(2)).
+        //    Shuffle timing (54/108 ms) AND lowcut (100 Hz) must both survive the feedback write!
+        let base = Replika {
+            ms: 50.0,
+            feedback: 0.5,
+            stereo: false,
+            shuffle: 0.0,
+            feel: 0.5,
+            ..INIT
+        };
+        let km = model(base);
+        let mut live: Vec<f32> = km.saved.to_vec();
+        let mut eff = ir::Effect {
+            kind: ir::EffectKind::Delay(delay(base).unwrap()),
+            bypass: false,
+            output: 1.0,
+            dry: 0.0,
+        };
+        // Apply shuffle = 0.8 via Knob(3).
+        live[3] = 0.8;
+        eff = km.build_effect(&live, &eff).expect("shuffle update");
+        // Apply live LOWCUT = 0.5 via extra_knobs.
+        let lc = extra_knobs(base)
+            .into_iter()
+            .find(|(k, f, _)| *k == ir::SlotKnob::Knob(27) && *f == ir::EffectParam::DelayLowCutHz)
+            .unwrap()
+            .2
+            .eval(0.5);
+        ir::EffectParam::DelayLowCutHz.set(&mut eff, lc);
+        // Now write feedback = 0.6 via Knob(2) — must NOT reset shuffle or lowcut!
+        live[2] = 0.6;
+        eff = km.build_effect(&live, &eff).expect("feedback update");
+        let ir::EffectKind::Delay(after) = &eff.kind else {
+            panic!("expected Delay");
+        };
+        assert!(
+            matches!(after.time, ir::DelayTime::Ms(ms) if (ms - 54.0).abs() < 1e-4),
+            "expected Ms(54.0), got {:?}",
+            after.time
+        );
+        assert!((after.low_cut_hz - 100.0).abs() < 1.0);
+        assert!((after.feedback[0][0] - 0.72).abs() < 1e-5);
+        let (l1, l2) = render_peaks(eff.kind);
+        assert!(
+            (l1 as isize - 2592).abs() <= 4 && (l2 as isize - 5184).abs() <= 8,
+            "live shuffle+feedback echoes expected near 2592/5184, got {l1}/{l2}"
+        );
     }
 }
