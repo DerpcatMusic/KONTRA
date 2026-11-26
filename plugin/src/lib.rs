@@ -204,6 +204,9 @@ pub struct Shared {
     /// Shared with the rack's loader thread, which wakes the tick when a
     /// load is ready.
     tasks: Arc<Mutex<Option<moose::prelude::TaskSpawner<Tick>>>>,
+    /// A tick was requested before a task spawner was installed; consumed once
+    /// `activate` or `process` has a spawner available.
+    pending_tick: AtomicBool,
     /// Whether the library browser has a background scan running.
     scanning: AtomicBool,
     /// The editor is open: the tick keeps its copy of the rack current.
@@ -266,7 +269,12 @@ impl Shared {
     }
 
     pub fn wake_tick(&self) {
-        wake(&self.tasks);
+        if let Some(tasks) = lock(&self.tasks).as_ref() {
+            self.pending_tick.store(false, Ordering::Release);
+            tasks.spawn_coalescing(Tick);
+        } else {
+            self.pending_tick.store(true, Ordering::Release);
+        }
     }
 
     pub fn has_pending_work(&self) -> bool {
@@ -413,14 +421,19 @@ impl KontraParams {
         self.shared.restored.fetch_add(1, Ordering::Release);
         // The restored macros' names.
         macros::renamed(self);
-        let mut requests = lock(&self.shared.requests);
-        requests.retain(|r| !matches!(r, Request::Restore(_)));
-        // A damaged or foreign state loads an empty rack, and says so.
-        let saved = Saved::parse(&json).unwrap_or_else(|message| {
-            requests.push(Request::Notice(message));
-            Saved::new(Vec::new())
-        });
-        requests.push(Request::Restore(saved));
+        {
+            let mut requests = lock(&self.shared.requests);
+            requests.retain(|r| !matches!(r, Request::Restore(_)));
+            // A damaged or foreign state loads an empty rack, and says so.
+            let saved = Saved::parse(&json).unwrap_or_else(|message| {
+                requests.push(Request::Notice(message));
+                Saved::new(Vec::new())
+            });
+            requests.push(Request::Restore(saved));
+        }
+        // Wake the control tick so a project load restores libraries even
+        // when the editor window is never opened.
+        self.shared.wake_tick();
     }
 }
 
@@ -578,6 +591,9 @@ impl BackgroundTask for Tick {
         } else {
             Interfaces::Hidden
         };
+        // Clear any deferred wake before draining requests so work queued
+        // concurrently after this point still triggers a follow-up tick.
+        p.shared.pending_tick.store(false, Ordering::Release);
         let raw_requests = std::mem::take(&mut *lock(&p.shared.requests));
         let changed = !raw_requests.is_empty();
         let requests = coalesce_requests(raw_requests, rack);
@@ -790,6 +806,15 @@ impl Plugin for Kontra {
         if let Some(audio) = audio.as_mut() {
             audio.panic();
         }
+        // Wake the control tick when an editor is waiting for its first
+        // snapshot or when host state / pending work arrived before activation
+        // (including a sample-rate change that queued a rack reload).
+        if p.shared.shown.load(Ordering::Acquire)
+            || p.shared.has_pending_work()
+            || p.shared.pending_tick.load(Ordering::Acquire)
+        {
+            p.shared.wake_tick();
+        }
         Ok(Dsp {
             audio,
             park: Arc::clone(&p.shared.parked),
@@ -971,11 +996,12 @@ impl Plugin for Kontra {
         // with an open editor, keep a 20 Hz housekeeping tick for meters/stats;
         // when completely silent and idle, spawn 0 ticks.
         let active = peak > 1e-6 || audio.active_voices() > 0;
-        let urgent = audio.take_wake();
+        let urgent = audio.take_wake() || p.shared.pending_tick.load(Ordering::Acquire);
         let meter_tick = (active || s.was_active) && p.shared.shown.load(Ordering::Relaxed);
         s.was_active = active;
         if urgent {
             if let Some(tasks) = cx.tasks::<Tick>() {
+                p.shared.pending_tick.store(false, Ordering::Release);
                 tasks.spawn_coalescing(Tick);
             }
             s.until_tick = (s.rate / 20.0) as usize;
@@ -1030,15 +1056,150 @@ fn build_rack(p: &KontraParams, c: &AudioConfig) -> Option<RackAudio> {
             requests.insert(0, Request::Restore(saved));
         }
     }
-    // An editor opened before the host prepared audio is waiting for its
-    // first snapshot. The host need not process an audio block to get it.
-    if p.shared.shown.load(Ordering::Acquire) {
-        p.shared.wake_tick();
-    }
     Some(audio)
 }
 
 moose::enable_rt_paranoid!();
+
+#[cfg(test)]
+mod headless_restore_tests {
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use kontra_host::state::{Saved, SavedPart};
+    use moose::prelude::*;
+
+    use crate::tests::{BLOCK, RATE, block};
+    use crate::{Kontra, KontraParams, Tick};
+
+    fn note_on(key: u8) -> moose::prelude::Event {
+        moose::prelude::Event::new(
+            0,
+            EventBody::NoteOn {
+                group: 0,
+                channel: 0,
+                note: key,
+                velocity: 100,
+            },
+        )
+    }
+
+    /// Regression: opening a DAW project without ever opening the KONTRA editor
+    /// must still wake `Tick` and restore saved parts in both host callback orders
+    /// (`restore` before `activate`, `activate` before `restore`), and across a
+    /// sample-rate change that rebuilds the rack.
+    #[test]
+    fn project_load_restores_parts_without_opening_editor() {
+        moose::core::tasks::warm_pool();
+        let dir = std::env::temp_dir().join(format!(
+            "kontra-headless-restore-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sfz = dir.join("tone.sfz");
+        std::fs::write(&sfz, "<region> sample=*sine key=60\n").unwrap();
+
+        let saved = Saved::new(vec![SavedPart::new(
+            0,
+            sfz,
+            kontra_host::rack::Mix::DEFAULT,
+        )])
+        .write();
+
+        // Case 1: Host calls load_state (`restore`) BEFORE `activate`, editor never opened.
+        {
+            let (tx, rx) = mpsc::channel();
+            let spawner: moose::prelude::TaskSpawner<Tick> =
+                moose::prelude::TaskSpawner::new(move |_| {
+                    let _ = tx.send(());
+                });
+            let any_tasks = moose::core::tasks::AnyTaskSpawner::new(&spawner);
+            let init_cx = moose::prelude::InitContext::new(Some(any_tasks));
+
+            let params = KontraParams::new();
+            assert!(!params.shared.shown.load(Ordering::Acquire));
+            *params.saved.write().unwrap() = saved.clone();
+            params.restore();
+
+            let mut dsp =
+                <Kontra as Plugin>::activate(&params, &AudioConfig::new(RATE, BLOCK), &init_cx)
+                    .expect("activate succeeds");
+            assert!(
+                rx.recv_timeout(Duration::from_millis(500)).is_ok(),
+                "activate must wake Tick for pending restore even when editor is closed"
+            );
+            Tick.run(&params);
+            assert!(
+                crate::lock(&params.shared.rack).as_ref().unwrap().parts()[0].is_some(),
+                "part must be loaded without opening editor (restore -> activate)"
+            );
+            let audio = block(&params, &mut dsp, &[note_on(60)]);
+            assert!(
+                audio.iter().any(|&s| s.abs() > 1e-4),
+                "headless restored part must produce audio"
+            );
+        }
+
+        // Case 2: Host calls `activate` BEFORE load_state (`restore`), editor never opened.
+        {
+            let (tx, rx) = mpsc::channel();
+            let spawner: moose::prelude::TaskSpawner<Tick> =
+                moose::prelude::TaskSpawner::new(move |_| {
+                    let _ = tx.send(());
+                });
+            let any_tasks = moose::core::tasks::AnyTaskSpawner::new(&spawner);
+            let init_cx = moose::prelude::InitContext::new(Some(any_tasks));
+
+            let params = KontraParams::new();
+            let dsp =
+                <Kontra as Plugin>::activate(&params, &AudioConfig::new(RATE, BLOCK), &init_cx)
+                    .expect("activate succeeds");
+            // Empty fresh instance with closed editor should not wake Tick needlessly.
+            assert!(
+                rx.try_recv().is_err(),
+                "fresh empty headless instance must not spuriously wake Tick"
+            );
+
+            *params.saved.write().unwrap() = saved;
+            params.restore();
+            assert!(
+                rx.recv_timeout(Duration::from_millis(500)).is_ok(),
+                "restore must wake Tick immediately even when editor is closed"
+            );
+            Tick.run(&params);
+            assert!(
+                crate::lock(&params.shared.rack).as_ref().unwrap().parts()[0].is_some(),
+                "part must be loaded without opening editor (activate -> restore)"
+            );
+
+            // Case 3: Sample-rate change rebuilds the rack while editor stays closed.
+            while rx.try_recv().is_ok() {}
+            <Kontra as Plugin>::deactivate(dsp);
+            let mut dsp2 =
+                <Kontra as Plugin>::activate(&params, &AudioConfig::new(44_100.0, BLOCK), &init_cx)
+                    .expect("reactivate at new rate succeeds");
+            assert!(
+                rx.recv_timeout(Duration::from_millis(500)).is_ok(),
+                "sample-rate change must wake Tick to reload previous parts when editor is closed"
+            );
+            Tick.run(&params);
+            assert!(
+                crate::lock(&params.shared.rack).as_ref().unwrap().parts()[0].is_some(),
+                "part must reload after sample-rate change without opening editor"
+            );
+            let audio = block(&params, &mut dsp2, &[note_on(60)]);
+            assert!(
+                audio.iter().any(|&s| s.abs() > 1e-4),
+                "headless reloaded part must produce audio after sample-rate change"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
 
 #[cfg(all(test, feature = "rt-paranoid"))]
 mod reset_realtime_tests {

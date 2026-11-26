@@ -751,15 +751,17 @@ pub fn page_as(
         let content = stack(groups.remove(&Some(v)).unwrap_or_default());
         let content = content.w(size.width * scale).h(size.height * scale);
         let id = format!("kontra-v-{face}-{}", v.0);
-        let el = col![content].scroll().w(w).h(h).id(id.clone());
         // Capture the wheel only when this viewport actually overflows, so a
-        // non-scrolling viewport never traps the rack's wheel.
+        // non-scrolling viewport never traps the rack's wheel. Placing
+        // `captures_wheel` directly on the scroll surface lets it scroll first
+        // and still trap exhausted wheel events from the rack underneath.
         let overflows = size.width * scale > w + 0.5 || size.height * scale > h + 0.5;
-        let el = if overflows {
-            col![el].w(w).h(h).captures_wheel().id(id + "-keep")
-        } else {
-            el
-        };
+        let el = col![content]
+            .scroll()
+            .when(overflows, |e| e.captures_wheel())
+            .w(w)
+            .h(h)
+            .id(id);
         if let Some(slot) = groups.get_mut(&host).and_then(|g| g.get_mut(at)) {
             *slot = el.at(x, y);
         }

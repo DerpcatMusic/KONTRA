@@ -675,6 +675,8 @@ pub(crate) struct Slot {
     open: bool,
     /// The layer its widgets draw on: 1 inside a popover's content.
     z: i32,
+    /// Enclosing scrolling viewport widget, if placed inside an oversized popover.
+    parent: Option<ui::WidgetRef>,
 }
 
 /// Places layer `k` of `n` in `r`, appending what it draws; a whole
@@ -694,6 +696,7 @@ pub(super) fn place(n: &Node, k: usize, r: ui::Rect, env: Env, bld: &mut Builder
         reads: n.reads.clone(),
         open: true,
         z: 0,
+        parent: None,
     });
     place_layer(n, k, r, env, bld);
     let (end, inner) = (bld.ui.widgets.len(), bld.nui.len() - at - 1);
@@ -767,13 +770,20 @@ pub(super) fn splice(
                     s.open = false;
                 }
             }
-            // Rebuilt on the layer it was on (a popover's content stays over
-            // the page), or higher where the rebuild opened a popover.
+            // Rebuilt on the layer and viewport it was on (a popover's content
+            // stays over the page and inside its scrolling viewport), or higher
+            // where the rebuild opened a popover.
             for w in bld.ui.widgets.iter_mut().skip(old.start) {
                 w.z = w.z.max(old.z);
+                if w.parent.is_none() {
+                    w.parent = old.parent;
+                }
             }
             for s in bld.nui.iter_mut().skip(i) {
                 s.z = s.z.max(old.z);
+                if s.parent.is_none() {
+                    s.parent = old.parent;
+                }
             }
         }
         None => bld.nui.push(Slot {
@@ -795,10 +805,23 @@ pub(super) fn splice(
             .zip(&old_zs)
             .any(|(w, &z)| w.z != z);
     let grown = (bld.nui.len() - i - 1).wrapping_sub(old.inner);
-    bld.ui.widgets.extend(tail);
+    let shift_parent = |parent: Option<ui::WidgetRef>| {
+        parent.map(|p| {
+            if p.0 >= old.end {
+                ui::WidgetRef(p.0.wrapping_add(shift))
+            } else {
+                p
+            }
+        })
+    };
+    bld.ui.widgets.extend(tail.into_iter().map(|mut w| {
+        w.parent = shift_parent(w.parent);
+        w
+    }));
     bld.nui.extend(after.into_iter().map(|s| Slot {
         start: s.start.wrapping_add(shift),
         end: s.end.wrapping_add(shift),
+        parent: shift_parent(s.parent),
         ..s
     }));
     // The slots around it end where it now ends, and hold what it holds.
@@ -996,7 +1019,7 @@ fn popover(bld: &mut Builder<'_>, args: &[Prop], a: ui::Rect, env: Env) {
         .first()
         .map_or((970., 600.), |p| (p.size.width, p.size.height));
     let (start, slots) = (bld.ui.widgets.len(), bld.nui.len());
-    let (w, h) = or_room(
+    let (full_w, full_h) = or_room(
         measure(bld, content, content.mods.len(), page, env),
         ui::Rect {
             x: 0.,
@@ -1005,9 +1028,10 @@ fn popover(bld: &mut Builder<'_>, args: &[Prop], a: ui::Rect, env: Env) {
             height: a.height,
         },
     );
-    // No larger than the page.
-    // ponytail: content taller than the page is cut, not scrolled.
-    let (w, h) = (w.min(page.0), h.min(page.1));
+    // Clamped to the page; content exceeding the page scrolls inside a
+    // clipped viewport instead of being cut off.
+    let (w, h) = (full_w.min(page.0), full_h.min(page.1));
+    let overflows = full_w > page.0 + 0.5 || full_h > page.1 + 0.5;
     let gap = num(arg(args, "spacing")).unwrap_or(0.);
     let (ax, ay) = alignment(text(arg(args, "alignment")));
     let along_x = a.x + (a.width - w) * ax;
@@ -1040,7 +1064,32 @@ fn popover(bld: &mut Builder<'_>, args: &[Prop], a: ui::Rect, env: Env) {
             bld.ui.widgets.push(w);
         }
     }
-    place(content, content.mods.len(), c, env, bld);
+    if overflows {
+        let vp = ui::WidgetRef(bld.ui.widgets.len());
+        let mut panel = ui::Widget::new("native_ui popover", ui::PageRef(0), c, ui::Kind::Panel);
+        panel.viewport = Some([0, 0]);
+        bld.ui.widgets.push(panel);
+        let (body_start, body_slots) = (bld.ui.widgets.len(), bld.nui.len());
+        let local = ui::Rect {
+            x: 0.,
+            y: 0.,
+            width: full_w,
+            height: full_h,
+        };
+        place(content, content.mods.len(), local, env, bld);
+        for w in bld.ui.widgets.iter_mut().skip(body_start) {
+            if w.parent.is_none() {
+                w.parent = Some(vp);
+            }
+        }
+        for s in bld.nui.iter_mut().skip(body_slots) {
+            if s.parent.is_none() {
+                s.parent = Some(vp);
+            }
+        }
+    } else {
+        place(content, content.mods.len(), c, env, bld);
+    }
     for w in bld.ui.widgets.iter_mut().skip(start) {
         w.z = 1;
     }
@@ -2429,5 +2478,101 @@ mod tests {
                     && w.text == "Hint"
                     && !w.intercepts_mouse)
         );
+    }
+
+    #[test]
+    fn oversized_popover_scrolls_inside_viewport_and_preserves_parent_across_splice() {
+        let picture = |_: &str| None;
+        let mut bld = Builder {
+            ui: ui::Interface::default(),
+            assets: std::collections::HashMap::new(),
+            styles: std::collections::HashMap::new(),
+            picture: &picture,
+            nui: Vec::new(),
+        };
+        let page = ui::Size {
+            width: 300.,
+            height: 200.,
+        };
+        bld.ui.pages.push(ui::Page {
+            size: page,
+            ..ui::Page::default()
+        });
+        let make_row = |i: usize| {
+            let mut row = node(
+                "Text",
+                vec![(
+                    "frame",
+                    vec![Prop::Table(vec![
+                        ("width".into(), Prop::Number(160.)),
+                        ("height".into(), Prop::Number(30.)),
+                    ])],
+                )],
+                Vec::new(),
+            );
+            row.props = vec![("text".into(), Prop::Text(format!("Item {i}")))];
+            if i == 0 {
+                row.instance = Some("pop/first".into());
+            }
+            row
+        };
+        let rows: Vec<Node> = (0..12).map(make_row).collect();
+        let list = node("VStack", Vec::new(), rows);
+        let anchor = node(
+            "Rectangle",
+            vec![
+                (
+                    "frame",
+                    vec![Prop::Table(vec![
+                        ("width".into(), Prop::Number(80.)),
+                        ("height".into(), Prop::Number(24.)),
+                    ])],
+                ),
+                (
+                    "popover",
+                    vec![Prop::Table(vec![
+                        ("visible".into(), Prop::Bool(true)),
+                        ("content".into(), Prop::Node(Box::new(list))),
+                        ("direction".into(), Prop::Text("down".into())),
+                    ])],
+                ),
+            ],
+            Vec::new(),
+        );
+        lower(&anchor, page, &mut bld);
+        let vp_idx = bld.ui.widgets.iter().position(|w| w.viewport.is_some());
+        assert!(
+            vp_idx.is_some(),
+            "oversized popover must emit a scrolling viewport"
+        );
+        let Some(vp_idx) = vp_idx else {
+            return;
+        };
+        let vp = ui::WidgetRef(vp_idx);
+        assert_eq!(bld.ui.widgets[vp_idx].z, 1);
+        assert!(bld.ui.widgets[vp_idx].rect.height <= page.height + 0.5);
+        assert!(
+            bld.ui.content(vp).height > page.height,
+            "viewport content height must retain full tall popover height: {:?}",
+            bld.ui.content(vp)
+        );
+        let child_count = bld
+            .ui
+            .widgets
+            .iter()
+            .filter(|w| w.parent == Some(vp) && w.z == 1)
+            .count();
+        assert_eq!(child_count, 12);
+
+        // Splicing an instance inside the popover keeps its widgets parented to the viewport.
+        let mut updated = make_row(0);
+        updated.props = vec![("text".into(), Prop::Text("Updated 0".into()))];
+        splice(&mut bld, 0, page, "pop/first", Some(&updated));
+        let spliced = bld.ui.widgets.iter().find(|w| w.text == "Updated 0");
+        assert!(spliced.is_some(), "spliced row present");
+        if let Some(spliced) = spliced {
+            assert_eq!(spliced.parent, Some(vp));
+            assert_eq!(spliced.z, 1);
+        }
     }
 }

@@ -434,8 +434,8 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | tested | `kontakt.ksp.cmd.fs_navigate` | fs_navigate | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) | #242 | 2026-11-25 | User Interface Widgets |
 | tested | `kontakt.ksp.cmd.get_control_par` | get_control_par | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) |  | 2026-10-27 | User Interface Commands |
 | tested | `kontakt.ksp.cmd.get_control_par_arr` | get_control_par_arr | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) | [KONTRA#1115](https://github.com/DerpcatMusic/KONTRA/pull/1115) | 2026-10-29 | User Interface Commands |
-| tested | `kontakt.ksp.cmd.get_engine_par` | get_engine_par | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameter Commands |
-| tested | `kontakt.ksp.cmd.get_engine_par_disp` | get_engine_par_disp | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameter Commands |
+| tested | `kontakt.ksp.cmd.get_engine_par` | get_engine_par | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameter Commands |
+| tested | `kontakt.ksp.cmd.get_engine_par_disp` | get_engine_par_disp | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameter Commands |
 | tested | `kontakt.ksp.cmd.get_engine_par_disp_ext` | get_engine_par_disp_ext | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) | [KONTRA#1183](https://github.com/DerpcatMusic/KONTRA/pull/1183) | 2026-10-29 | Engine Parameter Commands |
 | tested | `kontakt.ksp.cmd.get_event_ids` | get_event_ids | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) | #212 | 2026-11-25 | Event Commands |
 | tested | `kontakt.ksp.cmd.get_event_mark` | get_event_mark | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) | #212 | 2026-11-25 | Event Commands |
@@ -601,21 +601,21 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | done | `kontakt.ksp.const.DURATION_QUARTER_TRIPLET` | $DURATION_QUARTER_TRIPLET | [builtins.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/ksp/src/builtins.rs) |  | 2026-10-27 | Built-in Variables and Constants |
 | done | `kontakt.ksp.const.DURATION_SIXTEENTH` | $DURATION_SIXTEENTH | [builtins.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/ksp/src/builtins.rs) |  | 2026-10-27 | Built-in Variables and Constants |
 | done | `kontakt.ksp.const.DURATION_SIXTEENTH_TRIPLET` | $DURATION_SIXTEENTH_TRIPLET | [builtins.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/ksp/src/builtins.rs) |  | 2026-10-27 | Built-in Variables and Constants |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_ACBOX` | $EFFECT_TYPE_ACBOX | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_AET_FILTER` | $EFFECT_TYPE_AET_FILTER | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_ACBOX` | $EFFECT_TYPE_ACBOX | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_AET_FILTER` | $EFFECT_TYPE_AET_FILTER | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_BASSINVADER` | $EFFECT_TYPE_BASSINVADER |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_BASSPRO` | $EFFECT_TYPE_BASSPRO | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_BASSPRO` | $EFFECT_TYPE_BASSPRO | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
 | tested | `kontakt.ksp.const.EFFECT_TYPE_BEATMASHER` | $EFFECT_TYPE_BEATMASHER | [slicing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/slicing_dsp_parity.rs) | #349 | 2026-11-26 | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_BIGFUZZ` | $EFFECT_TYPE_BIGFUZZ |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_BITE` | $EFFECT_TYPE_BITE |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_BUS_COMP` | $EFFECT_TYPE_BUS_COMP |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_CABINET` | $EFFECT_TYPE_CABINET | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_CAT` | $EFFECT_TYPE_CAT | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_CABINET` | $EFFECT_TYPE_CABINET | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_CAT` | $EFFECT_TYPE_CAT | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_CHAINSAW` | $EFFECT_TYPE_CHAINSAW |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_CHORAL` | $EFFECT_TYPE_CHORAL |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_CHORUS` | $EFFECT_TYPE_CHORUS |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_COMPRESSOR` | $EFFECT_TYPE_COMPRESSOR |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_CRYWAH` | $EFFECT_TYPE_CRYWAH | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_CRYWAH` | $EFFECT_TYPE_CRYWAH | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_DELAY` | $EFFECT_TYPE_DELAY |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_DIRT` | $EFFECT_TYPE_DIRT |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_DISTORTION` | $EFFECT_TYPE_DISTORTION |  |  |  | Engine Parameters |
@@ -628,40 +628,40 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | done | `kontakt.ksp.const.EFFECT_TYPE_FREAK` | $EFFECT_TYPE_FREAK |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_FUZZ` | $EFFECT_TYPE_FUZZ |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_GAINER` | $EFFECT_TYPE_GAINER |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_HOTSOLO` | $EFFECT_TYPE_HOTSOLO | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_HOTSOLO` | $EFFECT_TYPE_HOTSOLO | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_INVERTER` | $EFFECT_TYPE_INVERTER |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_IRC` | $EFFECT_TYPE_IRC |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_JUMP` | $EFFECT_TYPE_JUMP | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_KOLOR` | $EFFECT_TYPE_KOLOR | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_JUMP` | $EFFECT_TYPE_JUMP | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_KOLOR` | $EFFECT_TYPE_KOLOR | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_LIMITER` | $EFFECT_TYPE_LIMITER |  |  |  | Engine Parameters |
 | tested | `kontakt.ksp.const.EFFECT_TYPE_LOFI` | $EFFECT_TYPE_LOFI | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) | [KONTRA#1322](https://github.com/DerpcatMusic/KONTRA/pull/1322) | 2026-11-12 | Engine Parameters |
 | tested | `kontakt.ksp.const.EFFECT_TYPE_NONE` | $EFFECT_TYPE_NONE | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) | [KONTRA#974](https://github.com/DerpcatMusic/KONTRA/pull/974) | 2026-10-29 | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_PHASER` | $EFFECT_TYPE_PHASER |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_PHASIS` | $EFFECT_TYPE_PHASIS |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_PLATEREVERB` | $EFFECT_TYPE_PLATEREVERB | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_PLATEREVERB` | $EFFECT_TYPE_PLATEREVERB | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_PSYCHEDELAY` | $EFFECT_TYPE_PSYCHEDELAY |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_RAUM` | $EFFECT_TYPE_RAUM |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_REPLIKA` | $EFFECT_TYPE_REPLIKA |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_REVERB` | $EFFECT_TYPE_REVERB |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_REVERB2` | $EFFECT_TYPE_REVERB2 |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_RINGMOD` | $EFFECT_TYPE_RINGMOD | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_RINGMOD` | $EFFECT_TYPE_RINGMOD | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
 | tested | `kontakt.ksp.const.EFFECT_TYPE_ROTATOR` | $EFFECT_TYPE_ROTATOR | [slicing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/slicing_dsp_parity.rs) | #349 | 2026-11-26 | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_SEND_LEVELS` | $EFFECT_TYPE_SEND_LEVELS |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_SHAPER` | $EFFECT_TYPE_SHAPER |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_SKREAMER` | $EFFECT_TYPE_SKREAMER |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_SKREAMERDLX` | $EFFECT_TYPE_SKREAMERDLX | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_SKREAMERDLX` | $EFFECT_TYPE_SKREAMERDLX | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_SOLID_GEQ` | $EFFECT_TYPE_SOLID_GEQ |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_STEREO` | $EFFECT_TYPE_STEREO |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_STEREO_TUNE` | $EFFECT_TYPE_STEREO_TUNE | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_STEREO_TUNE` | $EFFECT_TYPE_STEREO_TUNE | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_SUPERFAST100` | $EFFECT_TYPE_SUPERFAST100 |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_SUPERGT` | $EFFECT_TYPE_SUPERGT |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_SURROUND_PANNER` | $EFFECT_TYPE_SURROUND_PANNER |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_TAPE_SAT` | $EFFECT_TYPE_TAPE_SAT |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_TRANSLIM` | $EFFECT_TYPE_TRANSLIM |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_TRANS_MASTER` | $EFFECT_TYPE_TRANS_MASTER |  |  |  | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_TWANG` | $EFFECT_TYPE_TWANG | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_TWINDELAY` | $EFFECT_TYPE_TWINDELAY | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
-| tested | `kontakt.ksp.const.EFFECT_TYPE_VAN51` | $EFFECT_TYPE_VAN51 | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  | 2026-11-26 | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_TWANG` | $EFFECT_TYPE_TWANG | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_TWINDELAY` | $EFFECT_TYPE_TWINDELAY | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
+| tested | `kontakt.ksp.const.EFFECT_TYPE_VAN51` | $EFFECT_TYPE_VAN51 | [missing_dsp_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/missing_dsp_parity.rs) |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_VIBRATO_CHORUS` | $EFFECT_TYPE_VIBRATO_CHORUS |  |  |  | Engine Parameters |
 | done | `kontakt.ksp.const.EFFECT_TYPE_WOWFLUTTER` | $EFFECT_TYPE_WOWFLUTTER |  |  |  | Engine Parameters |
 | tested | `kontakt.ksp.const.ENGINE_UPTIME` | $ENGINE_UPTIME | [script.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/app/host/tests/script.rs) | [KONTRA#1324](https://github.com/DerpcatMusic/KONTRA/pull/1324) | 2026-11-12 | Built-in Variables and Constants |

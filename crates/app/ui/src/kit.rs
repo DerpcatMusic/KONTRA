@@ -743,6 +743,7 @@ pub fn sectioned_menu(
         .map(|i| i.chars().count())
         .max()
         .unwrap_or(0);
+    let width = longest as f64 * TEXT * 0.6 + SPACE * 4.;
     let pop = Overlay::default()
         .area(Area::Bottom)
         .fallback(Area::Top)
@@ -753,7 +754,11 @@ pub fn sectioned_menu(
             format!("{id}/menu"),
             id,
             &mut shown,
-            col(body).w(longest as f64 * TEXT * 0.6 + SPACE * 4.),
+            col(body)
+                .w(width)
+                .scroll()
+                .max_size((width, TEXT * 24.))
+                .id(format!("{id}/scroll")),
         );
     let tint = ink(active || shown);
     let face = stack![glyph(icon, TEXT + TIGHT, tint).centered()]
@@ -791,11 +796,10 @@ fn popup_frame(content: El) -> El {
 }
 
 /// `content` floated over everything, pinned under the element `anchor`
-/// names. It keeps the wheel from what lies under it (a knob, the rack); a
-/// node that keeps the wheel does not scroll itself, so scrolling `content`
-/// nests its scroller inside.
+/// names. It keeps the wheel from what lies under it (a knob, the rack) while
+/// preserving `content`'s own identity, padding, and scroll container.
 pub fn popup(anchor: &str, content: El) -> El {
-    popup_frame(content)
+    popup_frame(col![content])
         .captures_wheel()
         .float()
         .pin(

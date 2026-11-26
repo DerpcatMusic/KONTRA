@@ -581,7 +581,15 @@ fn tabs(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
                 .iter()
                 .map(|l| caption(l.clone()).w(TEXT * 22.))
                 .collect();
-            items.push(kit::popup(&id, col(lines).gap(TIGHT).pad(TIGHT)));
+            items.push(kit::popup(
+                &id,
+                col(lines)
+                    .gap(TIGHT)
+                    .pad(TIGHT)
+                    .scroll()
+                    .max_size((TEXT * 24., TEXT * 20.))
+                    .id(format!("{id}-list")),
+            ));
         }
     }
     const VELOCITY: [u8; 3] = [0, 64, 127];
