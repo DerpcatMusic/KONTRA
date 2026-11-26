@@ -434,3 +434,179 @@ fn set_key_colour_marks_playable_out_of_range_and_keyswitch_keys_accurately() {
     assert_eq!(types[108], 0, "resetKeyColour clears key type");
     assert_eq!(host.actions(Action::SetKeyPressed), [vec![74, 1]]);
 }
+
+#[test]
+fn param_widget_constructors_bind_and_update_target_parameters() {
+    let tree = "return {params={Name='Prog'},db=0,pan=0,layers={{params={Name='L1'},keygroups={{
+        params={Name='KG1',Gain='1',Pitch='0',Bypass='0'},group=0,
+        oscillators={{params={SamplePath='./a.wav',BaseNote='60',Gain='1',Reverse='0'}}}}}}}}";
+    let modules = [("__program.lua".to_owned(), tree.to_owned())];
+    let source = r#"
+        local kg = Program.layers[1].keygroups[1]
+        local pk = ParamKnob("pk", kg, "Gain")
+        local pm = ParamMenu("pm", kg, "Bypass", { "Off", "On" })
+        local pn = ParamNumBox("pn", kg, "Pitch")
+        local pb = ParamOnOffButton("pb", kg, "Bypass")
+        local ps = ParamSlider("ps", kg, "Gain")
+        function onInit()
+            pk:setValue(0.5)
+            pm:setValue(2)
+            pn:setValue(7)
+            pb:setValue(true)
+            ps:setValue(0.75)
+            assert(pk.value == 0.5)
+            assert(pm.value == 2)
+            assert(pn.value == 7)
+            assert(pb.value == true)
+            assert(ps.value == 0.75)
+        end
+    "#;
+    let compiled = compile(source, &modules, &[]).unwrap();
+    assert_eq!(compiled.ui.widgets.len(), 5);
+    let mut m = compiled.machine();
+    let mut host = MockHost::new();
+    let co = m.start(Callbacks::INIT, 0).expect("init");
+    run_to_done(&mut m, co, &mut host);
+    assert_eq!(m.faults().bad_code, 0, "{}", m.faults().last_error.as_str());
+}
+
+#[test]
+fn runtime_channel_emits_swaps_mapping_slices_params_and_effects_zero_alloc() {
+    use kontra_lua::{
+        EffectOp, EffectTarget, KeygroupParamKind, MAX_INLINE_SLICES, OscParamKind, RuntimeReply,
+        RuntimeRequest,
+    };
+    let tree =
+        "return {params={Name='Prog'},db=0,pan=0,layers={{params={Name='L1'},bus=0,keygroups={{
+        params={Name='KG1',LowKey='0',HighKey='127'},group=0,
+        oscillators={{params={SamplePath='./init.wav',BaseNote='60'}}}}}}}}";
+    let modules = [("__program.lua".to_owned(), tree.to_owned())];
+    let source = r#"
+        sample_done = false
+        mapping_done = false
+        playback_done = false
+        slice_starts = {}
+        function onNote()
+            local l = Program.layers[1]
+            local kg = l.keygroups[1]
+            local osc = kg.oscillators[1]
+            osc:setParameter("BaseNote", 72)
+            kg:setParameter("LowKey", 36)
+            loadSample(osc, "./replaced.wav", function(t)
+                sample_done = t.success
+                local slices = osc:getSliceInfo()
+                for i, s in ipairs(slices) do
+                    slice_starts[i] = s.start
+                end
+            end)
+            osc:loadMapping("./map.xml", function(t)
+                mapping_done = t.success and osc:getNumZones() == 3
+            end)
+            setPlaybackOptions(osc, { SampleStart = 64, LoopMode = 1, LoopStart = 128, LoopEnd = 512, Reverse = true }, function(t)
+                playback_done = t.success
+            end)
+            kg:insertEffect("OnePole")
+            kg:insertEffect("SparkVerb")
+            kg:moveEffect(2, 1)
+            kg:removeEffect(1)
+        end
+        function onController()
+            assert(sample_done, "sample swap callback did not complete")
+            assert(mapping_done, "mapping swap callback did not complete")
+            assert(playback_done, "playback options callback did not complete")
+            assert(slice_starts[1] == 0 and slice_starts[2] == 256 and slice_starts[3] == 512)
+            local osc = Program.layers[1].keygroups[1].oscillators[1]
+            assert(osc:getLoadingStatus() == 0)
+            assert(osc.sampleInfo.length == 1024 and osc.sampleInfo.sampleRate == 48000)
+        end
+    "#;
+    let mut compiled = compile(source, &modules, &[]).unwrap();
+    let rt = compiled.enable_runtime();
+    let mut m = compiled.machine();
+    let mut host = MockHost::new();
+
+    // Init runs before connect() (mirrors Engine::new).
+    let init = m.start(Callbacks::INIT, 0).expect("init");
+    run_to_done(&mut m, init, &mut host);
+    rt.connect();
+
+    // Trigger onNote -> emits runtime requests and spawns pump_swaps.
+    let note = m.start(Callbacks::NOTE, 1).expect("note");
+    run_to_done(&mut m, note, &mut host);
+
+    let mut reqs = Vec::new();
+    while let Some(r) = rt.pop_request() {
+        reqs.push(r);
+    }
+    assert!(reqs.iter().any(|r| matches!(
+        r,
+        RuntimeRequest::OscParam { group: 0, slot: 0, param: OscParamKind::BaseNote, value } if (*value - 72.0).abs() < 1e-6
+    )));
+    assert!(reqs.iter().any(|r| matches!(
+        r,
+        RuntimeRequest::KeygroupParam { group: 0, param: KeygroupParamKind::LowKey, value } if (*value - 36.0).abs() < 1e-6
+    )));
+    assert!(reqs.iter().any(|r| matches!(
+        r,
+        RuntimeRequest::EffectChain {
+            target: EffectTarget::Keygroup(0),
+            op: EffectOp::Insert { .. }
+        }
+    )));
+    assert!(reqs.iter().any(|r| matches!(
+        r,
+        RuntimeRequest::EffectChain {
+            target: EffectTarget::Keygroup(0),
+            op: EffectOp::Move { from: 1, to: 0 }
+        }
+    )));
+    assert!(reqs.iter().any(|r| matches!(
+        r,
+        RuntimeRequest::EffectChain {
+            target: EffectTarget::Keygroup(0),
+            op: EffectOp::Remove { index: 0 }
+        }
+    )));
+
+    // Push replies from "control thread".
+    for req in &reqs {
+        match *req {
+            RuntimeRequest::LoadSample { id, .. } => {
+                let mut slice_starts = [0u32; MAX_INLINE_SLICES];
+                slice_starts[0] = 0;
+                slice_starts[1] = 256;
+                slice_starts[2] = 512;
+                assert!(rt.push_reply(RuntimeReply {
+                    id,
+                    ok: true,
+                    frames: 1024,
+                    sample_rate: 48_000,
+                    num_zones: 1,
+                    num_slices: 3,
+                    slice_starts,
+                }));
+            }
+            RuntimeRequest::LoadMapping { id, .. } => {
+                assert!(rt.push_reply(RuntimeReply::simple(id, true, 2048, 48_000, 3)));
+            }
+            RuntimeRequest::PlaybackOptions { id, .. } => {
+                assert!(rt.push_reply(RuntimeReply::simple(id, true, 1024, 48_000, 1)));
+            }
+            _ => {}
+        }
+    }
+
+    // Pump spawned coroutine (pump_swaps) to completion.
+    while let Some((co, _)) = m.spawned() {
+        let mut step = m.run(co, &mut host);
+        while matches!(step, Step::Yield | Step::Wait(_)) {
+            m.begin_block();
+            step = m.run(co, &mut host);
+        }
+    }
+
+    // Verify Lua state saw every completion and slice position.
+    let cc = m.start(Callbacks::CONTROLLER, 2).expect("cc");
+    run_to_done(&mut m, cc, &mut host);
+    assert_eq!(m.faults().bad_code, 0, "{}", m.faults().last_error.as_str());
+}

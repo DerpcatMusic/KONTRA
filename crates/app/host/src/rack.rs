@@ -285,6 +285,9 @@ pub struct Rack {
     /// Cached decoded Kontakt base `.nki` per part for fast `.nksn` snapshot
     /// swaps without re-opening or re-decrypting the base instrument.
     snapshot_bases: Vec<Option<Arc<kontra_format_kontakt::SnapshotBase>>>,
+    /// Per-part lock-free UVI Lua runtime swap channels, open bank/disk
+    /// library handles, and sample caches (off the audio thread).
+    lua_runtime: Vec<requests::PartLuaRuntime>,
     /// The instruments the player has, by the catalog generation they are
     /// of: a snapshot kept apart from its library binds to one by name.
     known: (u64, Arc<Vec<PathBuf>>),
@@ -364,6 +367,9 @@ impl Rack {
             generation: 0,
             native: Vec::new(),
             snapshot_bases: (0..MAX_PARTS).map(|_| None).collect(),
+            lua_runtime: (0..MAX_PARTS)
+                .map(|_| requests::PartLuaRuntime::default())
+                .collect(),
             known: (0, Arc::default()),
             loads: loader::Loads::default(),
             looks_sent: 0,
@@ -851,6 +857,8 @@ impl Rack {
         let view = crate::view::View::of(&loaded.faces, &loaded.pages, &engine, near)
             .map(|view| view.with_waves(waves));
         let sounds = crate::sound::Sounds::new(self.rate, engine.group_sounds());
+        let lua_runtimes = std::mem::take(&mut loaded.lua_runtimes);
+        let lua_slot_samples = std::mem::take(&mut loaded.lua_slot_samples);
         let part_info = Part {
             source,
             recall: engine.recall_law(),
@@ -878,6 +886,9 @@ impl Rack {
             },
         };
         self.install(part, Box::new(engine), part_info);
+        if let Some(rt) = self.lua_runtime.get_mut(part) {
+            rt.attach(lua_runtimes, lua_slot_samples);
+        }
         Ok(())
     }
 
@@ -901,6 +912,9 @@ impl Rack {
                 .is_some_and(|b| info.source.as_deref() != Some(b.path()))
         {
             *cached = None;
+        }
+        if let Some(rt) = self.lua_runtime.get_mut(part) {
+            rt.reset();
         }
         self.generation += 1;
         let mut info = info;
@@ -938,6 +952,9 @@ impl Rack {
             *slot = None;
             if let Some(base) = self.snapshot_bases.get_mut(part) {
                 *base = None;
+            }
+            if let Some(rt) = self.lua_runtime.get_mut(part) {
+                rt.reset();
             }
             if let Some(generation) = generation {
                 self.send(Command::Remove { part, generation });
@@ -1395,6 +1412,7 @@ impl Rack {
                 break;
             }
         }
+        self.flush_lua_replies();
     }
 
     /// The highest levels the audio thread published since the last read.

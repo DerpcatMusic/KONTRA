@@ -19,7 +19,7 @@ use kontra_ir as ir;
 use kontra_law::common::SQUARE_ROOT;
 use roxmltree::Node;
 
-use super::{Attr, SPEED_OF_SOUND, UviModule, ids, num};
+use super::{Attr, SPEED_OF_SOUND, UviModule, eff, ids, num};
 
 /// SparkVerb: the 21 parameters above, in knob order.
 pub static SPARK_VERB: UviModule = UviModule {
@@ -50,32 +50,8 @@ pub static SPARK_VERB: UviModule = UviModule {
     ],
     report: spark_verb_report,
     build_effect: |p, current| {
-        let [
-            room,
-            decay,
-            predelay,
-            rolloff,
-            width,
-            mix,
-            mix_mode,
-            diffusion,
-            mod_rate,
-            mod_depth,
-            quality,
-            shape,
-            diff_on,
-            diff_start,
-            decay_low,
-            decay_high,
-            freq_low,
-            freq_high,
-            low_cut,
-            hi_cut,
-            freeze,
-        ] = *p
-        else {
-            return None;
-        };
+        #[rustfmt::skip]
+        let [room, decay, predelay, rolloff, width, mix, mix_mode, diffusion, mod_rate, mod_depth, quality, shape, diff_on, diff_start, decay_low, decay_high, freq_low, freq_high, low_cut, hi_cut, freeze] = *p else { return None };
         let room = f64::from(room).max(1.0);
         let seconds = f64::from(decay).max(0.01) * room / 10.0;
         let crossing = room / SPEED_OF_SOUND;
@@ -105,24 +81,25 @@ pub static SPARK_VERB: UviModule = UviModule {
             high_cut: hi_cut > 0.5,
             freeze: freeze > 0.5,
         };
-        Some(ir::Effect {
-            kind: ir::EffectKind::Reverb(ir::Reverb {
-                seconds: seconds as f32,
-                size: crossing as f32,
-                network: Some(ir::Network::Hadamard(law)),
-                damping: 0.0,
-                diffusion: diffusion.clamp(0.0, 1.0),
-                predelay_ms: predelay.max(0.0),
-                high_cut_hz: rolloff,
-                low_shelf_db: 0.0,
-                stereo: width.clamp(0.0, 1.0),
-                modulation_ms: swing_ms as f32,
-                modulation_hz: hz as f32,
-            }),
-            bypass: current.bypass,
-            output: wet as f32,
-            dry: dry as f32,
-        })
+        let rev = ir::Reverb {
+            seconds: seconds as f32,
+            size: crossing as f32,
+            network: Some(ir::Network::Hadamard(law)),
+            damping: 0.0,
+            diffusion: diffusion.clamp(0.0, 1.0),
+            predelay_ms: predelay.max(0.0),
+            high_cut_hz: rolloff,
+            low_shelf_db: 0.0,
+            stereo: width.clamp(0.0, 1.0),
+            modulation_ms: swing_ms as f32,
+            modulation_hz: hz as f32,
+        };
+        Some(eff(
+            ir::EffectKind::Reverb(rev),
+            current,
+            wet as f32,
+            dry as f32,
+        ))
     },
 };
 

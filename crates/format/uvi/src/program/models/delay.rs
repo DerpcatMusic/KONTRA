@@ -21,7 +21,7 @@ use kontra_ir as ir;
 use kontra_law::common::SQUARE_ROOT;
 use roxmltree::Node;
 
-use super::{Attr, DUAL_DELAY_MAX_S, UviModule, ids, num};
+use super::{Attr, DELAY_BASE, DUAL_DELAY_MAX_S, UviModule, eff, ids, num};
 
 /// DualDelay: `[DelayTime, HighCut, LowCut, ModRate, Mix, Feedback, FeedbackRatio,
 /// InputWidth, InputRotation, Rotation, OutputWidth, OutputRotation, SyncToHost]`.
@@ -45,24 +45,8 @@ pub static DUAL_DELAY: UviModule = UviModule {
     ],
     report: dual_delay_report,
     build_effect: |p, current| {
-        let [
-            time,
-            high_cut,
-            low_cut,
-            mod_rate,
-            mix,
-            feedback,
-            ratio,
-            in_width,
-            in_rot,
-            rot_deg,
-            out_width,
-            out_rot,
-            synced,
-        ] = *p
-        else {
-            return None;
-        };
+        #[rustfmt::skip]
+        let [time, high_cut, low_cut, mod_rate, mix, feedback, ratio, in_width, in_rot, rot_deg, out_width, out_rot, synced] = *p else { return None };
         let rot = |rad: f32| -> ir::Matrix {
             let (s, c) = rad.sin_cos();
             [[c, -s], [s, c]]
@@ -71,8 +55,7 @@ pub static DUAL_DELAY: UviModule = UviModule {
             let (same, other) = ((1.0 + w) / 2.0, (1.0 - w) / 2.0);
             [[same, other], [other, same]]
         };
-        let mul = |a: ir::Matrix, b: ir::Matrix| -> ir::Matrix {
-            let [[b00, b01], [b10, b11]] = b;
+        let mul = |a: ir::Matrix, [[b00, b01], [b10, b11]]: ir::Matrix| -> ir::Matrix {
             a.map(|[x, y]| [x * b00 + y * b10, x * b01 + y * b11])
         };
         let ratio = ratio.clamp(-1.0, 1.0);
@@ -88,35 +71,26 @@ pub static DUAL_DELAY: UviModule = UviModule {
         let scale = |[top, bottom]: ir::Matrix| [top.map(|x| x * fb0), bottom.map(|x| x * fb1)];
         let time = f64::from(time).max(0.0);
         let mix = mix.clamp(0.0, 1.0);
-        Some(ir::Effect {
-            kind: ir::EffectKind::Delay(ir::Delay {
-                direct: 0.0,
-                time: if synced > 0.5 {
-                    ir::DelayTime::Beats(time as f32)
-                } else {
-                    ir::DelayTime::Ms((time.min(DUAL_DELAY_MAX_S) * 1000.0) as f32)
-                },
-                depth_ms: 0.0,
-                second_head: false,
-                input: scale(input),
-                feedback: scale(fb_rot),
-                output,
-                damping_hz: high_cut,
-                low_cut_hz: low_cut.max(0.0),
-                steep_low_cut: false,
-                body: std::borrow::Cow::Borrowed(&[]),
-                triangle_s: None,
-                shape: std::borrow::Cow::Borrowed(&[]),
-                noise: [0.0; 2],
-                high_shelf: None,
-                spread_ms: 0.0,
-                rate: ir::Rate::Hz(mod_rate),
-                phase: 0.0,
-            }),
-            bypass: current.bypass,
-            output: SQUARE_ROOT.eval(mix),
-            dry: SQUARE_ROOT.eval(1.0 - mix),
-        })
+        let delay = ir::Delay {
+            time: if synced > 0.5 {
+                ir::DelayTime::Beats(time as f32)
+            } else {
+                ir::DelayTime::Ms((time.min(DUAL_DELAY_MAX_S) * 1000.0) as f32)
+            },
+            input: scale(input),
+            feedback: scale(fb_rot),
+            output,
+            damping_hz: high_cut,
+            low_cut_hz: low_cut.max(0.0),
+            rate: ir::Rate::Hz(mod_rate),
+            ..DELAY_BASE
+        };
+        Some(eff(
+            ir::EffectKind::Delay(delay),
+            current,
+            SQUARE_ROOT.eval(mix),
+            SQUARE_ROOT.eval(1.0 - mix),
+        ))
     },
 };
 

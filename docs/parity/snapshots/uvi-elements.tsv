@@ -27,7 +27,7 @@ element	Buzz	FX	no-specific-translation-read-found
 element	Chorus	Legacy	no-specific-translation-read-found
 element	Chorus2	structure-or-native-only	no-specific-translation-read-found
 element	ChorusBBD	FX	no-specific-translation-read-found
-element	CombFilter	FX	no-specific-translation-read-found
+element	CombFilter	FX	mapped
 element	CompExp	FX	mapped + ignored/unsupported
 element	Compressor	Legacy	no-specific-translation-read-found
 element	Connections	structure-or-native-only	parsed-only;runtime-consumed
@@ -46,13 +46,13 @@ element	DiffuseDelayNested	FX	no-specific-translation-read-found
 element	Diffusion	FX	no-specific-translation-read-found
 element	DigitalEq	FX	mapped + ignored/unsupported
 element	DigitalFilter	FX	no-specific-translation-read-found
-element	DiodeClipper	FX	no-specific-translation-read-found
+element	DiodeClipper	FX	mapped
 element	Dispersor	FX	no-specific-translation-read-found
 element	DoubleDrive	Legacy	no-specific-translation-read-found
-element	Drive	FX	no-specific-translation-read-found
+element	Drive	FX	mapped + ignored/unsupported
 element	DrumOscillator	Oscillator	no-specific-translation-read-found
 element	Drunk	Modulation	no-specific-translation-read-found
-element	DualDelay	Legacy	no-specific-translation-read-found
+element	DualDelay	Legacy	mapped + ignored/unsupported
 element	DualDelayX	FX	no-specific-translation-read-found
 element	EffectRack	FX	mapped + ignored/unsupported
 element	Engine	Other	no-specific-translation-read-found
@@ -63,11 +63,11 @@ element	FETCompressor	FX	no-specific-translation-read-found
 element	FXPreset	structure-or-native-only	no-specific-translation-read-found
 element	FatDelay	Legacy	no-specific-translation-read-found
 element	FeedbackCompressor	FX	no-specific-translation-read-found
-element	FeedbackMachine	FX	no-specific-translation-read-found
+element	FeedbackMachine	FX	mapped + ignored/unsupported
 element	FeedforwardCompressor	FX	no-specific-translation-read-found
 element	FilteredDelay	structure-or-native-only	no-specific-translation-read-found
 element	FilteredReverb	Legacy	no-specific-translation-read-found
-element	Flanger	FX	no-specific-translation-read-found
+element	Flanger	FX	mapped
 element	Flanger2	structure-or-native-only	no-specific-translation-read-found
 element	FmExplorerOscillator	Oscillator	no-specific-translation-read-found
 element	FmOscillator	Oscillator	no-specific-translation-read-found
@@ -101,9 +101,9 @@ element	Limiter	Legacy	no-specific-translation-read-found
 element	LoopLabOscillator	Oscillator	no-specific-translation-read-found
 element	LoudnessMeter	FX	no-specific-translation-read-found
 element	LowpassGateFX	FX	no-specific-translation-read-found
-element	MS20	FX	no-specific-translation-read-found
+element	MS20	FX	mapped
 element	MS20Dual	FX	no-specific-translation-read-found
-element	Maximizer	FX	no-specific-translation-read-found
+element	Maximizer	FX	mapped + ignored/unsupported
 element	MicroTuner	Event Processor	no-specific-translation-read-found
 element	MidiOut	Event Processor	no-specific-translation-read-found
 element	MidiPlayer	Event Processor	no-specific-translation-read-found
@@ -130,12 +130,12 @@ element	PdOscillator	Oscillator	no-specific-translation-read-found
 element	PhaseMeter	FX	no-specific-translation-read-found
 element	PhaseVocoderOscillator	Oscillator	no-specific-translation-read-found
 element	Phaser	Legacy	no-specific-translation-read-found
-element	Phasor	FX	no-specific-translation-read-found
+element	Phasor	FX	mapped + ignored/unsupported
 element	PhasorFilter	FX	no-specific-translation-read-found
 element	PingPongDelay	Legacy	no-specific-translation-read-found
 element	PlainReverb	Legacy	no-specific-translation-read-found
 element	PluckOscillator	Oscillator	no-specific-translation-read-found
-element	Program	Other	parsed-only
+element	Program	Other	mapped;runtime-consumed
 element	Properties	structure-or-native-only	no-specific-translation-read-found
 element	Pultec	FX	no-specific-translation-read-found
 element	Redux	Legacy	no-specific-translation-read-found
@@ -148,7 +148,7 @@ element	Rotary	Legacy	no-specific-translation-read-found
 element	Rotary2	FX	no-specific-translation-read-found
 element	SKF	FX	no-specific-translation-read-found
 element	SVF	FX	no-specific-translation-read-found
-element	SampleMappingOscillator	Oscillator	no-specific-translation-read-found
+element	SampleMappingOscillator	Oscillator	runtime-consumed
 element	SamplePlayer	Oscillator	mapped;parsed-only
 element	SampledReverb	FX	mapped + ignored/unsupported
 element	ScriptData	structure-or-native-only	no-specific-translation-read-found
@@ -159,7 +159,7 @@ element	SignalConnection	structure-or-native-only	parsed-only
 element	SimpleDelay	Legacy	no-specific-translation-read-found
 element	SmoothOverdrive	FX	no-specific-translation-read-found
 element	SoftLimiter	structure-or-native-only	no-specific-translation-read-found
-element	SparkVerb	FX	no-specific-translation-read-found
+element	SparkVerb	FX	mapped + ignored/unsupported
 element	SpectrogramAnalyzer	FX	no-specific-translation-read-found
 element	SpectrumAnalyzer	FX	no-specific-translation-read-found
 element	StdRandom	Modulation	no-specific-translation-read-found
@@ -200,7 +200,7 @@ element	WaveTableOscillator	Oscillator	no-specific-translation-read-found
 element	WavefolderFX	FX	no-specific-translation-read-found
 element	WhiteChorus	FX	no-specific-translation-read-found
 element	Widener	FX	no-specific-translation-read-found
-element	XpanderFilter	FX	no-specific-translation-read-found
+element	XpanderFilter	FX	mapped
 element	script	structure-or-native-only	runtime-consumed;parsed-only
 lua_callbacks	onAfterTouch	lua_callbacks	implemented
 lua_callbacks	onController	lua_callbacks	implemented
@@ -220,8 +220,8 @@ lua_class	AsyncDataSaveTask	lua_class	partial or unproven
 lua_class	AsyncMidiFileLoadTask	lua_class	partial or unproven
 lua_class	AsyncTask	lua_class	partial or unproven
 lua_class	AudioMeter	lua_class	implemented/partial UI proxy; property fidelity varies
-lua_class	AuxEffect	lua_class	proxy/partial; exact class parity unproved
-lua_class	BusRouter	lua_class	proxy/partial; exact class parity unproved
+lua_class	AuxEffect	lua_class	mapped; runtime-consumed
+lua_class	BusRouter	lua_class	mapped; runtime-consumed
 lua_class	Button	lua_class	implemented/partial UI proxy; property fidelity varies
 lua_class	ControlSignalSource	lua_class	proxy/partial; exact class parity unproved
 lua_class	DnDArea	lua_class	implemented/partial UI proxy; property fidelity varies
@@ -231,11 +231,11 @@ lua_class	EventProcessor	lua_class	proxy/partial; exact class parity unproved
 lua_class	FileFormat	lua_class	implemented constants/mapping
 lua_class	FileSelector	lua_class	implemented/partial UI proxy; property fidelity varies
 lua_class	Image	lua_class	implemented/partial UI proxy; property fidelity varies
-lua_class	InsertEffect	lua_class	proxy/partial; exact class parity unproved
-lua_class	Keygroup	lua_class	proxy/partial; exact class parity unproved
+lua_class	InsertEffect	lua_class	runtime-consumed (insertEffect/removeEffect/moveEffect)
+lua_class	Keygroup	lua_class	mapped; runtime-consumed
 lua_class	Knob	lua_class	implemented/partial UI proxy; property fidelity varies
 lua_class	Label	lua_class	implemented/partial UI proxy; property fidelity varies
-lua_class	Layer	lua_class	proxy/partial; exact class parity unproved
+lua_class	Layer	lua_class	mapped; runtime-consumed
 lua_class	Mapper	lua_class	implemented constants/mapping
 lua_class	Menu	lua_class	implemented/partial UI proxy; property fidelity varies
 lua_class	MidiEvent	lua_class	partial or unproven
@@ -244,7 +244,7 @@ lua_class	ModifierKeys	lua_class	partial or unproven
 lua_class	MultiStateButton	lua_class	implemented/partial UI proxy; property fidelity varies
 lua_class	NumBox	lua_class	implemented/partial UI proxy; property fidelity varies
 lua_class	OnOffButton	lua_class	implemented/partial UI proxy; property fidelity varies
-lua_class	Oscillator	lua_class	proxy/partial; exact class parity unproved
+lua_class	Oscillator	lua_class	runtime-consumed (loadSample/setPlaybackOptions/getSliceInfo)
 lua_class	Panel	lua_class	implemented/partial UI proxy; property fidelity varies
 lua_class	ParamKnob	lua_class	implemented/partial UI proxy; property fidelity varies
 lua_class	ParamMenu	lua_class	implemented/partial UI proxy; property fidelity varies
@@ -254,13 +254,13 @@ lua_class	ParamSlider	lua_class	implemented/partial UI proxy; property fidelity 
 lua_class	ParamWidget	lua_class	implemented/partial UI proxy; property fidelity varies
 lua_class	ParameterValue	lua_class	implemented/partial UI proxy; property fidelity varies
 lua_class	Part	lua_class	proxy/partial; exact class parity unproved
-lua_class	Program	lua_class	proxy/partial; exact class parity unproved
+lua_class	Program	lua_class	mapped; runtime-consumed
 lua_class	RectanglePlacement	lua_class	partial or unproven
 lua_class	SVG	lua_class	implemented/partial UI proxy; property fidelity varies
-lua_class	SampleBasedOscillator	lua_class	proxy/partial; exact class parity unproved
-lua_class	SampleMappingOscillator	lua_class	proxy/partial; exact class parity unproved
-lua_class	SamplePlayer	lua_class	proxy/partial; exact class parity unproved
-lua_class	SampledReverb	lua_class	proxy/partial; exact class parity unproved
+lua_class	SampleBasedOscillator	lua_class	runtime-consumed (loadSample/setPlaybackOptions)
+lua_class	SampleMappingOscillator	lua_class	runtime-consumed (loadMapping)
+lua_class	SamplePlayer	lua_class	mapped; runtime-consumed
+lua_class	SampledReverb	lua_class	mapped; runtime-consumed
 lua_class	SignalConnection	lua_class	proxy/partial; exact class parity unproved
 lua_class	Slider	lua_class	implemented/partial UI proxy; property fidelity varies
 lua_class	Synth	lua_class	proxy/partial; exact class parity unproved

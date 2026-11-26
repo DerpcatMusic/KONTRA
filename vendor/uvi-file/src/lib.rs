@@ -4,6 +4,7 @@
 pub mod access;
 pub mod access_error;
 pub mod crypto;
+pub mod mapping;
 pub mod ufs;
 
 pub use access_error::AccessError;

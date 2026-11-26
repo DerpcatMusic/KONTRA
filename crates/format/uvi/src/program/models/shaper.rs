@@ -29,7 +29,7 @@ use kontra_law::common::DB_GAIN;
 use kontra_law::uvi::{CLIPPER_ASYMMETRY, WAVESHAPER_DRIVE};
 use roxmltree::Node;
 
-use super::{Attr, UviModule, ids, nothing, num};
+use super::{Attr, UviModule, eff, ids, nothing, num};
 
 /// WaveShaper: `[InputGain, Amount, Mix, OutputGain, Mode, PreFreq, PostFreq]`.
 pub static WAVE_SHAPER: UviModule = UviModule {
@@ -72,12 +72,12 @@ pub static WAVE_SHAPER: UviModule = UviModule {
             highpass_hz: Some(post_hz),
             sections: ir::Sections::NONE,
         };
-        Some(ir::Effect {
-            kind: ir::EffectKind::Shaper(shaper),
-            bypass: current.bypass,
-            output: mix * out_gain * scale,
-            dry: 1.0 - mix,
-        })
+        Some(eff(
+            ir::EffectKind::Shaper(shaper),
+            current,
+            mix * out_gain * scale,
+            1.0 - mix,
+        ))
     },
 };
 
@@ -107,12 +107,12 @@ pub static DIODE_CLIPPER: UviModule = UviModule {
             asymmetry: CLIPPER_ASYMMETRY.eval_unclamped(asymmetry),
             dc_hz: 1.0,
         };
-        Some(ir::Effect {
-            kind: ir::EffectKind::Clipper(clipper),
-            bypass: current.bypass,
-            output: DB_GAIN.eval_unclamped(out_db),
-            dry: 0.0,
-        })
+        Some(eff(
+            ir::EffectKind::Clipper(clipper),
+            current,
+            DB_GAIN.eval_unclamped(out_db),
+            0.0,
+        ))
     },
 };
 

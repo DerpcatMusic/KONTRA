@@ -205,17 +205,7 @@ impl Bank {
     ) -> std::result::Result<(Vec<String>, ProtectionStatus), Error> {
         let ufs = Ufs::open(path).map_err(|e| Error::new(path, "bank", format!("{e:#}")))?;
         let namespace = &Namespaces::native().metadata;
-        // Samples are most of a bank's members and are stored clear (in every
-        // bank seen), so their records are not read. A bank whose folder
-        // links can't be followed is decoded whole.
-        let audio = |name: &str| {
-            let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
-            matches!(
-                ext.as_deref(),
-                Some("wav" | "aif" | "aiff" | "flac" | "ogg")
-            )
-        };
-        let files = match ufs.list_members(namespace, |n| !audio(n)) {
+        let files = match ufs.list_members(namespace, |n| !is_audio(n)) {
             Ok(files) => files,
             Err(_) => {
                 (ufs.decode_directory(namespace))
@@ -287,13 +277,9 @@ impl Bank {
                 format!("Samples/{cleaned}"),
             ]
         };
-
-        // 1. Exact path match across candidate roots.
         if let Some(index) = roots.iter().find_map(|p| self.lookup(p)) {
             return Some(index);
         }
-
-        // 2. Alternate audio extension across all candidate roots.
         if let Some(index) = roots.iter().find_map(|candidate| {
             let norm = normalize_virtual_path(candidate);
             let (stem, _) = norm.rsplit_once('.')?;
@@ -303,8 +289,6 @@ impl Bank {
         }) {
             return Some(index);
         }
-
-        // 3. Basename fallback with component-boundary trailing-path disambiguation.
         let name = normalize_virtual_path(cleaned);
         let base = name
             .rsplit('/')
@@ -314,19 +298,13 @@ impl Bank {
         if let Some(index) = self.resolve_by_name(&base, &name) {
             return Some(index);
         }
-
-        // 4. Basename fallback with alternate audio extensions.
         let (stem, _) = base.rsplit_once('.')?;
-        for ext in AUDIO_EXTS {
-            let alt_base = format!("{stem}.{ext}");
-            if alt_base == base {
-                continue;
-            }
-            if let Some(index) = self.resolve_by_name(&alt_base, &name) {
-                return Some(index);
-            }
-        }
-        None
+        AUDIO_EXTS.iter().find_map(|ext| {
+            let alt = format!("{stem}.{ext}");
+            (alt != base)
+                .then(|| self.resolve_by_name(&alt, &name))
+                .flatten()
+        })
     }
 
     fn resolve_by_name(&self, base_lower: &str, full_ref: &str) -> Option<usize> {
@@ -394,19 +372,14 @@ fn directory_protection(path: &Path, files: &[Member]) -> ProtectionStatus {
             format!("UFS bank uses unsupported protection mode {mode}"),
         );
     }
-    let has_content = files.iter().any(|m| m.mode == Protection::Content);
-    if !has_content {
+    if !files.iter().any(|m| m.mode == Protection::Content) || Bank::has_cached_key(path) {
         return ProtectionStatus::Open;
     }
-    if Bank::has_cached_key(path) {
-        return ProtectionStatus::Open;
-    }
-    let has_verifiable_png = files.iter().any(|m| {
+    if files.iter().any(|m| {
         m.mode == Protection::Content
             && (45..=16 << 20).contains(&m.size)
             && m.name.to_ascii_lowercase().ends_with(".png")
-    });
-    if has_verifiable_png {
+    }) {
         ProtectionStatus::Open
     } else {
         ProtectionStatus::protected(
@@ -543,17 +516,13 @@ impl crate::program::Library for Bank {
 
     fn audio_under(&self, folder: &str) -> Vec<String> {
         let norm = normalize_virtual_path(folder).to_ascii_lowercase();
-        let prefix = if norm.is_empty() {
-            String::new()
-        } else {
-            format!("{norm}/")
-        };
-        self.directory
-            .files
-            .iter()
-            .filter_map(|m| m.path.clone())
+        let prefix = (!norm.is_empty()).then(|| format!("{norm}/"));
+        (self.directory.files.iter().filter_map(|m| m.path.clone()))
             .filter(|p| {
-                is_audio(p) && (prefix.is_empty() || p.to_ascii_lowercase().starts_with(&prefix))
+                is_audio(p)
+                    && prefix
+                        .as_deref()
+                        .is_none_or(|pre| p.to_ascii_lowercase().starts_with(pre))
             })
             .collect()
     }
@@ -628,8 +597,7 @@ impl DiskLibrary {
         }
         let mut cache = self.dir_cache.borrow_mut();
         let root = self.root.canonicalize().ok()?;
-        let rooted = norm.starts_with(['$', '/']);
-        let candidates = if rooted {
+        let candidates = if norm.starts_with(['$', '/']) {
             [
                 (&self.root, cleaned.to_owned()),
                 (&self.root, format!("Samples/{cleaned}")),
@@ -642,8 +610,6 @@ impl DiskLibrary {
                 (&self.root, format!("Samples/{cleaned}")),
             ]
         };
-        // Ordinary references may follow links within the library. Only an
-        // explicit moved-folder mapping may name a destination outside it.
         let contained_file = |path: PathBuf| {
             let target = path.canonicalize().ok()?;
             (target.starts_with(&root) && target.is_file()).then_some(target)
@@ -661,20 +627,15 @@ impl DiskLibrary {
             resolve_case_insensitive_bounded(base, &self.root, rel, Some(&mut cache))
                 .and_then(contained_file)
         };
-        for (base, rel) in &candidates {
-            if let Some(found) = resolve(base, rel) {
-                return Some(found);
-            }
+        if let Some(found) = candidates.iter().find_map(|(b, r)| resolve(b, r)) {
+            return Some(found);
         }
-        for (base, rel) in &candidates {
+        candidates.iter().find_map(|(base, rel)| {
             let (stem, _) = rel.rsplit_once('.')?;
-            for ext in AUDIO_EXTS {
-                if let Some(found) = resolve(base, &format!("{stem}.{ext}")) {
-                    return Some(found);
-                }
-            }
-        }
-        None
+            AUDIO_EXTS
+                .iter()
+                .find_map(|ext| resolve(base, &format!("{stem}.{ext}")))
+        })
     }
 }
 
@@ -797,6 +758,124 @@ fn programs(directory: &Directory) -> Vec<usize> {
         .collect();
     found.sort();
     found.into_iter().map(|(_, i)| i).collect()
+}
+
+/// A sample resolved at runtime for a Lua `loadSample` or `loadMapping` swap.
+#[derive(Clone, Debug)]
+pub struct RuntimeSample {
+    pub sample: ir::Sample,
+    pub loops: Vec<ir::Loop>,
+}
+
+enum RuntimeSource {
+    Bank(Box<Bank>),
+    Disk(DiskLibrary),
+}
+
+/// Open UVI bank or disk library kept on the control thread for off-audio
+/// runtime `loadSample` and `loadMapping` execution.
+pub struct RuntimeLibrary {
+    source: RuntimeSource,
+    program_dir: String,
+}
+
+impl RuntimeLibrary {
+    /// Opens the UFS bank or standalone disk library backing `path`.
+    #[must_use]
+    pub fn open(path: &Path) -> Option<Self> {
+        if let Some((bank_path, member)) = crate::split(path) {
+            let bank = Bank::open(&bank_path).ok()?;
+            let in_bank = if member.is_empty() {
+                bank.programs()
+                    .first()
+                    .and_then(|&i| bank.directory.files.get(i)?.path.clone())
+                    .unwrap_or_default()
+            } else {
+                member
+            };
+            let program_dir = in_bank.rsplit_once('/').map_or("", |(d, _)| d).to_owned();
+            return Some(Self {
+                source: RuntimeSource::Bank(Box::new(bank)),
+                program_dir,
+            });
+        }
+        let disk_path = if path.is_dir() {
+            path.join("program.uvip")
+        } else {
+            path.to_path_buf()
+        };
+        Some(Self {
+            source: RuntimeSource::Disk(DiskLibrary::new(&disk_path)),
+            program_dir: String::new(),
+        })
+    }
+
+    /// Resolves `reference` (relative to `script_dir`) and probes its audio header and loops.
+    ///
+    /// # Errors
+    /// When the sample is missing or has an unreadable audio header.
+    pub fn sample(
+        &self,
+        script_dir: &str,
+        reference: &str,
+    ) -> std::result::Result<RuntimeSample, String> {
+        let joined = join_script_ref(script_dir, reference);
+        let Sampled { sample, loops } = match &self.source {
+            RuntimeSource::Bank(b) => {
+                crate::program::Library::sample(b.as_ref(), &self.program_dir, &joined)?
+            }
+            RuntimeSource::Disk(d) => {
+                crate::program::Library::sample(d, &self.program_dir, &joined)?
+            }
+        };
+        Ok(RuntimeSample { sample, loops })
+    }
+
+    /// Reads raw bytes of a mapping or data member at `reference`, returning `(base_dir, bytes)`.
+    #[must_use]
+    pub fn read_member(&self, script_dir: &str, reference: &str) -> Option<(String, Vec<u8>)> {
+        let joined = join_script_ref(script_dir, reference);
+        match &self.source {
+            RuntimeSource::Bank(b) => {
+                let m = b
+                    .directory
+                    .files
+                    .get(b.resolve(&self.program_dir, &joined)?)?;
+                let dir = m
+                    .path
+                    .as_deref()
+                    .and_then(|p| p.rsplit_once('/'))
+                    .map_or("", |(d, _)| d);
+                Some((dir.to_owned(), b.read(m).ok()?))
+            }
+            RuntimeSource::Disk(d) => {
+                let file = d.resolve_file(&joined)?;
+                let dir = file
+                    .parent()
+                    .and_then(|p| p.strip_prefix(&d.root).ok())
+                    .map_or_else(String::new, |p| p.to_string_lossy().replace('\\', "/"));
+                Some((dir, std::fs::read(&file).ok()?))
+            }
+        }
+    }
+
+    /// Lists audio members under `folder` (relative to `script_dir`).
+    #[must_use]
+    pub fn audio_under(&self, script_dir: &str, folder: &str) -> Vec<String> {
+        let folder = normalize_virtual_path(&join_script_ref(script_dir, folder));
+        match &self.source {
+            RuntimeSource::Bank(b) => crate::program::Library::audio_under(b.as_ref(), &folder),
+            RuntimeSource::Disk(d) => crate::program::Library::audio_under(d, &folder),
+        }
+    }
+}
+
+fn join_script_ref(script_dir: &str, reference: &str) -> String {
+    if script_dir.is_empty() || reference.starts_with(['$', '/', '\\']) {
+        reference.to_owned()
+    } else {
+        format!("{script_dir}/{reference}")
+    }
 }
 
 #[cfg(test)]

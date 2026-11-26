@@ -31,31 +31,14 @@ pub use shaper::{DIODE_CLIPPER, WAVE_SHAPER};
 pub use sweep::{FLANGER, PHASOR};
 
 /// Standard `Knob(0..MAX)` table for [`ir::KnobModel`].
+#[rustfmt::skip]
 const KNOBS: [ir::SlotKnob; ir::KnobModel::MAX] = [
-    ir::SlotKnob::Knob(0),
-    ir::SlotKnob::Knob(1),
-    ir::SlotKnob::Knob(2),
-    ir::SlotKnob::Knob(3),
-    ir::SlotKnob::Knob(4),
-    ir::SlotKnob::Knob(5),
-    ir::SlotKnob::Knob(6),
-    ir::SlotKnob::Knob(7),
-    ir::SlotKnob::Knob(8),
-    ir::SlotKnob::Knob(9),
-    ir::SlotKnob::Knob(10),
-    ir::SlotKnob::Knob(11),
-    ir::SlotKnob::Knob(12),
-    ir::SlotKnob::Knob(13),
-    ir::SlotKnob::Knob(14),
-    ir::SlotKnob::Knob(15),
-    ir::SlotKnob::Knob(16),
-    ir::SlotKnob::Knob(17),
-    ir::SlotKnob::Knob(18),
-    ir::SlotKnob::Knob(19),
-    ir::SlotKnob::Knob(20),
-    ir::SlotKnob::Knob(21),
-    ir::SlotKnob::Knob(22),
-    ir::SlotKnob::Knob(23),
+    ir::SlotKnob::Knob(0), ir::SlotKnob::Knob(1), ir::SlotKnob::Knob(2), ir::SlotKnob::Knob(3),
+    ir::SlotKnob::Knob(4), ir::SlotKnob::Knob(5), ir::SlotKnob::Knob(6), ir::SlotKnob::Knob(7),
+    ir::SlotKnob::Knob(8), ir::SlotKnob::Knob(9), ir::SlotKnob::Knob(10), ir::SlotKnob::Knob(11),
+    ir::SlotKnob::Knob(12), ir::SlotKnob::Knob(13), ir::SlotKnob::Knob(14), ir::SlotKnob::Knob(15),
+    ir::SlotKnob::Knob(16), ir::SlotKnob::Knob(17), ir::SlotKnob::Knob(18), ir::SlotKnob::Knob(19),
+    ir::SlotKnob::Knob(20), ir::SlotKnob::Knob(21), ir::SlotKnob::Knob(22), ir::SlotKnob::Knob(23),
 ];
 
 /// One saved attribute of a [`UviModule`]: its XML name, the value it
@@ -232,6 +215,43 @@ const SPEED_OF_SOUND: f64 = 340.0;
 /// The DualDelay engine's longest line, seconds.
 const DUAL_DELAY_MAX_S: f64 = 5.0;
 
+/// Builds a standard [`ir::Effect`] carrying `current.bypass`.
+pub(super) const fn eff(
+    kind: ir::EffectKind,
+    current: &ir::Effect,
+    output: f32,
+    dry: f32,
+) -> ir::Effect {
+    ir::Effect {
+        kind,
+        bypass: current.bypass,
+        output,
+        dry,
+    }
+}
+
+/// Shared zeroed/identity defaults for `ir::Delay` builders (`DualDelay`, `Flanger`).
+pub(super) const DELAY_BASE: ir::Delay = ir::Delay {
+    direct: 0.0,
+    time: ir::DelayTime::Ms(0.0),
+    depth_ms: 0.0,
+    second_head: false,
+    input: ir::IDENTITY,
+    feedback: ir::IDENTITY,
+    output: ir::IDENTITY,
+    damping_hz: f32::INFINITY,
+    low_cut_hz: 0.0,
+    steep_low_cut: false,
+    body: std::borrow::Cow::Borrowed(&[]),
+    triangle_s: None,
+    shape: std::borrow::Cow::Borrowed(&[]),
+    noise: [0.0; 2],
+    high_shelf: None,
+    spread_ms: 0.0,
+    rate: ir::Rate::Hz(1.0),
+    phase: 0.0,
+};
+
 /// ThreeBandShelves: UVI's one biquad ([ref] → [ref]) is the
 /// mid gain times a first-order low shelf at FreqLowMid and a first-order
 /// high shelf at FreqMidHigh, each by its band's gain over the mid's
@@ -270,12 +290,12 @@ pub static THREE_BAND_SHELVES: UviModule = UviModule {
             ir::Bell::FLAT,
             ir::Bell::FLAT,
         ];
-        Some(ir::Effect {
-            kind: ir::EffectKind::Eq(bands),
-            bypass: current.bypass,
-            output: DB_GAIN.eval_unclamped(g_mid),
-            dry: 0.0,
-        })
+        Some(eff(
+            ir::EffectKind::Eq(bands),
+            current,
+            DB_GAIN.eval_unclamped(g_mid),
+            0.0,
+        ))
     },
 };
 
@@ -288,31 +308,18 @@ pub static DIGITAL_EQ: UviModule = UviModule {
     attrs: &[],
     report: nothing,
     build_effect: |p, current| {
-        let [
-            scale,
-            f0,
-            g0,
-            bw0,
-            f1,
-            g1,
-            bw1,
-            f2,
-            g2,
-            bw2,
-            f3,
-            g3,
-            bw3,
-            s0,
-            s1,
-            s2,
-            s3,
-        ] = *p
-        else {
+        if p.len() < 17 {
             return None;
-        };
-        let make = |hz: f32, gain: f32, bw: f32, shape_code: f32| -> ir::Bell {
-            let code = shape_code.round() as i32;
-            let shape = match code {
+        }
+        let scale = p.first().copied()?;
+        let make = |i: usize| -> ir::Bell {
+            let b = 1 + 3 * i;
+            let (hz, gain, bw) = (
+                p.get(b).copied().unwrap_or(1000.0),
+                p.get(b + 1).copied().unwrap_or(0.0),
+                p.get(b + 2).copied().unwrap_or(1.0),
+            );
+            let shape = match p.get(13 + i).copied().unwrap_or(0.0).round() as i32 {
                 1 => ir::Shape::LowShelf,
                 2 => ir::Shape::HighShelf,
                 3 => ir::Shape::Peak,
@@ -331,14 +338,8 @@ pub static DIGITAL_EQ: UviModule = UviModule {
                 gain_db: gain * scale,
             }
         };
-        let bands = [
-            make(f0, g0, bw0, s0),
-            make(f1, g1, bw1, s1),
-            make(f2, g2, bw2, s2),
-            make(f3, g3, bw3, s3),
-        ];
         Some(ir::Effect {
-            kind: ir::EffectKind::Eq(bands),
+            kind: ir::EffectKind::Eq([make(0), make(1), make(2), make(3)]),
             bypass: current.bypass,
             output: 1.0,
             dry: 0.0,
@@ -416,12 +417,7 @@ pub static MAXIMIZER: UviModule = UviModule {
             lookahead_ms: lookahead.max(0.0),
             clip: (mode - 2.0).abs() < 0.5,
         });
-        Some(ir::Effect {
-            kind,
-            bypass: current.bypass,
-            output: 1.0,
-            dry: 0.0,
-        })
+        Some(eff(kind, current, 1.0, 0.0))
     },
 };
 
@@ -467,12 +463,7 @@ pub static XPANDER_FILTER: UviModule = UviModule {
             octaves: FREQ_OCTAVES,
             q_octaves: 0.0,
         };
-        Some(ir::Effect {
-            kind: ir::EffectKind::Filter(filter),
-            bypass: current.bypass,
-            output: 1.0,
-            dry: 0.0,
-        })
+        Some(eff(ir::EffectKind::Filter(filter), current, 1.0, 0.0))
     },
 };
 
@@ -505,13 +496,12 @@ pub static DRIVE: UviModule = UviModule {
             highpass_hz: None,
             sections: ir::Sections::NONE,
         };
-        let scale = 1.0 / d.tanh().max(f32::EPSILON);
-        Some(ir::Effect {
-            kind: ir::EffectKind::Shaper(shaper),
-            bypass: current.bypass,
-            output: scale,
-            dry: 0.0,
-        })
+        Some(eff(
+            ir::EffectKind::Shaper(shaper),
+            current,
+            1.0 / d.tanh().max(f32::EPSILON),
+            0.0,
+        ))
     },
 };
 
@@ -530,12 +520,7 @@ pub static CONVOLVER: UviModule = UviModule {
         } else {
             wet
         };
-        Some(ir::Effect {
-            kind: current.kind.clone(),
-            bypass: current.bypass,
-            output,
-            dry,
-        })
+        Some(eff(current.kind.clone(), current, output, dry))
     },
 };
 
@@ -562,12 +547,7 @@ pub static SAMPLED_REVERB: UviModule = UviModule {
         } else {
             wet * scale
         };
-        Some(ir::Effect {
-            kind: current.kind.clone(),
-            bypass: current.bypass,
-            output,
-            dry,
-        })
+        Some(eff(current.kind.clone(), current, output, dry))
     },
 };
 

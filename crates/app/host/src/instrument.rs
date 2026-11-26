@@ -1,8 +1,9 @@
 //! Loading an instrument file into a plan the engine plays: the format reads
 //! it into the IR, prepare loads its samples, its script is compiled.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use kontra_engine::{Plan, ir};
 use kontra_format::{EntryRef, FormatError, FormatId, LoadCx, LoadOptions, Notes, Registry};
@@ -52,6 +53,12 @@ pub struct Loaded {
     /// By script slot, a KSP script's catalog names as compiled: the
     /// engine-parameter id `SYMBOL_BASE + n` it passes is name n.
     pub symbols: Vec<Box<[Box<str>]>>,
+    /// Lock-free runtime swap channels attached to compiled UVI Lua scripts,
+    /// paired with each script's bank-relative `__dir` folder.
+    pub lua_runtimes: Vec<(Arc<kontra_lua::RuntimeChannel>, String)>,
+    /// Initial `(file, offset)` loaded into each `(group, slot)` for Lua
+    /// instruments so startup `onLoad` echoes skip redundant disk loads.
+    pub lua_slot_samples: HashMap<(u32, u16), (PathBuf, u64)>,
 }
 
 /// Reads an SFZ file, a SoundFont's first preset, a UVI program inside a `.ufs` bank, or a Kontakt instrument.
@@ -420,6 +427,7 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
     let mut pages = Vec::new();
     let mut persist = Vec::new();
     let mut symbols = Vec::new();
+    let mut lua_runtimes = Vec::new();
     diagnostics.extend(instrument.diagnostics);
     plan.knob_blends = instrument.knob_blends.clone();
     plan.knob_lfos = instrument.knob_lfos.clone();
@@ -437,6 +445,8 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
             compiled();
             match kontra_lua::compile(&script.source, &lua_modules(script), &script.saved) {
                 Ok(mut compiled) => {
+                    let rt_channel = compiled.enable_runtime();
+                    lua_runtimes.push((rt_channel, lua_script_dir(script)));
                     persist.push(crate::persist::Vars::lua(n, &compiled.ui));
                     pages.push(Some(std::mem::take(&mut compiled.ui)));
                     // Controllers a format routes to this script's knobs, by name.
@@ -569,6 +579,21 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
     if declares("NO_SYS_SCRIPT_PEDAL") {
         plan.sustain_pedal = kontra_engine::SustainPedal::ToScripts;
     }
+    let mut lua_slot_samples = HashMap::new();
+    if !lua_runtimes.is_empty() {
+        for (g, group) in instrument.groups.iter().enumerate() {
+            let Ok(group_id) = u32::try_from(g) else {
+                continue;
+            };
+            for z in &group.zones {
+                if let Some(s) = instrument.samples.get(z.sample) {
+                    lua_slot_samples
+                        .entry((group_id, z.slot))
+                        .or_insert_with(|| (s.file.clone(), s.offset));
+                }
+            }
+        }
+    }
     Loaded {
         timings: BuildTimings {
             files: files_time,
@@ -583,7 +608,26 @@ pub fn build(instrument: ir::Instrument, rate: u32, store: &mut Store) -> Loaded
         pages,
         persist,
         symbols,
+        lua_runtimes,
+        lua_slot_samples,
     }
+}
+
+/// Extracts a Lua script's `__dir` folder string from its `__dir.lua` data module.
+fn lua_script_dir(script: &ir::Script) -> String {
+    let Some((_, bytes)) = script.data.iter().find(|(name, _)| name == "__dir.lua") else {
+        return String::new();
+    };
+    let text = String::from_utf8_lossy(bytes);
+    let trimmed = text.trim();
+    let Some(rest) = trimmed.strip_prefix("return") else {
+        return String::new();
+    };
+    let rest = rest.trim();
+    if let Some(inner) = rest.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        return inner.replace("\\\"", "\"").replace("\\\\", "\\");
+    }
+    String::new()
 }
 
 /// The samples a UVI script loads as its program loads, from one run of it.

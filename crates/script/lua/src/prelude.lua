@@ -969,43 +969,115 @@ local function write_effect_knobs(at, index, slot, knobs, name, value)
 	end
 end
 
+local OSC_PARAMS = {
+	BaseNote = 0,
+	CoarseTune = 1,
+	FineTune = 2,
+	Pitch = 3,
+	Gain = 4,
+	Reverse = 5,
+	SampleStart = 6,
+	LoopStart = 7,
+	LoopEnd = 8,
+	Bypass = 9,
+}
+
+local KG_PARAMS = {
+	LowKey = 0,
+	HighKey = 1,
+	LowVelocity = 2,
+	HighVelocity = 3,
+	Tune = 4,
+	CoarseTune = 5,
+	FineTune = 6,
+	Gain = 7,
+	Pan = 8,
+}
+
+local function runtime_connected()
+	return __runtime_connected ~= nil and __runtime_connected()
+end
+
+local function to_param_number(value)
+	if type(value) == "boolean" then
+		return value and 1 or 0
+	end
+	return tonumber(value)
+end
+
+local function effect_target_of(el)
+	local f = fields_of(el)
+	if type(f.group) == "number" then
+		return 0, f.group
+	elseif type(f.bus) == "number" then
+		return 1, f.bus
+	elseif el == Program then
+		return 2, 0
+	end
+	return nil, nil
+end
+
 function Element.setParameter(self, name, value)
 	local was = self.params[name]
 	self.params[name] = value
 	if was ~= value and __watch then
 		__watch(self, name)
 	end
-	local env = fields_of(self).env
+	local fields = fields_of(self)
+	local env = fields.env
 	if env and ENVELOPE_PARAMS[name] and tonumber(value) then
 		set_envelope(self.params, env)
 		return
 	end
-	local lfo = fields_of(self).lfo
+	local lfo = fields.lfo
 	if lfo and LFO_PARAMS[name] then
 		set_lfo(self.params, lfo)
 		return
 	end
-	local line = fields_of(self).line
+	local line = fields.line
 	if line then
 		set_line(line, name, value)
 		return
 	end
-	local rack_mix = fields_of(self).rack_mix
+	local rack_mix = fields.rack_mix
 	if name == "Mix" and rack_mix and tonumber(value) then
 		local wet = math.clamp(tonumber(value), 0, 1)
 		host_call("EffectGain", 1, rack_mix[1], 0, math.floor(wet * 1e6 + 0.5))
 		host_call("EffectGain", 1, rack_mix[2], 0, math.floor((1 - wet) * 1e6 + 0.5))
 		return
 	end
-	local routed = fields_of(self).routed_knobs
+	local routed = fields.routed_knobs
 	if routed then
 		for i = 2, #routed do
 			write_effect_knobs(1, routed[1], routed[i][1], routed[i][2], name, value)
 		end
 		return
 	end
-	local fx = fields_of(self).fx
+	local fx = fields.fx
 	if not fx then
+		if runtime_connected() then
+			if type(fields.group) == "number" then
+				local code = KG_PARAMS[name]
+				local n = code ~= nil and to_param_number(value)
+				if n ~= nil then
+					__runtime_kg_param(fields.group, code, n)
+				end
+			else
+				local parent = fields.parent
+				local pg = parent and fields_of(parent).group
+				if type(pg) == "number" then
+					if name == "SamplePath" and type(value) == "string" then
+						loadSample(self, value)
+					else
+						local code = OSC_PARAMS[name]
+						local n = code ~= nil and to_param_number(value)
+						if n ~= nil then
+							__runtime_osc_param(pg, (fields.index or 1) - 1, code, n)
+						end
+					end
+				end
+			end
+		end
 		return
 	elseif name == "Bypass" then
 		local on = value == true or (type(value) == "number" and value ~= 0)
@@ -1014,11 +1086,11 @@ function Element.setParameter(self, name, value)
 		host_call("EffectGain", fx[1], fx[2], fx[3], math.floor(value * 1e6 + 0.5))
 	end
 	-- A number its response is prepared by: prepared again off the audio thread.
-	local knob = (fields_of(self).impulse or EMPTY)[name]
+	local knob = (fields.impulse or EMPTY)[name]
 	if knob and tonumber(value) then
 		host_call("ImpulseKnob", fx[1], fx[2], fx[3], knob, math.floor(tonumber(value) * 1e6 + 0.5))
 	end
-	write_effect_knobs(fx[1], fx[2], fx[3], fields_of(self).knobs, name, value)
+	write_effect_knobs(fx[1], fx[2], fx[3], fields.knobs, name, value)
 end
 
 local element
@@ -1081,22 +1153,35 @@ end
 
 -- Dynamic effect chain mutations on an element's inserts container.
 local function reindex_inserts(list, parent)
+	local tk, ti = effect_target_of(parent)
 	for i, child in ipairs(list) do
 		local f = fields_of(child)
 		f.index = i
 		f.parent = parent
+		if f.fx and tk ~= nil and f.fx[1] == tk and f.fx[2] == ti then
+			f.fx[3] = i - 1
+		end
 	end
 end
 
 function Element.insertEffect(self, effectType, index)
 	local list = self.inserts
-	local fx = element({ params = { Name = tostring(effectType or "Effect"), Type = tostring(effectType or "Effect"), Bypass = "0" } })
+	local name = tostring(effectType or "Effect")
+	local fx = element({ params = { Name = name, Type = name, Bypass = "0" } })
 	local pos = tonumber(index)
 	if pos then
 		pos = math.max(1, math.min(#list + 1, math.floor(pos)))
 		table.insert(list, pos, fx)
 	else
+		pos = #list + 1
 		table.insert(list, fx)
+	end
+	local tk, ti = effect_target_of(self)
+	if tk ~= nil then
+		fields_of(fx).fx = { tk, ti, pos - 1 }
+		if runtime_connected() then
+			__runtime_effect_op(tk, ti, 0, pos - 1, 0, name)
+		end
 	end
 	reindex_inserts(list, self)
 	return fx
@@ -1123,6 +1208,10 @@ function Element.removeEffect(self, target)
 	if fx then
 		host_call("EffectBypass", fx[1], fx[2], fx[3], 1)
 	end
+	local tk, ti = effect_target_of(self)
+	if tk ~= nil and runtime_connected() then
+		__runtime_effect_op(tk, ti, 1, idx - 1, 0, "")
+	end
 	reindex_inserts(list, self)
 	return true
 end
@@ -1137,6 +1226,10 @@ function Element.moveEffect(self, from, to)
 	if f ~= t then
 		local item = table.remove(list, f)
 		table.insert(list, t, item)
+		local tk, ti = effect_target_of(self)
+		if tk ~= nil and runtime_connected() then
+			__runtime_effect_op(tk, ti, 2, f - 1, t - 1, "")
+		end
 		reindex_inserts(list, self)
 	end
 	return true
@@ -1146,19 +1239,32 @@ function Element.loadImpulse(self, path, done)
 	return loadImpulse(self, path, done)
 end
 
--- ponytail: the count only; slice positions need the loop's slice data.
 function Element.getSliceInfo(self)
-	local p = fields_of(self).params or EMPTY
+	local fields = fields_of(self)
+	if fields.slices and #fields.slices > 0 then
+		local out = {}
+		for i, s in ipairs(fields.slices) do
+			out[i] = { index = i, start = s.start, length = s.length }
+		end
+		return out
+	end
+	local p = fields.params or EMPTY
 	local count = math.max(0, math.floor(tonumber(p.NumSlices) or 0))
+	local frames = math.max(0, math.floor(tonumber(fields.sampleFrames or p.SampleLength) or 0))
 	local slices = {}
 	for i = 1, count do
-		slices[i] = { index = i, start = 0, length = 0 }
+		local start = count > 0 and math.floor((i - 1) * frames / count) or 0
+		local stop = count > 0 and math.floor(i * frames / count) or 0
+		slices[i] = { index = i, start = start, length = math.max(0, stop - start) }
 	end
 	return slices
 end
 
 function Element.getNumZones(self)
 	local fields = fields_of(self)
+	if type(fields.numZones) == "number" then
+		return fields.numZones
+	end
 	if fields.zones then
 		return #fields.zones
 	end
@@ -1170,11 +1276,98 @@ function Element.getLoadingStatus(self)
 	return fields_of(self).loadingStatus or 0
 end
 
+-- Pending async runtime swaps (loadSample / loadMapping / setPlaybackOptions),
+-- pumped by one shared coroutine so burst reloads never exhaust task slots.
+local pending_swaps = {}
+local pending_swap_count = 0
+local swap_pumper_active = false
+local poll_slices = {}
+
+local function finish_swap(id, ok, frames, rate, num_zones, num_slices)
+	local entry = pending_swaps[id]
+	if not entry then
+		return
+	end
+	pending_swaps[id] = nil
+	pending_swap_count = math.max(0, pending_swap_count - 1)
+	local target = entry.target
+	if type(target) == "userdata" then
+		local f = fields_of(target)
+		f.loadingStatus = math.max(0, (f.loadingStatus or 1) - 1)
+		if ok then
+			if frames and frames > 0 then
+				f.sampleFrames = frames
+				f.sampleRate = rate
+				f.sampleInfo = nil
+			end
+			if entry.kind == "mapping" and num_zones and num_zones > 0 then
+				f.numZones = num_zones
+			end
+			if num_slices and num_slices > 0 then
+				local slices = {}
+				for i = 1, num_slices do
+					local st = poll_slices[i] or 0
+					local nx = (i < num_slices and poll_slices[i + 1]) or frames or st
+					slices[i] = { index = i, start = st, length = math.max(0, nx - st) }
+				end
+				f.slices = slices
+				if f.params then
+					f.params.NumSlices = num_slices
+				end
+			end
+		end
+	end
+	local task = entry.task
+	task.success = ok == true
+	if not task.cancelled and type(entry.done) == "function" then
+		entry.done(task)
+	end
+end
+
+local function pump_swaps()
+	while pending_swap_count > 0 do
+		local batch = 0
+		while batch < 512 do
+			local id, ok, frames, rate, num_zones, num_slices = __runtime_poll(poll_slices)
+			if not id then
+				break
+			end
+			batch = batch + 1
+			finish_swap(id, ok, frames, rate, num_zones, num_slices)
+		end
+		if pending_swap_count > 0 then
+			wait(1)
+		end
+	end
+	swap_pumper_active = false
+end
+
+local function register_swap(id, target, kind, done)
+	local task = make_task(AsyncTask, { success = false })
+	pending_swaps[id] = { task = task, done = done, target = target, kind = kind }
+	pending_swap_count = pending_swap_count + 1
+	if not swap_pumper_active then
+		swap_pumper_active = true
+		spawn(pump_swaps)
+	end
+	return task
+end
+
 function Element.loadMapping(self, path, done)
 	local fields = fields_of(self)
 	fields.mappingPath = path
+	local parent = fields.parent
+	local g = fields.group or (parent and fields_of(parent).group)
+	if runtime_connected() and type(g) == "number" and type(path) == "string" then
+		local slot = (fields.index or 1) - 1
+		fields.loadingStatus = (fields.loadingStatus or 0) + 1
+		local id = __runtime_load_mapping(g, slot, path)
+		if id and id > 0 then
+			return register_swap(id, self, "mapping", done)
+		end
+		fields.loadingStatus = math.max(0, (fields.loadingStatus or 1) - 1)
+	end
 	fields.loadingStatus = 0
-	-- Mapping files are not read: the load fails, as a missing file does in UVI.
 	local task = make_task(AsyncTask, { success = false })
 	if type(done) == "function" then
 		done(task)
@@ -1233,7 +1426,13 @@ local function element_index(e, key)
 	local path = fields.params and fields.params.SamplePath
 	if key == "sampleInfo" and type(path) == "string" and path ~= "" then
 		local p = fields.params
-		local info = { name = string.match(path, "[^/\\]*$"), basenote = p.BaseNote, finetune = p.FineTune }
+		local info = {
+			name = string.match(path, "[^/\\]*$"),
+			basenote = p.BaseNote,
+			finetune = p.FineTune,
+			length = fields.sampleFrames or 0,
+			sampleRate = fields.sampleRate or 48000,
+		}
 		fields.sampleInfo = info
 		return info
 	end
@@ -1415,11 +1614,19 @@ local function set_level(self, name, value)
 		return Element.setParameter(self, name, value)
 	end
 	self.params[name] = value
-	local line = fields_of(self).line
+	local f = fields_of(self)
+	local line = f.line
 	if levels[name] then
 		apply_level(self)
 	elseif line then
 		set_line(line, name, value)
+	end
+	if runtime_connected() and type(f.group) == "number" then
+		local code = KG_PARAMS[name]
+		local n = code ~= nil and to_param_number(value)
+		if n ~= nil then
+			__runtime_kg_param(f.group, code, n)
+		end
 	end
 end
 
@@ -1729,13 +1936,50 @@ function spawn(f, ...)
 	end))
 end
 
--- loadSample(oscillator, path, done): the samples a script loads were put
--- on their oscillators when the program loaded (`__record`); here it only
--- reports success.
+-- loadSample(oscillator, path, done): records at load time (`__record`); at
+-- runtime dispatches off-audio-thread sample loading & atomic Plan swap via
+-- the lock-free runtime channel and invokes `done(task)` once landed.
 local loads
 function loadSample(oscillator, path, done)
 	if loads and type(oscillator) == "userdata" and oscillator.parent then
 		table.insert(loads, { oscillator.parent.group, oscillator.index - 1, path, oscillator.params.BaseNote })
+	end
+	if type(oscillator) == "userdata" then
+		local f = fields_of(oscillator)
+		if f.params and type(path) == "string" then
+			f.params.SamplePath = path
+		end
+		f.sampleInfo = nil
+		f.slices = nil
+		if not loads and runtime_connected() and type(path) == "string" then
+			local parent = f.parent
+			local g = parent and fields_of(parent).group
+			if type(g) == "number" then
+				local p = f.params or EMPTY
+				local slot = (f.index or 1) - 1
+				f.loadingStatus = (f.loadingStatus or 0) + 1
+				local id = __runtime_load_sample(
+					g,
+					slot,
+					path,
+					tonumber(p.BaseNote),
+					tonumber(p.SampleStart),
+					p.Reverse,
+					tonumber(p.CoarseTune),
+					tonumber(p.FineTune),
+					tonumber(p.Gain)
+				)
+				if id and id > 0 then
+					return register_swap(id, oscillator, "sample", done)
+				end
+				f.loadingStatus = math.max(0, (f.loadingStatus or 1) - 1)
+				local fail = make_task(AsyncTask, { success = false })
+				if type(done) == "function" then
+					done(fail)
+				end
+				return fail
+			end
+		end
 	end
 	local task = make_task(AsyncTask, { success = true })
 	if type(done) == "function" then
@@ -2375,10 +2619,32 @@ end
 
 function setPlaybackOptions(oscillator, options, done)
 	if type(oscillator) == "userdata" and type(options) == "table" then
-		local p = fields_of(oscillator).params
+		local f = fields_of(oscillator)
+		local p = f.params
 		if p then
 			for k, v in pairs(options) do
 				p[k] = v
+			end
+		end
+		if runtime_connected() then
+			local parent = f.parent
+			local g = parent and fields_of(parent).group
+			if type(g) == "number" then
+				local slot = (f.index or 1) - 1
+				local start = tonumber(options.SampleStart or options.StartOffset or options.start)
+				local loop_start = tonumber(options.LoopStart or options.loopStart)
+				local loop_end = tonumber(options.LoopEnd or options.loopEnd)
+				local loop_mode = tonumber(options.LoopMode or options.loopMode)
+				local reverse = options.Reverse
+				if reverse == nil then
+					reverse = options.reverse
+				end
+				f.loadingStatus = (f.loadingStatus or 0) + 1
+				local id = __runtime_playback_opts(g, slot, start, loop_start, loop_end, loop_mode, reverse)
+				if id and id > 0 then
+					return register_swap(id, oscillator, "playback", done)
+				end
+				f.loadingStatus = math.max(0, (f.loadingStatus or 1) - 1)
 			end
 		end
 	end

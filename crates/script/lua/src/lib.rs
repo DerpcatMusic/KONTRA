@@ -23,9 +23,14 @@ mod interrupt;
 mod literal;
 pub mod nui;
 pub mod probe;
+pub mod runtime;
 mod save;
 mod ui;
 
+pub use runtime::{
+    EffectOp, EffectTarget, KeygroupParamKind, MAX_INLINE_SLICES, OscParamKind, RuntimeChannel,
+    RuntimeReply, RuntimeRequest,
+};
 pub use ui::{Ui, Widget};
 
 // With `system-allocator` (the host's heap-profile example) the binary brings
@@ -117,6 +122,8 @@ pub struct Compiled {
     controls: Vec<String>,
     /// The interface the script built as it loaded.
     pub ui: Ui,
+    /// Optional lock-free runtime swap channel attached by the host.
+    runtime: Option<Arc<RuntimeChannel>>,
     /// The state that load built, for the first machine (a big program's
     /// state is tens of MB and a second of load).
     built: Mutex<Option<Built>>,
@@ -178,6 +185,7 @@ pub fn compile(
         callbacks,
         controls,
         ui,
+        runtime: None,
         built: Mutex::new(Some((lua, checkpoints, arena))),
     })
 }
@@ -268,6 +276,14 @@ impl Foreign for Compiled {
 }
 
 impl Compiled {
+    /// Attaches (or returns the existing) lock-free [`RuntimeChannel`] so the
+    /// host control thread can service `loadSample`, `loadMapping`,
+    /// `setPlaybackOptions`, dynamic effect mutations, and live parameter edits
+    /// off the audio thread.
+    pub fn enable_runtime(&mut self) -> Arc<RuntimeChannel> {
+        Arc::clone(self.runtime.get_or_insert_with(RuntimeChannel::new))
+    }
+
     fn lua_machine(&self) -> LuaMachine {
         let built = self.built.lock().ok().and_then(|mut b| b.take());
         let (lua, checkpoints, arena) = match built {
@@ -285,6 +301,9 @@ impl Compiled {
             }
         };
         let load = arena.load();
+        if let Some(rt) = &self.runtime {
+            let _ = register_runtime(&lua, rt);
+        }
         // Each slot's coroutine, made here so no start makes one.
         let idle = lua.create_function(|_, ()| Ok(())).ok();
         let residents = (0..COROUTINES).map(|_| Slot {
@@ -351,6 +370,216 @@ impl Compiled {
         }
         machine
     }
+}
+
+/// Installs zero-allocation lock-free runtime swap bindings on `lua`'s globals.
+/// Called once off the audio thread when [`Compiled::lua_machine`] builds a
+/// host-connected script VM.
+fn register_runtime(lua: &Lua, rt: &Arc<RuntimeChannel>) -> mlua::Result<()> {
+    fn value_text(v: &Value) -> Option<Text> {
+        let Value::String(s) = v else {
+            return None;
+        };
+        let bytes = s.as_bytes();
+        let text = std::str::from_utf8(&bytes).ok()?;
+        Some(Text::from_str_cut(text).0)
+    }
+    fn opt_bool(v: &Value) -> Option<bool> {
+        match *v {
+            Value::Boolean(b) => Some(b),
+            Value::Integer(i) => Some(i != 0),
+            Value::Number(n) => Some(n != 0.0),
+            _ => None,
+        }
+    }
+    let g = lua.globals();
+    {
+        let rt = Arc::clone(rt);
+        g.set(
+            "__runtime_connected",
+            lua.create_function(move |_, ()| Ok(rt.is_connected()))?,
+        )?;
+    }
+    {
+        let rt = Arc::clone(rt);
+        type LoadSampleArgs = (
+            u32,
+            u16,
+            Value,
+            Option<f64>,
+            Option<f64>,
+            Value,
+            Option<f64>,
+            Option<f64>,
+            Option<f64>,
+        );
+        g.set(
+            "__runtime_load_sample",
+            lua.create_function(
+                move |_, (group, slot, path, root, sample_start, reverse, coarse, fine, gain): LoadSampleArgs| {
+                    let Some(path) = value_text(&path) else {
+                        return Ok(0u32);
+                    };
+                    let id = rt.alloc_id();
+                    let req = RuntimeRequest::LoadSample {
+                        id,
+                        group,
+                        slot,
+                        path,
+                        root: root.map(|r| r.round().clamp(0.0, 127.0) as u8),
+                        sample_start: sample_start.map(|s| s.max(0.0) as u64),
+                        reverse: opt_bool(&reverse),
+                        coarse_tune: coarse.map(|v| v as f32),
+                        fine_tune: fine.map(|v| v as f32),
+                        gain: gain.map(|v| v as f32),
+                    };
+                    Ok(if rt.push_request(req) { id } else { 0 })
+                },
+            )?,
+        )?;
+    }
+    {
+        let rt = Arc::clone(rt);
+        g.set(
+            "__runtime_load_mapping",
+            lua.create_function(move |_, (group, slot, path): (u32, u16, Value)| {
+                let Some(path) = value_text(&path) else {
+                    return Ok(0u32);
+                };
+                let id = rt.alloc_id();
+                let req = RuntimeRequest::LoadMapping {
+                    id,
+                    group,
+                    slot,
+                    path,
+                };
+                Ok(if rt.push_request(req) { id } else { 0 })
+            })?,
+        )?;
+    }
+    {
+        let rt = Arc::clone(rt);
+        g.set(
+            "__runtime_osc_param",
+            lua.create_function(move |_, (group, slot, code, value): (u32, u16, u8, f64)| {
+                let Some(param) = OscParamKind::from_code(code) else {
+                    return Ok(false);
+                };
+                Ok(rt.push_request(RuntimeRequest::OscParam {
+                    group,
+                    slot,
+                    param,
+                    value,
+                }))
+            })?,
+        )?;
+    }
+    {
+        let rt = Arc::clone(rt);
+        g.set(
+            "__runtime_kg_param",
+            lua.create_function(move |_, (group, code, value): (u32, u8, f64)| {
+                let Some(param) = KeygroupParamKind::from_code(code) else {
+                    return Ok(false);
+                };
+                Ok(rt.push_request(RuntimeRequest::KeygroupParam {
+                    group,
+                    param,
+                    value,
+                }))
+            })?,
+        )?;
+    }
+    {
+        let rt = Arc::clone(rt);
+        type PlaybackArgs = (
+            u32,
+            u16,
+            Option<f64>,
+            Option<f64>,
+            Option<f64>,
+            Option<f64>,
+            Value,
+        );
+        g.set(
+            "__runtime_playback_opts",
+            lua.create_function(
+                move |_, (group, slot, sample_start, loop_start, loop_end, loop_mode, reverse): PlaybackArgs| {
+                    let id = rt.alloc_id();
+                    let req = RuntimeRequest::PlaybackOptions {
+                        id,
+                        group,
+                        slot,
+                        sample_start: sample_start.map(|v| v.max(0.0) as u64),
+                        loop_start: loop_start.map(|v| v.max(0.0) as u64),
+                        loop_end: loop_end.map(|v| v.max(0.0) as u64),
+                        loop_mode: loop_mode.map(|v| v.round().clamp(0.0, 255.0) as u8),
+                        reverse: opt_bool(&reverse),
+                    };
+                    Ok(if rt.push_request(req) { id } else { 0 })
+                },
+            )?,
+        )?;
+    }
+    {
+        let rt = Arc::clone(rt);
+        g.set(
+            "__runtime_effect_op",
+            lua.create_function(
+                move |_,
+                      (target_kind, target_idx, op_kind, a, b, effect_type): (
+                    u8,
+                    u32,
+                    u8,
+                    u16,
+                    u16,
+                    Value,
+                )| {
+                    let Some(target) = EffectTarget::from_parts(target_kind, target_idx) else {
+                        return Ok(false);
+                    };
+                    let op = match op_kind {
+                        0 => EffectOp::Insert {
+                            index: a,
+                            effect_type: value_text(&effect_type).unwrap_or(Text::EMPTY),
+                        },
+                        1 => EffectOp::Remove { index: a },
+                        2 => EffectOp::Move { from: a, to: b },
+                        _ => return Ok(false),
+                    };
+                    Ok(rt.push_request(RuntimeRequest::EffectChain { target, op }))
+                },
+            )?,
+        )?;
+    }
+    {
+        let rt = Arc::clone(rt);
+        g.set(
+            "__runtime_poll",
+            lua.create_function(move |_, slices_out: Option<Table>| {
+                let Some(reply) = rt.pop_reply() else {
+                    return Ok((None::<u32>, false, 0.0f64, 0u32, 0u16, 0u16));
+                };
+                if let Some(table) = slices_out {
+                    let count = usize::from(reply.num_slices).min(MAX_INLINE_SLICES);
+                    for i in 0..count {
+                        if let Some(&start) = reply.slice_starts.get(i) {
+                            let _ = table.raw_set(i + 1, start);
+                        }
+                    }
+                }
+                Ok((
+                    Some(reply.id),
+                    reply.ok,
+                    reply.frames as f64,
+                    reply.sample_rate,
+                    reply.num_zones,
+                    reply.num_slices,
+                ))
+            })?,
+        )?;
+    }
+    Ok(())
 }
 
 /// `require("a.b")` and a member `a/b.lua` name the same module.

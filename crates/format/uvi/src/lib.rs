@@ -17,7 +17,35 @@ use kontra_format::{
 };
 use kontra_ir as ir;
 
+pub use bank::{RuntimeLibrary, RuntimeSample};
 pub use program::Swap;
+pub use uvi_file::mapping::{MappingEntry, parse_mapping_xml};
+
+/// Decodes UVI program or mapping XML bytes (plain UTF-8 or UVI-obfuscated).
+#[must_use]
+pub fn decode_program_text(bytes: &[u8]) -> Option<String> {
+    uvi_file::crypto::decode_program_bytes(bytes, &uvi_file::access::Namespaces::native().program)
+        .ok()
+        .or_else(|| String::from_utf8(bytes.to_vec()).ok())
+}
+
+/// Constructs a default [`ir::Effect`] for a registered UVI module tag name.
+#[must_use]
+pub fn build_effect_by_type(effect_type: &str) -> Option<ir::Effect> {
+    program::models::register_all();
+    let m =
+        (program::models::ALL.iter().copied()).find(|m| m.tag.eq_ignore_ascii_case(effect_type))?;
+    if !m.attrs.is_empty() {
+        let defaults: Vec<f32> = m.attrs.iter().map(|a| a.default).collect();
+        return m.build_fresh(&defaults);
+    }
+    (m.tag == "DigitalEq").then_some(ir::Effect {
+        kind: ir::EffectKind::Eq([ir::Bell::FLAT; 4]),
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })
+}
 
 /// UVI format implementation for [`kontra_format::Registry`].
 #[derive(Clone, Copy, Debug, Default)]
@@ -39,21 +67,25 @@ pub struct Error {
 
 impl Error {
     pub(crate) fn new(path: &Path, what: &'static str, reason: impl std::fmt::Display) -> Self {
-        Self {
-            path: path.to_path_buf(),
-            what,
-            reason: reason.to_string(),
-            protection: ProtectionStatus::Open,
-        }
+        Self::with_status(path, what, reason.to_string(), ProtectionStatus::Open)
     }
 
     pub(crate) fn protected(path: &Path, what: &'static str, status: ProtectionStatus) -> Self {
         let reason = status.to_string();
+        Self::with_status(path, what, reason, status)
+    }
+
+    fn with_status(
+        path: &Path,
+        what: &'static str,
+        reason: String,
+        protection: ProtectionStatus,
+    ) -> Self {
         Self {
             path: path.to_path_buf(),
             what,
             reason,
-            protection: status,
+            protection,
         }
     }
 
@@ -348,23 +380,22 @@ impl Format for Uvi {
 }
 
 fn scan_file(path: &Path, out: &mut dyn ScanSink) {
+    let stem = |p: &Path| {
+        p.file_stem()
+            .map_or_else(String::new, |s| s.to_string_lossy().into_owned())
+    };
     if path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("ufs"))
     {
         let protection = match inspect_protection(path) {
             Ok(status) => status,
-            Err(err) => {
-                out.issue(path, err.to_string(), err.protection);
-                return;
-            }
+            Err(err) => return out.issue(path, err.to_string(), err.protection),
         };
         match programs(path) {
             Ok(list) => {
                 for member in list {
-                    let name = Path::new(&member)
-                        .file_stem()
-                        .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+                    let name = stem(Path::new(&member));
                     out.entry(ScanEntry {
                         format: FormatId::Uvi,
                         path: path.join(member),
@@ -386,13 +417,10 @@ fn scan_file(path: &Path, out: &mut dyn ScanSink) {
             }
         }
     } else if is_standalone_uvip(path) {
-        let name = path
-            .file_stem()
-            .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
         out.entry(ScanEntry {
             format: FormatId::Uvi,
             path: path.to_path_buf(),
-            name,
+            name: stem(path),
             protection: ProtectionStatus::Open,
         });
     }

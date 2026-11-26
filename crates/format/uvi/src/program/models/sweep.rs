@@ -26,7 +26,7 @@ use kontra_format::Notes;
 use kontra_ir as ir;
 use roxmltree::Node;
 
-use super::{Attr, UviModule, ids, nothing, num};
+use super::{Attr, DELAY_BASE, UviModule, eff, ids, nothing, num};
 
 /// Flanger: `[DelayTime, Depth, Feedback, Speed, Mix, SyncToHost]`.
 pub static FLANGER: UviModule = UviModule {
@@ -45,40 +45,24 @@ pub static FLANGER: UviModule = UviModule {
         let [time, depth, feedback, speed, mix, synced] = *p else {
             return None;
         };
-        let depth = depth.clamp(0.0, 1.0);
-        let time = time.clamp(0.0, 1.0);
-        let speed = speed.max(1e-3);
-        let rate = if synced > 0.5 {
-            ir::Rate::Beats(speed)
-        } else {
-            ir::Rate::Hz(speed)
-        };
+        let (depth, time, speed) = (depth.clamp(0.0, 1.0), time.clamp(0.0, 1.0), speed.max(1e-3));
         let delay = ir::Delay {
-            direct: 0.0,
             time: ir::DelayTime::Ms(20.0 * (time + depth / 2.0)),
             depth_ms: 10.0 * depth,
-            second_head: false,
-            input: ir::IDENTITY,
             feedback: [[feedback, 0.0], [0.0, feedback]],
-            output: ir::IDENTITY,
-            damping_hz: f32::INFINITY,
-            low_cut_hz: 0.0,
-            steep_low_cut: false,
-            body: std::borrow::Cow::Borrowed(&[]),
-            triangle_s: None,
-            shape: std::borrow::Cow::Borrowed(&[]),
-            noise: [0.0; 2],
-            high_shelf: None,
-            spread_ms: 0.0,
-            rate,
-            phase: 0.0,
+            rate: if synced > 0.5 {
+                ir::Rate::Beats(speed)
+            } else {
+                ir::Rate::Hz(speed)
+            },
+            ..DELAY_BASE
         };
-        Some(ir::Effect {
-            kind: ir::EffectKind::Delay(delay),
-            bypass: current.bypass,
-            output: mix.clamp(0.0, 1.0),
-            dry: 1.0,
-        })
+        Some(eff(
+            ir::EffectKind::Delay(delay),
+            current,
+            mix.clamp(0.0, 1.0),
+            1.0,
+        ))
     },
 };
 
@@ -99,29 +83,14 @@ pub static PHASOR: UviModule = UviModule {
     ],
     report: phasor_report,
     build_effect: |p, current| {
-        let [
-            low,
-            high,
-            feedback,
-            speed,
-            spread,
-            depth,
-            order,
-            shape,
-            synced,
-        ] = *p
-        else {
-            return None;
-        };
-        let order = order.round().clamp(1.0, 12.0);
-        let low = low.max(1.0);
-        let high = high.max(1.0);
-        let speed = speed.max(1e-3);
-        let rate = if synced > 0.5 {
-            ir::Rate::Beats(speed)
-        } else {
-            ir::Rate::Hz(speed.min(10.0))
-        };
+        #[rustfmt::skip]
+        let [low, high, feedback, speed, spread, depth, order, shape, synced] = *p else { return None };
+        let (order, low, high, speed) = (
+            order.round().clamp(1.0, 12.0),
+            low.max(1.0),
+            high.max(1.0),
+            speed.max(1e-3),
+        );
         let hz = order / std::f32::consts::PI * (low * high).sqrt();
         let phaser = ir::Phaser {
             stages: 2 * order as u8,
@@ -130,17 +99,21 @@ pub static PHASOR: UviModule = UviModule {
             spread_hz: hz,
             exponent: 0.5 * (high / low).ln(),
             feedback,
-            rate,
+            rate: if synced > 0.5 {
+                ir::Rate::Beats(speed)
+            } else {
+                ir::Rate::Hz(speed.min(10.0))
+            },
             phase: spread.clamp(0.0, 1.0) / 4.0,
         };
         let depth = depth.clamp(0.0, 1.0);
         let norm = (1.0 + depth * depth).sqrt();
-        Some(ir::Effect {
-            kind: ir::EffectKind::Phaser(phaser),
-            bypass: current.bypass,
-            output: depth / norm,
-            dry: 1.0 / norm,
-        })
+        Some(eff(
+            ir::EffectKind::Phaser(phaser),
+            current,
+            depth / norm,
+            1.0 / norm,
+        ))
     },
 };
 

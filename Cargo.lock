@@ -2049,6 +2049,7 @@ dependencies = [
 name = "kontra-lua"
 version = "0.0.0"
 dependencies = [
+ "kontra-protocol",
  "kontra-ui-model",
  "kontra-vm",
  "mlua",

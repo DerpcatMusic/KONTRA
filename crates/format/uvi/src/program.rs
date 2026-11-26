@@ -22,7 +22,7 @@ mod ignored;
 mod lfo_routes;
 mod load;
 mod matrix;
-mod models;
+pub(crate) mod models;
 mod modulation;
 mod multi_peak;
 mod provenance;

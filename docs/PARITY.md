@@ -28,27 +28,27 @@ PR: the squash merge that last changed each row's evidence line (`Parity: <row-i
 |   Kontakt DSP: utility | 12 | 0 | 6 | 2 | 0 | 4 | 0.0 | 50.0 |
 | File loading: every saved object type | 129 | 45 | 0 | 11 | 61 | 12 | 34.9 | 34.9 |
 | Scripting (Lua API) | 123 | 123 | 0 | 0 | 0 | 0 | 100.0 | 100.0 |
-| Instrument panels: widgets | 158 | 153 | 5 | 0 | 0 | 0 | 96.8 | 100.0 |
-| Effects and elements | 546 | 34 | 19 | 19 | 0 | 474 | 6.2 | 9.7 |
+| Instrument panels: widgets | 158 | 158 | 0 | 0 | 0 | 0 | 100.0 | 100.0 |
+| Effects and elements | 546 | 34 | 37 | 1 | 0 | 474 | 6.2 | 13.0 |
 |   UVI DSP: EQ | 15 | 2 | 2 | 0 | 0 | 11 | 13.3 | 26.7 |
-|   UVI DSP: convolution | 6 | 2 | 1 | 1 | 0 | 2 | 33.3 | 50.0 |
+|   UVI DSP: convolution | 6 | 2 | 2 | 0 | 0 | 2 | 33.3 | 66.7 |
 |   UVI DSP: delay | 18 | 1 | 1 | 0 | 0 | 16 | 5.6 | 11.1 |
-|   UVI DSP: distortion | 36 | 2 | 2 | 2 | 0 | 30 | 5.6 | 11.1 |
-|   UVI DSP: dynamics | 27 | 1 | 0 | 1 | 0 | 25 | 3.7 | 3.7 |
+|   UVI DSP: distortion | 36 | 2 | 4 | 0 | 0 | 30 | 5.6 | 16.7 |
+|   UVI DSP: dynamics | 27 | 1 | 1 | 0 | 0 | 25 | 3.7 | 7.4 |
 |   UVI DSP: event processor | 15 | 1 | 1 | 0 | 0 | 13 | 6.7 | 13.3 |
-|   UVI DSP: filter | 63 | 3 | 1 | 2 | 0 | 57 | 4.8 | 6.3 |
-|   UVI DSP: legacy | 96 | 1 | 0 | 1 | 0 | 94 | 1.0 | 1.0 |
+|   UVI DSP: filter | 63 | 3 | 3 | 0 | 0 | 57 | 4.8 | 9.5 |
+|   UVI DSP: legacy | 96 | 1 | 1 | 0 | 0 | 94 | 1.0 | 2.1 |
 |   UVI DSP: modulation | 48 | 7 | 7 | 0 | 0 | 34 | 14.6 | 29.2 |
-|   UVI DSP: modulation FX | 36 | 2 | 0 | 2 | 0 | 32 | 5.6 | 5.6 |
-|   UVI DSP: oscillator | 84 | 1 | 0 | 1 | 0 | 82 | 1.2 | 1.2 |
-|   UVI DSP: other | 24 | 5 | 0 | 5 | 0 | 14 | 20.8 | 20.8 |
-|   UVI DSP: reverb | 15 | 1 | 1 | 2 | 0 | 11 | 6.7 | 13.3 |
+|   UVI DSP: modulation FX | 36 | 2 | 2 | 0 | 0 | 32 | 5.6 | 11.1 |
+|   UVI DSP: oscillator | 84 | 1 | 1 | 0 | 0 | 82 | 1.2 | 2.4 |
+|   UVI DSP: other | 24 | 5 | 5 | 0 | 0 | 14 | 20.8 | 41.7 |
+|   UVI DSP: reverb | 15 | 1 | 2 | 1 | 0 | 11 | 6.7 | 20.0 |
 |   UVI DSP: time-stretch / slicing | 12 | 0 | 0 | 0 | 0 | 12 | 0.0 | 0.0 |
-|   UVI DSP: utility | 51 | 5 | 3 | 2 | 0 | 41 | 9.8 | 15.7 |
-| Parameters | 3065 | 10 | 94 | 928 | 0 | 2033 | 0.3 | 3.4 |
+|   UVI DSP: utility | 51 | 5 | 5 | 0 | 0 | 41 | 9.8 | 19.6 |
+| Parameters | 3065 | 47 | 224 | 761 | 0 | 2033 | 1.5 | 8.8 |
 | **Kontakt overall** | 2291 | 643 | 632 | 840 | 61 | 115 | 28.1 | 55.7 |
-| **UVI overall** | 3892 | 320 | 118 | 947 | 0 | 2507 | 8.2 | 11.3 |
-| **All** | 6183 | 963 | 750 | 1787 | 61 | 2622 | 15.6 | 27.7 |
+| **UVI overall** | 3892 | 362 | 261 | 762 | 0 | 2507 | 9.3 | 16.0 |
+| **All** | 6183 | 1005 | 893 | 1602 | 61 | 2622 | 16.3 | 30.7 |
 | **Kontakt corpus** (playable) | 1821 | 1567 | 0 | 254 | 0 | 0 | 86.1 | 86.1 |
 | **UVI corpus** (playable) | 660 | 648 | 0 | 12 | 0 | 0 | 98.2 | 98.2 |
 
@@ -2536,221 +2536,221 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.browseForFile` | browseForFile | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___async.html |
-| tested | `uvi.api.createMidiFile` | createMidiFile | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___async.html |
-| tested | `uvi.api.listFiles` | listFiles | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___async.html |
-| tested | `uvi.api.loadData` | loadData | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___async.html |
-| tested | `uvi.api.loadImpulse` | loadImpulse | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___async.html |
-| tested | `uvi.api.loadMidi` | loadMidi | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___async.html |
-| tested | `uvi.api.loadSample` | loadSample | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___async.html |
-| tested | `uvi.api.loadState` | loadState | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___async.html |
-| tested | `uvi.api.loadTextData` | loadTextData | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___async.html |
-| tested | `uvi.api.purge` | purge | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___async.html |
-| tested | `uvi.api.saveData` | saveData | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___async.html |
-| tested | `uvi.api.saveMidi` | saveMidi | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___async.html |
-| tested | `uvi.api.saveState` | saveState | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___async.html |
-| tested | `uvi.api.saveTextData` | saveTextData | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___async.html |
-| tested | `uvi.api.setPlaybackOptions` | setPlaybackOptions | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___async.html |
-| tested | `uvi.api.unpurge` | unpurge | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___async.html |
+| tested | `uvi.api.browseForFile` | browseForFile | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___async.html |
+| tested | `uvi.api.createMidiFile` | createMidiFile | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___async.html |
+| tested | `uvi.api.listFiles` | listFiles | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___async.html |
+| tested | `uvi.api.loadData` | loadData | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___async.html |
+| tested | `uvi.api.loadImpulse` | loadImpulse | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___async.html |
+| tested | `uvi.api.loadMidi` | loadMidi | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___async.html |
+| tested | `uvi.api.loadSample` | loadSample | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___async.html |
+| tested | `uvi.api.loadState` | loadState | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___async.html |
+| tested | `uvi.api.loadTextData` | loadTextData | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___async.html |
+| tested | `uvi.api.purge` | purge | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___async.html |
+| tested | `uvi.api.saveData` | saveData | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___async.html |
+| tested | `uvi.api.saveMidi` | saveMidi | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___async.html |
+| tested | `uvi.api.saveState` | saveState | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___async.html |
+| tested | `uvi.api.saveTextData` | saveTextData | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___async.html |
+| tested | `uvi.api.setPlaybackOptions` | setPlaybackOptions | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___async.html |
+| tested | `uvi.api.unpurge` | unpurge | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___async.html |
 ### AsyncBrowseForFileTask (1 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.AsyncBrowseForFileTask.cancel` | AsyncBrowseForFileTask.cancel | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_async_browse_for_file_task.html |
+| tested | `uvi.api.AsyncBrowseForFileTask.cancel` | AsyncBrowseForFileTask.cancel | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_async_browse_for_file_task.html |
 ### AsyncDataLoadTask (2 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.AsyncDataLoadTask.cancel` | AsyncDataLoadTask.cancel | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_async_data_load_task.html |
+| tested | `uvi.api.AsyncDataLoadTask.cancel` | AsyncDataLoadTask.cancel | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_async_data_load_task.html |
 | tested | `uvi.api.AsyncDataLoadTask.data` | AsyncDataLoadTask.data | [tests.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/tests.rs) | [KONTRA#979](https://github.com/DerpcatMusic/KONTRA/pull/979) | 2026-10-29 | https://lua.uvi.net/class_async_data_load_task.html |
 ### AsyncDataSaveTask (1 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.AsyncDataSaveTask.cancel` | AsyncDataSaveTask.cancel | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_async_data_save_task.html |
+| tested | `uvi.api.AsyncDataSaveTask.cancel` | AsyncDataSaveTask.cancel | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_async_data_save_task.html |
 ### AsyncListFilesTask (2 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.AsyncListFilesTask.cancel` | AsyncListFilesTask.cancel | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_async_list_files_task.html |
-| tested | `uvi.api.AsyncListFilesTask.result` | AsyncListFilesTask.result | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_async_list_files_task.html |
+| tested | `uvi.api.AsyncListFilesTask.cancel` | AsyncListFilesTask.cancel | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_async_list_files_task.html |
+| tested | `uvi.api.AsyncListFilesTask.result` | AsyncListFilesTask.result | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_async_list_files_task.html |
 ### AsyncMidiFileLoadTask (2 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.AsyncMidiFileLoadTask.cancel` | AsyncMidiFileLoadTask.cancel | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_async_midi_file_load_task.html |
-| tested | `uvi.api.AsyncMidiFileLoadTask.midi` | AsyncMidiFileLoadTask.midi | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_async_midi_file_load_task.html |
+| tested | `uvi.api.AsyncMidiFileLoadTask.cancel` | AsyncMidiFileLoadTask.cancel | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_async_midi_file_load_task.html |
+| tested | `uvi.api.AsyncMidiFileLoadTask.midi` | AsyncMidiFileLoadTask.midi | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_async_midi_file_load_task.html |
 ### AsyncTask (1 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.AsyncTask.cancel` | AsyncTask.cancel | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_async_task.html |
+| tested | `uvi.api.AsyncTask.cancel` | AsyncTask.cancel | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_async_task.html |
 ### Context (13 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.getBarDuration` | getBarDuration | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___context.html |
-| tested | `uvi.api.getBeatDuration` | getBeatDuration | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___context.html |
-| tested | `uvi.api.getBeatTime` | getBeatTime | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___context.html |
-| tested | `uvi.api.getCC` | getCC | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___context.html |
-| tested | `uvi.api.getNoteDuration` | getNoteDuration | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___context.html |
-| tested | `uvi.api.getRunningBeatTime` | getRunningBeatTime | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___context.html |
-| tested | `uvi.api.getSamplingRate` | getSamplingRate | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___context.html |
-| tested | `uvi.api.getTempo` | getTempo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___context.html |
-| tested | `uvi.api.getTime` | getTime | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___context.html |
-| tested | `uvi.api.getTimeSignature` | getTimeSignature | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___context.html |
-| tested | `uvi.api.isKeyDown` | isKeyDown | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___context.html |
-| tested | `uvi.api.isNoteHeld` | isNoteHeld | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___context.html |
-| tested | `uvi.api.isOctaveKeyDown` | isOctaveKeyDown | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___context.html |
+| tested | `uvi.api.getBarDuration` | getBarDuration | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___context.html |
+| tested | `uvi.api.getBeatDuration` | getBeatDuration | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___context.html |
+| tested | `uvi.api.getBeatTime` | getBeatTime | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___context.html |
+| tested | `uvi.api.getCC` | getCC | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___context.html |
+| tested | `uvi.api.getNoteDuration` | getNoteDuration | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___context.html |
+| tested | `uvi.api.getRunningBeatTime` | getRunningBeatTime | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___context.html |
+| tested | `uvi.api.getSamplingRate` | getSamplingRate | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___context.html |
+| tested | `uvi.api.getTempo` | getTempo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___context.html |
+| tested | `uvi.api.getTime` | getTime | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___context.html |
+| tested | `uvi.api.getTimeSignature` | getTimeSignature | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___context.html |
+| tested | `uvi.api.isKeyDown` | isKeyDown | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___context.html |
+| tested | `uvi.api.isNoteHeld` | isNoteHeld | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___context.html |
+| tested | `uvi.api.isOctaveKeyDown` | isOctaveKeyDown | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___context.html |
 ### Conversions (4 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.beat2ms` | beat2ms | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___conversions.html |
-| tested | `uvi.api.ms2beat` | ms2beat | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___conversions.html |
-| tested | `uvi.api.ms2samples` | ms2samples | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___conversions.html |
-| tested | `uvi.api.samples2ms` | samples2ms | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___conversions.html |
+| tested | `uvi.api.beat2ms` | beat2ms | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___conversions.html |
+| tested | `uvi.api.ms2beat` | ms2beat | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___conversions.html |
+| tested | `uvi.api.ms2samples` | ms2samples | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___conversions.html |
+| tested | `uvi.api.samples2ms` | samples2ms | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___conversions.html |
 ### Element (9 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.Element.getParameter` | Element.getParameter | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_element.html |
-| tested | `uvi.api.Element.getParameterConnections` | Element.getParameterConnections | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_element.html |
-| tested | `uvi.api.Element.hasParameter` | Element.hasParameter | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_element.html |
-| tested | `uvi.api.Element.insertEffect` | Element.insertEffect | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_element.html |
-| tested | `uvi.api.Element.moveEffect` | Element.moveEffect | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_element.html |
-| tested | `uvi.api.Element.parameterDefinitions` | Element.parameterDefinitions | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_element.html |
-| tested | `uvi.api.Element.removeEffect` | Element.removeEffect | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_element.html |
+| tested | `uvi.api.Element.getParameter` | Element.getParameter | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_element.html |
+| tested | `uvi.api.Element.getParameterConnections` | Element.getParameterConnections | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_element.html |
+| tested | `uvi.api.Element.hasParameter` | Element.hasParameter | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_element.html |
+| tested | `uvi.api.Element.insertEffect` | Element.insertEffect | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_element.html |
+| tested | `uvi.api.Element.moveEffect` | Element.moveEffect | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_element.html |
+| tested | `uvi.api.Element.parameterDefinitions` | Element.parameterDefinitions | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_element.html |
+| tested | `uvi.api.Element.removeEffect` | Element.removeEffect | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_element.html |
 | tested | `uvi.api.Element.setParameter` | Element.setParameter | [tests.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/tests.rs) | #132 | 2026-11-23 | https://lua.uvi.net/class_element.html |
-| tested | `uvi.api.Element.synthChildren` | Element.synthChildren | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_element.html |
+| tested | `uvi.api.Element.synthChildren` | Element.synthChildren | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_element.html |
 ### Event (1 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.Event.Type` | Event.Type | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_event.html |
+| tested | `uvi.api.Event.Type` | Event.Type | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_event.html |
 ### Event callbacks (12 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.onAfterTouch` | onAfterTouch | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___event_callbacks.html |
-| tested | `uvi.api.onController` | onController | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___event_callbacks.html |
-| tested | `uvi.api.onEvent` | onEvent | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___event_callbacks.html |
-| tested | `uvi.api.onInit` | onInit | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___event_callbacks.html |
-| tested | `uvi.api.onLoad` | onLoad | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___event_callbacks.html |
+| tested | `uvi.api.onAfterTouch` | onAfterTouch | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___event_callbacks.html |
+| tested | `uvi.api.onController` | onController | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___event_callbacks.html |
+| tested | `uvi.api.onEvent` | onEvent | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___event_callbacks.html |
+| tested | `uvi.api.onInit` | onInit | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___event_callbacks.html |
+| tested | `uvi.api.onLoad` | onLoad | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___event_callbacks.html |
 | tested | `uvi.api.onNote` | onNote | [dispatch.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/dispatch.rs) | [KONTRA#1523](https://github.com/DerpcatMusic/KONTRA/pull/1523) | 2026-11-14 | https://lua.uvi.net/group___event_callbacks.html |
-| tested | `uvi.api.onPitchBend` | onPitchBend | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___event_callbacks.html |
-| tested | `uvi.api.onPolyAfterTouch` | onPolyAfterTouch | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___event_callbacks.html |
-| tested | `uvi.api.onProgramChange` | onProgramChange | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___event_callbacks.html |
-| tested | `uvi.api.onRelease` | onRelease | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___event_callbacks.html |
-| tested | `uvi.api.onSave` | onSave | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___event_callbacks.html |
-| tested | `uvi.api.onTransport` | onTransport | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___event_callbacks.html |
+| tested | `uvi.api.onPitchBend` | onPitchBend | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___event_callbacks.html |
+| tested | `uvi.api.onPolyAfterTouch` | onPolyAfterTouch | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___event_callbacks.html |
+| tested | `uvi.api.onProgramChange` | onProgramChange | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___event_callbacks.html |
+| tested | `uvi.api.onRelease` | onRelease | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___event_callbacks.html |
+| tested | `uvi.api.onSave` | onSave | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___event_callbacks.html |
+| tested | `uvi.api.onTransport` | onTransport | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___event_callbacks.html |
 ### Events (3 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.playNote` | playNote | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___events.html |
-| tested | `uvi.api.postEvent` | postEvent | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___events.html |
-| tested | `uvi.api.releaseVoice` | releaseVoice | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___events.html |
+| tested | `uvi.api.playNote` | playNote | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___events.html |
+| tested | `uvi.api.postEvent` | postEvent | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___events.html |
+| tested | `uvi.api.releaseVoice` | releaseVoice | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___events.html |
 ### Keygroup (1 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.Keygroup.Parameters` | Keygroup.Parameters | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_keygroup.html |
+| tested | `uvi.api.Keygroup.Parameters` | Keygroup.Parameters | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_keygroup.html |
 ### MIDI (9 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.afterTouch` | afterTouch | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___m_i_d_i.html |
-| tested | `uvi.api.controlChange` | controlChange | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___m_i_d_i.html |
-| tested | `uvi.api.enable_data_entry_as_cc` | enable_data_entry_as_cc | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___m_i_d_i.html |
-| tested | `uvi.api.enable_nrpn_as_cc` | enable_nrpn_as_cc | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___m_i_d_i.html |
-| tested | `uvi.api.enable_rpn_as_cc` | enable_rpn_as_cc | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___m_i_d_i.html |
-| tested | `uvi.api.pitchBend` | pitchBend | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___m_i_d_i.html |
-| tested | `uvi.api.polyAfterTouch` | polyAfterTouch | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___m_i_d_i.html |
-| tested | `uvi.api.postMidiEvent` | postMidiEvent | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___m_i_d_i.html |
-| tested | `uvi.api.programChange` | programChange | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___m_i_d_i.html |
+| tested | `uvi.api.afterTouch` | afterTouch | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___m_i_d_i.html |
+| tested | `uvi.api.controlChange` | controlChange | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___m_i_d_i.html |
+| tested | `uvi.api.enable_data_entry_as_cc` | enable_data_entry_as_cc | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___m_i_d_i.html |
+| tested | `uvi.api.enable_nrpn_as_cc` | enable_nrpn_as_cc | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___m_i_d_i.html |
+| tested | `uvi.api.enable_rpn_as_cc` | enable_rpn_as_cc | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___m_i_d_i.html |
+| tested | `uvi.api.pitchBend` | pitchBend | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___m_i_d_i.html |
+| tested | `uvi.api.polyAfterTouch` | polyAfterTouch | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___m_i_d_i.html |
+| tested | `uvi.api.postMidiEvent` | postMidiEvent | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___m_i_d_i.html |
+| tested | `uvi.api.programChange` | programChange | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___m_i_d_i.html |
 ### MidiEvent (1 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.MidiEvent.MidiEvent` | MidiEvent.MidiEvent | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_midi_event.html |
+| tested | `uvi.api.MidiEvent.MidiEvent` | MidiEvent.MidiEvent | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_midi_event.html |
 ### MidiSequence (6 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.MidiSequence.findAt` | MidiSequence.findAt | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_midi_sequence.html |
-| tested | `uvi.api.MidiSequence.findNextAt` | MidiSequence.findNextAt | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_midi_sequence.html |
-| tested | `uvi.api.MidiSequence.findPreviousAt` | MidiSequence.findPreviousAt | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_midi_sequence.html |
-| tested | `uvi.api.MidiSequence.getEvent` | MidiSequence.getEvent | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_midi_sequence.html |
-| tested | `uvi.api.MidiSequence.getNumEventsForTrack` | MidiSequence.getNumEventsForTrack | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_midi_sequence.html |
-| tested | `uvi.api.MidiSequence.insertEvent` | MidiSequence.insertEvent | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_midi_sequence.html |
+| tested | `uvi.api.MidiSequence.findAt` | MidiSequence.findAt | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_midi_sequence.html |
+| tested | `uvi.api.MidiSequence.findNextAt` | MidiSequence.findNextAt | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_midi_sequence.html |
+| tested | `uvi.api.MidiSequence.findPreviousAt` | MidiSequence.findPreviousAt | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_midi_sequence.html |
+| tested | `uvi.api.MidiSequence.getEvent` | MidiSequence.getEvent | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_midi_sequence.html |
+| tested | `uvi.api.MidiSequence.getNumEventsForTrack` | MidiSequence.getNumEventsForTrack | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_midi_sequence.html |
+| tested | `uvi.api.MidiSequence.insertEvent` | MidiSequence.insertEvent | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_midi_sequence.html |
 ### Oscillator (4 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.Oscillator.Parameters` | Oscillator.Parameters | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_oscillator.html |
-| tested | `uvi.api.Oscillator.getSliceInfo` | Oscillator.getSliceInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_oscillator.html |
-| tested | `uvi.api.Oscillator.looplabInfo` | Oscillator.looplabInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_oscillator.html |
-| tested | `uvi.api.Oscillator.sampleInfo` | Oscillator.sampleInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_oscillator.html |
+| tested | `uvi.api.Oscillator.Parameters` | Oscillator.Parameters | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_oscillator.html |
+| tested | `uvi.api.Oscillator.getSliceInfo` | Oscillator.getSliceInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_oscillator.html |
+| tested | `uvi.api.Oscillator.looplabInfo` | Oscillator.looplabInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_oscillator.html |
+| tested | `uvi.api.Oscillator.sampleInfo` | Oscillator.sampleInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_oscillator.html |
 ### SampleBasedOscillator (4 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.SampleBasedOscillator.Parameters` | SampleBasedOscillator.Parameters | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_sample_based_oscillator.html |
-| tested | `uvi.api.SampleBasedOscillator.getSliceInfo` | SampleBasedOscillator.getSliceInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_sample_based_oscillator.html |
-| tested | `uvi.api.SampleBasedOscillator.looplabInfo` | SampleBasedOscillator.looplabInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_sample_based_oscillator.html |
-| tested | `uvi.api.SampleBasedOscillator.sampleInfo` | SampleBasedOscillator.sampleInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_sample_based_oscillator.html |
+| tested | `uvi.api.SampleBasedOscillator.Parameters` | SampleBasedOscillator.Parameters | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_sample_based_oscillator.html |
+| tested | `uvi.api.SampleBasedOscillator.getSliceInfo` | SampleBasedOscillator.getSliceInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_sample_based_oscillator.html |
+| tested | `uvi.api.SampleBasedOscillator.looplabInfo` | SampleBasedOscillator.looplabInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_sample_based_oscillator.html |
+| tested | `uvi.api.SampleBasedOscillator.sampleInfo` | SampleBasedOscillator.sampleInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_sample_based_oscillator.html |
 ### SampleMappingOscillator (10 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.SampleMappingOscillator.Parameters` | SampleMappingOscillator.Parameters | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_sample_mapping_oscillator.html |
-| tested | `uvi.api.SampleMappingOscillator.getLoadingStatus` | SampleMappingOscillator.getLoadingStatus | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_sample_mapping_oscillator.html |
-| tested | `uvi.api.SampleMappingOscillator.getNumZones` | SampleMappingOscillator.getNumZones | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_sample_mapping_oscillator.html |
-| tested | `uvi.api.SampleMappingOscillator.getSliceInfo` | SampleMappingOscillator.getSliceInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_sample_mapping_oscillator.html |
-| tested | `uvi.api.SampleMappingOscillator.loadMapping` | SampleMappingOscillator.loadMapping | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_sample_mapping_oscillator.html |
-| tested | `uvi.api.SampleMappingOscillator.looplabInfo` | SampleMappingOscillator.looplabInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_sample_mapping_oscillator.html |
-| tested | `uvi.api.SampleMappingOscillator.purgeZones` | SampleMappingOscillator.purgeZones | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_sample_mapping_oscillator.html |
-| tested | `uvi.api.SampleMappingOscillator.sampleInfo` | SampleMappingOscillator.sampleInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_sample_mapping_oscillator.html |
-| tested | `uvi.api.SampleMappingOscillator.unpurgeZones` | SampleMappingOscillator.unpurgeZones | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_sample_mapping_oscillator.html |
-| tested | `uvi.api.SampleMappingOscillator.waitForLoading` | SampleMappingOscillator.waitForLoading | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_sample_mapping_oscillator.html |
+| tested | `uvi.api.SampleMappingOscillator.Parameters` | SampleMappingOscillator.Parameters | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_sample_mapping_oscillator.html |
+| tested | `uvi.api.SampleMappingOscillator.getLoadingStatus` | SampleMappingOscillator.getLoadingStatus | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_sample_mapping_oscillator.html |
+| tested | `uvi.api.SampleMappingOscillator.getNumZones` | SampleMappingOscillator.getNumZones | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_sample_mapping_oscillator.html |
+| tested | `uvi.api.SampleMappingOscillator.getSliceInfo` | SampleMappingOscillator.getSliceInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_sample_mapping_oscillator.html |
+| tested | `uvi.api.SampleMappingOscillator.loadMapping` | SampleMappingOscillator.loadMapping | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_sample_mapping_oscillator.html |
+| tested | `uvi.api.SampleMappingOscillator.looplabInfo` | SampleMappingOscillator.looplabInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_sample_mapping_oscillator.html |
+| tested | `uvi.api.SampleMappingOscillator.purgeZones` | SampleMappingOscillator.purgeZones | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_sample_mapping_oscillator.html |
+| tested | `uvi.api.SampleMappingOscillator.sampleInfo` | SampleMappingOscillator.sampleInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_sample_mapping_oscillator.html |
+| tested | `uvi.api.SampleMappingOscillator.unpurgeZones` | SampleMappingOscillator.unpurgeZones | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_sample_mapping_oscillator.html |
+| tested | `uvi.api.SampleMappingOscillator.waitForLoading` | SampleMappingOscillator.waitForLoading | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_sample_mapping_oscillator.html |
 ### SamplePlayer (4 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.SamplePlayer.Parameters` | SamplePlayer.Parameters | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_sample_player.html |
-| tested | `uvi.api.SamplePlayer.getSliceInfo` | SamplePlayer.getSliceInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_sample_player.html |
-| tested | `uvi.api.SamplePlayer.looplabInfo` | SamplePlayer.looplabInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_sample_player.html |
-| tested | `uvi.api.SamplePlayer.sampleInfo` | SamplePlayer.sampleInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_sample_player.html |
+| tested | `uvi.api.SamplePlayer.Parameters` | SamplePlayer.Parameters | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_sample_player.html |
+| tested | `uvi.api.SamplePlayer.getSliceInfo` | SamplePlayer.getSliceInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_sample_player.html |
+| tested | `uvi.api.SamplePlayer.looplabInfo` | SamplePlayer.looplabInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_sample_player.html |
+| tested | `uvi.api.SamplePlayer.sampleInfo` | SamplePlayer.sampleInfo | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_sample_player.html |
 ### SampledReverb (1 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.SampledReverb.loadImpulse` | SampledReverb.loadImpulse | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_sampled_reverb.html |
+| tested | `uvi.api.SampledReverb.loadImpulse` | SampledReverb.loadImpulse | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_sampled_reverb.html |
 ### Time (5 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
 | tested | `uvi.api.run` | run | [dispatch.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/dispatch.rs) | [KONTRA#1523](https://github.com/DerpcatMusic/KONTRA/pull/1523) | 2026-11-14 | https://lua.uvi.net/group___time.html |
 | tested | `uvi.api.spawn` | spawn | [realtime.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/realtime.rs) | [KONTRA#1318](https://github.com/DerpcatMusic/KONTRA/pull/1318) | 2026-11-12 | https://lua.uvi.net/group___time.html |
-| tested | `uvi.api.wait` | wait | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___time.html |
-| tested | `uvi.api.waitBeat` | waitBeat | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___time.html |
-| tested | `uvi.api.waitForRelease` | waitForRelease | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___time.html |
+| tested | `uvi.api.wait` | wait | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___time.html |
+| tested | `uvi.api.waitBeat` | waitBeat | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___time.html |
+| tested | `uvi.api.waitForRelease` | waitForRelease | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___time.html |
 ### Voice (11 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.api.changePan` | changePan | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___voice.html |
-| tested | `uvi.api.changeTune` | changeTune | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___voice.html |
-| tested | `uvi.api.changeVolume` | changeVolume | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___voice.html |
-| tested | `uvi.api.changeVolumedB` | changeVolumedB | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___voice.html |
-| tested | `uvi.api.fade` | fade | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___voice.html |
-| tested | `uvi.api.fade2` | fade2 | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___voice.html |
-| tested | `uvi.api.fadein` | fadein | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___voice.html |
-| tested | `uvi.api.fadeout` | fadeout | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___voice.html |
-| tested | `uvi.api.sendScriptModulation` | sendScriptModulation | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___voice.html |
-| tested | `uvi.api.sendScriptModulation2` | sendScriptModulation2 | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___voice.html |
-| tested | `uvi.api.setSampleOffset` | setSampleOffset | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/group___voice.html |
+| tested | `uvi.api.changePan` | changePan | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___voice.html |
+| tested | `uvi.api.changeTune` | changeTune | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___voice.html |
+| tested | `uvi.api.changeVolume` | changeVolume | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___voice.html |
+| tested | `uvi.api.changeVolumedB` | changeVolumedB | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___voice.html |
+| tested | `uvi.api.fade` | fade | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___voice.html |
+| tested | `uvi.api.fade2` | fade2 | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___voice.html |
+| tested | `uvi.api.fadein` | fadein | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___voice.html |
+| tested | `uvi.api.fadeout` | fadeout | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___voice.html |
+| tested | `uvi.api.sendScriptModulation` | sendScriptModulation | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___voice.html |
+| tested | `uvi.api.sendScriptModulation2` | sendScriptModulation2 | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___voice.html |
+| tested | `uvi.api.setSampleOffset` | setSampleOffset | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/group___voice.html |
 
 ## Instrument panels: widgets
 
@@ -2773,7 +2773,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | tested | `uvi.ui.Button.backgroundColourOff` | Button.backgroundColourOff | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_button.html |
 | tested | `uvi.ui.Button.backgroundColourOn` | Button.backgroundColourOn | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_button.html |
 | tested | `uvi.ui.Button.dragAndDropText` | Button.dragAndDropText | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_button.html |
-| tested | `uvi.ui.Button.push` | Button.push | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_button.html |
+| tested | `uvi.ui.Button.push` | Button.push | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) | #352 | 2026-11-26 | https://lua.uvi.net/class_button.html |
 | tested | `uvi.ui.Button.setLottieAnimation` | Button.setLottieAnimation | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_button.html |
 | tested | `uvi.ui.Button.setStripImage` | Button.setStripImage | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_button.html |
 | tested | `uvi.ui.Button.stripImage` | Button.stripImage | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_button.html |
@@ -2819,7 +2819,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | tested | `uvi.ui.Knob.setLottieAnimation` | Knob.setLottieAnimation | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_knob.html |
 | tested | `uvi.ui.Knob.setRange` | Knob.setRange | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_knob.html |
 | tested | `uvi.ui.Knob.setStripImage` | Knob.setStripImage | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_knob.html |
-| tested | `uvi.ui.Knob.setValue` | Knob.setValue | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_knob.html |
+| tested | `uvi.ui.Knob.setValue` | Knob.setValue | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_knob.html |
 ### Label (7 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
@@ -2897,41 +2897,41 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 |---|---|---|---|---|---|---|
 | tested | `uvi.ui.Panel.Panel` | Panel.Panel | [probe.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.lua) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_panel.html |
 | tested | `uvi.ui.Panel.backgroundColour` | Panel.backgroundColour | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_panel.html |
-### ParamKnob (4 tested, 1 done, 0 partial, 0 unseen, 0 missing)
+### ParamKnob (5 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| done | `uvi.ui.ParamKnob.ParamKnob` | ParamKnob.ParamKnob | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_knob.html |
+| tested | `uvi.ui.ParamKnob.ParamKnob` | ParamKnob.ParamKnob | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_param_knob.html |
 | tested | `uvi.ui.ParamKnob.bind` | ParamKnob.bind | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_knob.html |
 | tested | `uvi.ui.ParamKnob.setLottieAnimation` | ParamKnob.setLottieAnimation | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_knob.html |
 | tested | `uvi.ui.ParamKnob.setRange` | ParamKnob.setRange | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_knob.html |
 | tested | `uvi.ui.ParamKnob.setStripImage` | ParamKnob.setStripImage | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_knob.html |
-### ParamMenu (1 tested, 1 done, 0 partial, 0 unseen, 0 missing)
+### ParamMenu (2 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| done | `uvi.ui.ParamMenu.ParamMenu` | ParamMenu.ParamMenu | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_menu.html |
+| tested | `uvi.ui.ParamMenu.ParamMenu` | ParamMenu.ParamMenu | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_param_menu.html |
 | tested | `uvi.ui.ParamMenu.bind` | ParamMenu.bind | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_menu.html |
-### ParamNumBox (1 tested, 1 done, 0 partial, 0 unseen, 0 missing)
+### ParamNumBox (2 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| done | `uvi.ui.ParamNumBox.ParamNumBox` | ParamNumBox.ParamNumBox | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_num_box.html |
+| tested | `uvi.ui.ParamNumBox.ParamNumBox` | ParamNumBox.ParamNumBox | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_param_num_box.html |
 | tested | `uvi.ui.ParamNumBox.bind` | ParamNumBox.bind | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_num_box.html |
-### ParamOnOffButton (4 tested, 1 done, 0 partial, 0 unseen, 0 missing)
+### ParamOnOffButton (5 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| done | `uvi.ui.ParamOnOffButton.ParamOnOffButton` | ParamOnOffButton.ParamOnOffButton | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_on_off_button.html |
+| tested | `uvi.ui.ParamOnOffButton.ParamOnOffButton` | ParamOnOffButton.ParamOnOffButton | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_param_on_off_button.html |
 | tested | `uvi.ui.ParamOnOffButton.bind` | ParamOnOffButton.bind | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_on_off_button.html |
 | tested | `uvi.ui.ParamOnOffButton.setLottieAnimation` | ParamOnOffButton.setLottieAnimation | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_on_off_button.html |
 | tested | `uvi.ui.ParamOnOffButton.setStripImage` | ParamOnOffButton.setStripImage | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_on_off_button.html |
 | tested | `uvi.ui.ParamOnOffButton.stripImage` | ParamOnOffButton.stripImage | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_on_off_button.html |
-### ParamSlider (4 tested, 1 done, 0 partial, 0 unseen, 0 missing)
+### ParamSlider (5 tested, 0 done, 0 partial, 0 unseen, 0 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| done | `uvi.ui.ParamSlider.ParamSlider` | ParamSlider.ParamSlider | [prelude.lua](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/src/prelude.lua) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_slider.html |
+| tested | `uvi.ui.ParamSlider.ParamSlider` | ParamSlider.ParamSlider | [uvi_api_parity.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_api_parity.rs) |  |  | https://lua.uvi.net/class_param_slider.html |
 | tested | `uvi.ui.ParamSlider.bind` | ParamSlider.bind | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_slider.html |
 | tested | `uvi.ui.ParamSlider.setLottieAnimation` | ParamSlider.setLottieAnimation | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_slider.html |
 | tested | `uvi.ui.ParamSlider.setRange` | ParamSlider.setRange | [probe.expected](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/script/lua/tests/uvi_ui/probe.expected) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/class_param_slider.html |
@@ -3039,7 +3039,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| tested | `uvi.dsp.DigitalEq.ir` | Digital Eq: in IR | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | #308 | 2026-11-25 | https://lua.uvi.net/_elements.html#DigitalEq |
+| tested | `uvi.dsp.DigitalEq.ir` | Digital Eq: in IR | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | https://lua.uvi.net/_elements.html#DigitalEq |
 | done | `uvi.dsp.DigitalEq.driven` | Digital Eq: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) | [KONTRA#64](https://github.com/DerpcatMusic/KONTRA/pull/64) | 2026-10-14 | mapped + ignored/unsupported |
 | missing | `uvi.dsp.DigitalEq.measured` | Digital Eq: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | missing | `uvi.dsp.Pultec.ir` | Passive EQ: in IR |  |  |  | https://lua.uvi.net/_elements.html#Pultec |
@@ -3054,7 +3054,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.dsp.ToneStack.ir` | Tone Stack: in IR |  |  |  | https://lua.uvi.net/_elements.html#ToneStack |
 | missing | `uvi.dsp.ToneStack.driven` | Tone Stack: driven |  |  |  | no-specific-translation-read-found |
 | missing | `uvi.dsp.ToneStack.measured` | Tone Stack: output vs oracle |  |  |  | no UVI oracle in the repo yet |
-### convolution (2 tested, 1 done, 1 partial, 0 unseen, 2 missing)
+### convolution (2 tested, 2 done, 0 partial, 0 unseen, 2 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
@@ -3062,7 +3062,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | done | `uvi.dsp.Convolver.driven` | Convolver: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) | [KONTRA#64](https://github.com/DerpcatMusic/KONTRA/pull/64) | 2026-10-14 | mapped + ignored/unsupported |
 | missing | `uvi.dsp.Convolver.measured` | Convolver: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | tested | `uvi.dsp.SampledReverb.ir` | IReverb: in IR | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) | #155 | 2026-11-24 | https://lua.uvi.net/_elements.html#SampledReverb |
-| partial | `uvi.dsp.SampledReverb.driven` | IReverb: driven |  |  |  | proxy/partial; exact class parity unproved |
+| done | `uvi.dsp.SampledReverb.driven` | IReverb: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) | [KONTRA#64](https://github.com/DerpcatMusic/KONTRA/pull/64) | 2026-10-14 | mapped; runtime-consumed |
 | missing | `uvi.dsp.SampledReverb.measured` | IReverb: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 ### delay (1 tested, 1 done, 0 partial, 0 unseen, 16 missing)
 
@@ -3086,7 +3086,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | tested | `uvi.dsp.TrackDelay.ir` | Track Delay: in IR | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) | [KONTRA#917](https://github.com/DerpcatMusic/KONTRA/pull/917) | 2026-10-28 | https://lua.uvi.net/_elements.html#TrackDelay |
 | done | `uvi.dsp.TrackDelay.driven` | Track Delay: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) | [KONTRA#64](https://github.com/DerpcatMusic/KONTRA/pull/64) | 2026-10-14 | mapped + ignored/unsupported |
 | missing | `uvi.dsp.TrackDelay.measured` | Track Delay: output vs oracle |  |  |  | no UVI oracle in the repo yet |
-### distortion (2 tested, 2 done, 2 partial, 0 unseen, 30 missing)
+### distortion (2 tested, 4 done, 0 partial, 0 unseen, 30 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
@@ -3094,10 +3094,10 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.dsp.BoxModeler.driven` | Guitar Boxes: driven |  |  |  | no-specific-translation-read-found |
 | missing | `uvi.dsp.BoxModeler.measured` | Guitar Boxes: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | done | `uvi.dsp.DiodeClipper.ir` | Diode Clipper: in IR | [shaper.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/shaper.rs) | #200 | 2026-11-25 | https://lua.uvi.net/_elements.html#DiodeClipper |
-| partial | `uvi.dsp.DiodeClipper.driven` | Diode Clipper: driven |  |  |  | no-specific-translation-read-found |
+| done | `uvi.dsp.DiodeClipper.driven` | Diode Clipper: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) |  |  | mapped |
 | missing | `uvi.dsp.DiodeClipper.measured` | Diode Clipper: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | tested | `uvi.dsp.Drive.ir` | Drive: in IR | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) | [KONTRA#940](https://github.com/DerpcatMusic/KONTRA/pull/940) | 2026-10-29 | https://lua.uvi.net/_elements.html#Drive |
-| partial | `uvi.dsp.Drive.driven` | Drive: driven |  |  |  | no-specific-translation-read-found |
+| done | `uvi.dsp.Drive.driven` | Drive: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) | [KONTRA#64](https://github.com/DerpcatMusic/KONTRA/pull/64) | 2026-10-14 | mapped + ignored/unsupported |
 | missing | `uvi.dsp.Drive.measured` | Drive: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | missing | `uvi.dsp.Exciter.ir` | Exciter: in IR |  |  |  | https://lua.uvi.net/_elements.html#Exciter |
 | missing | `uvi.dsp.Exciter.driven` | Exciter: driven |  |  |  | no-specific-translation-read-found |
@@ -3126,7 +3126,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | tested | `uvi.dsp.WaveShaper.ir` | Wave Shaper: in IR | [shaper.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/shaper.rs) | #200 | 2026-11-25 | https://lua.uvi.net/_elements.html#WaveShaper |
 | done | `uvi.dsp.WaveShaper.driven` | Wave Shaper: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) | [KONTRA#64](https://github.com/DerpcatMusic/KONTRA/pull/64) | 2026-10-14 | mapped + ignored/unsupported |
 | missing | `uvi.dsp.WaveShaper.measured` | Wave Shaper: output vs oracle |  |  |  | no UVI oracle in the repo yet |
-### dynamics (1 tested, 0 done, 1 partial, 0 unseen, 25 missing)
+### dynamics (1 tested, 1 done, 0 partial, 0 unseen, 25 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
@@ -3149,7 +3149,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.dsp.Gate.driven` | Gate: driven |  |  |  | no-specific-translation-read-found |
 | missing | `uvi.dsp.Gate.measured` | Gate: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | tested | `uvi.dsp.Maximizer.ir` | Maximizer: in IR | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) | #155 | 2026-11-24 | https://lua.uvi.net/_elements.html#Maximizer |
-| partial | `uvi.dsp.Maximizer.driven` | Maximizer: driven |  |  |  | no-specific-translation-read-found |
+| done | `uvi.dsp.Maximizer.driven` | Maximizer: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) |  |  | mapped + ignored/unsupported |
 | missing | `uvi.dsp.Maximizer.measured` | Maximizer: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | missing | `uvi.dsp.ThreeBandComp.ir` | 3 Band Compressor: in IR |  |  |  | https://lua.uvi.net/_elements.html#ThreeBandComp |
 | missing | `uvi.dsp.ThreeBandComp.driven` | 3 Band Compressor: driven |  |  |  | no-specific-translation-read-found |
@@ -3176,7 +3176,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | tested | `uvi.dsp.ScriptProcessor.ir` | Script Processor: in IR | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | https://lua.uvi.net/_elements.html#ScriptProcessor |
 | done | `uvi.dsp.ScriptProcessor.driven` | Script Processor: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) | [KONTRA#64](https://github.com/DerpcatMusic/KONTRA/pull/64) | 2026-10-14 | runtime-consumed;parsed-only + runtime-consumed |
 | missing | `uvi.dsp.ScriptProcessor.measured` | Script Processor: output vs oracle |  |  |  | no UVI oracle in the repo yet |
-### filter (3 tested, 1 done, 2 partial, 0 unseen, 57 missing)
+### filter (3 tested, 3 done, 0 partial, 0 unseen, 57 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
@@ -3187,7 +3187,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.dsp.BrickwallFilter.driven` | Brickwall Filter: driven |  |  |  | no-specific-translation-read-found |
 | missing | `uvi.dsp.BrickwallFilter.measured` | Brickwall Filter: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | tested | `uvi.dsp.CombFilter.ir` | Comb Filter: in IR | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) | [KONTRA#1481](https://github.com/DerpcatMusic/KONTRA/pull/1481) | 2026-11-13 | https://lua.uvi.net/_elements.html#CombFilter |
-| partial | `uvi.dsp.CombFilter.driven` | Comb Filter: driven |  |  |  | no-specific-translation-read-found |
+| done | `uvi.dsp.CombFilter.driven` | Comb Filter: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) |  |  | mapped |
 | missing | `uvi.dsp.CombFilter.measured` | Comb Filter: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | missing | `uvi.dsp.CrossOverFilter.ir` | Crossover Filter: in IR |  |  |  | https://lua.uvi.net/_elements.html#CrossOverFilter |
 | missing | `uvi.dsp.CrossOverFilter.driven` | Crossover Filter: driven |  |  |  | no-specific-translation-read-found |
@@ -3241,9 +3241,9 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.dsp.WahWah.driven` | WahWah: driven |  |  |  | no-specific-translation-read-found |
 | missing | `uvi.dsp.WahWah.measured` | WahWah: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | tested | `uvi.dsp.XpanderFilter.ir` | Xpander Filter: in IR | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | https://lua.uvi.net/_elements.html#XpanderFilter |
-| partial | `uvi.dsp.XpanderFilter.driven` | Xpander Filter: driven |  |  |  | no-specific-translation-read-found |
+| done | `uvi.dsp.XpanderFilter.driven` | Xpander Filter: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) |  |  | mapped |
 | missing | `uvi.dsp.XpanderFilter.measured` | Xpander Filter: output vs oracle |  |  |  | no UVI oracle in the repo yet |
-### legacy (1 tested, 0 done, 1 partial, 0 unseen, 94 missing)
+### legacy (1 tested, 1 done, 0 partial, 0 unseen, 94 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
@@ -3272,7 +3272,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.dsp.DoubleDrive.driven` | Double Drive: driven |  |  |  | no-specific-translation-read-found |
 | missing | `uvi.dsp.DoubleDrive.measured` | Double Drive: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | tested | `uvi.dsp.DualDelay.ir` | Dual Delay: in IR | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #200 | 2026-11-25 | https://lua.uvi.net/_elements.html#DualDelay |
-| partial | `uvi.dsp.DualDelay.driven` | Dual Delay: driven |  |  |  | no-specific-translation-read-found |
+| done | `uvi.dsp.DualDelay.driven` | Dual Delay: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) |  |  | mapped + ignored/unsupported |
 | missing | `uvi.dsp.DualDelay.measured` | Dual Delay: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | missing | `uvi.dsp.FatDelay.ir` | Fat Delay: in IR |  |  |  | https://lua.uvi.net/_elements.html#FatDelay |
 | missing | `uvi.dsp.FatDelay.driven` | Fat Delay: driven |  |  |  | no-specific-translation-read-found |
@@ -3395,7 +3395,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.dsp.VoiceModulator.ir` | Voice Modulator: in IR |  |  |  | https://lua.uvi.net/_elements.html#VoiceModulator |
 | missing | `uvi.dsp.VoiceModulator.driven` | Voice Modulator: driven |  |  |  | no-specific-translation-read-found |
 | missing | `uvi.dsp.VoiceModulator.measured` | Voice Modulator: output vs oracle |  |  |  | no UVI oracle in the repo yet |
-### modulation FX (2 tested, 0 done, 2 partial, 0 unseen, 32 missing)
+### modulation FX (2 tested, 2 done, 0 partial, 0 unseen, 32 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
@@ -3415,13 +3415,13 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.dsp.Ensemble.driven` | Ensemble 505: driven |  |  |  | no-specific-translation-read-found |
 | missing | `uvi.dsp.Ensemble.measured` | Ensemble 505: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | tested | `uvi.dsp.Flanger.ir` | Flanger: in IR | [sweep.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/sweep.rs) | #200 | 2026-11-25 | https://lua.uvi.net/_elements.html#Flanger |
-| partial | `uvi.dsp.Flanger.driven` | Flanger: driven |  |  |  | no-specific-translation-read-found |
+| done | `uvi.dsp.Flanger.driven` | Flanger: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) | [KONTRA#64](https://github.com/DerpcatMusic/KONTRA/pull/64) | 2026-10-14 | mapped |
 | missing | `uvi.dsp.Flanger.measured` | Flanger: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | missing | `uvi.dsp.PhaseMeter.ir` | Phase Meter: in IR |  |  |  | https://lua.uvi.net/_elements.html#PhaseMeter |
 | missing | `uvi.dsp.PhaseMeter.driven` | Phase Meter: driven |  |  |  | no-specific-translation-read-found |
 | missing | `uvi.dsp.PhaseMeter.measured` | Phase Meter: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | tested | `uvi.dsp.Phasor.ir` | Phasor: in IR | [sweep.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/sweep.rs) | #200 | 2026-11-25 | https://lua.uvi.net/_elements.html#Phasor |
-| partial | `uvi.dsp.Phasor.driven` | Phasor: driven |  |  |  | no-specific-translation-read-found |
+| done | `uvi.dsp.Phasor.driven` | Phasor: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) |  |  | mapped + ignored/unsupported |
 | missing | `uvi.dsp.Phasor.measured` | Phasor: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | missing | `uvi.dsp.PhasorFilter.ir` | Phasor Filter: in IR |  |  |  | https://lua.uvi.net/_elements.html#PhasorFilter |
 | missing | `uvi.dsp.PhasorFilter.driven` | Phasor Filter: driven |  |  |  | no-specific-translation-read-found |
@@ -3435,7 +3435,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.dsp.WhiteChorus.ir` | Thorus: in IR |  |  |  | https://lua.uvi.net/_elements.html#WhiteChorus |
 | missing | `uvi.dsp.WhiteChorus.driven` | Thorus: driven |  |  |  | no-specific-translation-read-found |
 | missing | `uvi.dsp.WhiteChorus.measured` | Thorus: output vs oracle |  |  |  | no UVI oracle in the repo yet |
-### oscillator (1 tested, 0 done, 1 partial, 0 unseen, 82 missing)
+### oscillator (1 tested, 1 done, 0 partial, 0 unseen, 82 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
@@ -3503,10 +3503,10 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.dsp.PluckOscillator.driven` | Pluck: driven |  |  |  | no-specific-translation-read-found |
 | missing | `uvi.dsp.PluckOscillator.measured` | Pluck: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | missing | `uvi.dsp.SampleMappingOscillator.ir` | MultiSample: in IR |  |  |  | https://lua.uvi.net/_elements.html#SampleMappingOscillator |
-| missing | `uvi.dsp.SampleMappingOscillator.driven` | MultiSample: driven |  |  |  | proxy/partial; exact class parity unproved |
+| missing | `uvi.dsp.SampleMappingOscillator.driven` | MultiSample: driven |  |  |  | runtime-consumed (loadMapping) |
 | missing | `uvi.dsp.SampleMappingOscillator.measured` | MultiSample: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | tested | `uvi.dsp.SamplePlayer.ir` | Sample: in IR | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | https://lua.uvi.net/_elements.html#SamplePlayer |
-| partial | `uvi.dsp.SamplePlayer.driven` | Sample: driven |  |  |  | proxy/partial; exact class parity unproved |
+| done | `uvi.dsp.SamplePlayer.driven` | Sample: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) | [KONTRA#64](https://github.com/DerpcatMusic/KONTRA/pull/64) | 2026-10-14 | mapped; runtime-consumed |
 | missing | `uvi.dsp.SamplePlayer.measured` | Sample: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | missing | `uvi.dsp.SuperVPScrub.ir` | IRCAM Scrub: in IR |  |  |  | https://lua.uvi.net/_elements.html#SuperVPScrub |
 | missing | `uvi.dsp.SuperVPScrub.driven` | IRCAM Scrub: driven |  |  |  | no-specific-translation-read-found |
@@ -3523,35 +3523,35 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.dsp.WaveTableOscillator.ir` | Wavetable: in IR |  |  |  | https://lua.uvi.net/_elements.html#WaveTableOscillator |
 | missing | `uvi.dsp.WaveTableOscillator.driven` | Wavetable: driven |  |  |  | no-specific-translation-read-found |
 | missing | `uvi.dsp.WaveTableOscillator.measured` | Wavetable: output vs oracle |  |  |  | no UVI oracle in the repo yet |
-### other (5 tested, 0 done, 5 partial, 0 unseen, 14 missing)
+### other (5 tested, 5 done, 0 partial, 0 unseen, 14 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
 | tested | `uvi.dsp.AuxEffect.ir` | AuxEffect: in IR | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | https://lua.uvi.net/_elements.html#AuxEffect |
-| partial | `uvi.dsp.AuxEffect.driven` | AuxEffect: driven |  |  |  | proxy/partial; exact class parity unproved |
+| done | `uvi.dsp.AuxEffect.driven` | AuxEffect: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) | [KONTRA#64](https://github.com/DerpcatMusic/KONTRA/pull/64) | 2026-10-14 | mapped; runtime-consumed |
 | missing | `uvi.dsp.AuxEffect.measured` | AuxEffect: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | tested | `uvi.dsp.BusRouter.ir` | BusRouter: in IR | [report.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/report.rs) | [KONTRA#1434](https://github.com/DerpcatMusic/KONTRA/pull/1434) | 2026-11-13 | https://lua.uvi.net/_elements.html#BusRouter |
-| partial | `uvi.dsp.BusRouter.driven` | BusRouter: driven |  |  |  | proxy/partial; exact class parity unproved |
+| done | `uvi.dsp.BusRouter.driven` | BusRouter: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) | [KONTRA#64](https://github.com/DerpcatMusic/KONTRA/pull/64) | 2026-10-14 | mapped; runtime-consumed |
 | missing | `uvi.dsp.BusRouter.measured` | BusRouter: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | missing | `uvi.dsp.Engine.ir` | Engine: in IR |  |  |  | https://lua.uvi.net/_elements.html#Engine |
 | missing | `uvi.dsp.Engine.driven` | Engine: driven |  |  |  | no-specific-translation-read-found |
 | missing | `uvi.dsp.Engine.measured` | Engine: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | tested | `uvi.dsp.Keygroup.ir` | Keygroup: in IR | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | https://lua.uvi.net/_elements.html#Keygroup |
-| partial | `uvi.dsp.Keygroup.driven` | Keygroup: driven |  |  |  | proxy/partial; exact class parity unproved |
+| done | `uvi.dsp.Keygroup.driven` | Keygroup: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) | [KONTRA#64](https://github.com/DerpcatMusic/KONTRA/pull/64) | 2026-10-14 | mapped; runtime-consumed |
 | missing | `uvi.dsp.Keygroup.measured` | Keygroup: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | tested | `uvi.dsp.Layer.ir` | Layer: in IR | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | https://lua.uvi.net/_elements.html#Layer |
-| partial | `uvi.dsp.Layer.driven` | Layer: driven |  |  |  | proxy/partial; exact class parity unproved |
+| done | `uvi.dsp.Layer.driven` | Layer: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) | [KONTRA#64](https://github.com/DerpcatMusic/KONTRA/pull/64) | 2026-10-14 | mapped; runtime-consumed |
 | missing | `uvi.dsp.Layer.measured` | Layer: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | missing | `uvi.dsp.Part.ir` | Part: in IR |  |  |  | https://lua.uvi.net/_elements.html#Part |
 | missing | `uvi.dsp.Part.driven` | Part: driven |  |  |  | proxy/partial; exact class parity unproved |
 | missing | `uvi.dsp.Part.measured` | Part: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | tested | `uvi.dsp.Program.ir` | Program: in IR | [bank.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/bank.rs) | [KONTRA#845](https://github.com/DerpcatMusic/KONTRA/pull/845) | 2026-10-28 | https://lua.uvi.net/_elements.html#Program |
-| partial | `uvi.dsp.Program.driven` | Program: driven |  |  |  | proxy/partial; exact class parity unproved |
+| done | `uvi.dsp.Program.driven` | Program: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) |  |  | mapped; runtime-consumed |
 | missing | `uvi.dsp.Program.measured` | Program: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | missing | `uvi.dsp.Synth.ir` | Synth: in IR |  |  |  | https://lua.uvi.net/_elements.html#Synth |
 | missing | `uvi.dsp.Synth.driven` | Synth: driven |  |  |  | proxy/partial; exact class parity unproved |
 | missing | `uvi.dsp.Synth.measured` | Synth: output vs oracle |  |  |  | no UVI oracle in the repo yet |
-### reverb (1 tested, 1 done, 2 partial, 0 unseen, 11 missing)
+### reverb (1 tested, 2 done, 1 partial, 0 unseen, 11 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
@@ -3568,7 +3568,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.dsp.LA2A.driven` | Opal: driven |  |  |  | no-specific-translation-read-found |
 | missing | `uvi.dsp.LA2A.measured` | Opal: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | tested | `uvi.dsp.SparkVerb.ir` | SparkVerb: in IR | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) | [KONTRA#1020](https://github.com/DerpcatMusic/KONTRA/pull/1020) | 2026-10-29 | https://lua.uvi.net/_elements.html#SparkVerb |
-| partial | `uvi.dsp.SparkVerb.driven` | SparkVerb: driven |  |  |  | no-specific-translation-read-found |
+| done | `uvi.dsp.SparkVerb.driven` | SparkVerb: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) |  |  | mapped + ignored/unsupported |
 | missing | `uvi.dsp.SparkVerb.measured` | SparkVerb: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 ### time-stretch / slicing (0 tested, 0 done, 0 partial, 0 unseen, 12 missing)
 
@@ -3586,7 +3586,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.dsp.Shifter.ir` | Shifter: in IR |  |  |  | https://lua.uvi.net/_elements.html#Shifter |
 | missing | `uvi.dsp.Shifter.driven` | Shifter: driven |  |  |  | no-specific-translation-read-found |
 | missing | `uvi.dsp.Shifter.measured` | Shifter: output vs oracle |  |  |  | no UVI oracle in the repo yet |
-### utility (5 tested, 3 done, 2 partial, 0 unseen, 41 missing)
+### utility (5 tested, 5 done, 0 partial, 0 unseen, 41 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
@@ -3603,7 +3603,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | done | `uvi.dsp.EffectRack.driven` | Effect Rack: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) | [KONTRA#64](https://github.com/DerpcatMusic/KONTRA/pull/64) | 2026-10-14 | mapped + ignored/unsupported |
 | missing | `uvi.dsp.EffectRack.measured` | Effect Rack: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | tested | `uvi.dsp.FeedbackMachine.ir` | Feedback Machine: in IR | [inserts.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing/inserts.rs) | #200 | 2026-11-25 | https://lua.uvi.net/_elements.html#FeedbackMachine |
-| partial | `uvi.dsp.FeedbackMachine.driven` | Feedback Machine: driven |  |  |  | no-specific-translation-read-found |
+| done | `uvi.dsp.FeedbackMachine.driven` | Feedback Machine: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) |  |  | mapped + ignored/unsupported |
 | missing | `uvi.dsp.FeedbackMachine.measured` | Feedback Machine: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | tested | `uvi.dsp.Gain.ir` | Gain: in IR | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | https://lua.uvi.net/_elements.html#Gain |
 | done | `uvi.dsp.Gain.driven` | Gain: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) | [KONTRA#64](https://github.com/DerpcatMusic/KONTRA/pull/64) | 2026-10-14 | mapped + ignored/unsupported |
@@ -3615,7 +3615,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.dsp.LoudnessMeter.driven` | Loudness Meter: driven |  |  |  | no-specific-translation-read-found |
 | missing | `uvi.dsp.LoudnessMeter.measured` | Loudness Meter: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | tested | `uvi.dsp.MS20.ir` | VCF-20: in IR | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) | [KONTRA#983](https://github.com/DerpcatMusic/KONTRA/pull/983) | 2026-10-29 | https://lua.uvi.net/_elements.html#MS20 |
-| partial | `uvi.dsp.MS20.driven` | VCF-20: driven |  |  |  | no-specific-translation-read-found |
+| done | `uvi.dsp.MS20.driven` | VCF-20: driven | [uvi-elements.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/uvi-elements.tsv) |  |  | mapped |
 | missing | `uvi.dsp.MS20.measured` | VCF-20: output vs oracle |  |  |  | no UVI oracle in the repo yet |
 | missing | `uvi.dsp.MS20Dual.ir` | VCF-20 Dual: in IR |  |  |  | https://lua.uvi.net/_elements.html#MS20Dual |
 | missing | `uvi.dsp.MS20Dual.driven` | VCF-20 Dual: driven |  |  |  | no-specific-translation-read-found |
@@ -4329,8 +4329,8 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.MidiPlayer.ChannelBypass9` | MidiPlayer.ChannelBypass9 |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.MidiPlayer.Loop` | MidiPlayer.Loop |  |  |  | law ✗ range ✗ acts ✗ |
 | partial | `uvi.par.MidiPlayer.Transpose` | MidiPlayer.Transpose | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✗ acts ✗ |
-| done | `uvi.par.ScriptProcessor.Bypass` | ScriptProcessor.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
-### FX (2 tested, 34 done, 401 partial, 0 unseen, 663 missing)
+| done | `uvi.par.ScriptProcessor.Bypass` | ScriptProcessor.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+### FX (23 tested, 108 done, 306 partial, 0 unseen, 663 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
@@ -4426,12 +4426,12 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.ChorusBBD.Reactivity` | ChorusBBD.Reactivity |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.ChorusBBD.Rejection` | ChorusBBD.Rejection |  |  |  | law ✗ range ✗ acts ✗ |
 | partial | `uvi.par.ChorusBBD.Speed` | ChorusBBD.Speed | [sweep.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/sweep.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.CombFilter.Algorithm` | CombFilter.Algorithm | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.CombFilter.Bypass` | CombFilter.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.CombFilter.Freq` | CombFilter.Freq | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.CombFilter.KeyTracking` | CombFilter.KeyTracking | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.CombFilter.Mode` | CombFilter.Mode | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.CombFilter.Q` | CombFilter.Q | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✓ acts ✗ |
+| done | `uvi.par.CombFilter.Algorithm` | CombFilter.Algorithm | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.CombFilter.Bypass` | CombFilter.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.CombFilter.Freq` | CombFilter.Freq | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | [KONTRA#912](https://github.com/DerpcatMusic/KONTRA/pull/912) | 2026-10-28 | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.CombFilter.KeyTracking` | CombFilter.KeyTracking | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | [KONTRA#912](https://github.com/DerpcatMusic/KONTRA/pull/912) | 2026-10-28 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.CombFilter.Mode` | CombFilter.Mode | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | [KONTRA#1069](https://github.com/DerpcatMusic/KONTRA/pull/1069) | 2026-10-29 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.CombFilter.Q` | CombFilter.Q | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | #308 | 2026-11-25 | law ✓ range ✓ acts ✓ |
 | missing | `uvi.par.CompExp.AutoMakeUp` | CompExp.AutoMakeUp |  |  |  | law ✗ range ✗ acts ✗ |
 | partial | `uvi.par.CompExp.Bypass` | CompExp.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
 | missing | `uvi.par.CompExp.CompAttack` | CompExp.CompAttack |  |  |  | law ✗ range ✗ acts ✗ |
@@ -4444,8 +4444,8 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.CompExp.GateThreshold` | CompExp.GateThreshold |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.CompExp.MakeUpGain` | CompExp.MakeUpGain |  |  |  | law ✗ range ✗ acts ✗ |
 | partial | `uvi.par.CompExp.Mix` | CompExp.Mix | [gains.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/gains.rs) |  |  | law ✓ range ✓ acts ✗ |
-| done | `uvi.par.Convolver.Bypass` | Convolver.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
-| done | `uvi.par.Convolver.Dry` | Convolver.Dry | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Convolver.Bypass` | Convolver.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Convolver.Dry` | Convolver.Dry | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.Convolver.NormalizePower` | Convolver.NormalizePower | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) | #155 | 2026-11-24 | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.Convolver.Wet` | Convolver.Wet | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
 | partial | `uvi.par.CrossOverFilter.Bypass` | CrossOverFilter.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
@@ -4505,7 +4505,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.DigitalEq.Bandwidth7` | DigitalEq.Bandwidth7 |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.DigitalEq.Bandwidth8` | DigitalEq.Bandwidth8 |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.DigitalEq.Bandwidth9` | DigitalEq.Bandwidth9 |  |  |  | law ✗ range ✗ acts ✗ |
-| done | `uvi.par.DigitalEq.Bypass` | DigitalEq.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.DigitalEq.Bypass` | DigitalEq.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
 | missing | `uvi.par.DigitalEq.Channels1` | DigitalEq.Channels1 |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.DigitalEq.Channels10` | DigitalEq.Channels10 |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.DigitalEq.Channels11` | DigitalEq.Channels11 |  |  |  | law ✗ range ✗ acts ✗ |
@@ -4631,20 +4631,20 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | partial | `uvi.par.DigitalFilter.Q` | DigitalFilter.Q | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✓ acts ✗ |
 | partial | `uvi.par.DigitalFilter.Slope` | DigitalFilter.Slope | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `uvi.par.DigitalFilter.Spread` | DigitalFilter.Spread | [sweep.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/sweep.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.DiodeClipper.Asymmetry` | DiodeClipper.Asymmetry | [shaper.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/shaper.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.DiodeClipper.Bypass` | DiodeClipper.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.DiodeClipper.Drive` | DiodeClipper.Drive | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.DiodeClipper.HighPass` | DiodeClipper.HighPass | [shaper.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/shaper.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.DiodeClipper.OutputGain` | DiodeClipper.OutputGain | [shaper.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/shaper.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.DiodeClipper.Tone` | DiodeClipper.Tone | [shaper.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/shaper.rs) |  |  | law ✓ range ✗ acts ✗ |
+| done | `uvi.par.DiodeClipper.Asymmetry` | DiodeClipper.Asymmetry | [shaper.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/shaper.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.DiodeClipper.Bypass` | DiodeClipper.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.DiodeClipper.Drive` | DiodeClipper.Drive | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) | [KONTRA#940](https://github.com/DerpcatMusic/KONTRA/pull/940) | 2026-10-29 | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.DiodeClipper.HighPass` | DiodeClipper.HighPass | [shaper.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/shaper.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.DiodeClipper.OutputGain` | DiodeClipper.OutputGain | [shaper.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/shaper.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.DiodeClipper.Tone` | DiodeClipper.Tone | [shaper.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/shaper.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
 | partial | `uvi.par.Dispersor.Bypass` | Dispersor.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `uvi.par.Dispersor.Freq` | Dispersor.Freq | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✓ acts ✗ |
 | partial | `uvi.par.Dispersor.Order` | Dispersor.Order | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `uvi.par.Dispersor.Spread` | Dispersor.Spread | [sweep.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/sweep.rs) |  |  | law ✓ range ✗ acts ✗ |
 | missing | `uvi.par.Dispersor.Stages` | Dispersor.Stages |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.Drive.Bypass` | Drive.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Drive.DriveAmount` | Drive.DriveAmount | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Drive.Mode` | Drive.Mode | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) |  |  | law ✓ range ✗ acts ✗ |
+| done | `uvi.par.Drive.Bypass` | Drive.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Drive.DriveAmount` | Drive.DriveAmount | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Drive.Mode` | Drive.Mode | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | [KONTRA#1069](https://github.com/DerpcatMusic/KONTRA/pull/1069) | 2026-10-29 | law ✓ range ✗ acts ✓ |
 | missing | `uvi.par.Drive.Oversampling` | Drive.Oversampling |  |  |  | law ✗ range ✗ acts ✗ |
 | partial | `uvi.par.DualDelayX.Bypass` | DualDelayX.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
 | missing | `uvi.par.DualDelayX.Crusher` | DualDelayX.Crusher |  |  |  | law ✗ range ✗ acts ✗ |
@@ -4689,7 +4689,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.DualDelayX.TapeDrive` | DualDelayX.TapeDrive |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.DualDelayX.TapeSaturation` | DualDelayX.TapeSaturation |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.DualDelayX.TapeWarmth` | DualDelayX.TapeWarmth |  |  |  | law ✗ range ✗ acts ✗ |
-| done | `uvi.par.EffectRack.Bypass` | EffectRack.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.EffectRack.Bypass` | EffectRack.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
 | partial | `uvi.par.Ensemble.Bypass` | Ensemble.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `uvi.par.Ensemble.Mix` | Ensemble.Mix | [gains.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/gains.rs) |  |  | law ✓ range ✓ acts ✗ |
 | partial | `uvi.par.Ensemble.Mode` | Ensemble.Mode | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) |  |  | law ✓ range ✗ acts ✗ |
@@ -4720,10 +4720,10 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | partial | `uvi.par.FeedbackCompressor.Ratio` | FeedbackCompressor.Ratio | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) |  |  | law ✓ range ✓ acts ✗ |
 | partial | `uvi.par.FeedbackCompressor.Release` | FeedbackCompressor.Release | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `uvi.par.FeedbackCompressor.Threshold` | FeedbackCompressor.Threshold | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.FeedbackMachine.Bypass` | FeedbackMachine.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.FeedbackMachine.DelayTime` | FeedbackMachine.DelayTime | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.FeedbackMachine.Feedback` | FeedbackMachine.Feedback | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.FeedbackMachine.Mix` | FeedbackMachine.Mix | [gains.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/gains.rs) |  |  | law ✓ range ✓ acts ✗ |
+| done | `uvi.par.FeedbackMachine.Bypass` | FeedbackMachine.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.FeedbackMachine.DelayTime` | FeedbackMachine.DelayTime | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | [KONTRA#1069](https://github.com/DerpcatMusic/KONTRA/pull/1069) | 2026-10-29 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.FeedbackMachine.Feedback` | FeedbackMachine.Feedback | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.FeedbackMachine.Mix` | FeedbackMachine.Mix | [gains.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/gains.rs) | [KONTRA#1074](https://github.com/DerpcatMusic/KONTRA/pull/1074) | 2026-10-29 | law ✓ range ✓ acts ✓ |
 | partial | `uvi.par.FeedforwardCompressor.Attack` | FeedforwardCompressor.Attack | [gains.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/gains.rs) |  |  | law ✓ range ✗ acts ✗ |
 | missing | `uvi.par.FeedforwardCompressor.AutoMakeup` | FeedforwardCompressor.AutoMakeup |  |  |  | law ✗ range ✗ acts ✗ |
 | partial | `uvi.par.FeedforwardCompressor.Bypass` | FeedforwardCompressor.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
@@ -4738,13 +4738,13 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.FeedforwardCompressor.UpwardMode` | FeedforwardCompressor.UpwardMode |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.FeedforwardCompressor.UpwardRatio` | FeedforwardCompressor.UpwardRatio |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.FeedforwardCompressor.UpwardThreshold` | FeedforwardCompressor.UpwardThreshold |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.Flanger.Bypass` | Flanger.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Flanger.DelayTime` | Flanger.DelayTime | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Flanger.Depth` | Flanger.Depth | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.Flanger.Feedback` | Flanger.Feedback | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Flanger.Mix` | Flanger.Mix | [gains.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/gains.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.Flanger.Speed` | Flanger.Speed | [sweep.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/sweep.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Flanger.SyncToHost` | Flanger.SyncToHost | [lfo_routes.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/lfo_routes.rs) |  |  | law ✓ range ✗ acts ✗ |
+| done | `uvi.par.Flanger.Bypass` | Flanger.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Flanger.DelayTime` | Flanger.DelayTime | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | [KONTRA#1069](https://github.com/DerpcatMusic/KONTRA/pull/1069) | 2026-10-29 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.Flanger.Depth` | Flanger.Depth | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | [KONTRA#1069](https://github.com/DerpcatMusic/KONTRA/pull/1069) | 2026-10-29 | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.Flanger.Feedback` | Flanger.Feedback | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.Flanger.Mix` | Flanger.Mix | [gains.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/gains.rs) | [KONTRA#1074](https://github.com/DerpcatMusic/KONTRA/pull/1074) | 2026-10-29 | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.Flanger.Speed` | Flanger.Speed | [sweep.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/sweep.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Flanger.SyncToHost` | Flanger.SyncToHost | [lfo_routes.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/lfo_routes.rs) | [KONTRA#1493](https://github.com/DerpcatMusic/KONTRA/pull/1493) | 2026-11-13 | law ✓ range ✗ acts ✓ |
 | missing | `uvi.par.FormantCrusher.Bite` | FormantCrusher.Bite |  |  |  | law ✗ range ✗ acts ✗ |
 | partial | `uvi.par.FormantCrusher.Bypass` | FormantCrusher.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
 | missing | `uvi.par.FormantCrusher.FilterA` | FormantCrusher.FilterA |  |  |  | law ✗ range ✗ acts ✗ |
@@ -4764,9 +4764,9 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.FreqShifter.PreHighPassEnabled` | FreqShifter.PreHighPassEnabled |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.FreqShifter.PreHighPassFreq` | FreqShifter.PreHighPassFreq |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.FreqShifter.WetGain` | FreqShifter.WetGain |  |  |  | law ✗ range ✗ acts ✗ |
-| done | `uvi.par.Gain.Bypass` | Gain.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Gain.Bypass` | Gain.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.Gain.Volume` | Gain.Volume | [fade.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/fade.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
-| done | `uvi.par.GainMatrix.Bypass` | GainMatrix.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.GainMatrix.Bypass` | GainMatrix.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
 | missing | `uvi.par.GainMatrix.Gain_10_1` | GainMatrix.Gain_10_1 |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.GainMatrix.Gain_10_10` | GainMatrix.Gain_10_10 |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.GainMatrix.Gain_10_11` | GainMatrix.Gain_10_11 |  |  |  | law ✗ range ✗ acts ✗ |
@@ -5034,13 +5034,13 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.LowpassGateFX.Resonance` | LowpassGateFX.Resonance |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.LowpassGateFX.Sensitivity` | LowpassGateFX.Sensitivity |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.LowpassGateFX.VelocityToGate` | LowpassGateFX.VelocityToGate |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.MS20.Bypass` | MS20.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.MS20.Freq` | MS20.Freq | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.MS20.KeyTracking` | MS20.KeyTracking | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.MS20.Morph` | MS20.Morph | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.MS20.Q` | MS20.Q | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.MS20.ReferenceVoltage` | MS20.ReferenceVoltage | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.MS20.ResonanceTrim` | MS20.ResonanceTrim | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) |  |  | law ✓ range ✗ acts ✗ |
+| done | `uvi.par.MS20.Bypass` | MS20.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.MS20.Freq` | MS20.Freq | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | [KONTRA#912](https://github.com/DerpcatMusic/KONTRA/pull/912) | 2026-10-28 | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.MS20.KeyTracking` | MS20.KeyTracking | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | [KONTRA#912](https://github.com/DerpcatMusic/KONTRA/pull/912) | 2026-10-28 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.MS20.Morph` | MS20.Morph | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) | [KONTRA#983](https://github.com/DerpcatMusic/KONTRA/pull/983) | 2026-10-29 | law ✓ range ✓ acts ✓ |
+| tested | `uvi.par.MS20.Q` | MS20.Q | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | #308 | 2026-11-25 | law ✓ range ✓ acts ✓ |
+| tested | `uvi.par.MS20.ReferenceVoltage` | MS20.ReferenceVoltage | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) | [KONTRA#983](https://github.com/DerpcatMusic/KONTRA/pull/983) | 2026-10-29 | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.MS20.ResonanceTrim` | MS20.ResonanceTrim | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) | [KONTRA#983](https://github.com/DerpcatMusic/KONTRA/pull/983) | 2026-10-29 | law ✓ range ✗ acts ✓ |
 | partial | `uvi.par.MS20Dual.Bypass` | MS20Dual.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `uvi.par.MS20Dual.Freq` | MS20Dual.Freq | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✓ acts ✗ |
 | missing | `uvi.par.MS20Dual.FreqHP` | MS20Dual.FreqHP |  |  |  | law ✗ range ✗ acts ✗ |
@@ -5049,17 +5049,17 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.MS20Dual.Q_HP` | MS20Dual.Q_HP |  |  |  | law ✗ range ✗ acts ✗ |
 | partial | `uvi.par.MS20Dual.ReferenceVoltage` | MS20Dual.ReferenceVoltage | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) |  |  | law ✓ range ✓ acts ✗ |
 | partial | `uvi.par.MS20Dual.ResonanceTrim` | MS20Dual.ResonanceTrim | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Maximizer.Attack` | Maximizer.Attack | [gains.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/gains.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Maximizer.Bypass` | Maximizer.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Maximizer.Ceiling` | Maximizer.Ceiling | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Maximizer.CeilingMode` | Maximizer.CeilingMode | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Maximizer.Knee` | Maximizer.Knee | [shaper.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/shaper.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Maximizer.Lookahead` | Maximizer.Lookahead | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Maximizer.Release` | Maximizer.Release | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Maximizer.ReleaseBlend` | Maximizer.ReleaseBlend | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Maximizer.SlewRate` | Maximizer.SlewRate | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Maximizer.Threshold` | Maximizer.Threshold | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Maximizer.TruePeak` | Maximizer.TruePeak | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) |  |  | law ✓ range ✗ acts ✗ |
+| done | `uvi.par.Maximizer.Attack` | Maximizer.Attack | [gains.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/gains.rs) | [KONTRA#1074](https://github.com/DerpcatMusic/KONTRA/pull/1074) | 2026-10-29 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Maximizer.Bypass` | Maximizer.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Maximizer.Ceiling` | Maximizer.Ceiling | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) | #155 | 2026-11-24 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Maximizer.CeilingMode` | Maximizer.CeilingMode | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Maximizer.Knee` | Maximizer.Knee | [shaper.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/shaper.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Maximizer.Lookahead` | Maximizer.Lookahead | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) | #308 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Maximizer.Release` | Maximizer.Release | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) | #284 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Maximizer.ReleaseBlend` | Maximizer.ReleaseBlend | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) | #284 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Maximizer.SlewRate` | Maximizer.SlewRate | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Maximizer.Threshold` | Maximizer.Threshold | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) | #155 | 2026-11-24 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Maximizer.TruePeak` | Maximizer.TruePeak | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
 | partial | `uvi.par.MoogFilter.Bypass` | MoogFilter.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `uvi.par.MoogFilter.Freq` | MoogFilter.Freq | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✓ acts ✗ |
 | partial | `uvi.par.MoogFilter.KeyTracking` | MoogFilter.KeyTracking | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✗ acts ✗ |
@@ -5074,7 +5074,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | partial | `uvi.par.MoogLadder.Q` | MoogLadder.Q | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✓ acts ✗ |
 | partial | `uvi.par.MoogLadder.ResonanceTrim` | MoogLadder.ResonanceTrim | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) |  |  | law ✓ range ✗ acts ✗ |
 | missing | `uvi.par.MoogLadder.VoltageRef` | MoogLadder.VoltageRef |  |  |  | law ✗ range ✗ acts ✗ |
-| done | `uvi.par.OnePole.Bypass` | OnePole.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.OnePole.Bypass` | OnePole.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
 | tested | `uvi.par.OnePole.Freq` | OnePole.Freq | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | [KONTRA#912](https://github.com/DerpcatMusic/KONTRA/pull/912) | 2026-10-28 | law ✓ range ✓ acts ✓ |
 | done | `uvi.par.OnePole.KeyTracking` | OnePole.KeyTracking | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | [KONTRA#912](https://github.com/DerpcatMusic/KONTRA/pull/912) | 2026-10-28 | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.OnePole.Mode` | OnePole.Mode | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | [KONTRA#1069](https://github.com/DerpcatMusic/KONTRA/pull/1069) | 2026-10-29 | law ✓ range ✗ acts ✓ |
@@ -5082,16 +5082,16 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | partial | `uvi.par.PhaseMeter.Bypass` | PhaseMeter.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
 | missing | `uvi.par.PhaseMeter.Decay` | PhaseMeter.Decay |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.PhaseMeter.RefreshRate` | PhaseMeter.RefreshRate |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.Phasor.Bypass` | Phasor.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Phasor.Depth` | Phasor.Depth | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.Phasor.Feedback` | Phasor.Feedback | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Phasor.LFOSHape` | Phasor.LFOSHape | [sweep.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/sweep.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Phasor.MaxFreq` | Phasor.MaxFreq | [sweep.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/sweep.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Phasor.MinFreq` | Phasor.MinFreq | [sweep.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/sweep.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Phasor.Order` | Phasor.Order | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Phasor.Speed` | Phasor.Speed | [sweep.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/sweep.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Phasor.Spread` | Phasor.Spread | [sweep.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/sweep.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Phasor.SyncToHost` | Phasor.SyncToHost | [lfo_routes.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/lfo_routes.rs) |  |  | law ✓ range ✗ acts ✗ |
+| done | `uvi.par.Phasor.Bypass` | Phasor.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.Phasor.Depth` | Phasor.Depth | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | [KONTRA#1069](https://github.com/DerpcatMusic/KONTRA/pull/1069) | 2026-10-29 | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.Phasor.Feedback` | Phasor.Feedback | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Phasor.LFOSHape` | Phasor.LFOSHape | [sweep.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/sweep.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Phasor.MaxFreq` | Phasor.MaxFreq | [sweep.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/sweep.rs) | #284 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Phasor.MinFreq` | Phasor.MinFreq | [sweep.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/sweep.rs) | #284 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Phasor.Order` | Phasor.Order | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | #308 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Phasor.Speed` | Phasor.Speed | [sweep.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/sweep.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Phasor.Spread` | Phasor.Spread | [sweep.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/sweep.rs) | #284 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Phasor.SyncToHost` | Phasor.SyncToHost | [lfo_routes.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/lfo_routes.rs) | [KONTRA#1493](https://github.com/DerpcatMusic/KONTRA/pull/1493) | 2026-11-13 | law ✓ range ✗ acts ✓ |
 | partial | `uvi.par.PhasorFilter.Bypass` | PhasorFilter.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
 | missing | `uvi.par.PhasorFilter.CutoffMode` | PhasorFilter.CutoffMode |  |  |  | law ✗ range ✗ acts ✗ |
 | partial | `uvi.par.PhasorFilter.Depth` | PhasorFilter.Depth | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) |  |  | law ✓ range ✓ acts ✗ |
@@ -5180,15 +5180,15 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | partial | `uvi.par.SVF.Freq` | SVF.Freq | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✓ acts ✗ |
 | partial | `uvi.par.SVF.KeyTracking` | SVF.KeyTracking | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `uvi.par.SVF.Q` | SVF.Q | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.SampledReverb.Bypass` | SampledReverb.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SampledReverb.DampingHigh` | SampledReverb.DampingHigh | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SampledReverb.DampingLow` | SampledReverb.DampingLow | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SampledReverb.Dry` | SampledReverb.Dry | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SampledReverb.NormalizePower` | SampledReverb.NormalizePower | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SampledReverb.PreDelay` | SampledReverb.PreDelay | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.SampledReverb.Time` | SampledReverb.Time | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.SampledReverb.Wet` | SampledReverb.Wet | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SampledReverb.Width` | SampledReverb.Width | [ignored.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/ignored.rs) |  |  | law ✓ range ✓ acts ✗ |
+| done | `uvi.par.SampledReverb.Bypass` | SampledReverb.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SampledReverb.DampingHigh` | SampledReverb.DampingHigh | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) | [KONTRA#931](https://github.com/DerpcatMusic/KONTRA/pull/931) | 2026-10-28 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SampledReverb.DampingLow` | SampledReverb.DampingLow | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) | [KONTRA#931](https://github.com/DerpcatMusic/KONTRA/pull/931) | 2026-10-28 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SampledReverb.Dry` | SampledReverb.Dry | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SampledReverb.NormalizePower` | SampledReverb.NormalizePower | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) | #155 | 2026-11-24 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.SampledReverb.PreDelay` | SampledReverb.PreDelay | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) | #200 | 2026-11-25 | law ✓ range ✓ acts ✓ |
+| tested | `uvi.par.SampledReverb.Time` | SampledReverb.Time | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.SampledReverb.Wet` | SampledReverb.Wet | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.SampledReverb.Width` | SampledReverb.Width | [ignored.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/ignored.rs) | [KONTRA#1516](https://github.com/DerpcatMusic/KONTRA/pull/1516) | 2026-11-14 | law ✓ range ✓ acts ✓ |
 | partial | `uvi.par.Shifter.Bypass` | Shifter.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
 | missing | `uvi.par.Shifter.Detune` | Shifter.Detune |  |  |  | law ✗ range ✗ acts ✗ |
 | partial | `uvi.par.Shifter.FineTune` | Shifter.FineTune | [program.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program.rs) |  |  | law ✓ range ✗ acts ✗ |
@@ -5202,33 +5202,33 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.SmoothOverdrive.Overdrive` | SmoothOverdrive.Overdrive |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.SmoothOverdrive.Oversampling` | SmoothOverdrive.Oversampling |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.SmoothOverdrive.Trash` | SmoothOverdrive.Trash |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.Bypass` | SparkVerb.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.DecayHigh` | SparkVerb.DecayHigh | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.DecayLow` | SparkVerb.DecayLow | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.DecayTime` | SparkVerb.DecayTime | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.Diffusion` | SparkVerb.Diffusion | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.DiffusionOnOff` | SparkVerb.DiffusionOnOff | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.DiffusionStart` | SparkVerb.DiffusionStart | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) |  |  | law ✓ range ✗ acts ✗ |
+| done | `uvi.par.SparkVerb.Bypass` | SparkVerb.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SparkVerb.DecayHigh` | SparkVerb.DecayHigh | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) | [KONTRA#1020](https://github.com/DerpcatMusic/KONTRA/pull/1020) | 2026-10-29 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SparkVerb.DecayLow` | SparkVerb.DecayLow | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) | [KONTRA#1020](https://github.com/DerpcatMusic/KONTRA/pull/1020) | 2026-10-29 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SparkVerb.DecayTime` | SparkVerb.DecayTime | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) | #284 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SparkVerb.Diffusion` | SparkVerb.Diffusion | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SparkVerb.DiffusionOnOff` | SparkVerb.DiffusionOnOff | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SparkVerb.DiffusionStart` | SparkVerb.DiffusionStart | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
 | missing | `uvi.par.SparkVerb.EarlyShape` | SparkVerb.EarlyShape |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.Freeze` | SparkVerb.Freeze | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.FreqHigh` | SparkVerb.FreqHigh | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.FreqLow` | SparkVerb.FreqLow | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.HiCut` | SparkVerb.HiCut | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.LowCut` | SparkVerb.LowCut | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.Mix` | SparkVerb.Mix | [gains.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/gains.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.SparkVerb.MixMode` | SparkVerb.MixMode | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.ModDepth` | SparkVerb.ModDepth | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.ModRate` | SparkVerb.ModRate | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.Mode` | SparkVerb.Mode | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.PreDelay` | SparkVerb.PreDelay | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.SparkVerb.Quality` | SparkVerb.Quality | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.Rolloff` | SparkVerb.Rolloff | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.RoomSize` | SparkVerb.RoomSize | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.Shape` | SparkVerb.Shape | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✗ acts ✗ |
+| done | `uvi.par.SparkVerb.Freeze` | SparkVerb.Freeze | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SparkVerb.FreqHigh` | SparkVerb.FreqHigh | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) | [KONTRA#1020](https://github.com/DerpcatMusic/KONTRA/pull/1020) | 2026-10-29 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SparkVerb.FreqLow` | SparkVerb.FreqLow | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) | [KONTRA#1020](https://github.com/DerpcatMusic/KONTRA/pull/1020) | 2026-10-29 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SparkVerb.HiCut` | SparkVerb.HiCut | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) | [KONTRA#1020](https://github.com/DerpcatMusic/KONTRA/pull/1020) | 2026-10-29 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SparkVerb.LowCut` | SparkVerb.LowCut | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #284 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.SparkVerb.Mix` | SparkVerb.Mix | [gains.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/gains.rs) | [KONTRA#1074](https://github.com/DerpcatMusic/KONTRA/pull/1074) | 2026-10-29 | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.SparkVerb.MixMode` | SparkVerb.MixMode | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) | [KONTRA#898](https://github.com/DerpcatMusic/KONTRA/pull/898) | 2026-10-28 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SparkVerb.ModDepth` | SparkVerb.ModDepth | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SparkVerb.ModRate` | SparkVerb.ModRate | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SparkVerb.Mode` | SparkVerb.Mode | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | [KONTRA#1069](https://github.com/DerpcatMusic/KONTRA/pull/1069) | 2026-10-29 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.SparkVerb.PreDelay` | SparkVerb.PreDelay | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) | #200 | 2026-11-25 | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.SparkVerb.Quality` | SparkVerb.Quality | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SparkVerb.Rolloff` | SparkVerb.Rolloff | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) | [KONTRA#898](https://github.com/DerpcatMusic/KONTRA/pull/898) | 2026-10-28 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SparkVerb.RoomSize` | SparkVerb.RoomSize | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) | #284 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SparkVerb.Shape` | SparkVerb.Shape | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | [KONTRA#912](https://github.com/DerpcatMusic/KONTRA/pull/912) | 2026-10-28 | law ✓ range ✗ acts ✓ |
 | missing | `uvi.par.SparkVerb.UseFilterInFeedback` | SparkVerb.UseFilterInFeedback |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.SparkVerb.UseOldInputMatrix` | SparkVerb.UseOldInputMatrix |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.SparkVerb.UseOldOutputMatrix` | SparkVerb.UseOldOutputMatrix |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.SparkVerb.Width` | SparkVerb.Width | [ignored.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/ignored.rs) |  |  | law ✓ range ✓ acts ✗ |
+| tested | `uvi.par.SparkVerb.Width` | SparkVerb.Width | [ignored.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/ignored.rs) | [KONTRA#1516](https://github.com/DerpcatMusic/KONTRA/pull/1516) | 2026-11-14 | law ✓ range ✓ acts ✓ |
 | partial | `uvi.par.SpectrogramAnalyzer.Bypass` | SpectrogramAnalyzer.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
 | missing | `uvi.par.SpectrogramAnalyzer.ColorMap` | SpectrogramAnalyzer.ColorMap |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.SpectrogramAnalyzer.Duration` | SpectrogramAnalyzer.Duration |  |  |  | law ✗ range ✗ acts ✗ |
@@ -5335,7 +5335,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.ThreeBandLimiter.Threshold0` | ThreeBandLimiter.Threshold0 |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.ThreeBandLimiter.Threshold1` | ThreeBandLimiter.Threshold1 |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.ThreeBandLimiter.Threshold2` | ThreeBandLimiter.Threshold2 |  |  |  | law ✗ range ✗ acts ✗ |
-| done | `uvi.par.ThreeBandShelves.Bypass` | ThreeBandShelves.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.ThreeBandShelves.Bypass` | ThreeBandShelves.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.ThreeBandShelves.FreqLowMid` | ThreeBandShelves.FreqLowMid | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.ThreeBandShelves.FreqMidHigh` | ThreeBandShelves.FreqMidHigh | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.ThreeBandShelves.GainHigh` | ThreeBandShelves.GainHigh | [models.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models.rs) | #155 | 2026-11-24 | law ✓ range ✗ acts ✓ |
@@ -5350,7 +5350,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.ToneStack.Mid` | ToneStack.Mid |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.ToneStack.Model` | ToneStack.Model |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.ToneStack.Treble` | ToneStack.Treble |  |  |  | law ✗ range ✗ acts ✗ |
-| done | `uvi.par.TrackDelay.Bypass` | TrackDelay.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.TrackDelay.Bypass` | TrackDelay.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.TrackDelay.DelayTime` | TrackDelay.DelayTime | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | [KONTRA#1069](https://github.com/DerpcatMusic/KONTRA/pull/1069) | 2026-10-29 | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.TrackDelay.SyncToHost` | TrackDelay.SyncToHost | [lfo_routes.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/lfo_routes.rs) | [KONTRA#1493](https://github.com/DerpcatMusic/KONTRA/pull/1493) | 2026-11-13 | law ✓ range ✗ acts ✓ |
 | partial | `uvi.par.Tremolo.Bypass` | Tremolo.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
@@ -5396,7 +5396,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.WahWah.Model` | WahWah.Model |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.WahWah.Wah` | WahWah.Wah |  |  |  | law ✗ range ✗ acts ✗ |
 | done | `uvi.par.WaveShaper.Amount` | WaveShaper.Amount | [matrix.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/matrix.rs) | [KONTRA#912](https://github.com/DerpcatMusic/KONTRA/pull/912) | 2026-10-28 | law ✓ range ✗ acts ✓ |
-| done | `uvi.par.WaveShaper.Bypass` | WaveShaper.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.WaveShaper.Bypass` | WaveShaper.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.WaveShaper.InputGain` | WaveShaper.InputGain | [shaper.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/shaper.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.WaveShaper.Knee` | WaveShaper.Knee | [shaper.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/shaper.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
 | tested | `uvi.par.WaveShaper.Mix` | WaveShaper.Mix | [gains.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/gains.rs) | [KONTRA#1074](https://github.com/DerpcatMusic/KONTRA/pull/1074) | 2026-10-29 | law ✓ range ✓ acts ✓ |
@@ -5424,17 +5424,17 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.Widener.HighSelfGainSide` | Widener.HighSelfGainSide |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.Widener.HighShelfFreqSide` | Widener.HighShelfFreqSide |  |  |  | law ✗ range ✗ acts ✗ |
 | partial | `uvi.par.Widener.Width` | Widener.Width | [ignored.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/ignored.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.XpanderFilter.Algorithm` | XpanderFilter.Algorithm | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.XpanderFilter.Bypass` | XpanderFilter.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.XpanderFilter.DistortionType` | XpanderFilter.DistortionType | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.XpanderFilter.Drive` | XpanderFilter.Drive | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.XpanderFilter.Fat` | XpanderFilter.Fat | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.XpanderFilter.Freq` | XpanderFilter.Freq | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.XpanderFilter.KeyTracking` | XpanderFilter.KeyTracking | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.XpanderFilter.Mode` | XpanderFilter.Mode | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) |  |  | law ✓ range ✗ acts ✗ |
+| done | `uvi.par.XpanderFilter.Algorithm` | XpanderFilter.Algorithm | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.XpanderFilter.Bypass` | XpanderFilter.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.XpanderFilter.DistortionType` | XpanderFilter.DistortionType | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) | [KONTRA#1531](https://github.com/DerpcatMusic/KONTRA/pull/1531) | 2026-11-14 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.XpanderFilter.Drive` | XpanderFilter.Drive | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) | [KONTRA#940](https://github.com/DerpcatMusic/KONTRA/pull/940) | 2026-10-29 | law ✓ range ✓ acts ✓ |
+| tested | `uvi.par.XpanderFilter.Fat` | XpanderFilter.Fat | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) |  |  | law ✓ range ✓ acts ✓ |
+| tested | `uvi.par.XpanderFilter.Freq` | XpanderFilter.Freq | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | [KONTRA#912](https://github.com/DerpcatMusic/KONTRA/pull/912) | 2026-10-28 | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.XpanderFilter.KeyTracking` | XpanderFilter.KeyTracking | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | [KONTRA#912](https://github.com/DerpcatMusic/KONTRA/pull/912) | 2026-10-28 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.XpanderFilter.Mode` | XpanderFilter.Mode | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | [KONTRA#1069](https://github.com/DerpcatMusic/KONTRA/pull/1069) | 2026-10-29 | law ✓ range ✗ acts ✓ |
 | missing | `uvi.par.XpanderFilter.Oversampling` | XpanderFilter.Oversampling |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.XpanderFilter.Q` | XpanderFilter.Q | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) |  |  | law ✓ range ✓ acts ✗ |
-### Legacy (0 tested, 0 done, 144 partial, 0 unseen, 108 missing)
+| tested | `uvi.par.XpanderFilter.Q` | XpanderFilter.Q | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | #308 | 2026-11-25 | law ✓ range ✓ acts ✓ |
+### Legacy (1 tested, 16 done, 127 partial, 0 unseen, 108 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
@@ -5487,27 +5487,27 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.DoubleDrive.LowFreq` | DoubleDrive.LowFreq |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.DoubleDrive.PostDrive` | DoubleDrive.PostDrive |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.DoubleDrive.PreDrive` | DoubleDrive.PreDrive |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.DualDelay.Bypass` | DualDelay.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.DualDelay.DelayRatio` | DualDelay.DelayRatio | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.DualDelay.DelayTime` | DualDelay.DelayTime | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.DualDelay.Feedback` | DualDelay.Feedback | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.DualDelay.FeedbackRatio` | DualDelay.FeedbackRatio | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.DualDelay.HighCut` | DualDelay.HighCut | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.DualDelay.InputRotation` | DualDelay.InputRotation | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.DualDelay.InputWidth` | DualDelay.InputWidth | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) |  |  | law ✓ range ✗ acts ✗ |
+| done | `uvi.par.DualDelay.Bypass` | DualDelay.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.DualDelay.DelayRatio` | DualDelay.DelayRatio | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.DualDelay.DelayTime` | DualDelay.DelayTime | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | [KONTRA#1069](https://github.com/DerpcatMusic/KONTRA/pull/1069) | 2026-10-29 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.DualDelay.Feedback` | DualDelay.Feedback | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.DualDelay.FeedbackRatio` | DualDelay.FeedbackRatio | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.DualDelay.HighCut` | DualDelay.HighCut | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #284 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.DualDelay.InputRotation` | DualDelay.InputRotation | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.DualDelay.InputWidth` | DualDelay.InputWidth | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
 | missing | `uvi.par.DualDelay.Interpolation` | DualDelay.Interpolation |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.DualDelay.LowCut` | DualDelay.LowCut | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.DualDelay.Mix` | DualDelay.Mix | [gains.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/gains.rs) |  |  | law ✓ range ✓ acts ✗ |
+| done | `uvi.par.DualDelay.LowCut` | DualDelay.LowCut | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #284 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.DualDelay.Mix` | DualDelay.Mix | [gains.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/gains.rs) | [KONTRA#1074](https://github.com/DerpcatMusic/KONTRA/pull/1074) | 2026-10-29 | law ✓ range ✓ acts ✓ |
 | missing | `uvi.par.DualDelay.ModChannelOffset` | DualDelay.ModChannelOffset |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.DualDelay.ModDepth` | DualDelay.ModDepth | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.DualDelay.ModRate` | DualDelay.ModRate | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.DualDelay.OutputRotation` | DualDelay.OutputRotation | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.DualDelay.OutputWidth` | DualDelay.OutputWidth | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) |  |  | law ✓ range ✗ acts ✗ |
+| done | `uvi.par.DualDelay.ModDepth` | DualDelay.ModDepth | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.DualDelay.ModRate` | DualDelay.ModRate | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.DualDelay.OutputRotation` | DualDelay.OutputRotation | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.DualDelay.OutputWidth` | DualDelay.OutputWidth | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
 | missing | `uvi.par.DualDelay.PeakFreq` | DualDelay.PeakFreq |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.DualDelay.PeakGain` | DualDelay.PeakGain | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) |  |  | law ✓ range ✗ acts ✗ |
+| done | `uvi.par.DualDelay.PeakGain` | DualDelay.PeakGain | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
 | missing | `uvi.par.DualDelay.PeakQ` | DualDelay.PeakQ |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.DualDelay.Rotation` | DualDelay.Rotation | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.DualDelay.SyncToHost` | DualDelay.SyncToHost | [lfo_routes.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/lfo_routes.rs) |  |  | law ✓ range ✗ acts ✗ |
+| done | `uvi.par.DualDelay.Rotation` | DualDelay.Rotation | [delay.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/delay.rs) | #200 | 2026-11-25 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.DualDelay.SyncToHost` | DualDelay.SyncToHost | [lfo_routes.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/lfo_routes.rs) | [KONTRA#1493](https://github.com/DerpcatMusic/KONTRA/pull/1493) | 2026-11-13 | law ✓ range ✗ acts ✓ |
 | partial | `uvi.par.FatDelay.Bypass` | FatDelay.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `uvi.par.FatDelay.Cutoff` | FatDelay.Cutoff | [filters.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/filters.rs) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `uvi.par.FatDelay.DelayTime` | FatDelay.DelayTime | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) |  |  | law ✓ range ✗ acts ✗ |
@@ -5696,7 +5696,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 |---|---|---|---|---|---|---|
 | done | `uvi.par.AHD.AttackCurve` | AHD.AttackCurve | [modulation.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/modulation.rs) | [KONTRA#928](https://github.com/DerpcatMusic/KONTRA/pull/928) | 2026-10-28 | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.AHD.AttackTime` | AHD.AttackTime | [modulation.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/modulation.rs) | #94 | 2026-11-22 | law ✓ range ✗ acts ✓ |
-| done | `uvi.par.AHD.Bypass` | AHD.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.AHD.Bypass` | AHD.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.AHD.DecayCurve` | AHD.DecayCurve | [modulation.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/modulation.rs) | #109 | 2026-11-22 | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.AHD.DecayTime` | AHD.DecayTime | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) | #284 | 2026-11-25 | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.AHD.HoldTime` | AHD.HoldTime | [modulation.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/modulation.rs) | [KONTRA#928](https://github.com/DerpcatMusic/KONTRA/pull/928) | 2026-10-28 | law ✓ range ✗ acts ✓ |
@@ -5723,12 +5723,12 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | partial | `uvi.par.AttackDecayEnv.Bypass` | AttackDecayEnv.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `uvi.par.AttackDecayEnv.DecayTime` | AttackDecayEnv.DecayTime | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) |  |  | law ✓ range ✗ acts ✗ |
 | done | `uvi.par.ConstantModulation.Bipolar` | ConstantModulation.Bipolar | [matrix.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/matrix.rs) | #284 | 2026-11-25 | law ✓ range ✗ acts ✓ |
-| done | `uvi.par.ConstantModulation.Bypass` | ConstantModulation.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.ConstantModulation.Bypass` | ConstantModulation.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
 | missing | `uvi.par.ConstantModulation.Style` | ConstantModulation.Style |  |  |  | law ✗ range ✗ acts ✗ |
 | done | `uvi.par.ConstantModulation.Value` | ConstantModulation.Value | [matrix.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/matrix.rs) | [KONTRA#908](https://github.com/DerpcatMusic/KONTRA/pull/908) | 2026-10-28 | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.DAHDSR.AttackCurve` | DAHDSR.AttackCurve | [modulation.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/modulation.rs) | [KONTRA#928](https://github.com/DerpcatMusic/KONTRA/pull/928) | 2026-10-28 | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.DAHDSR.AttackTime` | DAHDSR.AttackTime | [modulation.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/modulation.rs) | #94 | 2026-11-22 | law ✓ range ✗ acts ✓ |
-| done | `uvi.par.DAHDSR.Bypass` | DAHDSR.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.DAHDSR.Bypass` | DAHDSR.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.DAHDSR.DecayCurve` | DAHDSR.DecayCurve | [modulation.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/modulation.rs) | #109 | 2026-11-22 | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.DAHDSR.DecayTime` | DAHDSR.DecayTime | [reverb.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/models/reverb.rs) | #284 | 2026-11-25 | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.DAHDSR.DelayTime` | DAHDSR.DelayTime | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | [KONTRA#1069](https://github.com/DerpcatMusic/KONTRA/pull/1069) | 2026-10-29 | law ✓ range ✗ acts ✓ |
@@ -5762,7 +5762,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.InterpolationRandom.Rate` | InterpolationRandom.Rate |  |  |  | law ✗ range ✗ acts ✗ |
 | partial | `uvi.par.InterpolationRandom.TriggerMode` | InterpolationRandom.TriggerMode | [program.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program.rs) |  |  | law ✓ range ✗ acts ✗ |
 | done | `uvi.par.LFO.Bipolar` | LFO.Bipolar | [matrix.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/matrix.rs) | #284 | 2026-11-25 | law ✓ range ✗ acts ✓ |
-| done | `uvi.par.LFO.Bypass` | LFO.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.LFO.Bypass` | LFO.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
 | done | `uvi.par.LFO.DelayTime` | LFO.DelayTime | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | [KONTRA#1069](https://github.com/DerpcatMusic/KONTRA/pull/1069) | 2026-10-29 | law ✓ range ✗ acts ✓ |
 | tested | `uvi.par.LFO.Depth` | LFO.Depth | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | [KONTRA#1069](https://github.com/DerpcatMusic/KONTRA/pull/1069) | 2026-10-29 | law ✓ range ✓ acts ✓ |
 | tested | `uvi.par.LFO.Freq` | LFO.Freq | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | [KONTRA#912](https://github.com/DerpcatMusic/KONTRA/pull/912) | 2026-10-28 | law ✓ range ✓ acts ✓ |
@@ -5784,7 +5784,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | partial | `uvi.par.MultiEnvelope.VelocityAmount` | MultiEnvelope.VelocityAmount | [modulation.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/modulation.rs) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `uvi.par.MultiEnvelope.VelocitySens` | MultiEnvelope.VelocitySens | [modulation.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/modulation.rs) |  |  | law ✓ range ✗ acts ✗ |
 | done | `uvi.par.MultiLFO.Bipolar` | MultiLFO.Bipolar | [matrix.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/matrix.rs) | #284 | 2026-11-25 | law ✓ range ✗ acts ✓ |
-| done | `uvi.par.MultiLFO.Bypass` | MultiLFO.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.MultiLFO.Bypass` | MultiLFO.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
 | tested | `uvi.par.MultiLFO.Depth` | MultiLFO.Depth | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | [KONTRA#1069](https://github.com/DerpcatMusic/KONTRA/pull/1069) | 2026-10-29 | law ✓ range ✓ acts ✓ |
 | tested | `uvi.par.MultiLFO.Freq` | MultiLFO.Freq | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | [KONTRA#912](https://github.com/DerpcatMusic/KONTRA/pull/912) | 2026-10-28 | law ✓ range ✓ acts ✓ |
 | done | `uvi.par.MultiLFO.Invert` | MultiLFO.Invert | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | #308 | 2026-11-25 | law ✓ range ✗ acts ✓ |
@@ -5813,7 +5813,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.ParametricLFO.Symmetry` | ParametricLFO.Symmetry |  |  |  | law ✗ range ✗ acts ✗ |
 | partial | `uvi.par.ParametricLFO.SyncToHost` | ParametricLFO.SyncToHost | [lfo_routes.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/lfo_routes.rs) |  |  | law ✓ range ✗ acts ✗ |
 | done | `uvi.par.ScriptEventModulation.Bipolar` | ScriptEventModulation.Bipolar | [matrix.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/matrix.rs) | #284 | 2026-11-25 | law ✓ range ✗ acts ✓ |
-| done | `uvi.par.ScriptEventModulation.Bypass` | ScriptEventModulation.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.ScriptEventModulation.Bypass` | ScriptEventModulation.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
 | partial | `uvi.par.StdRandom.Bipolar` | StdRandom.Bipolar | [matrix.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/matrix.rs) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `uvi.par.StdRandom.Bypass` | StdRandom.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `uvi.par.StdRandom.Depth` | StdRandom.Depth | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) |  |  | law ✓ range ✓ acts ✗ |
@@ -5821,7 +5821,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.StdRandom.Rate` | StdRandom.Rate |  |  |  | law ✗ range ✗ acts ✗ |
 | partial | `uvi.par.StdRandom.TriggerMode` | StdRandom.TriggerMode | [program.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program.rs) |  |  | law ✓ range ✗ acts ✗ |
 | done | `uvi.par.StepEnvelope.Bipolar` | StepEnvelope.Bipolar | [matrix.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/matrix.rs) | #284 | 2026-11-25 | law ✓ range ✗ acts ✓ |
-| done | `uvi.par.StepEnvelope.Bypass` | StepEnvelope.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.StepEnvelope.Bypass` | StepEnvelope.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
 | tested | `uvi.par.StepEnvelope.Depth` | StepEnvelope.Depth | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | [KONTRA#1069](https://github.com/DerpcatMusic/KONTRA/pull/1069) | 2026-10-29 | law ✓ range ✓ acts ✓ |
 | tested | `uvi.par.StepEnvelope.Freq` | StepEnvelope.Freq | [digital_eq.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/digital_eq.rs) | [KONTRA#912](https://github.com/DerpcatMusic/KONTRA/pull/912) | 2026-10-28 | law ✓ range ✓ acts ✓ |
 | done | `uvi.par.StepEnvelope.InterpolationMode` | StepEnvelope.InterpolationMode | [modulation.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/modulation.rs) | [KONTRA#897](https://github.com/DerpcatMusic/KONTRA/pull/897) | 2026-10-28 | law ✓ range ✗ acts ✓ |
@@ -5833,7 +5833,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | partial | `uvi.par.VoiceModulator.Bypass` | VoiceModulator.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
 | missing | `uvi.par.VoiceModulator.Legato` | VoiceModulator.Legato |  |  |  | law ✗ range ✗ acts ✗ |
 | partial | `uvi.par.VoiceModulator.NumSteps` | VoiceModulator.NumSteps | [modulation.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/modulation.rs) |  |  | law ✓ range ✗ acts ✗ |
-### Oscillator (0 tested, 0 done, 261 partial, 0 unseen, 533 missing)
+### Oscillator (0 tested, 11 done, 250 partial, 0 unseen, 533 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
@@ -6495,17 +6495,17 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.SampleMappingOscillator.VelGainKeyTrack` | SampleMappingOscillator.VelGainKeyTrack |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.SampleMappingOscillator.VelGainRange` | SampleMappingOscillator.VelGainRange |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.SampleMappingOscillator.VelMorph` | SampleMappingOscillator.VelMorph |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.SamplePlayer.AllowStreaming` | SamplePlayer.AllowStreaming | [ignored.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/ignored.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SamplePlayer.BaseNote` | SamplePlayer.BaseNote | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SamplePlayer.Bypass` | SamplePlayer.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SamplePlayer.CoarseTune` | SamplePlayer.CoarseTune | [tests.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/tests.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SamplePlayer.FineTune` | SamplePlayer.FineTune | [program.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SamplePlayer.Gain` | SamplePlayer.Gain | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SamplePlayer.InterpolationMode` | SamplePlayer.InterpolationMode | [modulation.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/modulation.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SamplePlayer.NoteTracking` | SamplePlayer.NoteTracking | [tests.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/tests.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SamplePlayer.Pitch` | SamplePlayer.Pitch | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SamplePlayer.Reverse` | SamplePlayer.Reverse | [bank.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/bank.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.SamplePlayer.SampleStart` | SamplePlayer.SampleStart | [program.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program.rs) |  |  | law ✓ range ✗ acts ✗ |
+| done | `uvi.par.SamplePlayer.AllowStreaming` | SamplePlayer.AllowStreaming | [ignored.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/ignored.rs) | [KONTRA#1516](https://github.com/DerpcatMusic/KONTRA/pull/1516) | 2026-11-14 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SamplePlayer.BaseNote` | SamplePlayer.BaseNote | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SamplePlayer.Bypass` | SamplePlayer.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SamplePlayer.CoarseTune` | SamplePlayer.CoarseTune | [tests.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/tests.rs) | [KONTRA#877](https://github.com/DerpcatMusic/KONTRA/pull/877) | 2026-10-28 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SamplePlayer.FineTune` | SamplePlayer.FineTune | [program.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program.rs) | [KONTRA#845](https://github.com/DerpcatMusic/KONTRA/pull/845) | 2026-10-28 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SamplePlayer.Gain` | SamplePlayer.Gain | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SamplePlayer.InterpolationMode` | SamplePlayer.InterpolationMode | [modulation.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/modulation.rs) | [KONTRA#897](https://github.com/DerpcatMusic/KONTRA/pull/897) | 2026-10-28 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SamplePlayer.NoteTracking` | SamplePlayer.NoteTracking | [tests.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/tests.rs) | #91 | 2026-11-22 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SamplePlayer.Pitch` | SamplePlayer.Pitch | [blend.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/blend.rs) | [KONTRA#1069](https://github.com/DerpcatMusic/KONTRA/pull/1069) | 2026-10-29 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SamplePlayer.Reverse` | SamplePlayer.Reverse | [bank.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/bank.rs) | [KONTRA#1530](https://github.com/DerpcatMusic/KONTRA/pull/1530) | 2026-11-14 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.SamplePlayer.SampleStart` | SamplePlayer.SampleStart | [program.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program.rs) | [KONTRA#845](https://github.com/DerpcatMusic/KONTRA/pull/845) | 2026-10-28 | law ✓ range ✗ acts ✓ |
 | missing | `uvi.par.SamplePlayer.SampleStartMillisecond` | SamplePlayer.SampleStartMillisecond |  |  |  | law ✗ range ✗ acts ✗ |
 | partial | `uvi.par.SuperVPScrub.BaseNote` | SuperVPScrub.BaseNote | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `uvi.par.SuperVPScrub.Bypass` | SuperVPScrub.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
@@ -6631,17 +6631,17 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.WaveTableOscillator.StereoSpreadMode` | WaveTableOscillator.StereoSpreadMode |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.WaveTableOscillator.WaveIndex` | WaveTableOscillator.WaveIndex |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.WaveTableOscillator.WaveIndexSpread` | WaveTableOscillator.WaveIndexSpread |  |  |  | law ✗ range ✗ acts ✗ |
-### Other (0 tested, 0 done, 69 partial, 0 unseen, 29 missing)
+### Other (15 tested, 29 done, 25 partial, 0 unseen, 29 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| partial | `uvi.par.AuxEffect.Bypass` | AuxEffect.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.AuxEffect.Gain` | AuxEffect.Gain | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.AuxEffect.Pan` | AuxEffect.Pan | [ignored.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/ignored.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.AuxEffect.PreInsert` | AuxEffect.PreInsert | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.BusRouter.Bypass` | BusRouter.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.BusRouter.Gain` | BusRouter.Gain | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.BusRouter.PreFader` | BusRouter.PreFader | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) |  |  | law ✓ range ✗ acts ✗ |
+| done | `uvi.par.AuxEffect.Bypass` | AuxEffect.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.AuxEffect.Gain` | AuxEffect.Gain | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.AuxEffect.Pan` | AuxEffect.Pan | [ignored.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/ignored.rs) | [KONTRA#1516](https://github.com/DerpcatMusic/KONTRA/pull/1516) | 2026-11-14 | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.AuxEffect.PreInsert` | AuxEffect.PreInsert | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) | [KONTRA#917](https://github.com/DerpcatMusic/KONTRA/pull/917) | 2026-10-28 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.BusRouter.Bypass` | BusRouter.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.BusRouter.Gain` | BusRouter.Gain | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.BusRouter.PreFader` | BusRouter.PreFader | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) | [KONTRA#877](https://github.com/DerpcatMusic/KONTRA/pull/877) | 2026-10-28 | law ✓ range ✗ acts ✓ |
 | missing | `uvi.par.Engine.AutoPlay` | Engine.AutoPlay |  |  |  | law ✗ range ✗ acts ✗ |
 | partial | `uvi.par.Engine.Bypass` | Engine.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
 | missing | `uvi.par.Engine.GlobalTune` | Engine.GlobalTune |  |  |  | law ✗ range ✗ acts ✗ |
@@ -6652,41 +6652,41 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `uvi.par.Engine.Recording` | Engine.Recording |  |  |  | law ✗ range ✗ acts ✗ |
 | partial | `uvi.par.Engine.SyncToHost` | Engine.SyncToHost | [lfo_routes.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/lfo_routes.rs) |  |  | law ✓ range ✗ acts ✗ |
 | missing | `uvi.par.Engine.Tempo` | Engine.Tempo |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.Keygroup.Bypass` | Keygroup.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Keygroup.BypassInsertFX` | Keygroup.BypassInsertFX | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Keygroup.ExclusiveGroup` | Keygroup.ExclusiveGroup | [program.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program.rs) |  |  | law ✓ range ✗ acts ✗ |
+| done | `uvi.par.Keygroup.Bypass` | Keygroup.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Keygroup.BypassInsertFX` | Keygroup.BypassInsertFX | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) | [KONTRA#877](https://github.com/DerpcatMusic/KONTRA/pull/877) | 2026-10-28 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Keygroup.ExclusiveGroup` | Keygroup.ExclusiveGroup | [program.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program.rs) | [KONTRA#845](https://github.com/DerpcatMusic/KONTRA/pull/845) | 2026-10-28 | law ✓ range ✗ acts ✓ |
 | missing | `uvi.par.Keygroup.FXPostGain` | Keygroup.FXPostGain |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.Keygroup.FadeCurve` | Keygroup.FadeCurve | [fade.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/fade.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.Keygroup.Gain` | Keygroup.Gain | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Keygroup.HighKey` | Keygroup.HighKey | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.Keygroup.HighKeyFade` | Keygroup.HighKeyFade | [fade.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/fade.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Keygroup.HighVelocity` | Keygroup.HighVelocity | [fade.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/fade.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.Keygroup.HighVelocityFade` | Keygroup.HighVelocityFade | [fade.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/fade.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Keygroup.LatchTrigger` | Keygroup.LatchTrigger | [program.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Keygroup.LowKey` | Keygroup.LowKey | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.Keygroup.LowKeyFade` | Keygroup.LowKeyFade | [fade.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/fade.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Keygroup.LowVelocity` | Keygroup.LowVelocity | [fade.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/fade.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.Keygroup.LowVelocityFade` | Keygroup.LowVelocityFade | [fade.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/fade.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Keygroup.Pan` | Keygroup.Pan | [ignored.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/ignored.rs) |  |  | law ✓ range ✓ acts ✗ |
+| tested | `uvi.par.Keygroup.FadeCurve` | Keygroup.FadeCurve | [fade.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/fade.rs) | [KONTRA#1164](https://github.com/DerpcatMusic/KONTRA/pull/1164) | 2026-10-29 | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.Keygroup.Gain` | Keygroup.Gain | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.Keygroup.HighKey` | Keygroup.HighKey | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.Keygroup.HighKeyFade` | Keygroup.HighKeyFade | [fade.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/fade.rs) | [KONTRA#1164](https://github.com/DerpcatMusic/KONTRA/pull/1164) | 2026-10-29 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.Keygroup.HighVelocity` | Keygroup.HighVelocity | [fade.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/fade.rs) | [KONTRA#1164](https://github.com/DerpcatMusic/KONTRA/pull/1164) | 2026-10-29 | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.Keygroup.HighVelocityFade` | Keygroup.HighVelocityFade | [fade.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/fade.rs) | [KONTRA#1164](https://github.com/DerpcatMusic/KONTRA/pull/1164) | 2026-10-29 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Keygroup.LatchTrigger` | Keygroup.LatchTrigger | [program.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program.rs) | [KONTRA#845](https://github.com/DerpcatMusic/KONTRA/pull/845) | 2026-10-28 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.Keygroup.LowKey` | Keygroup.LowKey | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.Keygroup.LowKeyFade` | Keygroup.LowKeyFade | [fade.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/fade.rs) | [KONTRA#1164](https://github.com/DerpcatMusic/KONTRA/pull/1164) | 2026-10-29 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.Keygroup.LowVelocity` | Keygroup.LowVelocity | [fade.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/fade.rs) | [KONTRA#1164](https://github.com/DerpcatMusic/KONTRA/pull/1164) | 2026-10-29 | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.Keygroup.LowVelocityFade` | Keygroup.LowVelocityFade | [fade.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/fade.rs) | [KONTRA#1164](https://github.com/DerpcatMusic/KONTRA/pull/1164) | 2026-10-29 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.Keygroup.Pan` | Keygroup.Pan | [ignored.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/ignored.rs) | [KONTRA#1516](https://github.com/DerpcatMusic/KONTRA/pull/1516) | 2026-11-14 | law ✓ range ✓ acts ✓ |
 | missing | `uvi.par.Keygroup.PanLaw` | Keygroup.PanLaw |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.Keygroup.TriggerMode` | Keygroup.TriggerMode | [program.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Keygroup.TriggerRule` | Keygroup.TriggerRule | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) |  |  | law ✓ range ✗ acts ✗ |
+| done | `uvi.par.Keygroup.TriggerMode` | Keygroup.TriggerMode | [program.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program.rs) | [KONTRA#845](https://github.com/DerpcatMusic/KONTRA/pull/845) | 2026-10-28 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Keygroup.TriggerRule` | Keygroup.TriggerRule | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) | [KONTRA#1060](https://github.com/DerpcatMusic/KONTRA/pull/1060) | 2026-10-29 | law ✓ range ✗ acts ✓ |
 | missing | `uvi.par.Keygroup.TriggerSync` | Keygroup.TriggerSync |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.Layer.Bypass` | Layer.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Layer.BypassInsertFX` | Layer.BypassInsertFX | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Layer.CustomPolyphony` | Layer.CustomPolyphony | [tests.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/tests.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.Layer.Gain` | Layer.Gain | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Layer.HighKey` | Layer.HighKey | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.Layer.LowKey` | Layer.LowKey | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✓ acts ✗ |
+| done | `uvi.par.Layer.Bypass` | Layer.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Layer.BypassInsertFX` | Layer.BypassInsertFX | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) | [KONTRA#877](https://github.com/DerpcatMusic/KONTRA/pull/877) | 2026-10-28 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.Layer.CustomPolyphony` | Layer.CustomPolyphony | [tests.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/tests.rs) | [KONTRA#1560](https://github.com/DerpcatMusic/KONTRA/pull/1560) | 2026-11-14 | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.Layer.Gain` | Layer.Gain | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.Layer.HighKey` | Layer.HighKey | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✓ acts ✓ |
+| tested | `uvi.par.Layer.LowKey` | Layer.LowKey | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✓ acts ✓ |
 | missing | `uvi.par.Layer.MidiMute` | Layer.MidiMute |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.Layer.Mute` | Layer.Mute | [keys.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/keys.rs) |  |  | law ✓ range ✗ acts ✗ |
+| done | `uvi.par.Layer.Mute` | Layer.Mute | [keys.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/keys.rs) | [KONTRA#1005](https://github.com/DerpcatMusic/KONTRA/pull/1005) | 2026-10-29 | law ✓ range ✗ acts ✓ |
 | missing | `uvi.par.Layer.NumVoicesPerNote` | Layer.NumVoicesPerNote |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.Layer.Pan` | Layer.Pan | [ignored.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/ignored.rs) |  |  | law ✓ range ✓ acts ✗ |
+| tested | `uvi.par.Layer.Pan` | Layer.Pan | [ignored.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/ignored.rs) | [KONTRA#1516](https://github.com/DerpcatMusic/KONTRA/pull/1516) | 2026-11-14 | law ✓ range ✓ acts ✓ |
 | missing | `uvi.par.Layer.PanLaw` | Layer.PanLaw |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.Layer.PlayMode` | Layer.PlayMode | [tests.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/tests.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Layer.PortamentoCurve` | Layer.PortamentoCurve | [tests.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/tests.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.Layer.PortamentoMode` | Layer.PortamentoMode | [tests.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/tests.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Layer.PortamentoTime` | Layer.PortamentoTime | [tests.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/tests.rs) |  |  | law ✓ range ✓ acts ✗ |
+| done | `uvi.par.Layer.PlayMode` | Layer.PlayMode | [tests.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/tests.rs) | [KONTRA#1560](https://github.com/DerpcatMusic/KONTRA/pull/1560) | 2026-11-14 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.Layer.PortamentoCurve` | Layer.PortamentoCurve | [tests.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/tests.rs) | [KONTRA#1568](https://github.com/DerpcatMusic/KONTRA/pull/1568) | 2026-11-14 | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.Layer.PortamentoMode` | Layer.PortamentoMode | [tests.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/tests.rs) | [KONTRA#1568](https://github.com/DerpcatMusic/KONTRA/pull/1568) | 2026-11-14 | law ✓ range ✗ acts ✓ |
+| tested | `uvi.par.Layer.PortamentoTime` | Layer.PortamentoTime | [tests.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/tests.rs) | [KONTRA#1568](https://github.com/DerpcatMusic/KONTRA/pull/1568) | 2026-11-14 | law ✓ range ✓ acts ✓ |
 | missing | `uvi.par.Layer.Solo` | Layer.Solo |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.Layer.VelocityCurve` | Layer.VelocityCurve |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.Layer.VoiceCount` | Layer.VoiceCount |  |  |  | law ✗ range ✗ acts ✗ |
@@ -6716,18 +6716,18 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | partial | `uvi.par.Part.Streaming` | Part.Streaming | [ignored.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/ignored.rs) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `uvi.par.Part.TransposeOctaves` | Part.TransposeOctaves | [program.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program.rs) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `uvi.par.Part.TransposeSemiTones` | Part.TransposeSemiTones | [program.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Program.Bypass` | Program.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Program.BypassInsertFX` | Program.BypassInsertFX | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Program.Gain` | Program.Gain | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
+| done | `uvi.par.Program.Bypass` | Program.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Program.BypassInsertFX` | Program.BypassInsertFX | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) | [KONTRA#877](https://github.com/DerpcatMusic/KONTRA/pull/877) | 2026-10-28 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Program.Gain` | Program.Gain | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) | #132 | 2026-11-23 | law ✓ range ✗ acts ✓ |
 | missing | `uvi.par.Program.LoopProgram` | Program.LoopProgram |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.Program.MemorySize` | Program.MemorySize |  |  |  | law ✗ range ✗ acts ✗ |
 | missing | `uvi.par.Program.NotePolyphony` | Program.NotePolyphony |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.Program.Pan` | Program.Pan | [ignored.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/ignored.rs) |  |  | law ✓ range ✓ acts ✗ |
+| tested | `uvi.par.Program.Pan` | Program.Pan | [ignored.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/ignored.rs) | [KONTRA#1516](https://github.com/DerpcatMusic/KONTRA/pull/1516) | 2026-11-14 | law ✓ range ✓ acts ✓ |
 | missing | `uvi.par.Program.PanLaw` | Program.PanLaw |  |  |  | law ✗ range ✗ acts ✗ |
-| partial | `uvi.par.Program.Polyphony` | Program.Polyphony | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) |  |  | law ✓ range ✓ acts ✗ |
-| partial | `uvi.par.Program.Streaming` | Program.Streaming | [ignored.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/ignored.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Program.TransposeOctaves` | Program.TransposeOctaves | [program.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program.rs) |  |  | law ✓ range ✗ acts ✗ |
-| partial | `uvi.par.Program.TransposeSemiTones` | Program.TransposeSemiTones | [program.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program.rs) |  |  | law ✓ range ✗ acts ✗ |
+| tested | `uvi.par.Program.Polyphony` | Program.Polyphony | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) | [KONTRA#1071](https://github.com/DerpcatMusic/KONTRA/pull/1071) | 2026-10-29 | law ✓ range ✓ acts ✓ |
+| done | `uvi.par.Program.Streaming` | Program.Streaming | [ignored.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/ignored.rs) | [KONTRA#1516](https://github.com/DerpcatMusic/KONTRA/pull/1516) | 2026-11-14 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Program.TransposeOctaves` | Program.TransposeOctaves | [program.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program.rs) | [KONTRA#845](https://github.com/DerpcatMusic/KONTRA/pull/845) | 2026-10-28 | law ✓ range ✗ acts ✓ |
+| done | `uvi.par.Program.TransposeSemiTones` | Program.TransposeSemiTones | [program.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program.rs) | [KONTRA#845](https://github.com/DerpcatMusic/KONTRA/pull/845) | 2026-10-28 | law ✓ range ✗ acts ✓ |
 | partial | `uvi.par.Synth.Bypass` | Synth.Bypass | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `uvi.par.Synth.BypassInsertFX` | Synth.BypassInsertFX | [routing.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/program/routing.rs) |  |  | law ✓ range ✗ acts ✗ |
 | partial | `uvi.par.Synth.Gain` | Synth.Gain | [lib.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/uvi/src/lib.rs) |  |  | law ✓ range ✗ acts ✗ |
