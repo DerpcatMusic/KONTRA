@@ -21,6 +21,24 @@ const GLIDE_MS: ir::Law = ir::Law::ExpAffine {
     scale: 2.0,
 };
 
+/// Envelope follower attack time knob: `7·((2502/7)^x − 2/7)` ms (`5.0` .. `2.5k` ms).
+const ENVF_ATTACK_MS: ir::Law = ir::Law::ExpAffine {
+    base: 2_502.0 / 7.0,
+    offset: 0.0,
+    factor: 1.0,
+    shift: -2.0 / 7.0,
+    scale: 7.0,
+};
+
+/// Envelope follower release time knob: `42·((2502/42)^x − 2/42)` ms (`40.0` .. `2.5k` ms).
+const ENVF_RELEASE_MS: ir::Law = ir::Law::ExpAffine {
+    base: 2_502.0 / 42.0,
+    offset: 0.0,
+    factor: 1.0,
+    shift: -2.0 / 42.0,
+    scale: 42.0,
+};
+
 pub(crate) use kontra_plan::par_values::{BUS_OFFSET, LevelPar, RackScheme, effect_par, level_par};
 
 impl Engine {
@@ -487,6 +505,7 @@ impl Engine {
                 return Some(i32::from(m.bypass));
             }
             EnginePar::ReleaseTrigger => return Some(i32::from(g.release_trigger)),
+            EnginePar::KeyTracking => return Some(i32::from(g.keytrack != 0.0)),
             EnginePar::RouteIntensity => setting(&SQUARE, f64::from(route()?.abs())),
             EnginePar::RouteDepth => setting(&SIGNED_CUBE, f64::from(route()?)),
             EnginePar::LfoFade => stage_setting(&STAGE_10S, f64::from(g.lfo(slot)?.fade_ms)),
@@ -796,6 +815,10 @@ impl Engine {
             }),
             EnginePar::IntModType => true,
             EnginePar::IntModSubtype => set_mod_subtype(g, slot, value),
+            EnginePar::KeyTracking => {
+                g.keytrack = if value != 0 { 1.0 } else { 0.0 };
+                true
+            }
             _ => return self.set_mod_or_envelope(par, value, x, unit, group, slot, generic),
         };
         // A route or LFO belongs to its group: only that group's voices read it.
@@ -854,6 +877,39 @@ impl Engine {
         generic: i32,
     ) -> bool {
         let (rate, tempo) = (self.rate, self.tempo);
+        if matches!(
+            par,
+            EnginePar::FollowerAttack | EnginePar::FollowerRelease | EnginePar::FollowerGainBoost
+        ) {
+            let Ok(g_idx) = usize::try_from(group) else {
+                return false;
+            };
+            let Some(g) = self.groups.get_mut(g_idx) else {
+                return false;
+            };
+            let Some(idx) = g.follower_index(slot) else {
+                return false;
+            };
+            let Some(f) = g.followers.get_mut(idx) else {
+                return false;
+            };
+            match par {
+                EnginePar::FollowerAttack => f.attack_ms = ENVF_ATTACK_MS.eval_f64(x) as f32,
+                EnginePar::FollowerRelease => f.release_ms = ENVF_RELEASE_MS.eval_f64(x) as f32,
+                EnginePar::FollowerGainBoost => f.gain_db = (x * 24.0) as f32,
+                _ => return false,
+            }
+            let updated = *f;
+            if let Some(live) = self.followers.get_mut(g_idx).and_then(|fs| fs.get_mut(idx)) {
+                live.set(kontra_dsp::dynamics::EnvelopeFollowerSettings {
+                    attack_ms: updated.attack_ms,
+                    release_ms: updated.release_ms,
+                    adaption_ms: updated.adaption_ms,
+                    gain_db: updated.gain_db,
+                });
+            }
+            return true;
+        }
         let Some(g) = self.group_mut(group) else {
             return false;
         };
@@ -1272,6 +1328,19 @@ fn get_mod_par(g: &Group, par: EnginePar, slot: i32, generic: i32) -> Option<i32
                         (u.clamp(0.0, 1.0) * 1e6).round() as i32
                     }),
             })
+        }
+        EnginePar::FollowerAttack | EnginePar::FollowerRelease | EnginePar::FollowerGainBoost => {
+            let idx = g.follower_index(slot)?;
+            let f = g.followers.get(idx)?;
+            let x = match par {
+                EnginePar::FollowerAttack => stage_setting(&ENVF_ATTACK_MS, f64::from(f.attack_ms)),
+                EnginePar::FollowerRelease => {
+                    stage_setting(&ENVF_RELEASE_MS, f64::from(f.release_ms))
+                }
+                EnginePar::FollowerGainBoost => (f64::from(f.gain_db) / 24.0).clamp(0.0, 1.0),
+                _ => return None,
+            };
+            Some((x * 1e6).round() as i32)
         }
         _ => None,
     }

@@ -158,7 +158,10 @@ impl ScriptPlan {
             | EnginePar::GlideCoef
             | EnginePar::GlideCoefUnit
             | EnginePar::IntModType
-            | EnginePar::IntModSubtype => Holder::Mod,
+            | EnginePar::IntModSubtype
+            | EnginePar::FollowerAttack
+            | EnginePar::FollowerRelease
+            | EnginePar::FollowerGainBoost => Holder::Mod,
             EnginePar::Volume | EnginePar::Pan | EnginePar::Tune | EnginePar::OutputChannel => {
                 Holder::Level
             }

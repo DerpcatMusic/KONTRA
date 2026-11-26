@@ -975,7 +975,11 @@ fn a_groups_controls_take_sets_as_kontakt_takes_them() {
         let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
         let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
         let at = i8::try_from(index).unwrap();
-        plan.groups[0].held = vec![(at, held_key(par), before)];
+        if par == "$ENGINE_PAR_TRACKING" {
+            plan.groups[0].keytrack = f64::from(before);
+        } else {
+            plan.groups[0].held = vec![(at, held_key(par), before)];
+        }
         let source = format!(
             "on init\n set_engine_par({par}, {value}, 0, {index}, -1)\n \
              message(get_engine_par({par}, 0, {index}, -1))\nend on"
@@ -7396,4 +7400,234 @@ fn a_uvi_note_posted_after_a_wait_ends_at_its_key_up() {
     );
     level(&mut e, &[off(60)]);
     assert_eq!(level(&mut e, &[]), 0.0, "released at the key-up");
+}
+
+/// `$ENGINE_PAR_TRACKING` off plays every key at the root's rate; on, an
+/// octave up plays twice as fast. The sample is a ramp, so the level a
+/// block ends on is how far the voice read.
+#[test]
+fn tracking_set_by_a_script_moves_the_pitch_a_key_plays() {
+    let frames = 96_000u32;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let bytes = (0..frames)
+        .flat_map(|i| (i as f32 / frames as f32).to_le_bytes())
+        .collect();
+    let key = BlobKey {
+        file: "ramp".into(),
+        offset: 0,
+        fmt: FMT,
+    };
+    let sample = store
+        .load(
+            &key,
+            Arc::new(MemSource::new(FMT, bytes)),
+            u64::from(frames),
+            std::slice::from_ref(&(0..u64::from(frames))),
+        )
+        .unwrap();
+    let region = Region {
+        mix: None,
+        table: None,
+        sample,
+        start: 0,
+        end: u64::from(frames),
+        loops: Default::default(),
+        reverse: false,
+    };
+    let root = 60;
+    let read = |tracking: i32| {
+        let z = Zone::new(region.clone(), root, RATE);
+        let src = format!(
+            "on init\n set_engine_par($ENGINE_PAR_TRACKING, {tracking}, 0, -1, -1)\nend on"
+        );
+        let mut e = engine(&store, vec![z], &src);
+        level(&mut e, &[on(root + 12)])
+    };
+    let (off, on) = (read(0), read(1));
+    assert!(off > 0.0, "the voice plays");
+    assert!(
+        (on / off - 2.0).abs() < 0.05,
+        "octave up reads {on}, root rate {off}"
+    );
+}
+
+/// An insert-bus convolution of a stereo 16-bit response with `taps`,
+/// Kontakt's Auto Gain ready for a script's `IRC_AUTO_GAIN`.
+fn convolution_engine(store: &mut Store, taps: &[f32], script: &str) -> Engine {
+    use kontra_engine::{Response, ir};
+    let pcm: Vec<u8> = (taps.iter())
+        .flat_map(|&t| {
+            let s = ((t * 32_768.0) as i16).to_le_bytes();
+            [s, s].concat()
+        })
+        .collect();
+    let mut wav = b"RIFF".to_vec();
+    wav.extend((36 + pcm.len() as u32).to_le_bytes());
+    wav.extend(b"WAVEfmt ");
+    wav.extend(16u32.to_le_bytes());
+    wav.extend([1, 0, 2, 0]);
+    wav.extend(RATE.to_le_bytes());
+    wav.extend((RATE * 4).to_le_bytes());
+    wav.extend([4, 0, 16, 0]);
+    wav.extend(b"data");
+    wav.extend((pcm.len() as u32).to_le_bytes());
+    wav.extend(&pcm);
+    let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("taps{taps:?}.wav"));
+    std::fs::write(&file, wav).unwrap();
+    let mut plan = Plan::new(vec![zone(store, 0.5, 0)], 16);
+    plan.inserts = vec![Some(ir::Effect {
+        kind: ir::EffectKind::Convolution { impulse: 0 },
+        bypass: false,
+        output: 1.0,
+        dry: 0.0,
+    })];
+    plan.impulses = vec![Some(Response {
+        left: taps.to_vec(),
+        right: taps.to_vec(),
+    })];
+    plan.slot_shapes.fresh_normalize = Some(ir::Normalize {
+        energy: 0.5,
+        max_gain: 2.0,
+        floor: 0.001,
+        channels: ir::EnergyChannels::Loudest,
+        after_resample: false,
+    });
+    let law = ir::Impulse {
+        sample: 0,
+        reverse: false,
+        normalize: None,
+        predelay_ms: 0.0,
+        cuts: None,
+        envelope: None,
+        mix: None,
+        size: [1.0, 1.0],
+        length: 1.0,
+        window_whole: false,
+    };
+    plan.impulse_laws = vec![("taps".into(), law)];
+    plan.responses = vec![(
+        "taps".into(),
+        ir::Sample {
+            name: "Taps.wav".into(),
+            file,
+            offset: 0,
+            len: None,
+            channels: 0,
+            frames: 0,
+            rate: 0,
+            keystream: None,
+            raw: None,
+        },
+    )];
+    let script = kontra_ksp::compile(script, &[]).unwrap();
+    plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    Engine::new(Arc::new(plan), store.client(), RATE)
+}
+
+/// `IRC_REVERSE` plays the response back to front, so the first output
+/// frame is the last tap's; `IRC_AUTO_GAIN` scales it by
+/// `sqrt(0.5 / E)`, E the response's energy. Both read back what was set.
+#[test]
+fn a_scripts_convolution_reverse_and_auto_gain_prepare_its_response_again() {
+    let taps = [0.5f32, 0.25];
+    let run = |par: &str, set: i32| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let src = format!(
+            "on init\n set_engine_par({par}, {set}, -1, 0, $NI_INSERT_BUS)\n \
+             message(get_engine_par({par}, -1, 0, $NI_INSERT_BUS))\nend on"
+        );
+        let mut e = convolution_engine(&mut store, &taps, &src);
+        assert_eq!(e.last_message(), set.to_string(), "{par} reads back");
+        let mut out = vec![[0.0f32; 2]; 2_400];
+        e.process(&mut out, &[on(60)]);
+        let first = out.iter().find(|f| f[0].abs() > 1e-4).unwrap()[0];
+        (first, out[2_000][0], e.stats().actions_unhandled)
+    };
+    let (plain_first, plain_steady, _) = run("$ENGINE_PAR_IRC_REVERSE", 0);
+    let (rev_first, rev_steady, unhandled) = run("$ENGINE_PAR_IRC_REVERSE", 1);
+    assert_eq!(unhandled, 0);
+    let want = taps[1] / taps[0];
+    assert!(
+        (rev_first / plain_first - want).abs() < 0.01,
+        "{rev_first} / {plain_first}"
+    );
+    assert!(
+        (rev_steady - plain_steady).abs() < 1e-3,
+        "same energy, same sum"
+    );
+    let (_, gained, _) = run("$ENGINE_PAR_IRC_AUTO_GAIN", 1);
+    let energy: f32 = taps.iter().map(|t| t * t).sum();
+    let gain = (0.5 / energy).sqrt().min(2.0);
+    assert!(
+        (gained / plain_steady - gain).abs() < 0.01,
+        "{gained} / {plain_steady} want {gain}"
+    );
+}
+
+/// A script's `ENVF_*` sets move the group's envelope follower live: more
+/// gain boost ducks a follower-driven volume deeper, a longer attack ducks
+/// the onset less, and each reads back the value it was set to.
+#[test]
+fn a_scripts_envelope_follower_sets_move_what_the_follower_ducks() {
+    use kontra_engine::ir;
+    let run = |sets: &str| {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let mut plan = Plan::new(vec![zone(&mut store, 0.5, 0)], 16);
+        let g = &mut plan.groups[0];
+        g.mods.clear();
+        g.followers = vec![ir::EnvelopeFollower {
+            attack_ms: 5.0,
+            release_ms: 40.0,
+            adaption_ms: 0.0,
+            gain_db: 0.0,
+        }];
+        g.mods.push(ir::Mod {
+            name: "ENVF".into(),
+            slot: 0,
+            target: 0,
+            bypass: false,
+            route: ir::ModRoute::new(ir::Source::EnvelopeFollower(0), ir::ParamAddr::Volume, -0.8)
+                .law(ir::RouteLaw::Gain(ir::Curve::Depth { power: 1 })),
+        });
+        let script = kontra_ksp::compile(&format!("on init\n{sets}\nend on"), &[]).unwrap();
+        plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+        let mut e = Engine::new(Arc::new(plan), store.client(), RATE);
+        let msg = e.last_message().to_string();
+        let mut out = vec![[0.0f32; 2]; 9_600];
+        e.process(&mut out, &[on(60)]);
+        let mean = |r: std::ops::Range<usize>| {
+            let n = r.len() as f32;
+            out[r].iter().map(|f| f[0].abs()).sum::<f32>() / n
+        };
+        (mean(240..960), mean(4_800..9_600), msg)
+    };
+    let set = |par: &str, x: i32| {
+        format!(
+            "set_engine_par($ENGINE_PAR_ENVF_{par}, {x}, 0, 0, -1)\n\
+             message(get_engine_par($ENGINE_PAR_ENVF_{par}, 0, 0, -1))"
+        )
+    };
+    let (_, flat, _) = run(&set("GAIN_BOOST", 0));
+    let (_, boosted, read) = run(&set("GAIN_BOOST", 1_000_000));
+    assert_eq!(read, "1000000");
+    assert!(
+        boosted < flat,
+        "24 dB boost ducks deeper: {boosted} vs {flat}"
+    );
+    let (fast_onset, fast_steady, _) = run(&set("ATTACK", 0));
+    let (slow_onset, slow_steady, read) = run(&set("ATTACK", 1_000_000));
+    assert!(
+        (read.parse::<i32>().unwrap() - 1_000_000).abs() <= 1,
+        "{read}"
+    );
+    assert!(
+        slow_onset > fast_onset,
+        "a 2.5 s attack ducks the onset less: {slow_onset} vs {fast_onset}"
+    );
+    assert!(slow_steady > fast_steady, "and is still rising at 200 ms");
+    let (_, _, read) = run(&set("RELEASE", 500_000));
+    assert!(
+        (read.parse::<i32>().unwrap() - 500_000).abs() <= 1,
+        "{read}"
+    );
 }

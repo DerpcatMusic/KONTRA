@@ -99,6 +99,7 @@ $ENGINE_PAR_CT_TONE	Cat	0..=1_000_000	identity	fx_other.tsv (max_error=0)
 $ENGINE_PAR_CT_TREBLE	Cat	0..=1_000_000	identity	fx_other.tsv (max_error=0)
 $ENGINE_PAR_CT_VOLUME	Cat	0..=1_000_000	identity	fx_other.tsv (max_error=0)
 $ENGINE_PAR_CUTOFF	BandPass	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
+$ENGINE_PAR_CW_PEDAL	Cry Wah	0..=1_000_000	linear 0.0..=100.0 %	cry_wah.rs / engine-par-disp.tsv
 $ENGINE_PAR_DAMPING	Distortion	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
 $ENGINE_PAR_DECAY	AHDSR	0..=1_000_000	2 * (12501^x - 1) ms (STAGE_25S, 0..25000 ms)	mod_par_laws.lua / par_laws.rs
 $ENGINE_PAR_DIRT_AMOUNTA	Dirt	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
@@ -130,6 +131,8 @@ $ENGINE_PAR_DS_VOLUME	DStortion	0..=1_000_000	identity	fx_other.tsv (max_error=0
 $ENGINE_PAR_EFFECT_BYPASS	BandPass	switch (0 or 1)	bool: stored=1 when value>=1	filters_eq.tsv (max_error=0)
 $ENGINE_PAR_EFFECT_SUBTYPE	Filter	$FILTER_TYPE_*	switches filter slot subtype shape	filter-type-ids.tsv / filter_subtypes.tsv
 $ENGINE_PAR_EFFECT_TYPE	Rack	$EFFECT_TYPE_*	switches insert effect module type (async outside on init)	effect-type-ids.tsv / limiter-dynamics.tsv
+$ENGINE_PAR_EXP_FILTER_AMOUNT	AET Filter	0..=1_000_000	linear 0.0..=100.0 %	dyx.rs / engine-par-disp.tsv
+$ENGINE_PAR_EXP_FILTER_MORPH	AET Filter	0..=1_000_000	linear 0.0..=100.0 %	dyx.rs / engine-par-disp.tsv
 $ENGINE_PAR_FCOMP_ATTACK	Feedback Compressor	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
 $ENGINE_PAR_FCOMP_HQ_MODE	Feedback Compressor	switch (0 or 1)	bool: stored=1 when value>=1	fx_dynamics_dist_tape.tsv (max_error=0)
 $ENGINE_PAR_FCOMP_INPUT	Feedback Compressor	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
@@ -235,6 +238,17 @@ $ENGINE_PAR_JMP_MONO	Jump	switch (0 or 1)	bool: stored=1 when value>=1	fx_dynami
 $ENGINE_PAR_JMP_PREAMP	Jump	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
 $ENGINE_PAR_JMP_PRESENCE	Jump	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
 $ENGINE_PAR_JMP_TREBLE	Jump	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_KOLOR_BASS	Kolor	0..=1_000_000	linear -20.0..=20.0 dB	kolor.rs / engine-par-disp.tsv
+$ENGINE_PAR_KOLOR_BASS_SAVER	Kolor	0..=1_000_000	linear 0.0..=100.0 %	kolor.rs / engine-par-disp.tsv
+$ENGINE_PAR_KOLOR_BOOST_LEVEL	Kolor	0..=1_000_000	linear 0.0..=12.0 dB	kolor.rs / engine-par-disp.tsv
+$ENGINE_PAR_KOLOR_DRIVE	Kolor	0..=1_000_000	linear 0.0..=100.0 %	kolor.rs / engine-par-disp.tsv
+$ENGINE_PAR_KOLOR_HPF	Kolor	0..=1_000_000	exp 10.0 * 2048^x Hz (10.0..=20480.0 Hz)	kolor.rs / engine-par-disp.tsv
+$ENGINE_PAR_KOLOR_LPF	Kolor	0..=1_000_000	exp 10.0 * 2048^x Hz (10.0..=20480.0 Hz)	kolor.rs / engine-par-disp.tsv
+$ENGINE_PAR_KOLOR_MID	Kolor	0..=1_000_000	linear -20.0..=20.0 dB	kolor.rs / engine-par-disp.tsv
+$ENGINE_PAR_KOLOR_MID_FREQ	Kolor	0..=1_000_000	linear 80.0..=2500.0 Hz	kolor.rs / engine-par-disp.tsv
+$ENGINE_PAR_KOLOR_MID_Q	Kolor	0..=1_000_000	linear 0.0..=100.0 %	kolor.rs / engine-par-disp.tsv
+$ENGINE_PAR_KOLOR_MIX	Kolor	0..=1_000_000	linear 0.0..=100.0 %	kolor.rs / engine-par-disp.tsv
+$ENGINE_PAR_KOLOR_TREBLE	Kolor	0..=1_000_000	linear -20.0..=20.0 dB	kolor.rs / engine-par-disp.tsv
 $ENGINE_PAR_LFO_DELAY	LFO	0..=1_000_000	2 * (5002^x - 1) ms (STAGE_10S, 0..10002 ms)	mod_par_laws.lua / par_laws.rs
 $ENGINE_PAR_LFO_PHASE	LFO	0..=1_000_000	linear 0..1 cycle (0..360 deg)	mod_par_laws.lua / script_knobs.rs
 $ENGINE_PAR_LFO_RAND	LFO	0..=1_000_000	linear bipolar 2*x - 1 (-100..+100%)	script_knobs.rs / engine-par-disp.tsv
@@ -358,6 +372,7 @@ $ENGINE_PAR_RINGMOD_FM	RingModulator	0..=1_000_000	identity	fx_other.tsv (max_er
 $ENGINE_PAR_RINGMOD_FREQUENCY	RingModulator	0..=1_000_000	identity	fx_other.tsv (max_error=0)
 $ENGINE_PAR_RINGMOD_LFO_AMOUNT	RingModulator	0..=1_000_000	identity	fx_other.tsv (max_error=0)
 $ENGINE_PAR_RINGMOD_LFO_RATE	RingModulator	0..=1_000_000	identity	fx_other.tsv (max_error=0)
+$ENGINE_PAR_RINGMOD_LFO_WAVE	Ring Modulator	0..=1 (refused outside)	0 sine, 1 square	ringmod.rs / engine_pars.rs::ACCEPTS
 $ENGINE_PAR_RINGMOD_RING	RingModulator	0..=1_000_000	identity	fx_other.tsv (max_error=0)
 $ENGINE_PAR_RT_ACCEL_HI	Rotator	0..=1_000_000	identity	fx_other.tsv (max_error=0)
 $ENGINE_PAR_RT_ACCEL_LO	Rotator	0..=1_000_000	identity	fx_other.tsv (max_error=0)
@@ -415,11 +430,18 @@ $ENGINE_PAR_SEQ_LMF_Q	Solid G-EQ	0..=1_000_000	identity	filters_eq.tsv (max_erro
 $ENGINE_PAR_SEQ_LP	Solid G-EQ	switch (0 or 1)	bool: stored=1 when value>=1	filters_eq.tsv (max_error=0)
 $ENGINE_PAR_SEQ_LP_FREQ	Solid G-EQ	0..=1_000_000	identity	filters_eq.tsv (max_error=0)
 $ENGINE_PAR_SHAPE	Shaper	0..=1_000_000	linear a=-1 b=2	fx_dynamics_dist_tape.tsv (max_error=5e-08)
+$ENGINE_PAR_SHAPE_TYPE	Saturation	0..=2 (refused outside)	0 Classic, 1 Enhanced, 2 Drums	effects.rs / engine_pars.rs::ACCEPTS
+$ENGINE_PAR_SKDLX_BASS	Skreamer Deluxe	0..=1_000_000	linear -100.0..=100.0 %	skreamer_deluxe.rs / engine-par-disp.tsv
+$ENGINE_PAR_SKDLX_DRIVE	Skreamer Deluxe	0..=1_000_000	linear 0.0..=100.0 %	skreamer_deluxe.rs / engine-par-disp.tsv
+$ENGINE_PAR_SKDLX_MID	Skreamer Deluxe	0..=1_000_000	linear -100.0..=100.0 %	skreamer_deluxe.rs / engine-par-disp.tsv
+$ENGINE_PAR_SKDLX_TONE	Skreamer Deluxe	0..=1_000_000	linear 0.0..=100.0 %	skreamer_deluxe.rs / engine-par-disp.tsv
+$ENGINE_PAR_SKDLX_TREBLE	Skreamer Deluxe	0..=1_000_000	linear -100.0..=100.0 %	skreamer_deluxe.rs / engine-par-disp.tsv
 $ENGINE_PAR_SK_BASS	Skreamer	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
 $ENGINE_PAR_SK_BRIGHT	Skreamer	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
 $ENGINE_PAR_SK_DRIVE	Skreamer	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
 $ENGINE_PAR_SK_MIX	Skreamer	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
 $ENGINE_PAR_SK_TONE	Skreamer	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_SOURCE_MODE	Group	read-only (0..=9)	group source playback mode ($NI_SOURCE_MODE_*), drops sets	engine_par_clamp.tsv / source_pars.rs
 $ENGINE_PAR_SPEED	TimeMachine	0..=1_000_000	time-stretch speed ratio (0..800%)	tm_source_sweep.tsv / script_knobs.rs
 $ENGINE_PAR_SP_DIVERGENCE	Surround Panner	0..=1_000_000	identity	fx_other.tsv (max_error=0)
 $ENGINE_PAR_SP_LFE_VOLUME	Surround Panner	0..=1_000_000	linear a=-36 b=72	fx_other.tsv (max_error=5e-06)
@@ -428,7 +450,22 @@ $ENGINE_PAR_SP_OFFSET_DISTANCE	Surround Panner	0..=1_000_000	identity	fx_other.t
 $ENGINE_PAR_SP_OFFSET_X	Surround Panner	0..=1_000_000	linear a=-1 b=2	fx_other.tsv (max_error=5e-08)
 $ENGINE_PAR_SP_OFFSET_Y	Surround Panner	0..=1_000_000	linear a=-1 b=2	fx_other.tsv (max_error=5e-08)
 $ENGINE_PAR_SP_SIZE	Surround Panner	0..=1_000_000	linear a=0.1 b=0.9	fx_other.tsv (max_error=5e-08)
+$ENGINE_PAR_START_CRITERIA_CC_MAX	Group	read-only (0..=127)	start criterion CC upper bound at slot 0..=3, drops sets	engine_par_clamp.tsv / start-criteria.nki
+$ENGINE_PAR_START_CRITERIA_CC_MIN	Group	read-only (0..=127)	start criterion CC lower bound at slot 0..=3, drops sets	engine_par_clamp.tsv / start-criteria.nki
+$ENGINE_PAR_START_CRITERIA_CONTROLLER	Group	read-only (0..=127)	start criterion CC number at slot 0..=3, drops sets	engine_par_clamp.tsv / start-criteria.nki
+$ENGINE_PAR_START_CRITERIA_CYCLE_CLASS	Group	read-only (int)	start criterion round-robin cycle class at slot 0..=3, drops sets	engine_par_clamp.tsv / start-criteria.nki
+$ENGINE_PAR_START_CRITERIA_KEY_MAX	Group	read-only (0..=127)	start criterion keyswitch upper bound at slot 0..=3, drops sets	engine_par_clamp.tsv / start-criteria.nki
+$ENGINE_PAR_START_CRITERIA_KEY_MIN	Group	read-only (0..=127)	start criterion keyswitch lower bound at slot 0..=3, drops sets	engine_par_clamp.tsv / start-criteria.nki
+$ENGINE_PAR_START_CRITERIA_MODE	Group	read-only (0..=4)	start criterion mode at slot 0..=3, drops sets	engine_par_clamp.tsv / start-criteria.nki
+$ENGINE_PAR_START_CRITERIA_NEXT_CRIT	Group	read-only (0..=2)	start criterion boolean join at slot 0..=3, drops sets	engine_par_clamp.tsv / start-criteria.nki
+$ENGINE_PAR_START_CRITERIA_SEQ_ONLY	Group	read-only (0 or 1)	start criterion sequencer-only flag at slot 0..=3, drops sets	engine_par_clamp.tsv / start-criteria.nki
+$ENGINE_PAR_START_CRITERIA_SLICE_IDX	Group	read-only (-1 or >=0)	start criterion slice index at slot 0..=3, drops sets	engine_par_clamp.tsv / start-criteria.nki
+$ENGINE_PAR_START_CRITERIA_ZONE_IDX	Group	read-only (-1 or >=0)	start criterion zone index at slot 0..=3, drops sets	engine_par_clamp.tsv / start-criteria.nki
 $ENGINE_PAR_STEREO	Stereo	0..=1_000_000	linear a=-1 b=2	fx_other.tsv (max_error=5e-08)
+$ENGINE_PAR_STEREOTUNE_DRIFT	Stereo Tune	0..=1_000_000	linear 1.0..=100.0 %	stereo_tune.rs / engine-par-disp.tsv
+$ENGINE_PAR_STEREOTUNE_MIX	Stereo Tune	0..=1_000_000	linear 0.0..=100.0 %	stereo_tune.rs / engine-par-disp.tsv
+$ENGINE_PAR_STEREOTUNE_SPLIT	Stereo Tune	0..=1_000_000	linear 100.0..=1000.0 Hz	stereo_tune.rs / engine-par-disp.tsv
+$ENGINE_PAR_STEREOTUNE_SPREAD	Stereo Tune	0..=1_000_000	linear 0.0..=100.0 %	stereo_tune.rs / engine-par-disp.tsv
 $ENGINE_PAR_STEREO_PAN	Stereo	0..=1_000_000	linear a=-1 b=2	fx_other.tsv (max_error=5e-08)
 $ENGINE_PAR_STEREO_PSEUDO	Stereo	switch (0 or 1)	bool: stored=1 when value>=1	fx_other.tsv (max_error=0)
 $ENGINE_PAR_SUPERGT_ATTACK	Supercharger GT	0..=1_000_000	identity	fx_other.tsv (max_error=0)
@@ -459,6 +496,7 @@ $ENGINE_PAR_TP_GAIN	Tape Saturator	0..=1_000_000	identity	fx_dynamics_dist_tape.
 $ENGINE_PAR_TP_HF_ROLLOFF	Tape Saturator	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
 $ENGINE_PAR_TP_QUALITY	Tape Saturator	switch (0 or 1)	bool: stored=1 when value>=1	fx_dynamics_dist_tape.tsv (max_error=0)
 $ENGINE_PAR_TP_WARMTH	Tape Saturator	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
+$ENGINE_PAR_TRACKING	Group	switch (0 or 1)	bool: enables pitch key tracking (1.0 vs 0.0) when value!=0	engine_par_clamp.tsv / source-pars.nki
 $ENGINE_PAR_TRANSLIM_CEILING	Transparent Limiter	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
 $ENGINE_PAR_TRANSLIM_RELEASE	Transparent Limiter	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
 $ENGINE_PAR_TRANSLIM_THRESHOLD	Transparent Limiter	0..=1_000_000	identity	fx_dynamics_dist_tape.tsv (max_error=0)
@@ -493,6 +531,7 @@ $ENGINE_PAR_VC_DEPTH	VibratoChorus	0..=1_000_000	table	fx_raum_delight_psyche_vi
 $ENGINE_PAR_VC_MIX	VibratoChorus	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
 $ENGINE_PAR_VC_RATE	VibratoChorus	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
 $ENGINE_PAR_VC_WIDTH	VibratoChorus	0..=1_000_000	identity	fx_raum_delight_psyche_vibrato_phasis_replika.tsv (max_error=0)
+$ENGINE_PAR_VOICE_GROUP	Group	unclamped int (-1 none)	reads the saved voice group, keeps any set, moves no voice	engine_par_clamp.tsv / start-criteria.nki
 $ENGINE_PAR_VOLUME	Level	0..=1_000_000	cubic gain 4 * x^3 (unity at 629961; -inf..+12 dB)	par_laws.rs / Kontakt 8.13.1 oracle
 $ENGINE_PAR_WOWFLUTTER_AGE	WowFlutter	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)
 $ENGINE_PAR_WOWFLUTTER_FLUTTER	WowFlutter	0..=1_000_000	identity	fx_bite_dirt_freak_wowflutter_twindelay.tsv (max_error=0)

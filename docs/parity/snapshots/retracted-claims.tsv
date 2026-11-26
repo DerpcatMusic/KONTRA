@@ -1,5 +1,4 @@
 id	reason
-kontakt.par.CONTROL_PAR_CUSTOM_ID	no verified law: acts alone grades partial, not done
 kontakt.par.ENGINE_PAR_ENVELOPE_ORDER	no verified law: acts alone grades partial, not done
 kontakt.par.ENGINE_PAR_FORMANT	no verified law: acts alone grades partial, not done
 kontakt.par.ENGINE_PAR_FORMANT_SHIFT	no verified law: acts alone grades partial, not done
@@ -23,6 +22,5 @@ kontakt.par.ENGINE_PAR_START_CRITERIA_SLICE_IDX	no verified law: acts alone grad
 kontakt.par.ENGINE_PAR_START_CRITERIA_ZONE_IDX	no verified law: acts alone grades partial, not done
 kontakt.par.ENGINE_PAR_TMPRO_KEEP_FORMANTS	no verified law: acts alone grades partial, not done
 kontakt.par.ENGINE_PAR_TM_LEGATO	no verified law: acts alone grades partial, not done
-kontakt.par.ENGINE_PAR_TRACKING	no verified law: acts alone grades partial, not done
 kontakt.par.ENGINE_PAR_VOICE_GROUP	no verified law: acts alone grades partial, not done
 kontakt.par.ZONE_PAR_GROUP	no verified law: acts alone grades partial, not done

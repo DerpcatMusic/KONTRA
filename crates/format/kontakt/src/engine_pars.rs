@@ -319,6 +319,10 @@ const FIXED: &[(&str, ir::EnginePar)] = {
         ("$ENGINE_PAR_STEPSEQ_STEP_VALUE", P::StepSeqStepValue),
         ("$ENGINE_PAR_GLIDE_COEF", P::GlideCoef),
         ("$ENGINE_PAR_GLIDE_COEF_UNIT", P::GlideCoefUnit),
+        ("$ENGINE_PAR_ENVF_ATTACK", P::FollowerAttack),
+        ("$ENGINE_PAR_ENVF_RELEASE", P::FollowerRelease),
+        ("$ENGINE_PAR_ENVF_GAIN_BOOST", P::FollowerGainBoost),
+        ("$ENGINE_PAR_TRACKING", P::KeyTracking),
         // Position, the form amounts and Inharm are 0..=1 linear (readouts.rs
         // shows 0..100); the voice clamps each with its routes to 0..=1
         //. The modulator is not carried yet: its text answers,
@@ -459,6 +463,21 @@ const MOD_NUMERIC_READOUTS: &[(&str, ir::Law, ir::Form)] = &[
         shifted_exp(0.0, 2_500.0),
         ir::Form::Padded,
     ),
+    (
+        "$ENGINE_PAR_ENVF_ATTACK",
+        shifted_exp(5.0, 2_500.0),
+        ir::Form::Padded,
+    ),
+    (
+        "$ENGINE_PAR_ENVF_RELEASE",
+        shifted_exp(40.0, 2_500.0),
+        ir::Form::Padded,
+    ),
+    (
+        "$ENGINE_PAR_ENVF_GAIN_BOOST",
+        ir::Law::Linear { lo: 0.0, hi: 24.0 },
+        ir::Form::Padded,
+    ),
 ];
 
 const MOD_BLANK_READOUTS: &[&str] = &[
@@ -488,23 +507,14 @@ const MOD_BLANK_READOUTS: &[&str] = &[
     "$ENGINE_PAR_INTMOD_SUBTYPE",
 ];
 
-/// Controls whose DSP processor (Envelope Follower / TM2 Transient Size) is not
-/// yet implemented in the engine: stored as `EnginePar::Opaque` (`held`, `acts ✗`)
-/// while carrying their verified Kontakt 8.13.1 display laws (`disp ✓`).
+/// Controls whose processor the engine does not play: Transient Size (no
+/// TM2), and the envelope follower's adaption, a dB baseline the follower's
+/// smoothing-time model has no law for. Stored as `EnginePar::Opaque`
+/// (`held`, `acts ✗`) with their verified Kontakt 8.13.1 display laws.
 const UNPLAYED_HELD: &[(&str, ir::Law, ir::Form)] = &[
     (
         "$ENGINE_PAR_TRANSIENT_SIZE",
         shifted_exp(100.0, 5_000.0),
-        ir::Form::Padded,
-    ),
-    (
-        "$ENGINE_PAR_ENVF_ATTACK",
-        shifted_exp(5.0, 2_500.0),
-        ir::Form::Padded,
-    ),
-    (
-        "$ENGINE_PAR_ENVF_RELEASE",
-        shifted_exp(40.0, 2_500.0),
         ir::Form::Padded,
     ),
     (
@@ -513,11 +523,6 @@ const UNPLAYED_HELD: &[(&str, ir::Law, ir::Form)] = &[
             lo: -54.0,
             hi: -6.0,
         },
-        ir::Form::Padded,
-    ),
-    (
-        "$ENGINE_PAR_ENVF_GAIN_BOOST",
-        ir::Law::Linear { lo: 0.0, hi: 24.0 },
         ir::Form::Padded,
     ),
 ];

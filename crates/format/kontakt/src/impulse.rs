@@ -264,10 +264,10 @@ impl<'a> Impulses<'a> {
 /// .5, .75 → 634, 3591 Hz, fitted as the second-order Butterworths the
 /// response is shaped with).
 ///
-/// ponytail: Auto Gain, Reverse and the ER/LR boundary (no
-/// corpus script writes them) are not carried.
-pub(crate) fn script_knobs() -> [(&'static str, ir::KnobTarget, ir::Law); 7] {
-    use ir::ImpulseKnob::{Cut, PredelayMs, Size};
+/// ponytail: the ER/LR boundary (no corpus script writes it, and its saved
+/// units are unmeasured) is not carried.
+pub(crate) fn script_knobs() -> [(&'static str, ir::KnobTarget, ir::Law); 9] {
+    use ir::ImpulseKnob::{AutoGain, Cut, PredelayMs, Reverse, Size};
     use ir::KnobTarget::Impulse;
     let predelay: Vec<f32> = (0..=32)
         .map(|i| kontra_law::kontakt::CONVOLUTION_PREDELAY.eval(i as f32 / 32.0))
@@ -278,6 +278,7 @@ pub(crate) fn script_knobs() -> [(&'static str, ir::KnobTarget, ir::Law); 7] {
     };
     let cut = |late, high| Impulse(Cut { late, high });
     let size = || ir::Law::Linear { lo: 0.5, hi: 1.5 };
+    let on = || ir::Law::Breakpoints([(0.0, 0.0, 0.0), (1e-6, 1.0, 0.0), (1.0, 1.0, 0.0)].into());
     [
         (
             "$ENGINE_PAR_IRC_PREDELAY",
@@ -299,6 +300,8 @@ pub(crate) fn script_knobs() -> [(&'static str, ir::KnobTarget, ir::Law); 7] {
             Impulse(Size { late: true }),
             size(),
         ),
+        ("$ENGINE_PAR_IRC_AUTO_GAIN", Impulse(AutoGain), on()),
+        ("$ENGINE_PAR_IRC_REVERSE", Impulse(Reverse), on()),
     ]
 }
 

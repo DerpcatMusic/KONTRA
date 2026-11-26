@@ -365,11 +365,12 @@ fn a_groups_source_controls_read_as_kontakt_saved_them() {
     ];
     assert_eq!(i.groups.len(), measured.len());
     for (g, row) in i.groups.iter().zip(measured) {
+        // Tracking plays: it is the group's key tracking, not a held value.
         let got = names.map(|n| {
             let key = kontra_ir::held_key(&format!("$ENGINE_PAR_{n}"));
             (g.held.iter())
                 .find(|h| h.0 == -1 && h.1 == key)
-                .map_or(0, |h| h.2)
+                .map_or(i32::from(n == "TRACKING" && g.keytrack != 0.0), |h| h.2)
         });
         assert_eq!(got, row, "group {}", g.name);
     }

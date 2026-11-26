@@ -15,12 +15,11 @@ use ni_file::kontakt::objects::{BParSrcMode, GroupParams, SourceValue};
 /// value but 0; the interpolation quality keeps 0..=2 (the setter refuses
 /// the rest, `ACCEPTS`); Smooth, Env Order and Formant Shift keep an
 /// unclamped 0..=1 `f32`; the rest clamp to 0..=1e6.
-pub(crate) const SOURCE: [(&str, ir::HeldSet); 12] = {
+pub(crate) const SOURCE: [(&str, ir::HeldSet); 11] = {
     use ir::HeldSet::{Clamp, Drop, Keep, Switch, Unit};
     const UNIT: ir::HeldSet = Clamp(0, 1_000_000);
     [
         ("$ENGINE_PAR_SOURCE_MODE", Drop),
-        ("$ENGINE_PAR_TRACKING", Switch),
         ("$ENGINE_PAR_HQI_MODE", Keep),
         ("$ENGINE_PAR_TM_LEGATO", Switch),
         ("$ENGINE_PAR_TMPRO_KEEP_FORMANTS", Switch),
@@ -69,7 +68,6 @@ pub(crate) fn held(record: &BParSrcMode, params: &GroupParams) -> Vec<(i8, u32, 
             "$ENGINE_PAR_SOURCE_MODE",
             KSP_MODE.get(record.mode as usize).copied(),
         ),
-        ("$ENGINE_PAR_TRACKING", Some(i32::from(params.key_tracking))),
         (
             "$ENGINE_PAR_HQI_MODE",
             Some(params.interp_quality.clamp(0, 2)),

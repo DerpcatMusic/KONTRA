@@ -121,6 +121,14 @@ pub enum EnginePar {
     IntModType,
     /// Internal modulator subtype (`Env`: `0` AHDSR / `1` Flex / `2` DBD; `LFO`: `0..=5`; `Glide`: `-1`).
     IntModSubtype,
+    /// Audio-rate envelope follower attack time (`5..=2500` ms).
+    FollowerAttack,
+    /// Audio-rate envelope follower release time (`40..=2500` ms).
+    FollowerRelease,
+    /// Audio-rate envelope follower input gain boost (`0..=24` dB).
+    FollowerGainBoost,
+    /// Group pitch key tracking switch (`0` off, nonzero on).
+    KeyTracking,
 }
 
 /// What a set keeps of a held group control ([`EnginePar::GroupHeld`]).
@@ -255,7 +263,11 @@ impl EnginePar {
             | Self::LfoDelayUnit
             | Self::LfoNormalize
             | Self::IntModType
-            | Self::IntModSubtype => ParRole::Active,
+            | Self::IntModSubtype
+            | Self::FollowerAttack
+            | Self::FollowerRelease
+            | Self::FollowerGainBoost
+            | Self::KeyTracking => ParRole::Active,
         }
     }
 

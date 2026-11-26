@@ -1081,10 +1081,11 @@ pub(crate) fn readouts() -> Vec<(&'static str, ir::Readout)> {
     ]);
     // The Convolution's knobs read what they set: its cut-offs through the measured knob laws
     // (impulse.rs), its sizes as 50..150 % in one decimal (`get_engine_par_disp_ext`,
-    // 2026-11-25).
+    // 2026-11-25). Its predelay and switches have their own rows above.
     rows.extend(
         crate::impulse::script_knobs()
             .into_iter()
+            .filter(|(name, ..)| name.contains("_FREQ_") || name.contains("LENGTH"))
             .map(|(name, _, law)| {
                 if name.contains("LENGTH") {
                     (name, lin(50.0, 150.0), Decimal, none)

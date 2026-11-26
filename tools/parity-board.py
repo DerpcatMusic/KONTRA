@@ -207,6 +207,8 @@ def handled_event_pars():
     out = set()
     for c in used_consts:
         out.update(EVENT_CONST_TO_KSP.get(c, ()))
+    if "Action::EventParAt" in ev_src:
+        out.add("EVENT_PAR")
     return out
 
 
@@ -248,7 +250,15 @@ def kontakt_ksp_and_params(manual, status):
     # Exact first-column $ENGINE_PAR_* lookup from binding TSVs (no bag-of-words matching).
     law_files = [p for p in files("docs/re/kontakt-bindings/*.tsv") if p.name != "engine-par-disp.tsv"]
     law_map = tsv_first_col_names(law_files)
-    clamp_map = tsv_first_col_names([ROOT / "docs/re/kontakt-bindings/engine_par_clamp.tsv"])
+    clamp_rel = "docs/re/kontakt-bindings/engine_par_clamp.tsv"
+    clamp_map = {}
+    for line in read(clamp_rel).splitlines():
+        if not line or line.startswith("#"):
+            continue
+        cols = line.split("\t")
+        for col in (cols[0], cols[3] if len(cols) > 3 else ""):
+            if col.startswith("$ENGINE_PAR_"):
+                clamp_map.setdefault(col.lstrip("$").upper(), clamp_rel)
 
     ksp, pars = [], []
     for item in manual:
@@ -276,7 +286,7 @@ def kontakt_ksp_and_params(manual, status):
             else:
                 acts = bare in ui_names
                 group = "$CONTROL_PAR"
-            tok_rx = re.compile(rf"\${re.escape(bare)}\b", re.I)
+            tok_rx = re.compile(rf"[$%]{re.escape(bare)}\b", re.I)
             probe = find_regex(measured_probe_paths, tok_rx)
             cells = [probe is not None, None, None, acts]
             ev = (probe, name) if probe else (find_regex(src_paths, tok_rx), name) if acts else None

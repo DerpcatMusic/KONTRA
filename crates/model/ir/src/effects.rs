@@ -471,13 +471,55 @@ pub enum ImpulseKnob {
     },
     /// The share of the response kept ([`crate::Impulse::length`]).
     Length,
+    /// Reverses the response when on ([`crate::Impulse::reverse`]).
+    Reverse,
+    /// Normalizes the response when on ([`crate::Impulse::normalize`]).
+    AutoGain,
 }
 
 impl ImpulseKnob {
-    /// Where the setting lives in `law`. A cut on a response with none
-    /// first gets open cuts (20 Hz and 20 kHz) and no crossover.
-    pub fn field_mut(self, law: &mut crate::Impulse) -> &mut f32 {
+    /// Sets this knob of `law` to `y` (a switch is on above 0.5; Auto Gain
+    /// then normalizes as `fresh` does); false when `law` already had it.
+    pub fn apply(self, law: &mut crate::Impulse, y: f32, fresh: Option<crate::Normalize>) -> bool {
+        let on = y > 0.5;
         match self {
+            Self::Reverse => std::mem::replace(&mut law.reverse, on) != on,
+            Self::AutoGain => {
+                let want = fresh.filter(|_| on);
+                std::mem::replace(&mut law.normalize, want) != want
+            }
+            _ => self
+                .field_mut(law)
+                .is_some_and(|at| std::mem::replace(at, y) != y),
+        }
+    }
+
+    /// This knob's setting in `law` (a switch reads 0 or 1).
+    #[must_use]
+    pub fn read(self, law: &crate::Impulse) -> f32 {
+        match self {
+            Self::Reverse => f32::from(u8::from(law.reverse)),
+            Self::AutoGain => f32::from(u8::from(law.normalize.is_some())),
+            Self::PredelayMs => law.predelay_ms,
+            Self::Length => law.length,
+            Self::Size { late } => {
+                let [early, late_part] = law.size;
+                if late { late_part } else { early }
+            }
+            Self::Cut { late, high } => {
+                let [low, hi] = law
+                    .cuts
+                    .map_or([20.0, 20_000.0], |c| if late { c.late } else { c.early });
+                if high { hi } else { low }
+            }
+        }
+    }
+
+    /// Where a continuous setting lives in `law` (`None` for a switch). A
+    /// cut on a response with none first gets open cuts (20 Hz and 20 kHz)
+    /// and no crossover.
+    fn field_mut(self, law: &mut crate::Impulse) -> Option<&mut f32> {
+        Some(match self {
             Self::PredelayMs => &mut law.predelay_ms,
             Self::Length => &mut law.length,
             Self::Size { late } => {
@@ -498,7 +540,8 @@ impl ImpulseKnob {
                 let [low, hi] = part;
                 if high { hi } else { low }
             }
-        }
+            Self::Reverse | Self::AutoGain => return None,
+        })
     }
 }
 

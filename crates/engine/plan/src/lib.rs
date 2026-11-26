@@ -239,6 +239,9 @@ pub struct Group {
     /// Inline zero-allocation live script state for modulator sync units,
     /// DBD easy/saved shape, flex loop bounds, and step-modulator one-shot.
     pub mod_sync: ModSync,
+    /// Pitch key tracking (`1` follows the key, `0` none); a script's
+    /// tracking set moves it live.
+    pub keytrack: f64,
     /// What it gives each of its zones.
     pub zones: ZoneRules,
 }
@@ -403,6 +406,7 @@ impl Group {
             speed: None,
             glide: None,
             mod_sync: ModSync::default(),
+            keytrack: 1.0,
             zones: ZoneRules::PLAIN,
         }
     }
@@ -432,6 +436,7 @@ impl Group {
                 !self.mods.iter().any(|m| i32::from(m.slot) == slot)
                     && routed().is_none()
                     && self.glide.is_none()
+                    && self.follower_index(slot).is_none()
             }
             _ => false,
         }
@@ -478,6 +483,18 @@ impl Group {
             })
     }
 
+    /// Index into [`Self::followers`] of an envelope follower modulator at `slot`.
+    #[must_use]
+    pub fn follower_index(&self, slot: i32) -> Option<usize> {
+        self.mods
+            .iter()
+            .filter(|m| i32::from(m.slot) == slot)
+            .find_map(|m| match m.route.driver() {
+                Some(ir::Source::EnvelopeFollower(n)) => Some(usize::from(n)),
+                _ => None,
+            })
+    }
+
     /// Internal modulator `(type, subtype)` at `slot`.
     #[must_use]
     pub fn mod_type_and_subtype(&self, slot: i32) -> (i32, i32) {
@@ -496,6 +513,9 @@ impl Group {
         }
         if self.step_mod_indices(slot).is_some() {
             return (3, -1);
+        }
+        if self.follower_index(slot).is_some() {
+            return (4, -1);
         }
         if let Some(l) = self.lfo(slot) {
             let sub = match l.wave {

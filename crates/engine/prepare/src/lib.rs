@@ -224,6 +224,7 @@ pub fn prepare(
             speed: g.speed,
             glide: g.glide,
             mod_sync,
+            keytrack: g.keytrack,
             zones,
         }
     })

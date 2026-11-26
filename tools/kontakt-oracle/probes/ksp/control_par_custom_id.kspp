@@ -1,0 +1,16 @@
+# Kontakt 8.13.1: $CONTROL_PAR_CUSTOM_ID default, set (positive, negative, zero), and readback.
+# Run: ksp_probe.py "ANALOG STRINGS.nki" this-file > control_par_custom_id.measured
+# KONTRA replays it: crates/app/host/tests/oracle_probes.rs.
+R one 1
+S declare ui_knob $k(0, 100, 1)
+S declare ui_slider $s(0, 100)
+R k_def get_control_par(get_ui_id($k), $CONTROL_PAR_CUSTOM_ID)
+R s_def get_control_par(get_ui_id($s), $CONTROL_PAR_CUSTOM_ID)
+S set_control_par(get_ui_id($k), $CONTROL_PAR_CUSTOM_ID, 42)
+R k_42 get_control_par(get_ui_id($k), $CONTROL_PAR_CUSTOM_ID)
+S set_control_par(get_ui_id($k), $CONTROL_PAR_CUSTOM_ID, -7)
+R k_neg get_control_par(get_ui_id($k), $CONTROL_PAR_CUSTOM_ID)
+S set_control_par(get_ui_id($s), $CONTROL_PAR_CUSTOM_ID, 123456)
+R s_big get_control_par(get_ui_id($s), $CONTROL_PAR_CUSTOM_ID)
+S set_control_par(get_ui_id($k), $CONTROL_PAR_CUSTOM_ID, 0)
+R k_zero get_control_par(get_ui_id($k), $CONTROL_PAR_CUSTOM_ID)

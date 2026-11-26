@@ -718,7 +718,9 @@ impl Engine {
                 }
             }
         }
-        let semitones = (f64::from(note.key) - f64::from(zone.root)) * zone.keytrack
+        // The group's, which a script's tracking set moves.
+        let keytrack = (self.groups.get(zone.group as usize)).map_or(zone.keytrack, |g| g.keytrack);
+        let semitones = (f64::from(note.key) - f64::from(zone.root)) * keytrack
             + zone.tune
             + self.level(zone).tune
             + note.tune

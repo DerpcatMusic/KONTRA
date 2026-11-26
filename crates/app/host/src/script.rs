@@ -440,6 +440,7 @@ const LAWS: &[(&str, Option<ControlKind>, i32, ParWrite, Read)] = {
             Inherit("$CONTROL_PAR_DEFAULT_VALUE", "$CONTROL_PAR_MIN_VALUE", false),
         ),
         ("$CONTROL_PAR_DISABLE_TEXT_SHIFTING", None, 0, Flag, Stored),
+        ("$CONTROL_PAR_CUSTOM_ID", None, 0, AtLeast(0), Stored),
         ("$CONTROL_PAR_UNIT", None, 0, Within(0, 6), Stored),
         ("$CONTROL_PAR_VALUEPOS_Y", None, 0, AtLeast(0), Stored),
         ("$CONTROL_PAR_FONT_TYPE", None, 0, AtLeast(0), Stored),

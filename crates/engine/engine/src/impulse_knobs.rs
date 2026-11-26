@@ -32,11 +32,9 @@ impl Engine {
         let Some((Some(found), mut law)) = self.playing(slot, generic) else {
             return false;
         };
-        let at = knob.field_mut(&mut law);
-        if *at == y {
+        if !knob.apply(&mut law, y, self.plan.slot_shapes.fresh_normalize) {
             return true;
         }
-        *at = y;
         if self.building || self.running.is(Kind::Init) {
             self.want(slot, generic, found, law);
             return true;
@@ -84,8 +82,8 @@ impl Engine {
         slot: i32,
         generic: i32,
     ) -> Option<f32> {
-        let (_, mut law) = self.playing(slot, generic)?;
-        Some(*knob.field_mut(&mut law))
+        let (_, law) = self.playing(slot, generic)?;
+        Some(knob.read(&law))
     }
 
     /// The convolution at `slot` of the `generic` rack: its response's index
