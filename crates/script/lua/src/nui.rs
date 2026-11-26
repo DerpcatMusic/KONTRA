@@ -123,7 +123,8 @@ impl std::fmt::Debug for Page {
 pub fn load(modules: &[(String, String)], entry: &str) -> Result<Page, Diagnostic> {
     let mut sources = HashMap::new();
     for (path, src) in modules {
-        let name = path.trim_end_matches(".nui").replace('\\', "/");
+        let normalized = path.replace('\\', "/");
+        let name = strip_module_ext(&normalized).to_owned();
         let lua = transform::transform(src).map_err(|e| Diagnostic {
             module: path.clone(),
             line: Some(e.line),
@@ -161,11 +162,28 @@ pub fn load(modules: &[(String, String)], entry: &str) -> Result<Page, Diagnosti
     })
 }
 
+/// Strips a `.nui` or `.lua` module extension case-insensitively.
+fn strip_module_ext(path: &str) -> &str {
+    for ext in [".nui", ".lua"] {
+        if path.len() >= ext.len() && path[path.len() - ext.len()..].eq_ignore_ascii_case(ext) {
+            return &path[..path.len() - ext.len()];
+        }
+    }
+    path
+}
+
 /// `require` over the page's modules: `a.b` is `a/b.nui`, else
 /// `a/b/init.nui`; `native_ui`, `native_ui_util` and `kontakt` are built in.
+/// Module lookup matches exact case first and falls back to ASCII case-folding
+/// (matching Kontakt's case-insensitive `.nkr` virtual filesystem, where e.g.
+/// `cat-commons/init.nui` requires `cat-commons.Browser` for `browser.nui`).
 fn require(lua: &Lua, sources: HashMap<String, String>) -> mlua::Result<Function> {
     let loaded = lua.create_table()?;
     let builtins: Table = lua.globals().get("__builtins")?;
+    let folded: HashMap<String, String> = sources
+        .keys()
+        .map(|k| (k.to_ascii_lowercase(), k.clone()))
+        .collect();
     lua.create_function(move |lua, name: String| {
         if let Ok(v) = builtins.get::<Value>(name.as_str())
             && !v.is_nil()
@@ -177,6 +195,14 @@ fn require(lua: &Lua, sources: HashMap<String, String>) -> mlua::Result<Function
         let (key, text) = [&path, &init]
             .into_iter()
             .find_map(|k| sources.get(k.as_str()).map(|t| (k.clone(), t)))
+            .or_else(|| {
+                [path.to_ascii_lowercase(), init.to_ascii_lowercase()]
+                    .into_iter()
+                    .find_map(|low| {
+                        let canonical = folded.get(&low)?;
+                        sources.get(canonical).map(|t| (canonical.clone(), t))
+                    })
+            })
             .ok_or_else(|| mlua::Error::runtime(format!("module {name} not found")))?;
         if let Ok(v) = loaded.get::<Value>(key.as_str())
             && !v.is_nil()
@@ -772,5 +798,34 @@ mod tests {
         )]);
         let tree = page.render(&[]).unwrap().unwrap();
         assert_eq!(tree.prop("text"), Some(&Prop::Text("00".into())));
+    }
+
+    #[test]
+    fn require_resolves_module_names_case_insensitively() {
+        let mut page = page(&[
+            (
+                "cat-commons/browser.nui",
+                "local state = { count = 0 }; state.count = state.count + 1; return state",
+            ),
+            (
+                "cat-commons/init.nui",
+                "local a = require('cat-commons.Browser'); local b = require('cat-commons.browser'); assert(a == b and a.count == 1); return a",
+            ),
+            (
+                "project_components/init.lua",
+                "local ui = require 'native_ui'; local c = ui.Color.gray:opacity(0.5); assert(c.a == 0.5); return { ok = true }",
+            ),
+            (
+                "main.nui",
+                r#"local ui = require "native_ui"
+                local commons = require "cat-commons"
+                local proj = require "project_components"
+                return function()
+                    return @ui.Text { text = tostring(commons.count) .. tostring(proj.ok) }
+                end"#,
+            ),
+        ]);
+        let tree = page.render(&[]).unwrap().unwrap();
+        assert_eq!(tree.prop("text"), Some(&Prop::Text("1true".into())));
     }
 }

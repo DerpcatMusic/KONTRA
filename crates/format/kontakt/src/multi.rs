@@ -466,11 +466,9 @@ fn multi_script_data(
     {
         let res = resources.get_or_insert_with(|| crate::resources::Resources::open(path));
         for module in res.under("native_ui") {
-            if !module
-                .rsplit('.')
-                .next()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("nui"))
-            {
+            if !module.rsplit('.').next().is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("nui") || ext.eq_ignore_ascii_case("lua")
+            }) {
                 continue;
             }
             if let Some(bytes) = res.read(&format!("native_ui/{module}")) {

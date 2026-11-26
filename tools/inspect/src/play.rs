@@ -524,11 +524,15 @@ fn run_events(
             Value::from(unanswered_par_names),
         );
     }
-    // The keys the scripts mark playable ($NI_KEY_TYPE_DEFAULT = 1); empty when they mark none.
-    let playable: Vec<_> = (engine.keys().iter().enumerate())
+    // The keys the scripts mark playable ($NI_KEY_TYPE_DEFAULT = 1); when they
+    // mark none (UVI, most Kontakt), the keys the zones map.
+    let mut playable: Vec<usize> = (engine.keys().iter().enumerate())
         .filter(|(_, k)| k.kind == 1)
         .map(|(n, _)| n)
         .collect();
+    if playable.is_empty() {
+        playable = mapped_keys(engine.plan().zones.iter().map(|z| z.keys.clone()));
+    }
     if let Some(result) = out.get_mut("result").and_then(Value::as_object_mut) {
         result.insert("ui_build".into(), json!(ui));
         result.insert("ui_shown".into(), shown);
@@ -583,11 +587,42 @@ fn ui_shown(
         .filter(|(_, w)| !matches!(w.kind, kontra_ui_model::Kind::Panel))
         .filter(|&(n, _)| tree.visible(kontra_ui_model::WidgetRef(n)))
         .count();
-    let wallpaper = tree
-        .pages
-        .first()
-        .is_some_and(|p| p.background.image.is_some());
+    let wallpaper = has_wallpaper(tree);
     json!({"slot": view.slot, "wallpaper": wallpaper, "pictures": !tree.assets.is_empty(), "drawn": drawn})
+}
+
+/// The MIDI keys any of `zones` maps, ascending.
+fn mapped_keys(zones: impl Iterator<Item = std::ops::RangeInclusive<u8>>) -> Vec<usize> {
+    let mut mapped: Vec<usize> = zones
+        .flat_map(|keys| keys.map(usize::from))
+        .filter(|&k| k < 128)
+        .collect();
+    mapped.sort_unstable();
+    mapped.dedup();
+    mapped
+}
+
+/// Whether the first page draws a backdrop: its own wallpaper, or a visible
+/// picture covering at least half of it each way (UVI scripts such as
+/// Augmented Orchestra paint theirs on a page-sized panel).
+fn has_wallpaper(tree: &kontra_ui_model::Interface) -> bool {
+    use kontra_ui_model::{AssetKind, Kind, PageRef, WidgetRef};
+    let Some(p) = tree.pages.first() else {
+        return false;
+    };
+    p.background.image.is_some()
+        || tree.widgets.iter().enumerate().any(|(n, w)| {
+            w.page == PageRef(0)
+                && matches!(w.kind, Kind::Panel | Kind::Image)
+                && tree.visible(WidgetRef(n))
+                && w.rect.width >= p.size.width / 2.
+                && w.rect.height >= p.size.height / 2.
+                && w.images.iter().any(|i| {
+                    tree.assets
+                        .get(i.asset.0)
+                        .is_some_and(|a| matches!(&a.kind, AssetKind::Image(m) if m.size.is_some()))
+                })
+        })
 }
 
 /// Each script slot's UI as the scenario left it: a build error (a panic too)
@@ -772,5 +807,65 @@ fn wake_unpurged(engine: &mut Engine, store: &mut Store) {
             }
         }
         engine.unpurged(u, true);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{has_wallpaper, mapped_keys};
+    use kontra_ui_model as ui;
+
+    #[test]
+    fn playable_keys_fall_back_to_exactly_the_keys_the_zones_map() {
+        let zones = [36..=47u8, 60..=60, 44..=50, 120..=255];
+        let keys = mapped_keys(zones.iter().cloned());
+        for k in 0..128usize {
+            let mapped = zones.iter().any(|z| z.contains(&(k as u8)));
+            assert_eq!(keys.contains(&k), mapped, "key {k}");
+        }
+        assert!(keys.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    /// A page with pictures but no `background.image` has a backdrop only
+    /// when a visible picture covers at least half the page each way.
+    #[test]
+    fn a_page_sized_picture_panel_is_the_wallpaper_and_a_small_one_is_not() {
+        let size = ui::Size {
+            width: 720.,
+            height: 480.,
+        };
+        let tree = |w: f64, h: f64, hidden: bool| {
+            let mut t = ui::Interface::default();
+            t.pages.push(ui::Page {
+                size,
+                ..Default::default()
+            });
+            t.assets.push(ui::Asset {
+                path: "bg.png".into(),
+                kind: ui::AssetKind::Image(ui::ImageMeta {
+                    size: Some(size),
+                    ..Default::default()
+                }),
+            });
+            let rect = ui::Rect {
+                x: 0.,
+                y: 0.,
+                width: w,
+                height: h,
+            };
+            let mut panel = ui::Widget::new("bg", ui::PageRef(0), rect, ui::Kind::Panel);
+            panel
+                .images
+                .push(ui::ImageUse::new(ui::AssetRef(0), ui::Role::Background));
+            panel.hidden = hidden;
+            t.widgets.push(panel);
+            t
+        };
+        let (w, h) = (size.width, size.height);
+        assert!(has_wallpaper(&tree(w, h, false)));
+        assert!(has_wallpaper(&tree(w / 2., h / 2., false)));
+        assert!(!has_wallpaper(&tree(w / 2. - 1., h, false)));
+        assert!(!has_wallpaper(&tree(w, h / 2. - 1., false)));
+        assert!(!has_wallpaper(&tree(w, h, true)));
     }
 }

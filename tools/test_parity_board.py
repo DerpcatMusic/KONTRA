@@ -65,9 +65,12 @@ assert dsp_rows["kontakt.dsp.solid_bus_comp.measured"]["status"] == "tested", ds
 assert dsp_rows["kontakt.dsp.filter.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.filter.measured"]
 
 fmt_rows, _, _ = board.kontakt_format()
-fmt_partial = [r for r in fmt_rows if r["status"] == "partial"]
 fmt_unseen = [r for r in fmt_rows if r["status"] == "unseen"]
-assert len(fmt_partial) >= 11, f"expected >=11 partial ni-file classes, got {len(fmt_partial)}"
+for r in fmt_rows:
+    # A class is tested only on census evidence that read all of its objects.
+    if r["status"] == "tested":
+        assert r["ev"] and r["ev"][0].endswith("ni-file-census.tsv"), r
+        assert " objects full" in r["note"] and not r["note"].startswith("0/"), r
 assert len(fmt_unseen) > 0, "corpus-absent classes must report unseen, not done"
 assert not any(r["status"] == "done" for r in fmt_rows), "ni-file classes with 0 objects must not report done"
 

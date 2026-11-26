@@ -78,6 +78,7 @@ local named = {
 	red = color(255, 0, 0),
 	blue = color(0, 0, 255),
 	grey = color(128, 128, 128),
+	gray = color(128, 128, 128),
 	none = color(0, 0, 0, 0),
 }
 local ColorType = setmetatable({}, {

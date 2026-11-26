@@ -26,7 +26,7 @@ PR: the squash merge that last changed each row's evidence line (`Parity: <row-i
 |   Kontakt DSP: modulation source | 12 | 4 | 8 | 0 | 0 | 0 | 33.3 | 100.0 |
 |   Kontakt DSP: reverb | 12 | 4 | 8 | 0 | 0 | 0 | 33.3 | 100.0 |
 |   Kontakt DSP: utility | 12 | 4 | 8 | 0 | 0 | 0 | 33.3 | 100.0 |
-| File loading: every saved object type | 129 | 45 | 0 | 11 | 61 | 12 | 34.9 | 34.9 |
+| File loading: every saved object type | 129 | 56 | 0 | 0 | 61 | 12 | 43.4 | 43.4 |
 | Scripting (Lua API) | 123 | 123 | 0 | 0 | 0 | 0 | 100.0 | 100.0 |
 | Instrument panels: widgets | 158 | 158 | 0 | 0 | 0 | 0 | 100.0 | 100.0 |
 | Effects and elements | 546 | 34 | 37 | 1 | 0 | 474 | 6.2 | 13.0 |
@@ -46,16 +46,18 @@ PR: the squash merge that last changed each row's evidence line (`Parity: <row-i
 |   UVI DSP: time-stretch / slicing | 12 | 0 | 0 | 0 | 0 | 12 | 0.0 | 0.0 |
 |   UVI DSP: utility | 51 | 5 | 5 | 0 | 0 | 41 | 9.8 | 19.6 |
 | Parameters | 3065 | 47 | 224 | 761 | 0 | 2033 | 1.5 | 8.8 |
-| **Kontakt overall** | 2293 | 747 | 1134 | 336 | 61 | 15 | 32.6 | 82.0 |
+| **Kontakt overall** | 2293 | 758 | 1134 | 325 | 61 | 15 | 33.1 | 82.5 |
 | **UVI overall** | 3892 | 362 | 261 | 762 | 0 | 2507 | 9.3 | 16.0 |
-| **All** | 6185 | 1109 | 1395 | 1098 | 61 | 2522 | 17.9 | 40.5 |
-| **Kontakt corpus** (playable) | 1821 | 1567 | 0 | 254 | 0 | 0 | 86.1 | 86.1 |
-| **UVI corpus** (playable) | 660 | 648 | 0 | 12 | 0 | 0 | 98.2 | 98.2 |
+| **All** | 6185 | 1120 | 1395 | 1087 | 61 | 2522 | 18.1 | 40.7 |
+| **Kontakt corpus** (playable) | 1881 | 1820 | 0 | 61 | 0 | 0 | 96.8 | 96.8 |
+| **Kontakt corpus** (clean: 0 audible/script drops) | 1881 | 958 | 0 | 923 | 0 | 0 | 50.9 | 50.9 |
+| **UVI corpus** (playable) | 660 | 659 | 0 | 1 | 0 | 0 | 99.8 | 99.8 |
+| **UVI corpus** (clean: 0 audible/script drops) | 660 | 653 | 0 | 7 | 0 | 0 | 98.9 | 98.9 |
 
-ni-file corpus bytes: 14543257982 read, 2809095722 unaccounted for (census snapshot); 2809095722 unaccounted after the latest batch in docs/re/NI_FILE_PARITY.md.
-UI corpus: 61 mismatched areas across 17 instruments (snapshots/ui-corpus.tsv).
-Kontakt corpus checks: green 1567/1821, load_s_p50 3.29, load_s_p95 11.35, loads 1821/1821, samples 1821/1821, script 1821/1821, sound 1736/1821, ui 1621/1821 (snapshots/corpus-census.tsv).
-UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/660, samples 660/660, script 654/660, sound 654/660, ui 660/660 (snapshots/corpus-census.tsv).
+ni-file corpus bytes: 14543257982 read, 0 unaccounted for (census snapshot); 2809095722 unaccounted after the latest batch in docs/re/NI_FILE_PARITY.md.
+UI corpus: 81 mismatched areas across 17 instruments (snapshots/ui-corpus.tsv).
+Kontakt corpus checks: clean 958/1881, load_s_p50 0.91, load_s_p95 1.56, loads 1881/1881, playable 1820/1881, samples 1881/1881, script 1881/1881, sound 1840/1881, ui 1831/1881 (snapshots/corpus-census.tsv).
+UVI corpus checks: clean 653/660, load_s_p50 1.72, load_s_p95 2.93, loads 660/660, playable 659/660, samples 660/660, script 660/660, sound 659/660, ui 660/660 (snapshots/corpus-census.tsv).
 
 ## Snapshots
 
@@ -2182,7 +2184,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 |---|---|---|---|---|---|---|
 | done | `kontakt.dsp.delay.ir` | Delay (legacy): in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
 | done | `kontakt.dsp.delay.driven` | Delay (legacy): driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #192 | 2026-11-24 |  |
-| tested | `kontakt.dsp.delay.measured` | Delay (legacy): output vs oracle | [legacy_delay_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/legacy_delay_measured.rs) | #288 | 2026-11-26 | max 0.25 dB (the_legacy_delay_matches_the_reference_render) |
+| tested | `kontakt.dsp.delay.measured` | Delay (legacy): output vs oracle | [legacy_delay_measured.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/tests/legacy_delay_measured.rs) | #288 |  | max 0.25 dB (the_legacy_delay_matches_the_reference_render) |
 | done | `kontakt.dsp.replika.ir` | Replika: in IR | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #362 | 2026-11-26 |  |
 | done | `kontakt.dsp.replika.driven` | Replika: driven live | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #362 | 2026-11-26 |  |
 | tested | `kontakt.dsp.replika.measured` | Replika: output vs oracle | [effects.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/effects.rs) | #362 | 2026-11-26 | max 0.8 dB (replika_matches_kontakt_oracle_echo_gains_and_bodies) |
@@ -2351,7 +2353,7 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
-| done | `kontakt.dsp.arp.ir` | BParArp: in IR | [timed.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/timed.rs) |  | 2026-11-26 |  |
+| done | `kontakt.dsp.arp.ir` | BParArp: in IR | [timed.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/timed.rs) |  |  |  |
 | done | `kontakt.dsp.arp.driven` | BParArp: driven | [voice_gain.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/engine/engine/src/voice_gain.rs) | #362 | 2026-11-26 |  |
 | tested | `kontakt.dsp.arp.measured` | BParArp: output vs oracle | [timed.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/timed.rs) | #144 | 2026-11-24 | max 0.01 dB (step_mod_looping_free_synced_shaper_and_polarity) |
 | done | `kontakt.dsp.glide.ir` | BParGlide: in IR | [translate.rs](https://github.com/DerpcatMusic/KONTRA/blob/main/crates/format/kontakt/src/translate.rs) | #115 | 2026-11-22 |  |
@@ -2398,15 +2400,15 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 
 ## File loading: every saved object type
 
-### serialized classes (45 tested, 0 done, 11 partial, 61 unseen, 12 missing)
+### serialized classes (56 tested, 0 done, 0 partial, 61 unseen, 12 missing)
 
 | Status | Row | Item | Evidence | PR | Changed | Note |
 |---|---|---|---|---|---|---|
 | unseen | `kontakt.format.0x01.BAutomationObject` | 0x01 BAutomationObject | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
 | unseen | `kontakt.format.0x02.BOutputConfiguration_OutputPartition` | 0x02 BOutputConfiguration::OutputPartition | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
 | unseen | `kontakt.format.0x05.BLoop` | 0x05 BLoop | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
-| tested | `kontakt.format.0x06.BParScript` | 0x06 BParScript | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 |  | 3680/3680 objects full, 0 of 4684118054 bytes unaccounted |
-| tested | `kontakt.format.0x07.BParEnv` | 0x07 BParEnv | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 |  | 1389661/1389661 objects full, 0 of 5558644 bytes unaccounted |
+| tested | `kontakt.format.0x06.BParScript` | 0x06 BParScript | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 3680/3680 objects full, 0 of 4684118054 bytes unaccounted |
+| tested | `kontakt.format.0x07.BParEnv` | 0x07 BParEnv | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 1389661/1389661 objects full, 0 of 5558644 bytes unaccounted |
 | tested | `kontakt.format.0x08.BParLFO` | 0x08 BParLFO | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #275 | 2026-11-25 | 2047212/2047212 objects full, 0 of 137528016 bytes unaccounted |
 | unseen | `kontakt.format.0x09.BParArp` | 0x09 BParArp | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
 | unseen | `kontakt.format.0x0A.BParEnvF` | 0x0A BParEnvF | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
@@ -2415,29 +2417,29 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | tested | `kontakt.format.0x0D.BParInternalMod` | 0x0D BParInternalMod | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #289 | 2026-11-25 | 3436873/3436873 objects full, 0 of 828991689 bytes unaccounted |
 | unseen | `kontakt.format.0x0E.BParSrcMode` | 0x0E BParSrcMode | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
 | unseen | `kontakt.format.0x0F.BParStartCriteria` | 0x0F BParStartCriteria | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
-| tested | `kontakt.format.0x10.BParFXDelay` | 0x10 BParFXDelay | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 5617/5617 objects full, 0 of 162893 bytes unaccounted |
-| tested | `kontakt.format.0x11.BParFXChorus` | 0x11 BParFXChorus | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 703/703 objects full, 0 of 17575 bytes unaccounted |
-| tested | `kontakt.format.0x12.BParFXFlanger` | 0x12 BParFXFlanger | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 |  | 1/1 objects full, 0 of 33 bytes unaccounted |
-| tested | `kontakt.format.0x13.BParFXGainer` | 0x13 BParFXGainer | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 542/542 objects full, 0 of 2168 bytes unaccounted |
-| tested | `kontakt.format.0x14.BParFXPhaser` | 0x14 BParFXPhaser | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 703/703 objects full, 0 of 20387 bytes unaccounted |
-| tested | `kontakt.format.0x15.BParFXReverb` | 0x15 BParFXReverb | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 2808/2808 objects full, 0 of 56160 bytes unaccounted |
-| tested | `kontakt.format.0x16.BParFXIRC` | 0x16 BParFXIRC | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 2184/2184 objects full, 0 of 264264 bytes unaccounted |
-| tested | `kontakt.format.0x17.BParFXSendLevels` | 0x17 BParFXSendLevels | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 1888/1888 objects full, 0 of 203904 bytes unaccounted |
-| tested | `kontakt.format.0x18.BParFXFilter` | 0x18 BParFXFilter | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 784597/784597 objects full, 0 of 15743169 bytes unaccounted |
-| tested | `kontakt.format.0x19.BParFXCompressor` | 0x19 BParFXCompressor | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 3714/3714 objects full, 0 of 77994 bytes unaccounted |
+| tested | `kontakt.format.0x10.BParFXDelay` | 0x10 BParFXDelay | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 5617/5617 objects full, 0 of 162893 bytes unaccounted |
+| tested | `kontakt.format.0x11.BParFXChorus` | 0x11 BParFXChorus | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 703/703 objects full, 0 of 17575 bytes unaccounted |
+| tested | `kontakt.format.0x12.BParFXFlanger` | 0x12 BParFXFlanger | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 1/1 objects full, 0 of 33 bytes unaccounted |
+| tested | `kontakt.format.0x13.BParFXGainer` | 0x13 BParFXGainer | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 542/542 objects full, 0 of 2168 bytes unaccounted |
+| tested | `kontakt.format.0x14.BParFXPhaser` | 0x14 BParFXPhaser | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 703/703 objects full, 0 of 20387 bytes unaccounted |
+| tested | `kontakt.format.0x15.BParFXReverb` | 0x15 BParFXReverb | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 2808/2808 objects full, 0 of 56160 bytes unaccounted |
+| tested | `kontakt.format.0x16.BParFXIRC` | 0x16 BParFXIRC | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 2184/2184 objects full, 0 of 264264 bytes unaccounted |
+| tested | `kontakt.format.0x17.BParFXSendLevels` | 0x17 BParFXSendLevels | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 1888/1888 objects full, 0 of 203904 bytes unaccounted |
+| tested | `kontakt.format.0x18.BParFXFilter` | 0x18 BParFXFilter | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 784597/784597 objects full, 0 of 15743169 bytes unaccounted |
+| tested | `kontakt.format.0x19.BParFXCompressor` | 0x19 BParFXCompressor | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 3714/3714 objects full, 0 of 77994 bytes unaccounted |
 | tested | `kontakt.format.0x1A.BParFXInverter` | 0x1A BParFXInverter | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #289 | 2026-11-25 | 189140/189140 objects full, 0 of 378280 bytes unaccounted |
 | unseen | `kontakt.format.0x1B.BParFXDYX` | 0x1B BParFXDYX | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
-| tested | `kontakt.format.0x1C.BParFXLimiter` | 0x1C BParFXLimiter | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 702/702 objects full, 0 of 5616 bytes unaccounted |
-| tested | `kontakt.format.0x1D.BParFXShaper` | 0x1D BParFXShaper | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 338789/338789 objects full, 0 of 2710312 bytes unaccounted |
+| tested | `kontakt.format.0x1C.BParFXLimiter` | 0x1C BParFXLimiter | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 702/702 objects full, 0 of 5616 bytes unaccounted |
+| tested | `kontakt.format.0x1D.BParFXShaper` | 0x1D BParFXShaper | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 338789/338789 objects full, 0 of 2710312 bytes unaccounted |
 | unseen | `kontakt.format.0x1D.BParFXSurroundPanner` | 0x1D BParFXSurroundPanner | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
-| tested | `kontakt.format.0x1E.BParFXDistortion` | 0x1E BParFXDistortion | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 338585/338585 objects full, 0 of 4063020 bytes unaccounted |
-| tested | `kontakt.format.0x1F.BParFXStereoSpread` | 0x1F BParFXStereoSpread | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 4527/4527 objects full, 0 of 40743 bytes unaccounted |
-| tested | `kontakt.format.0x20.BParFXLoFi` | 0x20 BParFXLoFi | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 338584/338584 objects full, 0 of 5755928 bytes unaccounted |
-| tested | `kontakt.format.0x21.BParFXSkreamer` | 0x21 BParFXSkreamer | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 206/206 objects full, 0 of 4120 bytes unaccounted |
-| tested | `kontakt.format.0x22.BParFXRotator` | 0x22 BParFXRotator | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 |  | 1/1 objects full, 0 of 24 bytes unaccounted |
+| tested | `kontakt.format.0x1E.BParFXDistortion` | 0x1E BParFXDistortion | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 338585/338585 objects full, 0 of 4063020 bytes unaccounted |
+| tested | `kontakt.format.0x1F.BParFXStereoSpread` | 0x1F BParFXStereoSpread | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 4527/4527 objects full, 0 of 40743 bytes unaccounted |
+| tested | `kontakt.format.0x20.BParFXLoFi` | 0x20 BParFXLoFi | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 338584/338584 objects full, 0 of 5755928 bytes unaccounted |
+| tested | `kontakt.format.0x21.BParFXSkreamer` | 0x21 BParFXSkreamer | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 206/206 objects full, 0 of 4120 bytes unaccounted |
+| tested | `kontakt.format.0x22.BParFXRotator` | 0x22 BParFXRotator | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 1/1 objects full, 0 of 24 bytes unaccounted |
 | unseen | `kontakt.format.0x23.BParFXTwang` | 0x23 BParFXTwang | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
 | unseen | `kontakt.format.0x24.BParFXCabinet` | 0x24 BParFXCabinet | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
-| tested | `kontakt.format.0x25.BParFX` | 0x25 BParFX | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 2023439/2023439 objects full, 0 of 44445170 bytes unaccounted |
+| tested | `kontakt.format.0x25.BParFX` | 0x25 BParFX | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 2023439/2023439 objects full, 0 of 44445170 bytes unaccounted |
 | unseen | `kontakt.format.0x26.BDyxMorphGroup` | 0x26 BDyxMorphGroup | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
 | unseen | `kontakt.format.0x27.BDyxMorphMap` | 0x27 BDyxMorphMap | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
 | unseen | `kontakt.format.0x2A.BSample` | 0x2A BSample | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
@@ -2456,22 +2458,22 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | missing | `kontakt.format.0x30.Snapshot` | 0x30 Snapshot |  |  |  | not in the corpus, no reader |
 | missing | `kontakt.format.0x30.SrcModePreset` | 0x30 SrcModePreset |  |  |  | not in the corpus, no reader |
 | missing | `kontakt.format.0x30.TablePreset` | 0x30 TablePreset |  |  |  | not in the corpus, no reader |
-| tested | `kontakt.format.0x3A.BParameterArraySer_struct_BParFX_8` | 0x3A BParameterArraySer<struct BParFX, 8> | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 |  | 29284/29284 objects full, 0 of 3089180 bytes unaccounted |
+| tested | `kontakt.format.0x3A.BParameterArraySer_struct_BParFX_8` | 0x3A BParameterArraySer<struct BParFX, 8> | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 29284/29284 objects full, 0 of 3089180 bytes unaccounted |
 | unseen | `kontakt.format.0x3B.BParameterArraySer_struct_BParInternalMod_16` | 0x3B BParameterArraySer<struct BParInternalMod, 16> | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
 | unseen | `kontakt.format.0x3C.BParameterArraySer_struct_BParExternalMod_64` | 0x3C BParameterArraySer<struct BParExternalMod, 64> | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
 | tested | `kontakt.format.0x3F.BParEnv_AHDSR` | 0x3F BParEnv_AHDSR | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #289 | 2026-11-25 | 1389661/1389661 objects full, 0 of 107003897 bytes unaccounted |
 | unseen | `kontakt.format.0x40.BParEnv_FM7` | 0x40 BParEnv_FM7 | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
 | unseen | `kontakt.format.0x41.BParEnv_DBD` | 0x41 BParEnv_DBD | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
-| tested | `kontakt.format.0x42.BParFXTape` | 0x42 BParFXTape | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 518/518 objects full, 0 of 6734 bytes unaccounted |
-| tested | `kontakt.format.0x43.BParFXTrans` | 0x43 BParFXTrans | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 103/103 objects full, 0 of 1648 bytes unaccounted |
-| tested | `kontakt.format.0x44.BParFXSSLGEQ` | 0x44 BParFXSSLGEQ | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 2242/2242 objects full, 0 of 94164 bytes unaccounted |
-| tested | `kontakt.format.0x46.BParFXSSLGBusComp` | 0x46 BParFXSSLGBusComp | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 103/103 objects full, 0 of 3090 bytes unaccounted |
-| tested | `kontakt.format.0x47.SaveSettings` | 0x47 SaveSettings | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 733/733 objects full, 0 of 10995 bytes unaccounted |
+| tested | `kontakt.format.0x42.BParFXTape` | 0x42 BParFXTape | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 518/518 objects full, 0 of 6734 bytes unaccounted |
+| tested | `kontakt.format.0x43.BParFXTrans` | 0x43 BParFXTrans | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 103/103 objects full, 0 of 1648 bytes unaccounted |
+| tested | `kontakt.format.0x44.BParFXSSLGEQ` | 0x44 BParFXSSLGEQ | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 2242/2242 objects full, 0 of 94164 bytes unaccounted |
+| tested | `kontakt.format.0x46.BParFXSSLGBusComp` | 0x46 BParFXSSLGBusComp | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 103/103 objects full, 0 of 3090 bytes unaccounted |
+| tested | `kontakt.format.0x47.SaveSettings` | 0x47 SaveSettings | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 733/733 objects full, 0 of 10995 bytes unaccounted |
 | unseen | `kontakt.format.0x4A.BParGroupDynamics` | 0x4A BParGroupDynamics | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
-| tested | `kontakt.format.0x4C.BParFXFBComp` | 0x4C BParFXFBComp | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 103/103 objects full, 0 of 3193 bytes unaccounted |
-| tested | `kontakt.format.0x4D.BParFXJump` | 0x4D BParFXJump | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 2808/2808 objects full, 0 of 73008 bytes unaccounted |
-| tested | `kontakt.format.0x4E.QuickBrowseData` | 0x4E QuickBrowseData | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 682/682 objects full, 0 of 2728 bytes unaccounted |
-| tested | `kontakt.format.0x4F.BSnapshot` | 0x4F BSnapshot | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 |  | 1139/1139 objects full, 0 of 1991129186 bytes unaccounted |
+| tested | `kontakt.format.0x4C.BParFXFBComp` | 0x4C BParFXFBComp | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 103/103 objects full, 0 of 3193 bytes unaccounted |
+| tested | `kontakt.format.0x4D.BParFXJump` | 0x4D BParFXJump | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 2808/2808 objects full, 0 of 73008 bytes unaccounted |
+| tested | `kontakt.format.0x4E.QuickBrowseData` | 0x4E QuickBrowseData | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 682/682 objects full, 0 of 2728 bytes unaccounted |
+| tested | `kontakt.format.0x4F.BSnapshot` | 0x4F BSnapshot | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 1139/1139 objects full, 0 of 1991129186 bytes unaccounted |
 | unseen | `kontakt.format.0x50.BGroupSnapshot` | 0x50 BGroupSnapshot | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
 | tested | `kontakt.format.0x51.BSnapshotMetaData` | 0x51 BSnapshotMetaData | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #289 | 2026-11-25 | 1139/1139 objects full, 0 of 71510 bytes unaccounted |
 | unseen | `kontakt.format.0x52.BParFXVan51` | 0x52 BParFXVan51 | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
@@ -2479,12 +2481,12 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | unseen | `kontakt.format.0x54.BParFXBassInvader` | 0x54 BParFXBassInvader | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
 | unseen | `kontakt.format.0x54.BParFXHotSolo` | 0x54 BParFXHotSolo | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
 | unseen | `kontakt.format.0x55.BParFXCat` | 0x55 BParFXCat | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
-| tested | `kontakt.format.0x56.BParFXDStortion` | 0x56 BParFXDStortion | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #275 | 2026-11-25 | 2/2 objects full, 0 of 50 bytes unaccounted |
+| tested | `kontakt.format.0x56.BParFXDStortion` | 0x56 BParFXDStortion | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #289 | 2026-11-25 | 2/2 objects full, 0 of 50 bytes unaccounted |
 | unseen | `kontakt.format.0x57.BParFXPlateReverb` | 0x57 BParFXPlateReverb | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
 | unseen | `kontakt.format.0x58.BParFXCryWah` | 0x58 BParFXCryWah | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
-| tested | `kontakt.format.0x59.BParFXGaloisReverb` | 0x59 BParFXGaloisReverb | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 |  | 271/271 objects full, 0 of 10840 bytes unaccounted |
-| tested | `kontakt.format.0x5A.BParFXReplikaDelay` | 0x5A BParFXReplikaDelay | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #289 | 2026-11-25 | 56/56 objects full, 0 of 6384 bytes unaccounted |
-| tested | `kontakt.format.0x5B.BParFXPhasis` | 0x5B BParFXPhasis | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #289 | 2026-11-25 | 5/5 objects full, 0 of 260 bytes unaccounted |
+| tested | `kontakt.format.0x59.BParFXGaloisReverb` | 0x59 BParFXGaloisReverb | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 271/271 objects full, 0 of 10840 bytes unaccounted |
+| tested | `kontakt.format.0x5A.BParFXReplikaDelay` | 0x5A BParFXReplikaDelay | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #275 | 2026-11-25 | 56/56 objects full, 0 of 6384 bytes unaccounted |
+| tested | `kontakt.format.0x5B.BParFXPhasis` | 0x5B BParFXPhasis | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #275 | 2026-11-25 | 5/5 objects full, 0 of 260 bytes unaccounted |
 | tested | `kontakt.format.0x5C.BParFXFlair` | 0x5C BParFXFlair | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #275 | 2026-11-25 | 2/2 objects full, 0 of 132 bytes unaccounted |
 | tested | `kontakt.format.0x5D.BParFXChoral` | 0x5D BParFXChoral | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #289 | 2026-11-25 | 12/12 objects full, 0 of 408 bytes unaccounted |
 | unseen | `kontakt.format.0x5E.BParFXCoreCell` | 0x5E BParFXCoreCell | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
@@ -2517,20 +2519,20 @@ UVI corpus checks: green 648/660, load_s_p50 6.97, load_s_p95 13.02, loads 660/6
 | unseen | `kontakt.format.0x7A.BParFXReverbDelight` | 0x7A BParFXReverbDelight | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
 | unseen | `kontakt.format.0xF00.UIState` | 0xF00 UIState | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
 | unseen | `kontakt.format.0xF01.CXBrowserUIState` | 0xF01 CXBrowserUIState | [parser_coverage.md](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/re/kontakt-catalog/parser_coverage.md) |  |  | 0 corpus objects (unseen) |
-| partial | `kontakt.format.0xF02.SessionState` | 0xF02 SessionState | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 0/1 objects full, 2528 of 2528 bytes unaccounted |
+| tested | `kontakt.format.0xF02.SessionState` | 0xF02 SessionState | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #369 | 2026-11-26 | 1/1 objects full, 0 of 2528 bytes unaccounted |
 | missing | `kontakt.format.0x2710.BApp_BSplashDialog` | 0x2710 BApp::BSplashDialog |  |  |  | not in the corpus, no reader |
 | missing | `kontakt.format.0x2710.NI_NGL_StandardSplashDialog2` | 0x2710 NI::NGL::StandardSplashDialog2 |  |  |  | not in the corpus, no reader |
-| tested | `kontakt.format.0x0045.BInsertBus` | 0x0045 BInsertBus | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 25344/25344 objects full, 0 of 685672 bytes unaccounted |
-| partial | `kontakt.format.0x003e.BOutputConfiguration` | 0x003e BOutputConfiguration | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 0/54 objects full, 132983 of 132983 bytes unaccounted |
-| partial | `kontakt.format.0x0003.Bank` | 0x0003 Bank | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 0/54 objects full, 4916 of 4916 bytes unaccounted |
-| partial | `kontakt.format.0x004b.FNTableImpl` | 0x004b FNTableImpl | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 0/1875 objects full, 1979670958 of 1979670958 bytes unaccounted |
-| partial | `kontakt.format.0x0033.GroupList` | 0x0033 GroupList | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 0/682 objects full, 206184 of 886620173 bytes unaccounted |
-| partial | `kontakt.format.0x0049.MidiPortMaps` | 0x0049 MidiPortMaps | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 0/54 objects full, 14688 of 14688 bytes unaccounted |
-| partial | `kontakt.format.0x0048.MultiSlots` | 0x0048 MultiSlots | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 0/54 objects full, 95744 of 95744 bytes unaccounted |
-| partial | `kontakt.format.0x0028.Program` | 0x0028 Program | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 0/682 objects full, 766323 of 766323 bytes unaccounted |
-| partial | `kontakt.format.0x0037.SlotList` | 0x0037 SlotList | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 0/54 objects full, 286314986 of 286327735 bytes unaccounted |
-| partial | `kontakt.format.0x0032.VoiceGroups` | 0x0032 VoiceGroups | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 0/682 objects full, 42592 of 42592 bytes unaccounted |
-| partial | `kontakt.format.0x0034.ZoneList` | 0x0034 ZoneList | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) |  |  | 0/682 objects full, 541843820 of 3134975386 bytes unaccounted |
+| tested | `kontakt.format.0x0045.BInsertBus` | 0x0045 BInsertBus | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #303 | 2026-11-25 | 25344/25344 objects full, 0 of 685672 bytes unaccounted |
+| tested | `kontakt.format.0x003e.BOutputConfiguration` | 0x003e BOutputConfiguration | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #369 | 2026-11-26 | 54/54 objects full, 0 of 132983 bytes unaccounted |
+| tested | `kontakt.format.0x0003.Bank` | 0x0003 Bank | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #369 | 2026-11-26 | 54/54 objects full, 0 of 4916 bytes unaccounted |
+| tested | `kontakt.format.0x004b.FNTableImpl` | 0x004b FNTableImpl | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #369 | 2026-11-26 | 1875/1875 objects full, 0 of 1979670958 bytes unaccounted |
+| tested | `kontakt.format.0x0033.GroupList` | 0x0033 GroupList | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #369 | 2026-11-26 | 682/682 objects full, 0 of 886620173 bytes unaccounted |
+| tested | `kontakt.format.0x0049.MidiPortMaps` | 0x0049 MidiPortMaps | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #369 | 2026-11-26 | 54/54 objects full, 0 of 14688 bytes unaccounted |
+| tested | `kontakt.format.0x0048.MultiSlots` | 0x0048 MultiSlots | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #369 | 2026-11-26 | 54/54 objects full, 0 of 95744 bytes unaccounted |
+| tested | `kontakt.format.0x0028.Program` | 0x0028 Program | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #369 | 2026-11-26 | 682/682 objects full, 0 of 766323 bytes unaccounted |
+| tested | `kontakt.format.0x0037.SlotList` | 0x0037 SlotList | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #369 | 2026-11-26 | 54/54 objects full, 0 of 286327735 bytes unaccounted |
+| tested | `kontakt.format.0x0032.VoiceGroups` | 0x0032 VoiceGroups | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #369 | 2026-11-26 | 682/682 objects full, 0 of 42592 bytes unaccounted |
+| tested | `kontakt.format.0x0034.ZoneList` | 0x0034 ZoneList | [ni-file-census.tsv](https://github.com/DerpcatMusic/KONTRA/blob/main/docs/parity/snapshots/ni-file-census.tsv) | #369 | 2026-11-26 | 682/682 objects full, 0 of 3134975386 bytes unaccounted |
 
 ## Scripting (Lua API)
 

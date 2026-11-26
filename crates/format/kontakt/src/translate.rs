@@ -924,11 +924,9 @@ fn data_files(
     {
         let resources = resources.get_or_insert_with(|| Resources::open(path));
         for module in resources.under("native_ui") {
-            if !module
-                .rsplit('.')
-                .next()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("nui"))
-            {
+            if !module.rsplit('.').next().is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("nui") || ext.eq_ignore_ascii_case("lua")
+            }) {
                 continue;
             }
             if let Some(bytes) = resources.read(&format!("native_ui/{module}")) {
