@@ -29,7 +29,7 @@ Status: research spec, no code changed, nothing built. Evidence tags:
   (`lib.rs:416-418`) where the recovered Kontakt law is linear (`docs/re/engine/BASIC_BEHAVIORS.md` row 6).
 - The random sample-start range (Kontakt `sample_start_mod_range`) is read into IR and used only for the preload
   window (`prepare.rs:164-188`); playback never applies it. The Kontakt law is not recovered
-  (`docs/re/engine/UNROUTED_START_RANGE.md`).
+  ([`docs/re/engine/UNROUTED_START_RANGE.md`](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/re/engine/UNROUTED_START_RANGE.md)).
 
 ## 2. Reference behaviour
 
@@ -313,7 +313,7 @@ Each claim below is either [binary]/[doc]-tagged or [inferred]. The run column i
 | Claim | Status | Run |
 |---|---|---|
 | Kontakt linear velocity fade law | [measured] in KONTAKT_REFERENCE s.11 | Re-run as gap 1, use it as the regression for `Law::Linear`. |
-| Kontakt random N = rows, MT stream | [binary], `docs/re` | Oracle: 4-row random group, 1000 notes, compare to KONTRA after the N fix (gap 5). |
+| Kontakt random N = rows, MT stream | [binary], [`docs/re`](https://github.com/Matari-Audio/dsp-research/tree/main/plugins/kontra/docs/re) | Oracle: 4-row random group, 1000 notes, compare to KONTRA after the N fix (gap 5). |
 | Kontakt RR counter steps on every note | [binary] | Gap 9 oracle fixture. |
 | Kontakt Start-on-Key latch semantics | [binary] + [doc] | Keys in a gap between two switch ranges (gap 6, 7). |
 | SFZ per-region seq counter | [source] sfizz | sfizz run on two overlapping regions with seq_length 2 (no Kontakt needed). |

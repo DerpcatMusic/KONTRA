@@ -16,7 +16,7 @@ root-authorized combined integration cycle.
 ## Primary requirements, not native receipts
 
 The five immutable NI archive/excerpt pairs are verified again in
-`evidence/waveform-runtime-source-checks.json`. Exact excerpt SHA256:
+[`evidence/waveform-runtime-source-checks.json`](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/evidence/waveform-runtime-source-checks.json). Exact excerpt SHA256:
 
 | NI primary section | Exact excerpt SHA256 | Requirement used |
 | --- | --- | --- |
@@ -130,7 +130,7 @@ Host routing and epoch qualification must precede use of that trusted sink.
 ## Pinned actual consumer spans
 
 At exact code SHA d057af73, these full spans and their Git blobs/digests are in
-`evidence/waveform-runtime-source-checks.json`:
+[`evidence/waveform-runtime-source-checks.json`](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/evidence/waveform-runtime-source-checks.json):
 
 | Path | Inclusive span | Responsibility |
 | --- | --- | --- |
@@ -178,14 +178,14 @@ with its captured physical source removed is rejected during seed compilation.
 
 ## No-build checks and limitations
 
-`evidence/waveform-runtime-source-checks.json`, SHA256
+[`evidence/waveform-runtime-source-checks.json`](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/evidence/waveform-runtime-source-checks.json), SHA256
 `867cba4b753fcb001da8413b1f3b63ff8a273a5de21d34a42e093ebb610fd2d8`:
 10 independent finite transaction-model cases +3 qualification cases pass;
 5 exact primary archive/excerpt pairs verified; original5 function bodies and
 request decoder body preserved; generic Store code and reserved files pinned.
 This is not interpretation or execution of Rust/KSP and not type checking.
 
-`evidence/waveform-runtime-syntax-checks.json`, SHA256
+[`evidence/waveform-runtime-syntax-checks.json`](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/evidence/waveform-runtime-syntax-checks.json), SHA256
 `4fc944ef3c5f57bc36dccec4fae356f983658c40257059fe282b2c12f8cfab34`:
 installed WASM grammar checks13 Rust files.12 have no error/missing nodes.
 lib.rs has the same4 pre-existing grammar errors as exact d1fb, at its existing

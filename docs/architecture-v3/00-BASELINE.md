@@ -95,5 +95,5 @@ Already good, keep: the IR as the meeting point; allocation-free audio
 thread; sample-accurate block splitting; native vectors for DSP laws; the
 `builtins!` and `RuntimeProblems` macros (already declare-once, extend the idea).
 
-Playback behaviour: see [../audit-2026-10-24/PLAYBACK_AUDIT.md](../audit-2026-10-24/PLAYBACK_AUDIT.md)
+Playback behaviour: see [../audit-2026-10-24/PLAYBACK_AUDIT.md](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/audit-2026-10-24/PLAYBACK_AUDIT.md)
 (Areia dense 0/64 chords audible, Vista 100% cold starts).

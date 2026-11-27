@@ -55,7 +55,7 @@ Scope: note-on to voice start, the event queue, script callbacks, allocation, st
 
 ### 1.6 Corpus evidence: how real libraries use this (Kontakt) [corpus]
 
-Method: `dump_scripts` (existing `sampler-kontakt` example, read-only, no build) run over `/data/main/Libraries/Kontakt`: 26 distinct scripts from 405 instrument uses. Only Afflatus (22 scripts, 348 uses), ANALOG STRINGS (3) and Areia (1, 54 uses) yielded scripts. The other folders (Conflux, Dolce, CHORUS, Una Corda, Morphology, Pacific, Shreddage) have `make_persistent` scripts per `docs/re/ksp/PERSISTENCE_CENSUS.md`, but the dumper produced no output for them. Open gap, see section 9.
+Method: `dump_scripts` (existing `sampler-kontakt` example, read-only, no build) run over `/data/main/Libraries/Kontakt`: 26 distinct scripts from 405 instrument uses. Only Afflatus (22 scripts, 348 uses), ANALOG STRINGS (3) and Areia (1, 54 uses) yielded scripts. The other folders (Conflux, Dolce, CHORUS, Una Corda, Morphology, Pacific, Shreddage) have `make_persistent` scripts per [`docs/re/ksp/PERSISTENCE_CENSUS.md`](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/re/ksp/PERSISTENCE_CENSUS.md), but the dumper produced no output for them. Open gap, see section 9.
 
 | Behaviour | Afflatus Chapter II Brass | ANALOG STRINGS | Areia 1.2.0 |
 |---|---|---|---|
@@ -92,7 +92,7 @@ Concrete reliance:
 
 ## 2. Reference: UVI Workstation / UVIScript [binary][repo]
 
-- Repo coverage of UVIScript: `docs/architecture-v2/UVI_SCRIPT_COVERAGE.md`. Implemented: `onNote`, `onRelease` (`wait_for_release_resumes_on_note_off_and_release_is_called`), `playNote`, `releaseVoice`, `fadein`/`fadeout`, `wait`, `spawn`, `run`, `waitBeat`, `changeVolume`/`changeTune`/`changePan`. `setParameter` is a stub for `Program.Polyphony`, `OnePole.Freq` and every layer gain. [repo] same file, lines 20–58, 93.
+- Repo coverage of UVIScript: [`docs/architecture-v2/UVI_SCRIPT_COVERAGE.md`](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/architecture-v2/UVI_SCRIPT_COVERAGE.md). Implemented: `onNote`, `onRelease` (`wait_for_release_resumes_on_note_off_and_release_is_called`), `playNote`, `releaseVoice`, `fadein`/`fadeout`, `wait`, `spawn`, `run`, `waitBeat`, `changeVolume`/`changeTune`/`changePan`. `setParameter` is a stub for `Program.Polyphony`, `OnePole.Freq` and every layer gain. [repo] same file, lines 20–58, 93.
 - UVIScript callbacks are cooperative coroutines; `spawn` is deferred to the end of the current instant; `wait` and note-release suspension need sample/beat scheduling. [repo] `docs/FALCON_RUNTIME_UI_GROUNDWORK.md:52`.
 - UVI's voice model is per program/layer (see section 1.7 binary strings), not per engine: `Poly` vs `Mono` modes are a program setting, and `ExclusiveGroup` is a layer or program attribute.
 - `/home/derpcat/Documents/UVI/Falcon/UVIScript` is an empty directory on this machine: no UVI script manual is available locally. Online docs were not reachable with the queries tried; not verified.

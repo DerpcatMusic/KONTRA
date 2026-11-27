@@ -14,10 +14,10 @@
 - `plugins/kontra/crates/engine/vm/src/action.rs` & `crates/script/ksp/src/{builtins,consts}.rs`
 - `plugins/kontra/crates/app/host/src/script.rs`
 - `plugins/kontra/tools/coverage/engine.tsv`
-- Binary RE & gold reference corpus under `plugins/kontra/docs/re/` and `plugins/kontra/docs/architecture-v3/gold/`
+- Binary RE & gold reference corpus under [`plugins/kontra/docs/re/`](https://github.com/Matari-Audio/dsp-research/tree/main/plugins/kontra/docs/re) and `plugins/kontra/docs/architecture-v3/gold/`
 
 **Evidence confidence tags:**
-- **`proven`** — directly verified against Kontakt 8.13.1 disassembly/decompile notes in `docs/re/`, oracle measurements, or internal contradiction between two KONTRA files.
+- **`proven`** — directly verified against Kontakt 8.13.1 disassembly/decompile notes in [`docs/re/`](https://github.com/Matari-Audio/dsp-research/tree/main/plugins/kontra/docs/re), oracle measurements, or internal contradiction between two KONTRA files.
 - **`likely`** — strongly supported by Kontakt manual/KSP spec and KONTRA's own partial handling (e.g. lag applied to 2 targets, omitted on others), pending an oracle render to quantify exact residual.
 - **`suspect`** — documented unverified assumption or heuristic needing measurement.
 

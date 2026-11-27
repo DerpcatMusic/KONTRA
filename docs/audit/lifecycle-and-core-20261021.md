@@ -195,7 +195,7 @@ never on a switch. After A→B→A the reload restores A's last host-saved `scri
 `load.rs:1067-1121` then drops that slot's script and records one `unsupported` entry. The names in
 the audit brief (`load_ensemble`, `load_patch`, `load_snapshot`, `save_snapshot`) are not in
 `crates/sampler-ksp/src/builtins.rs` or the manual-derived `KSP_SURFACE.json`; whether Kontakt 8
-accepts them is unverified here. The real corpus hits this class: `docs/audit-2026-10-08/ksp-sema-faults.md`
+accepts them is unverified here. The real corpus hits this class: [`docs/audit-2026-10-08/ksp-sema-faults.md`](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/audit-2026-10-08/ksp-sema-faults.md)
 records 45 faulted script slots across 30 multi items from `subscribe_async` (30) and `mf_get_first`
 (15). `allow_group`/`disallow_group` are native only in note/release callbacks; elsewhere they warn
 and do nothing (`lower.rs:2179`, `:3042-3044`; asserted by `crates/sampler-ksp/tests/groups.rs:185-205`),
@@ -394,7 +394,7 @@ budget, concurrent loads) is a counter on the coordinator, not a reason to seria
 ### Control state: one source of truth
 
 Authoritative value lives in the audio-side runtime (it already is: `Runtime` control values with
-revisions, `docs/architecture-v2/CONTROL_STATE.md`). Everything else is a mirror:
+revisions, [`docs/architecture-v2/CONTROL_STATE.md`](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/architecture-v2/CONTROL_STATE.md)). Everything else is a mirror:
 
 - Writers (UI, host automation, script, recall) submit `ControlEdit { ticket, id: ControlId, value,
   origin }` through the existing `ControlClient` SPSC; stale tickets are rejected at the boundary.

@@ -28,7 +28,7 @@ Read in order:
 | [11-MIGRATION.md](11-MIGRATION.md) | PR-by-PR order with gates, and what gets deleted when |
 | [13-IR-VNEXT.md](13-IR-VNEXT.md) | **Current plan.** IR vNext phases 0–3: what is done on main, what is left, and the done rule |
 
-Background: [../audit-2026-10-24/](../audit-2026-10-24/) (playback audit,
+Background: [../audit-2026-10-24/](https://github.com/Matari-Audio/dsp-research/tree/main/plugins/kontra/docs/audit-2026-10-24) (playback audit,
 sampler landscape, one-engine audit, future plan).
 
 ## The ten rules

@@ -5,7 +5,7 @@ Library-survey section (§8) is pending its agent; everything else is final.
 
 Tags: `[source]` file:line read in this repo or a reference tree · `[binary]` string/address in a vendor binary · `[doc]` vendor or public manual (KM = Kontakt manual PDF page, KSP = KSP manual PDF page, UVI = lua.uvi.net / manual.uvi.net, via WebFetch summary unless noted) · `[inferred]` my reasoning · `[measured]` reproduced with a script in §9.
 
-Reference trees: `Research/samplers/sfizz/src/sfizz/`, `Research/samplers/hise/hi_core/…`, `docs/re/`, `docs/architecture-v2/`, `crates/sampler-core/src/voice_mod/laws.rs`.
+Reference trees: `Research/samplers/sfizz/src/sfizz/`, `Research/samplers/hise/hi_core/…`, [`docs/re/`](https://github.com/Matari-Audio/dsp-research/tree/main/plugins/kontra/docs/re), [`docs/architecture-v2/`](https://github.com/Matari-Audio/dsp-research/tree/main/plugins/kontra/docs/architecture-v2), `crates/sampler-core/src/voice_mod/laws.rs`.
 
 ---
 
@@ -204,7 +204,7 @@ Target     = { addr: (scope, node_id, param_id), unit: Unit, range, law: LawId, 
 Law        = Linear | DbLinear{range} | Power{exp} | KontaktFamilyH{ intensity_ref, cube: bool }
            | Table(CurveId) | Exponential{ low, high } | ShiftedExponential{ top_ms }
 ```
-- Laws are data. Format adapters only choose a `LawId` and parameters; the engine has one implementation per law (matches `docs/architecture-v2/MODULATION_V2.md` "law as data" rule).
+- Laws are data. Format adapters only choose a `LawId` and parameters; the engine has one implementation per law (matches [`docs/architecture-v2/MODULATION_V2.md`](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/architecture-v2/MODULATION_V2.md) "law as data" rule).
 - `Envelope = { delay, attack{time, curve}, hold, decay{time, shape}, sustain (law), release{time, shape}, ahd_only, retrigger, vel_amount, vel_sens }`. Shape is a `CurveId` (linear = identity). Time law is a `Law` (Kontakt: ms raw; script/knob: ShiftedExponential).
 - `Lfo = { rate (Hz | beat), depth, phase, delay_ms, fade_in_ms, retrigger, shape: Waveform | Table, sync }`. Kontakt Multi and fade law are a shape variant with the `[0.3,1.3]` clamp data.
 

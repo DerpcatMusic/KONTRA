@@ -15,7 +15,7 @@ About box shows this file, embedded when the plugin is built.
 How a change gets from a pull request into the notes:
 [CONTRIBUTING.md](CONTRIBUTING.md#pull-requests-commits-and-releases).
 The hand-written notes of the 0.3 series (the previous engine) are kept in
-[docs/history/CHANGELOG-0.3.md](docs/history/CHANGELOG-0.3.md).
+[docs/history/CHANGELOG-0.3.md](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/history/CHANGELOG-0.3.md).
 
 ## 0.6.24 — 2026-11-24
 

@@ -8,8 +8,8 @@ to identify where information is missing and which implementation owns it.
 Native Kontakt and Falcon/Workstation behavior and their official scripting
 contracts are the reference. Agreement between Kontra v1 and v2 is useful
 regression evidence and can still preserve the same mistake. The
-[Kontakt native contract audit](audit-2026-10-12/kontakt-native-contract.md) and
-[Falcon native contract audit](audit-2026-10-12/falcon-native-contract.md) distinguish
+[Kontakt native contract audit](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/audit-2026-10-12/kontakt-native-contract.md) and
+[Falcon native contract audit](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/audit-2026-10-12/falcon-native-contract.md) distinguish
 documented rules, local findings and the native captures still needed.
 
 ## Start the workbench
@@ -256,7 +256,7 @@ Validated Falcon hierarchical menus include their grouped tree and original
 zero-based item indices in each widget's `menu_hierarchy` metadata. The shared
 production popup writes the original item value when a leaf is selected;
 ambiguous paths and renderer limits remain explicit UI omissions. See the
-[hierarchical menu evidence](architecture-v2/UVI_HIERARCHICAL_MENUS.md).
+[hierarchical menu evidence](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/architecture-v2/UVI_HIERARCHICAL_MENUS.md).
 
 Load timings include process wall time and launcher time including the heavy-job
 queue, sandbox and JSON transfer. Asset preparation includes worker wait,
@@ -282,5 +282,5 @@ The shared browser exercised problem navigation, lowering, source escaping,
 conversion records, UI omissions and clearing. Final desktop and narrow previews
 had no page overflow or console errors.
 
-The related [Kontakt audit](audit-2026-10-12/kontakt-parity.md) records exact v1
+The related [Kontakt audit](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/audit-2026-10-12/kontakt-parity.md) records exact v1
 NCKP fields that v2 omits, with source references and retained diagnostics.

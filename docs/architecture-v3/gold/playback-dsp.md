@@ -39,7 +39,7 @@ probe in the repo. The measurement plan at the end lists what still must be run.
   loop_count, alternating_loop, loop_tuning, x_fade_length`.
 - `[measured, earlier]` Oracle probe on Audio Imperia CHORUS "09 Ensemble - Sustained Oh": Kontakt's
   crossfade matches the **linear complementary** law to 0.1 dB (residual -69.5 dBFS); equal-power sits 2–3 dB
-  high mid-fade (`docs/re/engine/LOOP_XFADE_HOLD_PROBES.md` §1). Seam 2 shows a Kontakt dropout, not
+  high mid-fade ([`docs/re/engine/LOOP_XFADE_HOLD_PROBES.md`](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/re/engine/LOOP_XFADE_HOLD_PROBES.md) §1). Seam 2 shows a Kontakt dropout, not
   explained.
 - `[binary]` The script constant `$NI_FADE_EQUAL_POWER` exists (strings in Kontakt8.exe). This is a
   script-side fade curve, not proof that the loop law is equal-power. The probe settles the loop law.
@@ -367,7 +367,7 @@ Loop { start, end, crossfade_frames, shape: Linear | EqualPower | Wrap,
 ## 6. Measurement plan (proves each claim; not run in this pass)
 
 Existing probes that already prove a claim:
-- Loop crossfade law is linear: `docs/re/engine/LOOP_XFADE_HOLD_PROBES.md` §1 (CHORUS "09 Ensemble", seams
+- Loop crossfade law is linear: [`docs/re/engine/LOOP_XFADE_HOLD_PROBES.md`](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/re/engine/LOOP_XFADE_HOLD_PROBES.md) §1 (CHORUS "09 Ensemble", seams
   0 and 1 at -69.5 and -70.3 dBFS against the linear render).
 - Bus pan law is balance: `docs/re/kontakt-bus-pan.md` (RE, plus a synthetic PCM test in KONTRA).
 - HQI setting values: `docs/re/engine/k-sampler-source.md:146`.

@@ -129,7 +129,7 @@ the DSP identity of already prepared settings; coordinate registry/cache IDs wit
    the old under the **same host-call schedule**; legacy EQ has host-call-sensitive updates,
    so universal partition invariance would be a false requirement. Other paths retain their
    existing partition guarantees. Structural migrations require output and next-state identity.
-5. Use existing assets below and the parity lane's `docs/re/engine/fx-measured/` **when it
+5. Use existing assets below and the parity lane's [`docs/re/engine/fx-measured/`](https://github.com/Matari-Audio/dsp-research/tree/main/plugins/kontra/docs/re/engine/fx-measured) **when it
    lands** (absent on this baseline). Do not make up native vectors, redo its oracle rig or
    silently promote `Partial`/`Generic`/`NotModeled` to exact.
 6. Each implementation PR records base/head SHA, model/settings, channels, rate, frame count,

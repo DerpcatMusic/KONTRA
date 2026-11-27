@@ -21,7 +21,7 @@ The root inputs are `handoff/round11-zone-ui-consumer-requirements.{md,json}`
 under `/home/derpcat/.t3/scratch/2026-10-10-stop-this-thread-2336e1f0-2f34-7f6415ff`.
 Their byte digests, five selected official excerpt/archive digests, immutable
 source Git SHAs/blobs/full inclusive line spans, and test-source pins are in
-`docs/evidence/waveform-operands-source-checks.json`. No native receipt exists
+[`docs/evidence/waveform-operands-source-checks.json`](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/evidence/waveform-operands-source-checks.json). No native receipt exists
 for this lane. These are archived primary NI documentation requirements, not
 Kontakt 8.13.1 execution receipts or a Falcon behavior claim.
 
@@ -165,7 +165,7 @@ of the decoder**, Rust type checking, or integration behavior evidence.
 
 The Node check uses an already-installed WASM Rust grammar and reports zero
 syntax error/missing nodes in four Rust files. Grammar digest and exact checked
-file digests are in `docs/evidence/waveform-operands-syntax-checks.json`.
+file digests are in [`docs/evidence/waveform-operands-syntax-checks.json`](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/evidence/waveform-operands-syntax-checks.json).
 It does not check types, APIs, KSP semantics, or native behavior. Root integration
 alone owns any later combined build/test; this lane neither appended a batch nor
 requested a per-lane build.

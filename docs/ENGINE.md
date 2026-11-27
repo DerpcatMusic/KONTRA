@@ -36,11 +36,11 @@ We live by KISS and YAGNI. More often than not the simpler solution is the corre
 | Engine | `crates/sampler-core/src/dsp/` | Shared cores by family: `eq_family`, `filter`, `dynamics`, `space`, `timemod`, `color`, plus `biquad` and primitives. Source, voice, modulation and scheduling live beside it in `sampler-core`. |
 | Neutral configuration | `crates/sampler-ir/src/fx/` | Per-family `Config` types the engine reads. |
 | Extensions | `crates/sampler-kontakt`, `crates/sampler-uvi` (and future crates) | File/preset/script readers and parameter mapping only. |
-| Evidence | `docs/re/`, `crates/sampler-parity`, golden and recorded vectors | The proof that a mapping matches the original. |
+| Evidence | [`docs/re/`](https://github.com/Matari-Audio/dsp-research/tree/main/plugins/kontra/docs/re), `crates/sampler-parity`, golden and recorded vectors | The proof that a mapping matches the original. |
 
 ## Adding a product or module
 
-1. Find the original behaviour in the binary (REA/Ghidra decompilation; `unpacer` for the PACE-protected UVI/Falcon code). Record it in `docs/re/` with the evidence.
+1. Find the original behaviour in the binary (REA/Ghidra decompilation; `unpacer` for the PACE-protected UVI/Falcon code). Record it in [`docs/re/`](https://github.com/Matari-Audio/dsp-research/tree/main/plugins/kontra/docs/re) with the evidence.
 2. Check whether the shared engine already covers it with a different law or setting. Prefer extending an existing core over adding one.
 3. If a capability is missing, add it to the engine in general form, with a bit-exact test (golden coefficients, recorded vector or null test).
 4. Map the product's parameters in the extension crate. Unsupported parameters must be diagnosed, not silently ignored.
@@ -53,7 +53,7 @@ We live by KISS and YAGNI. More often than not the simpler solution is the corre
 - Fix mechanisms for all libraries, never per instrument.
 - Targets: every supported library plays correctly; 300 voices at about 1% CPU.
 
-See also: [DSP system inventory](re/DSP_SYSTEM_INVENTORY.md), [format specification](re/DSP_FORMAT_SPECIFICATION.md), [shared IR](architecture-v2/SHARED_IR.md), [DSP coverage](architecture-v2/DSP_COVERAGE.md).
+See also: [DSP system inventory](re/DSP_SYSTEM_INVENTORY.md), [format specification](re/DSP_FORMAT_SPECIFICATION.md), [shared IR](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/architecture-v2/SHARED_IR.md), [DSP coverage](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/architecture-v2/DSP_COVERAGE.md).
 
 ## Universal module architecture (design)
 

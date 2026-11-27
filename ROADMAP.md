@@ -59,7 +59,7 @@ Counts are rows in the [parity matrix](docs/re/engine/PARITY_MATRIX.md) (155 row
 ### Scripting
 
 - **KSP, done**: scripts run natively in the plugin. Callbacks cover init, note, release, controller and UI. Covered: generated notes, waits, `find_group` lookup (#261), the MT19937 start draw (#274), polyphonic variable scope (#384), effect and filter type constants (#356, #430, #432), `set_control_par` rules (#400), keyswitch articulations migrated to zone selectors (#436).
-- **KSP, partial**: the Kontakt 8.12 surface has 1,605 identifiers. Most are not yet implemented, and 42 have partial overrides ([KSP parity map](docs/architecture-v2/KSP_PARITY.md)). Persistence, async and some UI services are partial. KSP diagnostics name the failing operation and input (#81, #379, #399).
+- **KSP, partial**: the Kontakt 8.12 surface has 1,605 identifiers. Most are not yet implemented, and 42 have partial overrides ([KSP parity map](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/architecture-v2/KSP_PARITY.md)). Persistence, async and some UI services are partial. KSP diagnostics name the failing operation and input (#81, #379, #399).
 - **UVI Lua, partial**: UVI scripts run on the shared Luau runtime (#452) under a deterministic work budget. The API is a Lua 5.1-compatible approximation. Parameter writes for LFO, MultiLFO and DAHDSR are not bound (see Known limitations).
 
 ### Performance (measured)
@@ -73,13 +73,13 @@ Recorded baseline, commit `fbc205f7` (2026-10-07), AMD Ryzen 7 7800X3D, 16 cores
 | Streaming sweep | 64 frames | 4.6 µs | 15.1 µs | 5 / 8,250 |
 | Convolution pads | 64 frames | 117 µs | 151 µs | 12 / 6,000 |
 
-100 resident voices at 256 frames, one thread, share of the deadline ([docs/architecture-v2/CPU_EVIDENCE.md](docs/architecture-v2/CPU_EVIDENCE.md)): plain 0.31%, fractional 5.37%, filtered 9.10%, modulated 13.44%, three EQs plus stereo 17.18%.
+100 resident voices at 256 frames, one thread, share of the deadline ([docs/architecture-v2/CPU_EVIDENCE.md](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/architecture-v2/CPU_EVIDENCE.md)): plain 0.31%, fractional 5.37%, filtered 9.10%, modulated 13.44%, three EQs plus stereo 17.18%.
 
 This baseline is older than much of the performance work (#236 to #446) and has not been re-measured. Re-baselining is pending. The target of 300 voices at 1% of the meter is not achieved. The Kontakt and Falcon comparison on the same instruments is not measured.
 
 ### MPE and MIDI
 
-- **Done**: MPE per-note pitch, pressure and timbre routing. Measured on 41 Kontakt instruments (up to five per library): pitch responds on 34, pressure on 40, timbre on 35 ([MPE_COVERAGE.md](docs/architecture-v2/MPE_COVERAGE.md)). Per-note bend sensitivity and pitch reset are covered by tests (#281, #333, #334, #337).
+- **Done**: MPE per-note pitch, pressure and timbre routing. Measured on 41 Kontakt instruments (up to five per library): pitch responds on 34, pressure on 40, timbre on 35 ([MPE_COVERAGE.md](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/architecture-v2/MPE_COVERAGE.md)). Per-note bend sensitivity and pitch reset are covered by tests (#281, #333, #334, #337).
 - **Not started**: MIDI-CI and SysEx. Full MPE on UVI instruments is not measured.
 
 ### Editor and platform
@@ -88,7 +88,7 @@ This baseline is older than much of the performance work (#236 to #446) and has 
 
 ## In progress
 
-- **Universal Luau script layer** (#452, #453, #460, #477, #478, #480, #482, #483, #485, #487). The Luau runtime exists, and a KSP-to-Luau front end covers UI controls, PGS keys and UI record builtins. No corpus script is fully in the subset yet: 0 of 696 extracted scripts. The interpreter stays the default because Luau is slower with worse tails on the measured per-event workload ([UNIVERSAL_SCRIPT.md](docs/architecture-v2/UNIVERSAL_SCRIPT.md)).
+- **Universal Luau script layer** (#452, #453, #460, #477, #478, #480, #482, #483, #485, #487). The Luau runtime exists, and a KSP-to-Luau front end covers UI controls, PGS keys and UI record builtins. No corpus script is fully in the subset yet: 0 of 696 extracted scripts. The interpreter stays the default because Luau is slower with worse tails on the measured per-event workload ([UNIVERSAL_SCRIPT.md](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/architecture-v2/UNIVERSAL_SCRIPT.md)).
 - **Format coverage**: UVI modulation mapping. This is the largest gap family and covers LFO, MultiLFO, DAHDSR and constant modulation.
 - **Wow / Flutter** (#317, #322, #325, #463). Parameters are read and stored, and the Kontakt control laws are applied. The DSP kernel is not ported; the prepare step is blocked (#467, #469). Not shipped as processing.
 - **Kolor shaper** (#367, #389, #398, #402, #414, #417, #419, #422, #462, #466, #470, #471). The dry path and several shaper cases are ported and checked against native vectors. Other cases are open. Matrix status: partial.
@@ -108,7 +108,7 @@ This baseline is older than much of the performance work (#236 to #446) and has 
 
 ## Known limitations
 
-Dates matter. The corpus numbers are from the full-tier survey of 2026-10-23 (base `3ab06104d`, machine heavily loaded). The [library gap report](docs/re/engine/LIBRARY_GAPS.md) has the full table.
+Dates matter. The corpus numbers are from the full-tier survey of 2026-10-23 (base `3ab06104d`, machine heavily loaded). The [library gap report](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/re/engine/LIBRARY_GAPS.md) has the full table.
 
 - **Corpus load (2026-10-23)**: 1,312 of 1,395 instruments and programs load, 1,297 sound, 1,295 have no failure. Kontakt: 682 of 682 single instruments and 53 of 53 multis load; one script compile failure (Shreddage E-Upright).
 - **Silent at a covered key (2026-10-23)**: 15 instruments (Dolce 10, Pacific Ensemble Strings 5). Probe key 60 may be the cause.

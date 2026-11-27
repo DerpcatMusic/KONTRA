@@ -128,5 +128,5 @@ Every PR answers these in its *Vision check* section, one line each:
 - By subsystem: [02-ENGINE.md](02-ENGINE.md), [03-DSP.md](03-DSP.md),
   [04-SCRIPT.md](04-SCRIPT.md), [05-STREAM.md](05-STREAM.md),
   [06-FORMATS.md](06-FORMATS.md), [07-APP.md](07-APP.md).
-- Evidence: `docs/re/`, `tools/kontakt-oracle/`, the vectors next to each DSP
+- Evidence: [`docs/re/`](https://github.com/Matari-Audio/dsp-research/tree/main/plugins/kontra/docs/re), `tools/kontakt-oracle/`, the vectors next to each DSP
   family.

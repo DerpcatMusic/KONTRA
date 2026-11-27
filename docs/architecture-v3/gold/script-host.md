@@ -99,7 +99,7 @@ transforms mod wheel into aftertouch.
 **Persistence** `[doc]` KSP_Manual 1640-1700: `make_persistent` saved with instrument, snapshot and `.nkp`;
 restored at the **end** of `on init`, read earlier with `read_persistent_var`. `make_instr_persistent` saved
 with the instrument only, not snapshots, so loading a snapshot does not change it.
-`[artifact]` `docs/re/ksp/PERSISTENCE_CENSUS.md`: 16 instruments; `make_persistent` in all of them; `on
+`[artifact]` [`docs/re/ksp/PERSISTENCE_CENSUS.md`](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/re/ksp/PERSISTENCE_CENSUS.md): 16 instruments; `make_persistent` in all of them; `on
 persistence_changed` in 9 (Conflux, Morphology, Dolce, Areia, Una Corda, Shreddage ×2, ANALOG, Chorus);
 `read_persistent_var` in 7; `make_instr_persistent` in 4 (Conflux, Una Corda, Shreddage, ANALOG).
 
@@ -165,7 +165,7 @@ same CC and controller concepts; no separate automation model documented in the 
 - **Bindings** `[source]` `load.rs:1569-1631` (saved + fixed), `load.rs:1849-1882` (`fixed_automation`:
   every widget with `$CONTROL_PAR_AUTOMATION_ID` becomes `HostParameter(id)`, range 0–1, no soft takeover).
 - **Persistence** `[source]` `crates/script/ksp/src/persist.rs`; snapshot path in `sampler-kontakt/src/snapshot.rs`
-  (`docs/re/ksp/PERSISTENCE_CENSUS.md` says snapshot writes overwrite any named entry regardless of
+  ([`docs/re/ksp/PERSISTENCE_CENSUS.md`](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/re/ksp/PERSISTENCE_CENSUS.md) says snapshot writes overwrite any named entry regardless of
   `make_instr_persistent`).
 - **Tests** `[source]` `load.rs:1884-1930` (automation id binds host slot and runs its callback; a controller
   source binds to a widget). Read only the first test in full.
@@ -310,6 +310,6 @@ Areia IR.
 - `[web]` WebSearch on UVI Falcon automation (community posts; not UVI docs).
 - `[binary]` `/data/dev/workspace/re-binaries/Kontakt8.exe`, `UVIWorkstationx64.exe` (rabin2 -z).
 - `[artifact]` `fresh-engine/areia-old-ir.json`, `fresh-engine/areia-script/0.txt`,
-  `layer-onset-20261024/vista-scripts/*.ksp`, `docs/re/ksp/PERSISTENCE_CENSUS.md`.
+  `layer-onset-20261024/vista-scripts/*.ksp`, [`docs/re/ksp/PERSISTENCE_CENSUS.md`](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/re/ksp/PERSISTENCE_CENSUS.md).
 - `[source]` KONTRA files as cited above.
 - `[source]` Research/samplers/hise, Research/samplers/sfizz (read-only).

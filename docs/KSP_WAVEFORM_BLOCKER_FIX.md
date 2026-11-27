@@ -106,7 +106,7 @@ authorized cycle. No current batch append or per-lane build is requested.
 
 ## Immutable evidence and no-build checks
 
-`evidence/waveform-blocker-fix-source-checks.json` pins parent/code trees,
+[`evidence/waveform-blocker-fix-source-checks.json`](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/evidence/waveform-blocker-fix-source-checks.json) pins parent/code trees,
 full source Git blobs and inclusive spans, focused changed spans, complete
 original source pins, all test names/body digests, the exact delta digest,
 unchanged shared-file custody, immutable root inputs and primary documentation.
@@ -118,7 +118,7 @@ conversion and all register-window edges. Assertions are tied to the observed
 source mechanisms; they do not execute or interpret Rust/KSP. Model success is
 not a product PASS or a compiler result.
 
-`evidence/waveform-blocker-fix-syntax-checks.json` uses the already-installed
+[`evidence/waveform-blocker-fix-syntax-checks.json`](https://github.com/Matari-Audio/dsp-research/blob/main/plugins/kontra/docs/evidence/waveform-blocker-fix-syntax-checks.json) uses the already-installed
 WASM grammar for13 Rust files. Twelve have no error/missing nodes. lib.rs retains
 all four baseline cfg-destructuring error nodes, with exact baseline/current
 types, text, positions and surrounding context digests. No introduced nodes
