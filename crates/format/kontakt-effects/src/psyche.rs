@@ -62,22 +62,19 @@ pub fn saved(version: u16, public: &[u8]) -> Option<Psyche> {
     if version != 0x10 {
         return None;
     }
-    let f = |n: usize| {
-        let bytes = public.get(n..n + 4)?.try_into().ok()?;
-        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
-    };
-    let flag = |n: usize| public.get(n).map(|&b| b != 0);
+    let mut cur = crate::module::Cursor::new(public);
+    let [ms, feedback, detune, pitch, offset, cross] = cur.f32_array()?;
     Some(Psyche {
-        ms: f(0)?,
-        feedback: f(4)?,
-        detune: f(8)?,
-        pitch: f(12)?,
-        offset: f(16)?,
-        cross: f(20)?,
-        reverse_stereo: flag(24)?,
-        detune_stereo: flag(25)?,
-        reverse: flag(26)?,
-        beats: Some(f(27)?).filter(|&b| b > 0.0),
+        ms,
+        feedback,
+        detune,
+        pitch,
+        offset,
+        cross,
+        reverse_stereo: cur.bool()?,
+        detune_stereo: cur.bool()?,
+        reverse: cur.bool()?,
+        beats: Some(cur.f32()?).filter(|&b| b > 0.0),
     })
 }
 
@@ -85,25 +82,7 @@ pub fn saved(version: u16, public: &[u8]) -> Option<Psyche> {
 /// free (`0..=4`) or unused/out-of-range units.
 #[must_use]
 pub fn sync_unit_beats(unit: i32) -> Option<f32> {
-    const T: f32 = 2.0 / 3.0;
-    match unit {
-        5 => Some(4.0),
-        6 => Some(4.0 * T),
-        7 => Some(2.0),
-        8 => Some(2.0 * T),
-        9 => Some(1.0),
-        10 => Some(T),
-        12 => Some(0.5),
-        13 => Some(0.5 * T),
-        15 => Some(0.25),
-        16 => Some(0.25 * T),
-        17 => Some(0.125),
-        18 => Some(0.125 * T),
-        19 => Some(0.0625),
-        20 => Some(0.0625 * T),
-        21 => Some(1.0 / 64.0),
-        _ => None,
-    }
+    crate::module::sync_beats(unit)
 }
 
 /// Inverse of [`sync_unit_beats`]: maps a saved beat duration back to its
@@ -220,28 +199,25 @@ pub fn model(p: Psyche) -> ir::KnobModel {
 /// `fx_raum_delight_psyche_vibrato_phasis_replika.tsv`).
 #[must_use]
 pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 10] {
-    use ir::KnobTarget::Slot;
-    use ir::SlotKnob::Knob;
-    let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
-    let raw = || ir::Law::Linear { lo: 0.0, hi: 1e6 };
+    use crate::module::{RAW_LAW, UNIT_LAW, knob_row};
     [
-        (
+        knob_row(
             "$ENGINE_PAR_PSYDL_TIME",
-            Slot(Knob(0)),
+            0,
             ir::Law::Linear {
                 lo: 0.0,
                 hi: LONGEST_MS,
             },
         ),
-        ("$ENGINE_PAR_PSYDL_FEEDBACK", Slot(Knob(1)), unit()),
-        ("$ENGINE_PAR_PSYDL_DETUNE", Slot(Knob(2)), unit()),
-        ("$ENGINE_PAR_PSYDL_PITCH", Slot(Knob(3)), unit()),
-        ("$ENGINE_PAR_PSYDL_LR_OFFSET", Slot(Knob(4)), unit()),
-        ("$ENGINE_PAR_PSYDL_CROSS_FEEDBACK", Slot(Knob(5)), unit()),
-        ("$ENGINE_PAR_PSYDL_REVERSE_STEREO", Slot(Knob(6)), raw()),
-        ("$ENGINE_PAR_PSYDL_DETUNE_STEREO", Slot(Knob(7)), raw()),
-        ("$ENGINE_PAR_PSYDL_REVERSE", Slot(Knob(8)), raw()),
-        ("$ENGINE_PAR_PSYDL_TIME_UNIT", Slot(Knob(9)), raw()),
+        knob_row("$ENGINE_PAR_PSYDL_FEEDBACK", 1, UNIT_LAW),
+        knob_row("$ENGINE_PAR_PSYDL_DETUNE", 2, UNIT_LAW),
+        knob_row("$ENGINE_PAR_PSYDL_PITCH", 3, UNIT_LAW),
+        knob_row("$ENGINE_PAR_PSYDL_LR_OFFSET", 4, UNIT_LAW),
+        knob_row("$ENGINE_PAR_PSYDL_CROSS_FEEDBACK", 5, UNIT_LAW),
+        knob_row("$ENGINE_PAR_PSYDL_REVERSE_STEREO", 6, RAW_LAW),
+        knob_row("$ENGINE_PAR_PSYDL_DETUNE_STEREO", 7, RAW_LAW),
+        knob_row("$ENGINE_PAR_PSYDL_REVERSE", 8, RAW_LAW),
+        knob_row("$ENGINE_PAR_PSYDL_TIME_UNIT", 9, RAW_LAW),
     ]
 }
 

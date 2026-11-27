@@ -5,7 +5,7 @@
 
 use kontra_ir as ir;
 
-use crate::module::{MixMode, Module, f32_le, ids};
+use crate::module::{Cursor, MixMode, Module, ids};
 
 /// Saved fields in record order.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -21,11 +21,9 @@ pub fn saved(version: u16, public: &[u8]) -> Option<CoreCell> {
     if version != 0x51 {
         return None;
     }
-    let mut params = [0.0f32; 10];
-    for (i, slot) in params.iter_mut().enumerate() {
-        *slot = f32_le(public, i * 4)?;
-    }
-    Some(CoreCell { params })
+    Some(CoreCell {
+        params: Cursor::new(public).f32_array()?,
+    })
 }
 
 /// Physical IR effect matching Kontakt's zeroed-output Core Cell placeholder.

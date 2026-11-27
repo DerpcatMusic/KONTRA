@@ -47,10 +47,11 @@ pub struct Strip {
     pub shaper: crate::Shaper,
 }
 
-/// What a compressor's level detector reads.
+/// What a compressor's level detector reads and how its gain-reduction
+/// transfer curve and ballistics behave.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Detector {
-    /// The input (feed-forward).
+    /// The input (feed-forward peak with soft knee).
     Input,
     /// Its own output (feedback).
     Output,
@@ -59,6 +60,13 @@ pub enum Detector {
     /// hold falls by the release while nothing retriggers it. Linked, the
     /// channels' mean triggers both. No knee.
     Trigger,
+    /// 8-segment piecewise linear transfer curve with 2-state attack
+    /// recurrence, decaying peak hold, and signed-mean stereo link.
+    Enhanced,
+    /// Bus VCA hybrid RMS/peak detector with `ln(0.8)` time-constant law,
+    /// signed-mean stereo link, 2 dB soft knee, and optional dual-stage
+    /// program-dependent auto-release.
+    Bus { auto_release: bool },
 }
 
 /// A transient shaper: a gain in dB from its attack and sustain envelopes.

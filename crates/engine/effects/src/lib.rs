@@ -5,11 +5,6 @@
 
 mod ensemble;
 pub mod matrix;
-/// Standalone, allocation-free Kontakt L4 DSP cores (`EnhancedCompressor`,
-/// `SolidBusComp`, `SolidPassFilters`, `StereoModeller`). Rack/translator
-/// integration for `StereoModeller` pseudo-stereo lands with the Wave 2A
-/// `Module` table; presets continue emitting the diagnostic until wired.
-pub mod measured_dsp;
 pub mod processors;
 mod response;
 pub mod summed;

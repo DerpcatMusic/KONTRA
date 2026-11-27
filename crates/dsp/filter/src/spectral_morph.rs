@@ -4,8 +4,6 @@
 //! profiles controlled by `morph` (`0..=1`) and depth `amount` (`0..=1`).
 //! Pre-allocated, zero heap allocations on the audio thread, denormal-safe.
 
-use std::f64::consts::TAU;
-
 use kontra_dsp_core::Biquad;
 
 /// Physical settings for [`SpectralMorph`].
@@ -134,34 +132,12 @@ const BANKS: [[[[f32; 3]; 4]; 4]; 4] = [
     ],
 ];
 
-fn peak(hz: f32, q: f32, gain_db: f32, rate: u32) -> Biquad {
-    let r = f64::from(rate.max(1));
-    let f = f64::from(hz).clamp(20.0, 0.45 * r);
-    let w = TAU * f / r;
-    let a = 10.0f64.powf(f64::from(gain_db) / 40.0);
-    let alpha = w.sin() / (2.0 * f64::from(q).max(0.15));
-    let cos_w = w.cos();
-    Biquad::new([
-        1.0 + alpha * a,
-        -2.0 * cos_w,
-        1.0 - alpha * a,
-        1.0 + alpha / a,
-        -2.0 * cos_w,
-        1.0 - alpha / a,
-    ])
-}
+use kontra_dsp_core::peak;
 
-#[inline]
-fn flush32(x: f32) -> f32 {
-    if x.abs() < 1e-20 || !x.is_finite() {
-        0.0
-    } else {
-        x
-    }
-}
+use kontra_dsp_core::flush_f32 as flush32;
 
 /// Dynamic spectral/formant morphing filter.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SpectralMorph {
     s: SpectralMorphSettings,
     rate: u32,
@@ -189,6 +165,13 @@ impl SpectralMorph {
     pub fn set(&mut self, s: SpectralMorphSettings) {
         self.s = s;
         self.retune(s);
+    }
+
+    pub fn reset(&mut self) {
+        for band in &mut self.bands {
+            band.reset();
+        }
+        self.amount_cur = self.s.amount.clamp(0.0, 1.0);
     }
 
     fn retune(&mut self, s: SpectralMorphSettings) {

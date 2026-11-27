@@ -6,59 +6,14 @@ use crate::Settings;
 use crate::fade::flush;
 use crate::fdn::{MAX_PREDELAY_MS, MAX_SIZE};
 use crate::resample::{BLOCK, Pair};
+use kontra_dsp_core::DelayLine;
 use kontra_law::{NETWORK_LINES as LINES, ReverbNetwork};
 use std::f64::consts::PI;
 
 mod span;
 
-/// A power-of-two ring; reads past its length wrap.
-struct Ring {
-    buf: Box<[f32]>,
-    mask: usize,
-}
-
-impl Ring {
-    /// Not real-time: allocates.
-    fn new(min_len: usize) -> Self {
-        let n = min_len.next_power_of_two().max(2);
-        Self {
-            buf: vec![0.0; n].into(),
-            mask: n - 1,
-        }
-    }
-
-    /// The frame written `k` frames before `w`.
-    fn at(&self, w: usize, k: usize) -> f32 {
-        self.buf
-            .get(w.wrapping_sub(k) & self.mask)
-            .copied()
-            .unwrap_or(0.0)
-    }
-
-    fn put(&mut self, w: usize, v: f32) {
-        if let Some(s) = self.buf.get_mut(w & self.mask) {
-            *s = v;
-        }
-    }
-
-    fn add(&mut self, w: usize, v: f32) {
-        if let Some(s) = self.buf.get_mut(w & self.mask) {
-            *s += v;
-        }
-    }
-
-    /// `(1 − f)·x[w − i] + f·x[w − i − 1]`, `d = i + f`.
-    fn weighted(&self, w: usize, d: f32) -> f32 {
-        // As `d as usize`, through the cheaper signed conversion.
-        let i = (d as i32).max(0);
-        let f = d - i as f32;
-        let i = i as usize;
-        (1.0 - f) * self.at(w, i) + f * self.at(w, i + 1)
-    }
-}
-
 struct Line {
-    ring: Ring,
+    ring: DelayLine,
     /// Read delay before modulation, and the swing; `sin` picks the
     /// phasor's sine over its cosine.
     base: f32,
@@ -75,7 +30,7 @@ struct Line {
 
 /// Three delays coupled by a fixed matrix: an allpass of gain `p`.
 struct Unit {
-    rings: [Ring; 3],
+    rings: [DelayLine; 3],
     d: [usize; 3],
     z: [f32; 3],
     m: [f32; 9],
@@ -96,8 +51,8 @@ impl Unit {
         for (z, ((ring, d), [a, b, c, e])) in self.z.iter_mut().zip(next) {
             let v = flush(a * z0 + b * z1 + c * z2 + e * x);
             *written = written.max(v.abs());
-            ring.put(w, v);
-            *z = ring.at(w.wrapping_add(1), d);
+            ring.write_at(w, v);
+            *z = ring.read_offset_at(w.wrapping_add(1), d);
         }
         y
     }
@@ -189,7 +144,7 @@ pub struct Network {
     mean: f32,
     half: f32,
     inject_offset: usize,
-    pre: [Ring; 2],
+    pre: [DelayLine; 2],
     predelay: [f32; 2],
     taps: [[(u8, f32); 8]; 2],
     units: [[Unit; 4]; 2],
@@ -223,7 +178,7 @@ impl Network {
         let lines = longest
             .iter()
             .map(|&len| Line {
-                ring: Ring::new(len as usize),
+                ring: DelayLine::exact_pow2(len as usize),
                 base: 0.0,
                 depth: 0.0,
                 sin: false,
@@ -237,7 +192,7 @@ impl Network {
         let spread = longest.iter().max().copied().unwrap_or(0) as f32;
         let pre = MAX_PREDELAY_MS * 0.001 * law.rate + spread + 2.0;
         let unit = |d: [u16; 3]| Unit {
-            rings: d.map(|n| Ring::new(usize::from(n) + 1)),
+            rings: d.map(|n| DelayLine::exact_pow2(usize::from(n) + 1)),
             d: d.map(usize::from),
             z: [0.0; 3],
             m: [0.0; 9],
@@ -267,7 +222,10 @@ impl Network {
             mean: (a + b) * 0.5,
             half: (a - b) * 0.5,
             inject_offset: 0,
-            pre: [Ring::new(pre as usize), Ring::new(pre as usize)],
+            pre: [
+                DelayLine::exact_pow2(pre as usize),
+                DelayLine::exact_pow2(pre as usize),
+            ],
             predelay: [0.0; 2],
             taps: [[(0, 0.0); 8]; 2],
             units: [law.units.map(unit), law.units.map(unit)],
@@ -482,7 +440,7 @@ impl Network {
     /// predelay, the longest line and the allpass units, at the host rate.
     #[must_use]
     pub fn memory(&self) -> usize {
-        let len = |r: &Ring| r.buf.len();
+        let len = DelayLine::capacity;
         let pre = self.pre.iter().map(len).max().unwrap_or(0);
         let line = self.lines.iter().map(|l| len(&l.ring)).max().unwrap_or(0);
         let units: usize = (self.units.iter().flatten())
@@ -555,8 +513,8 @@ impl Network {
             .zip(&mut self.pre)
             .zip(input.into_iter().zip(self.predelay))
         {
-            ring.put(w, v);
-            *x = ring.weighted(w, d);
+            ring.write_at(w, v);
+            *x = ring.read_linear_at(w, d.max(0.0));
         }
         // Read and damp every line, then feed the matrix back.
         let mut t = [0f32; 32];
@@ -564,7 +522,7 @@ impl Network {
         for (line, &col) in self.lines.iter_mut().zip(&self.col) {
             let swing = if line.sin { lfo[1] } else { lfo[0] };
             let d = swing * line.depth + line.base;
-            let read = line.ring.weighted(w, d);
+            let read = line.ring.read_linear_at(w, d.max(0.0));
             line.v = read * line.a + line.b * line.v;
             if let Some(slot) = t.get_mut(usize::from(col) & 31) {
                 *slot = line.v;
@@ -581,10 +539,10 @@ impl Network {
             if u.abs() > written {
                 written = u.abs();
             }
-            line.ring.put(w, u);
+            line.ring.write_at(w, u);
             if line.inject != 0.0 {
                 line.ring
-                    .add(at, if line.right { x[1] } else { x[0] } * line.inject);
+                    .add_at(at, if line.right { x[1] } else { x[0] } * line.inject);
             }
         }
         self.written = written;

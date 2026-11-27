@@ -7,10 +7,36 @@ mod follower;
 mod limiter;
 mod transient;
 
-pub use compressor::{Compressor, Detector, Settings as CompressorSettings};
+pub use compressor::{Compressor, Detector, Settings as CompressorSettings, bus_coeff};
 pub use follower::{EnvelopeFollower, Settings as EnvelopeFollowerSettings};
 pub use limiter::{Limiter, Settings as LimiterSettings};
 pub use transient::{Settings as TransientSettings, Transient};
+
+/// Unified static-dispatch dynamics processor covering compressors (all 5
+/// detector/ballistic laws), peak/lookahead limiters, and transient shapers.
+pub enum Dynamics {
+    Compressor(Box<Compressor>, u32),
+    Limiter(Box<Limiter>, u32),
+    Transient(Box<Transient>),
+}
+
+impl Dynamics {
+    pub fn process(&mut self, io: &mut [[f32; 2]]) {
+        match self {
+            Self::Compressor(c, _) => c.process(io),
+            Self::Limiter(l, _) => l.process(io),
+            Self::Transient(t) => t.process(io),
+        }
+    }
+
+    pub fn process_sidechain(&mut self, io: &mut [[f32; 2]], key: &[[f32; 2]]) {
+        match self {
+            Self::Compressor(c, _) => c.process_sidechain(io, key),
+            Self::Limiter(l, _) => l.process(io),
+            Self::Transient(t) => t.process(io),
+        }
+    }
+}
 
 /// `db` as a linear gain.
 #[inline]

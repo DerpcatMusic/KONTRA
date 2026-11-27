@@ -13,15 +13,15 @@
 use std::sync::Arc;
 
 use kontra_dsp::delay::{Comb, line_frames};
-use kontra_dsp::drive::{Core, Crush, Outer, Overdrive};
-use kontra_dsp::filter::{Clocked, ClockedShape, Formant, Svf, VowelSet, Vowels};
+use kontra_dsp::drive::{ColorSat, Core, Crush, Outer, Overdrive};
+use kontra_dsp::dynamics::Compressor;
+use kontra_dsp::filter::{Clocked, ClockedShape, Formant, SpectralMorph, Svf, Wah};
+use kontra_effects::processors::{
+    color_sat, compressor, reduction, shaper, spectral_morph, voicing, wah,
+};
+use kontra_effects::summed::{VoiceEq, shape, vowels};
 use kontra_ir as ir;
 use kontra_plan::route_depth;
-
-use kontra_dsp::dynamics::Compressor;
-use kontra_effects::processors::{compressor, reduction, shaper, voicing};
-
-use kontra_effects::summed::{VoiceEq, shape};
 
 /// ponytail: the lowest damping (`1/Q`) a resonance route may reach; the
 /// stages go unstable below it.
@@ -68,11 +68,14 @@ pub enum Kind {
     Clocked(Clocked),
     Eq(VoiceEq),
     Formant(Formant),
+    Wah(Wah),
+    SpectralMorph(SpectralMorph),
     Shaper(Core),
     /// A compressor into a shaper's core ([`ir::Strip`]).
     Strip(Compressor, Core),
     Crush(Crush),
     Overdrive(Overdrive),
+    ColorSat(ColorSat),
     Comb(Comb),
     /// A stateless 2×2 gain/pan/stereo/invert slot that cannot commute past a
     /// drive effect into the voice's amp matrix; its matrix is read live from
@@ -87,6 +90,7 @@ fn is_drive(kind: &ir::EffectKind) -> bool {
             | ir::EffectKind::Strip(_)
             | ir::EffectKind::Crush(_)
             | ir::EffectKind::Overdrive(_)
+            | ir::EffectKind::ColorSat(_)
             | ir::EffectKind::Comb(_)
     )
 }
@@ -122,25 +126,23 @@ fn unit(kind: &ir::EffectKind, rate: u32) -> Option<(Kind, Outer)> {
             Kind::Clocked(Clocked::new(shape, [c.cutoff, c.resonance], rate))
         }
         ir::EffectKind::Eq(bells) => Kind::Eq(VoiceEq::new(*bells, rate)),
+        ir::EffectKind::EqPass {
+            bands,
+            hp_hz,
+            lp_hz,
+        } => Kind::Eq(VoiceEq::with_pass(*bands, *hp_hz, *lp_hz, rate)),
         ir::EffectKind::Formant(f) => Kind::Formant(Formant::new(vowels(*f), rate)),
+        ir::EffectKind::Wah(w) => Kind::Wah(Wah::new(wah(*w), rate)),
+        ir::EffectKind::SpectralMorph(m) => {
+            Kind::SpectralMorph(SpectralMorph::new(spectral_morph(*m), rate))
+        }
         ir::EffectKind::Crush(c) => Kind::Crush(Crush::new(reduction(*c, rate), 1)),
         ir::EffectKind::Overdrive(o) => Kind::Overdrive(Overdrive::new(voicing(o), rate)),
+        ir::EffectKind::ColorSat(c) => Kind::ColorSat(ColorSat::new(color_sat(*c), rate)),
         ir::EffectKind::Comb(c) => Kind::Comb(Comb::new(c.hz, c.feedback, c.forward, rate)),
         _ => return None,
     };
     Some((kind, Outer::empty()))
-}
-
-fn vowels(f: ir::Formant) -> Vowels {
-    Vowels {
-        talk: f.talk,
-        sharp: f.sharp,
-        size: f.size,
-        set: match f.set {
-            ir::VowelSet::First => VowelSet::First,
-            ir::VowelSet::Second => VowelSet::Second,
-        },
-    }
 }
 
 /// A group's per-voice units in slot order; empty when all of it is shared.
@@ -259,6 +261,8 @@ pub fn process(
                 Kind::Clocked(c) => c.process(chunk),
                 Kind::Eq(q) => q.process(chunk),
                 Kind::Formant(f) => f.process(chunk),
+                Kind::Wah(w) => drive(chunk, spare, e, |io| w.process(io)),
+                Kind::SpectralMorph(m) => drive(chunk, spare, e, |io| m.process(io)),
                 Kind::Shaper(s) => drive(chunk, spare, e, |io| {
                     u.outer.before(io);
                     s.process(io);
@@ -272,6 +276,7 @@ pub fn process(
                 }),
                 Kind::Crush(c) => drive(chunk, spare, e, |io| c.process(io)),
                 Kind::Overdrive(o) => drive(chunk, spare, e, |io| o.process(io)),
+                Kind::ColorSat(c) => drive(chunk, spare, e, |io| c.process(io)),
                 Kind::Comb(c) => {
                     let line = lines.get_mut(u.line * each..(u.line + 1) * each);
                     drive(chunk, spare, e, |io| {
@@ -351,8 +356,23 @@ fn tune(kind: &mut Kind, outer: &mut Outer, t: Tune<'_>, rate: u32) {
         }
         (Kind::Clocked(c), Tune::Clocked(knobs)) => c.set(knobs),
         (Kind::Eq(q), Tune::Eq(bells)) => q.retune(bells, rate),
+        (Kind::Eq(q), Tune::EqPass(bells, hp_hz, lp_hz)) => {
+            q.retune_pass(bells, hp_hz, lp_hz, rate);
+        }
+        (
+            Kind::Eq(q),
+            Tune::Effect(ir::EffectKind::EqPass {
+                bands,
+                hp_hz,
+                lp_hz,
+            }),
+        ) => q.retune_pass(*bands, *hp_hz, *lp_hz, rate),
         (Kind::Comb(c), Tune::Comb(hz, feedback)) => c.set(hz, feedback, rate),
         (Kind::Formant(f), Tune::Effect(ir::EffectKind::Formant(v))) => f.set(vowels(*v), rate),
+        (Kind::Wah(w), Tune::Effect(ir::EffectKind::Wah(v))) => w.set(wah(*v)),
+        (Kind::SpectralMorph(m), Tune::Effect(ir::EffectKind::SpectralMorph(v))) => {
+            m.set(spectral_morph(*v));
+        }
         (Kind::Shaper(s), Tune::Effect(ir::EffectKind::Shaper(v))) => {
             let new = shaper(v, rate);
             s.retune(&new.core);
@@ -367,6 +387,7 @@ fn tune(kind: &mut Kind, outer: &mut Outer, t: Tune<'_>, rate: u32) {
         }
         (Kind::Crush(c), Tune::Effect(ir::EffectKind::Crush(v))) => c.set(reduction(*v, rate)),
         (Kind::Overdrive(o), Tune::Effect(ir::EffectKind::Overdrive(v))) => o.set(voicing(v), rate),
+        (Kind::ColorSat(c), Tune::Effect(ir::EffectKind::ColorSat(v))) => c.set(color_sat(*v)),
         _ => {}
     }
 }
@@ -376,6 +397,7 @@ pub enum Tune<'a> {
     Filter(f32, [f32; 3]),
     Clocked([f32; 2]),
     Eq([ir::Bell; 4]),
+    EqPass([ir::Bell; 4], Option<f32>, Option<f32>),
     /// A comb's pitch in Hz and feedback.
     Comb(f32, f32),
     /// Borrowed: an effect's settings outweigh the other moves.
@@ -520,5 +542,98 @@ mod tests {
             r0 > 0.1 && r1 > 0.1 && (r0 - r1).abs() > 1e-3,
             "{r0} vs {r1}"
         );
+    }
+
+    #[test]
+    fn voice_rack_runs_eq_pass_wah_spectral_morph_and_color_sat_per_voice() {
+        let rate = 48_000;
+        let mut g = kontra_plan::Group::standard();
+        g.inserts = vec![
+            Some(ir::Effect {
+                kind: ir::EffectKind::EqPass {
+                    bands: [ir::Bell::FLAT; 4],
+                    hp_hz: Some(250.0),
+                    lp_hz: Some(6_000.0),
+                },
+                bypass: false,
+                output: 1.0,
+                dry: 0.0,
+            }),
+            Some(ir::Effect {
+                kind: ir::EffectKind::Wah(ir::Wah {
+                    peak_hz: 1200.0,
+                    peak_q: 4.0,
+                    peak_gain: 2.0,
+                    low_hz: 200.0,
+                    low_gain: 0.5,
+                    mid_hz: 1500.0,
+                    mid_gain: 0.2,
+                    high_hz: 3200.0,
+                    high_gain: 4.0,
+                    mono: false,
+                }),
+                bypass: false,
+                output: 1.0,
+                dry: 0.0,
+            }),
+            Some(ir::Effect {
+                kind: ir::EffectKind::SpectralMorph(ir::SpectralMorph {
+                    morph: 0.5,
+                    amount: 0.8,
+                    bank: 0,
+                    tracking: false,
+                }),
+                bypass: false,
+                output: 1.0,
+                dry: 0.0,
+            }),
+            Some(ir::Effect {
+                kind: ir::EffectKind::ColorSat(ir::ColorSat {
+                    character: 2,
+                    drive: 0.7,
+                    boost: false,
+                    boost_db: 0.0,
+                    bass_saver: 0.2,
+                    lpf_hz: 16_000.0,
+                    hpf_hz: 40.0,
+                    bass_db: 0.0,
+                    mid_db: 0.0,
+                    mid_hz: 1000.0,
+                    mid_q: 1.0,
+                    treble_db: 0.0,
+                    mix: 1.0,
+                }),
+                bypass: false,
+                output: 1.0,
+                dry: 0.0,
+            }),
+        ];
+        let tmpl = template(&g, rate);
+        assert_eq!(
+            tmpl.len(),
+            4,
+            "all 4 slots up to ColorSat must run per-voice"
+        );
+        assert!(matches!(tmpl.first().map(|u| &u.kind), Some(Kind::Eq(_))));
+        assert!(matches!(tmpl.get(1).map(|u| &u.kind), Some(Kind::Wah(_))));
+        assert!(matches!(
+            tmpl.get(2).map(|u| &u.kind),
+            Some(Kind::SpectralMorph(_))
+        ));
+        assert!(matches!(
+            tmpl.get(3).map(|u| &u.kind),
+            Some(Kind::ColorSat(_))
+        ));
+        assert_eq!(crate::group_racks::split(&g, &tmpl), None);
+
+        let mut rack: Vec<Unit> = tmpl.iter().cloned().collect();
+        let mut spare = vec![[0.0; 2]; 256];
+        let mut io: Vec<[f32; 2]> = (0..256)
+            .map(|i| [(std::f32::consts::TAU * 440.0 * i as f32 / rate as f32).sin() * 0.4; 2])
+            .collect();
+        let dry = io.clone();
+        process(&mut rack, &g.inserts, &mut io, &mut spare, &mut [], rate);
+        assert!(io.iter().flatten().all(|v| v.is_finite()));
+        assert_ne!(io, dry);
     }
 }

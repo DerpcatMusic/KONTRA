@@ -1,5 +1,6 @@
-//! Each slot's processor from its IR effect: the wet processors (reverbs,
-//! delays, dynamics, drives, a cascade) and the summed EQ and filter stages,
+//! Each slot's processor from its IR effect: static-dispatch [`DspUnit`]
+//! (built on unified [`Space`], [`Dynamics`], [`Drive`], filter, and time-mod
+//! families — zero trait-object dispatch) and the summed EQ/filter stages,
 //! with their settings in DSP terms. Not real-time unless a function says so.
 
 use kontra_dsp::delay::{
@@ -10,24 +11,36 @@ use kontra_dsp::delay::{
 };
 use kontra_dsp::drive::{
     self, AmpStack, AmpStackSettings, AmpVoicing, Cabinet, CabinetSettings, Circuit, Clipper,
-    ColorSat, ColorSatSettings, Converter, Crush, Overdrive, Reduction, Shaper, Voicing,
+    ColorSat, ColorSatSettings, Converter, Crush, Drive, Overdrive, Reduction, Shaper, Voicing,
 };
 use kontra_dsp::dynamics::{
-    Compressor, CompressorSettings, Detector, Limiter, LimiterSettings, Transient,
+    Compressor, CompressorSettings, Detector, Dynamics, Limiter, LimiterSettings, Transient,
     TransientSettings,
 };
 use kontra_dsp::filter::{
     Cascade, CascadeSettings, CascadeStage, Clocked, ClockedShape, NotchSettings, Notches,
     SpectralMorph, SpectralMorphSettings, Svf, Wah, WahSettings,
 };
-use kontra_dsp::reverb::{Combs, Convolver, Fdn, Hadamard, Network, Plate, Settings};
+use kontra_dsp::reverb::{Convolver, Settings, Space};
 use kontra_dsp::spatial::{
     Ring, RingMod, RingSource, Rotary, RotarySettings, StereoDetune, StereoDetuneSettings,
 };
 use kontra_ir as ir;
 use kontra_voice::Gain;
 
+use crate::ensemble::Ensemble;
 use crate::{MAX_SPAN, Response, matrix as effects, summed as filters};
+
+/// Copies matching fields from an IR settings struct into its DSP counterpart,
+/// with optional computed overrides placed before `;`.
+macro_rules! map_fields {
+    ($src:ident => $($Dst:ident)::+ { $( $k:ident : $v:expr ),+ $(,)? ; $( $f:ident ),* $(,)? }) => {
+        $($Dst)::+ { $( $k: $v, )+ $( $f: $src.$f, )* }
+    };
+    ($src:ident => $($Dst:ident)::+ { $( $f:ident ),* $(,)? }) => {
+        $($Dst)::+ { $( $f: $src.$f, )* }
+    };
+}
 
 pub enum Dsp {
     None,
@@ -37,479 +50,222 @@ pub enum Dsp {
     /// A filter, following its slot each span (a script may move or
     /// reshape it).
     Filter(Box<Svf>),
-    /// A wet path (convolver or reverb) and a span of its output.
-    Wet(Box<dyn Wet>, Box<[[f32; 2]]>),
+    /// A wet path (static-dispatch [`DspUnit`]) and a span of its output.
+    Wet(DspUnit, Box<[[f32; 2]]>),
 }
 
-/// A processor whose span replaces the slot's output; the slot's dry level
-/// mixes the input back.
-pub trait Wet: Send {
-    fn process(&mut self, io: &mut [[f32; 2]]);
+/// Static-dispatch wet DSP processor for audio-thread slot execution.
+/// Large processors are boxed inside their variants so `DspUnit` stays small
+/// while eliminating all vtable indirection on the audio thread.
+pub enum DspUnit {
+    Space(Space),
+    Dynamics(Dynamics),
+    Drive(Drive),
+    /// [`ir::Strip`]: a compressor into a waveshaper, and the rate both retune
+    /// at. Accepts a plain shaper's settings too (its compressor then passes).
+    Strip(Box<Compressor>, Box<Shaper>, u32),
+    Cascade(Box<Cascade>),
+    Clocked(Box<Clocked>),
+    Notches(Box<Notches>),
+    Wah(Box<Wah>),
+    SpectralMorph(Box<SpectralMorph>),
+    ModDelay(Box<ModDelay>),
+    DualDelay(Box<DualDelay>),
+    Scanner(Box<Scanner>),
+    Shifter(Box<Shifter>),
+    Phaser(Box<Phaser>),
+    Ensemble(Box<Ensemble>),
+    CombBank(Box<CombBank>),
+    Ring(Box<Ring>, u32),
+    Rotary(Box<Rotary>),
+    StereoDetune(Box<StereoDetune>),
+    Gater(Box<Gater>),
+    BeatMasher(Box<BeatMasher>),
+    BeatSlicer(Box<BeatSlicer>),
+    ReverseGrain(Box<ReverseGrain>),
+    TransposeStretch(Box<TransposeStretch>),
+}
+
+impl DspUnit {
+    pub fn process(&mut self, io: &mut [[f32; 2]]) {
+        match self {
+            Self::Space(u) => u.process(io),
+            Self::Dynamics(u) => u.process(io),
+            Self::Drive(u) => u.process(io),
+            Self::Strip(c, s, _) => {
+                c.process(io);
+                s.process(io);
+            }
+            Self::Cascade(u) => u.process(io),
+            Self::Clocked(u) => u.process(io),
+            Self::Notches(u) => u.process(io),
+            Self::Wah(u) => u.process(io),
+            Self::SpectralMorph(u) => u.process(io),
+            Self::ModDelay(u) => u.process(io),
+            Self::DualDelay(u) => u.process(io),
+            Self::Scanner(u) => u.process(io),
+            Self::Shifter(u) => u.process(io),
+            Self::Phaser(u) => u.process(io),
+            Self::Ensemble(u) => u.process(io),
+            Self::CombBank(u) => u.process(io),
+            Self::Ring(u, _) => u.process(io),
+            Self::Rotary(u) => u.process(io),
+            Self::StereoDetune(u) => u.process(io),
+            Self::Gater(u) => u.process(io),
+            Self::BeatMasher(u) => u.process(io),
+            Self::BeatSlicer(u) => u.process(io),
+            Self::ReverseGrain(u) => u.process(io),
+            Self::TransposeStretch(u) => u.process(io),
+        }
+    }
+
     /// Processes `io` using an external sidechain `key` signal for detection.
-    /// Non-sidechain processors ignore `key` and run [`Wet::process`].
-    fn process_sidechain(&mut self, io: &mut [[f32; 2]], _key: &[[f32; 2]]) {
-        self.process(io);
-    }
-    /// The slot's settings as scripts left them, at the host's tempo,
-    /// before each block. Never allocates.
-    fn set(&mut self, _kind: &ir::EffectKind, _tempo: f32) {}
-    /// Frames after which silent input leaves it silent, once nothing
-    /// louder than silence went into its state for as long; `None`: it
-    /// always runs.
-    fn memory(&self) -> Option<usize> {
-        None
-    }
-    /// The loudest value the last [`Wet::process`] wrote into its state
-    /// (its lines, rings and filters), heard or not: a muted output may
-    /// hide a tail a later setting lets out.
-    fn written(&self) -> f32 {
-        0.0
-    }
-    /// `silence.len()` silent frames pass unprocessed: its clocks (an LFO,
-    /// a glide) move on as [`Wet::process`] would move them. `silence` is
-    /// scratch. Only called on processors with a [`Wet::memory`].
-    fn idle(&mut self, _silence: &mut [[f32; 2]]) {}
-    /// Whether its input gains are all 0, so its input reaches neither its
-    /// state nor its output: the slot hears it as silence.
-    fn deaf(&self) -> bool {
-        false
-    }
-}
-
-impl Wet for Convolver {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        Convolver::process(self, io);
-    }
-
-    // No clocks and no feedback: its state is its last `taps` inputs (and
-    // the sums made of them), so silent input alone settles it; the slot's
-    // output gain sits after it, in the rack. `written` stays 0.
-    fn memory(&self) -> Option<usize> {
-        Some(self.taps())
-    }
-}
-
-// Dynamics follow their slot each span: a script may move any setting
-// (Una Corda's compressor amount and transient knobs).
-impl Wet for Rated<Compressor> {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        self.0.process(io);
-    }
-
-    fn process_sidechain(&mut self, io: &mut [[f32; 2]], key: &[[f32; 2]]) {
-        self.0.process_sidechain(io, key);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::Compressor(c) = kind {
-            self.0.set(compressor(*c), self.1);
-        }
-    }
-}
-
-impl Wet for Rated<Limiter> {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        self.0.process(io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::Limiter(l) = kind {
-            self.0.set(limiter(*l), self.1);
-        }
-    }
-}
-
-impl Wet for Transient {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        Transient::process(self, io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::Transient(t) = kind {
-            Transient::set(self, transient(*t));
-        }
-    }
-}
-
-impl Wet for Cascade {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        Cascade::process(self, io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::Cascade(c) = kind {
-            Cascade::set(self, cascade(*c));
-        }
-    }
-}
-
-impl Wet for Clocked {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        Clocked::process(self, io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::Clocked(c) = kind {
-            Clocked::set(self, [c.cutoff, c.resonance]);
-        }
-    }
-}
-
-impl Wet for Fdn {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        Fdn::process(self, io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::Reverb(r) = kind {
-            Fdn::set(self, settings(r));
-        }
-    }
-}
-
-impl Wet for Combs {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        Combs::process(self, io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::Reverb(r) = kind {
-            Combs::set(self, settings(r));
-        }
-    }
-}
-
-impl Wet for Hadamard {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        Hadamard::process(self, io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::Reverb(r) = kind {
-            Hadamard::set(self, settings(r));
-        }
-    }
-}
-
-impl Wet for Plate {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        Plate::process(self, io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::Reverb(r) = kind {
-            Plate::set(self, settings(r));
-        }
-    }
-}
-
-impl Wet for DualDelay {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        DualDelay::process(self, io);
-    }
-
-    fn memory(&self) -> Option<usize> {
-        Some(DualDelay::memory(self))
-    }
-
-    fn written(&self) -> f32 {
-        DualDelay::written(self)
-    }
-
-    fn idle(&mut self, silence: &mut [[f32; 2]]) {
-        DualDelay::idle(self, silence.len());
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
-        if let ir::EffectKind::DualDelay(d) = kind {
-            DualDelay::set(self, dual_delay(*d, tempo));
-        }
-    }
-}
-
-impl Wet for StereoDetune {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        StereoDetune::process(self, io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::StereoDetune(s) = kind {
-            StereoDetune::set(self, stereo_detune(*s));
-        }
-    }
-}
-
-impl Wet for Wah {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        Wah::process(self, io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::Wah(w) = kind {
-            Wah::set(self, wah(*w));
-        }
-    }
-}
-
-impl Wet for AmpStack {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        AmpStack::process(self, io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::AmpStack(a) = kind {
-            AmpStack::set(self, amp_stack(*a));
-        }
-    }
-}
-
-impl Wet for Cabinet {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        Cabinet::process(self, io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::Cabinet(c) = kind {
-            Cabinet::set(self, cabinet(*c));
-        }
-    }
-}
-
-impl Wet for ColorSat {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        ColorSat::process(self, io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::ColorSat(c) = kind {
-            ColorSat::set(self, color_sat(*c));
-        }
-    }
-}
-
-impl Wet for SpectralMorph {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        SpectralMorph::process(self, io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::SpectralMorph(m) = kind {
-            SpectralMorph::set(self, spectral_morph(*m));
-        }
-    }
-}
-
-impl Wet for Network {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        Network::process(self, io);
-    }
-
-    fn memory(&self) -> Option<usize> {
-        Some(Network::memory(self))
-    }
-
-    fn written(&self) -> f32 {
-        Network::written(self)
-    }
-
-    fn idle(&mut self, silence: &mut [[f32; 2]]) {
-        Network::idle(self, silence);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::Reverb(r) = kind {
-            Network::set(self, settings(r));
-        }
-    }
-}
-
-impl Wet for ModDelay {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        ModDelay::process(self, io);
-    }
-
-    fn memory(&self) -> Option<usize> {
-        Some(ModDelay::memory(self))
-    }
-
-    fn written(&self) -> f32 {
-        ModDelay::written(self)
-    }
-
-    fn idle(&mut self, silence: &mut [[f32; 2]]) {
-        ModDelay::idle(self, silence.len());
-    }
-
-    fn deaf(&self) -> bool {
-        ModDelay::deaf(self)
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
-        if let ir::EffectKind::Delay(d) = kind {
-            ModDelay::set(self, delay(d, tempo));
-        }
-    }
-}
-
-impl Wet for Scanner {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        Scanner::process(self, io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::Scanner(s) = kind {
-            Scanner::set(self, scanner(*s));
-        }
-    }
-}
-
-fn scanner(s: ir::Scanner) -> ScannerSettings {
-    ScannerSettings {
-        sections: usize::from(s.sections),
-        henry: s.henry,
-        farad: s.farad,
-        last_farad: s.last_farad,
-        load_ohm: s.load_ohm,
-        shunt_ohm: s.shunt_ohm,
-        taps: s.taps,
-        hz: s.hz,
-        lead: s.lead,
-        split_hz: s.split_hz,
-        high: s.high,
-        blend: s.blend,
-        mix: s.mix,
-    }
-}
-
-impl Wet for Shifter {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        Shifter::process(self, io);
-    }
-
-    fn memory(&self) -> Option<usize> {
-        Some(Shifter::memory(self))
-    }
-
-    fn written(&self) -> f32 {
-        Shifter::written(self)
-    }
-
-    fn idle(&mut self, silence: &mut [[f32; 2]]) {
-        Shifter::idle(self, silence);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
-        if let ir::EffectKind::Shifter(s) = kind {
-            Shifter::set(self, shifter(*s, tempo));
-        }
-    }
-}
-
-impl Wet for CombBank {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        CombBank::process(self, io);
-    }
-
-    fn memory(&self) -> Option<usize> {
-        Some(CombBank::memory(self))
-    }
-
-    fn written(&self) -> f32 {
-        CombBank::written(self)
-    }
-
-    fn idle(&mut self, silence: &mut [[f32; 2]]) {
-        CombBank::idle(self, silence.len());
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
-        if let ir::EffectKind::CombBank(c) = kind {
-            CombBank::set(self, comb_bank(*c, tempo));
-        }
-    }
-}
-
-impl Wet for Phaser {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        Phaser::process(self, io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
-        if let ir::EffectKind::Phaser(p) = kind {
-            Phaser::set(self, phaser(*p, tempo));
-        }
-    }
-}
-
-impl Wet for Notches {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        Notches::process(self, io);
-    }
-
-    fn memory(&self) -> Option<usize> {
-        Some(Notches::memory(self))
-    }
-
-    fn written(&self) -> f32 {
-        Notches::written(self)
-    }
-
-    fn idle(&mut self, silence: &mut [[f32; 2]]) {
-        Notches::idle(self, silence.len());
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
-        if let ir::EffectKind::Notches(n) = kind {
-            Notches::set(self, notches(*n, tempo));
-        }
-    }
-}
-
-impl Wet for Rated<Shaper> {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        self.0.process(io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        // A strip's compressor is lost on a slot built without one.
-        if let ir::EffectKind::Shaper(s) | ir::EffectKind::Strip(ir::Strip { shaper: s, .. }) = kind
-        {
-            self.0.retune(curve(&s.curve), tone(s), self.1);
+    /// Non-sidechain processors ignore `key` and run [`Self::process`].
+    pub fn process_sidechain(&mut self, io: &mut [[f32; 2]], key: &[[f32; 2]]) {
+        match self {
+            Self::Dynamics(u) => u.process_sidechain(io, key),
+            Self::Strip(c, s, _) => {
+                c.process_sidechain(io, key);
+                s.process(io);
+            }
+            _ => self.process(io),
         }
     }
 
-    // A memoryless curve between filters whose slowest pole (an 8 Hz
-    // one-pole high-pass) is down 120 dB after 0.28 s: silent input for a
-    // third of a second leaves it silent.
-    fn memory(&self) -> Option<usize> {
-        Some(self.1 as usize / 3)
+    /// Updates parameters from `kind` at `tempo` before a block. Never allocates.
+    pub fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
+        match (self, kind) {
+            (Self::Space(u), ir::EffectKind::Reverb(r)) => u.set(settings(r)),
+            (Self::Dynamics(Dynamics::Compressor(c, rate)), ir::EffectKind::Compressor(k)) => {
+                c.set(compressor(*k), *rate);
+            }
+            (Self::Dynamics(Dynamics::Limiter(l, rate)), ir::EffectKind::Limiter(k)) => {
+                l.set(limiter(*k), *rate);
+            }
+            (Self::Dynamics(Dynamics::Transient(t)), ir::EffectKind::Transient(k)) => {
+                t.set(transient(*k));
+            }
+            (
+                Self::Drive(Drive::Shaper(s, rate)),
+                ir::EffectKind::Shaper(k) | ir::EffectKind::Strip(ir::Strip { shaper: k, .. }),
+            ) => s.retune(curve(&k.curve), tone(k), *rate),
+            (Self::Drive(Drive::Overdrive(o, rate)), ir::EffectKind::Overdrive(k)) => {
+                o.set(voicing(k), *rate);
+            }
+            (Self::Drive(Drive::Crush(c, rate)), ir::EffectKind::Crush(k)) => {
+                c.set(reduction(*k, *rate));
+            }
+            (Self::Drive(Drive::AmpStack(a)), ir::EffectKind::AmpStack(k)) => a.set(amp_stack(*k)),
+            (Self::Drive(Drive::ColorSat(c)), ir::EffectKind::ColorSat(k)) => c.set(color_sat(*k)),
+            (Self::Drive(Drive::Cabinet(c)), ir::EffectKind::Cabinet(k)) => c.set(cabinet(*k)),
+            (
+                Self::Strip(c, s, rate),
+                ir::EffectKind::Strip(ir::Strip {
+                    compressor: ck,
+                    shaper: sk,
+                }),
+            ) => {
+                c.set(compressor(*ck), *rate);
+                s.retune(curve(&sk.curve), tone(sk), *rate);
+            }
+            (Self::Strip(c, s, rate), ir::EffectKind::Shaper(sk)) => {
+                c.set(compressor(PASS), *rate);
+                s.retune(curve(&sk.curve), tone(sk), *rate);
+            }
+            (Self::Cascade(u), ir::EffectKind::Cascade(k)) => u.set(cascade(*k)),
+            (Self::Clocked(u), ir::EffectKind::Clocked(k)) => u.set([k.cutoff, k.resonance]),
+            (Self::Notches(u), ir::EffectKind::Notches(k)) => u.set(notches(*k, tempo)),
+            (Self::Wah(u), ir::EffectKind::Wah(k)) => u.set(wah(*k)),
+            (Self::SpectralMorph(u), ir::EffectKind::SpectralMorph(k)) => {
+                u.set(spectral_morph(*k));
+            }
+            (Self::ModDelay(u), ir::EffectKind::Delay(k)) => u.set(delay(k, tempo)),
+            (Self::DualDelay(u), ir::EffectKind::DualDelay(k)) => u.set(dual_delay(*k, tempo)),
+            (Self::Scanner(u), ir::EffectKind::Scanner(k)) => u.set(scanner(*k)),
+            (Self::Shifter(u), ir::EffectKind::Shifter(k)) => u.set(shifter(*k, tempo)),
+            (Self::Phaser(u), ir::EffectKind::Phaser(k)) => u.set(phaser(*k, tempo)),
+            (Self::Ensemble(u), kind @ ir::EffectKind::Ensemble(_)) => u.set(kind, tempo),
+            (Self::CombBank(u), ir::EffectKind::CombBank(k)) => u.set(comb_bank(*k, tempo)),
+            (Self::Ring(u, rate), ir::EffectKind::RingMod(k)) => u.set(ring(*k, tempo), *rate),
+            (Self::Rotary(u), ir::EffectKind::Rotary(k)) => u.set(rotary(*k)),
+            (Self::StereoDetune(u), ir::EffectKind::StereoDetune(k)) => u.set(stereo_detune(*k)),
+            (Self::Gater(u), ir::EffectKind::Gater(k)) => u.set(gater(*k, tempo)),
+            (Self::BeatMasher(u), ir::EffectKind::BeatMasher(k)) => u.set(beat_masher(*k, tempo)),
+            (Self::BeatSlicer(u), ir::EffectKind::BeatSlicer(k)) => u.set(beat_slicer(*k, tempo)),
+            (Self::ReverseGrain(u), ir::EffectKind::ReverseGrain(k)) => u.set(reverse_grain(*k)),
+            (Self::TransposeStretch(u), ir::EffectKind::TransposeStretch(k)) => {
+                u.set(transpose_stretch(*k, tempo));
+            }
+            _ => {}
+        }
     }
-}
 
-/// [`ir::Strip`]: a compressor into a waveshaper, and the rate both retune
-/// at. A slot built as one takes a plain shaper's settings too (its
-/// compressor then passes), so a script may move either way.
-struct Strip(Compressor, Shaper, u32);
-
-impl Wet for Strip {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        self.0.process(io);
-        self.1.process(io);
+    /// Frames after which silent input leaves it silent; `None` means it always runs.
+    #[must_use]
+    pub fn memory(&self) -> Option<usize> {
+        match self {
+            Self::Space(u) => u.memory(),
+            Self::Drive(Drive::Shaper(_, rate)) => Some(*rate as usize / 3),
+            Self::Notches(u) => Some(u.memory()),
+            Self::ModDelay(u) => Some(u.memory()),
+            Self::DualDelay(u) => Some(u.memory()),
+            Self::Shifter(u) => Some(u.memory()),
+            Self::Ensemble(u) => u.memory(),
+            Self::CombBank(u) => Some(u.memory()),
+            Self::Rotary(u) => Some(u.memory()),
+            Self::BeatMasher(u) => Some(u.memory()),
+            Self::BeatSlicer(u) => Some(u.memory()),
+            Self::ReverseGrain(u) => Some(u.memory()),
+            Self::TransposeStretch(u) => Some(u.memory()),
+            _ => None,
+        }
     }
 
-    fn process_sidechain(&mut self, io: &mut [[f32; 2]], key: &[[f32; 2]]) {
-        self.0.process_sidechain(io, key);
-        self.1.process(io);
+    /// Loudest value written into state during the last [`Self::process`].
+    #[must_use]
+    pub fn written(&self) -> f32 {
+        match self {
+            Self::Space(u) => u.written(),
+            Self::Notches(u) => u.written(),
+            Self::ModDelay(u) => u.written(),
+            Self::DualDelay(u) => u.written(),
+            Self::Shifter(u) => u.written(),
+            Self::Ensemble(u) => u.written(),
+            Self::CombBank(u) => u.written(),
+            Self::Rotary(u) => u.written(),
+            Self::Gater(u) => u.written(),
+            Self::BeatMasher(u) => u.written(),
+            Self::BeatSlicer(u) => u.written(),
+            Self::ReverseGrain(u) => u.written(),
+            Self::TransposeStretch(u) => u.written(),
+            _ => 0.0,
+        }
     }
 
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        let (c, s) = match kind {
-            ir::EffectKind::Strip(ir::Strip { compressor, shaper }) => (*compressor, shaper),
-            ir::EffectKind::Shaper(s) => (PASS, s),
-            _ => return,
-        };
-        self.0.set(compressor(c), self.2);
-        self.1.retune(curve(&s.curve), tone(s), self.2);
+    /// Advances internal clocks over `silence.len()` silent frames.
+    pub fn idle(&mut self, silence: &mut [[f32; 2]]) {
+        match self {
+            Self::Space(u) => u.idle(silence),
+            Self::Notches(u) => u.idle(silence.len()),
+            Self::ModDelay(u) => u.idle(silence.len()),
+            Self::DualDelay(u) => u.idle(silence.len()),
+            Self::Shifter(u) => u.idle(silence),
+            Self::Ensemble(u) => u.idle(silence),
+            Self::CombBank(u) => u.idle(silence.len()),
+            Self::Rotary(u) => u.idle(silence.len()),
+            Self::Gater(u) => u.idle(silence.len()),
+            Self::BeatMasher(u) => u.idle(silence.len()),
+            Self::BeatSlicer(u) => u.idle(silence.len()),
+            Self::ReverseGrain(u) => u.idle(silence.len()),
+            Self::TransposeStretch(u) => u.idle(silence.len()),
+            _ => {}
+        }
+    }
+
+    /// Whether input gains are all 0 so input reaches neither state nor output.
+    #[must_use]
+    pub fn deaf(&self) -> bool {
+        matches!(self, Self::ModDelay(u) if u.deaf())
     }
 }
 
@@ -528,340 +284,119 @@ const PASS: ir::Compressor = ir::Compressor {
     sidechain_hz: None,
 };
 
-/// A drive unit on summed audio and the rate its settings retune at.
-struct Rated<T>(T, u32);
-
-impl Wet for Rated<Overdrive> {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        self.0.process(io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::Overdrive(o) = kind {
-            self.0.set(voicing(o), self.1);
-        }
-    }
-}
-
-impl Wet for Rated<Crush> {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        self.0.process(io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::Crush(c) = kind {
-            self.0.set(reduction(*c, self.1));
-        }
-    }
-}
-
-impl Wet for Clipper {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        Clipper::process(self, io);
-    }
-}
-
-impl Wet for Rated<Ring> {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        self.0.process(io);
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
-        if let ir::EffectKind::RingMod(r) = kind {
-            self.0.set(ring(*r, tempo), self.1);
-        }
-    }
-}
-
-impl Wet for Rotary {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        Rotary::process(self, io);
-    }
-
-    fn memory(&self) -> Option<usize> {
-        Some(Rotary::memory(self))
-    }
-
-    fn written(&self) -> f32 {
-        Rotary::written(self)
-    }
-
-    fn idle(&mut self, silence: &mut [[f32; 2]]) {
-        Rotary::idle(self, silence.len());
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::Rotary(r) = kind {
-            Rotary::set(self, rotary(*r));
-        }
-    }
+fn scanner(s: ir::Scanner) -> ScannerSettings {
+    map_fields!(s => ScannerSettings {
+        sections: usize::from(s.sections);
+        henry, farad, last_farad, load_ohm, shunt_ohm, taps, hz, lead, split_hz, high, blend, mix
+    })
 }
 
 fn rotary(r: ir::Rotary) -> RotarySettings {
-    RotarySettings {
-        fast: r.fast,
-        horn_slow_hz: r.horn_slow_hz,
-        horn_fast_hz: r.horn_fast_hz,
-        drum_slow_hz: r.drum_slow_hz,
-        drum_fast_hz: r.drum_fast_hz,
-        accel_hi: r.accel_hi,
-        accel_lo: r.accel_lo,
-        crossover_hz: r.crossover_hz,
-        balance: r.balance,
-        distance: r.distance,
-        mix: r.mix,
-    }
-}
-
-impl Wet for Gater {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        Gater::process(self, io);
-    }
-
-    fn written(&self) -> f32 {
-        Gater::written(self)
-    }
-
-    fn idle(&mut self, silence: &mut [[f32; 2]]) {
-        Gater::idle(self, silence.len());
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
-        if let ir::EffectKind::Gater(g) = kind {
-            Gater::set(self, gater(*g, tempo));
-        }
-    }
+    map_fields!(r => RotarySettings {
+        fast, horn_slow_hz, horn_fast_hz, drum_slow_hz, drum_fast_hz, accel_hi, accel_lo,
+        crossover_hz, balance, distance, mix
+    })
 }
 
 fn gater(g: ir::Gater, tempo: f32) -> GaterSettings {
-    GaterSettings {
-        rate_hz: hz(g.rate, tempo),
-        shape: g.shape,
-        noise: g.noise,
-        mix: g.mix,
-        stutter: g.stutter,
-        mute_input: g.mute_input,
-        active: g.active,
-    }
-}
-
-impl Wet for BeatMasher {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        BeatMasher::process(self, io);
-    }
-
-    fn memory(&self) -> Option<usize> {
-        Some(BeatMasher::memory(self))
-    }
-
-    fn written(&self) -> f32 {
-        BeatMasher::written(self)
-    }
-
-    fn idle(&mut self, silence: &mut [[f32; 2]]) {
-        BeatMasher::idle(self, silence.len());
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
-        if let ir::EffectKind::BeatMasher(m) = kind {
-            BeatMasher::set(self, beat_masher(*m, tempo));
-        }
-    }
+    map_fields!(g => GaterSettings {
+        rate_hz: hz(g.rate, tempo);
+        shape, noise, mix, stutter, mute_input, active
+    })
 }
 
 fn beat_masher(m: ir::BeatMasher, tempo: f32) -> BeatMasherSettings {
-    BeatMasherSettings {
-        tempo_bpm: tempo,
-        length_beats: m.length_beats,
-        rotate: m.rotate,
-        gate: m.gate,
-        mix: m.mix,
-        reverse: m.reverse,
-        wrap: m.wrap,
-        mash: m.mash,
-    }
-}
-
-impl Wet for BeatSlicer {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        BeatSlicer::process(self, io);
-    }
-
-    fn memory(&self) -> Option<usize> {
-        Some(BeatSlicer::memory(self))
-    }
-
-    fn written(&self) -> f32 {
-        BeatSlicer::written(self)
-    }
-
-    fn idle(&mut self, silence: &mut [[f32; 2]]) {
-        BeatSlicer::idle(self, silence.len());
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
-        if let ir::EffectKind::BeatSlicer(s) = kind {
-            BeatSlicer::set(self, beat_slicer(*s, tempo));
-        }
-    }
+    map_fields!(m => BeatMasherSettings {
+        tempo_bpm: tempo;
+        length_beats, rotate, gate, mix, reverse, wrap, mash
+    })
 }
 
 fn beat_slicer(s: ir::BeatSlicer, tempo: f32) -> BeatSlicerSettings {
-    BeatSlicerSettings {
-        tempo_bpm: tempo,
-        bars: s.bars,
-        pattern: s.pattern,
-        style: s.style,
-        buzz: s.buzz,
-        gate: s.gate,
-        slice: s.slice,
-        mix: s.mix,
-    }
-}
-
-impl Wet for ReverseGrain {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        ReverseGrain::process(self, io);
-    }
-
-    fn memory(&self) -> Option<usize> {
-        Some(ReverseGrain::memory(self))
-    }
-
-    fn written(&self) -> f32 {
-        ReverseGrain::written(self)
-    }
-
-    fn idle(&mut self, silence: &mut [[f32; 2]]) {
-        ReverseGrain::idle(self, silence.len());
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
-        if let ir::EffectKind::ReverseGrain(r) = kind {
-            ReverseGrain::set(self, reverse_grain(*r));
-        }
-    }
+    map_fields!(s => BeatSlicerSettings {
+        tempo_bpm: tempo;
+        bars, pattern, style, buzz, gate, slice, mix
+    })
 }
 
 fn reverse_grain(r: ir::ReverseGrain) -> ReverseGrainSettings {
-    ReverseGrainSettings {
-        speed: r.speed,
-        grain_ms: r.grain_ms,
-        pitch_ratio: r.pitch_ratio,
-        mix: r.mix,
-        forward: r.forward,
-        invert_grains: r.invert_grains,
-        reverse: r.reverse,
-    }
-}
-
-impl Wet for TransposeStretch {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
-        TransposeStretch::process(self, io);
-    }
-
-    fn memory(&self) -> Option<usize> {
-        Some(TransposeStretch::memory(self))
-    }
-
-    fn written(&self) -> f32 {
-        TransposeStretch::written(self)
-    }
-
-    fn idle(&mut self, silence: &mut [[f32; 2]]) {
-        TransposeStretch::idle(self, silence.len());
-    }
-
-    fn set(&mut self, kind: &ir::EffectKind, tempo: f32) {
-        if let ir::EffectKind::TransposeStretch(t) = kind {
-            TransposeStretch::set(self, transpose_stretch(*t, tempo));
-        }
-    }
+    map_fields!(r => ReverseGrainSettings {
+        speed, grain_ms, pitch_ratio, mix, forward, invert_grains, reverse
+    })
 }
 
 fn transpose_stretch(t: ir::TransposeStretch, tempo: f32) -> TransposeStretchSettings {
-    TransposeStretchSettings {
-        tempo_bpm: tempo,
-        semitones: t.semitones,
-        amount: t.amount,
-        grain_ms: t.grain_ms,
-        mix: t.mix,
-        stretch: t.stretch,
-        grain_mode: t.grain_mode,
-        bars: t.bars,
-    }
+    map_fields!(t => TransposeStretchSettings {
+        tempo_bpm: tempo;
+        semitones, amount, grain_ms, mix, stretch, grain_mode, bars
+    })
 }
 
 fn ring(r: ir::RingMod, tempo: f32) -> RingMod {
-    RingMod {
-        hz: r.hz,
-        spread: r.spread,
-        bias: r.bias,
-        quadrature: r.quadrature,
-        drive: r.drive,
-        highpass_hz: r.highpass_hz,
-        gate: r.gate,
-        feedback: r.feedback,
-        source: match r.source {
-            ir::RingSource::Oscillator => RingSource::Oscillator,
-            ir::RingSource::Sidechain {
-                contour,
-                attack,
-                release,
-                bandpass_hz,
-            } => RingSource::Sidechain {
-                contour,
-                attack,
-                release,
-                bandpass_hz,
-            },
-            ir::RingSource::Radio {
-                gain,
-                tuned_hz,
-                damping,
-                makeup,
-                product,
-                noise,
-            } => RingSource::Radio {
-                gain,
-                tuned_hz,
-                damping,
-                makeup,
-                product,
-                noise,
-            },
-            ir::RingSource::Modulated {
-                edge,
-                fm_ms,
-                lfo_rate,
-                lfo_depth,
-                lfo_square,
-            } => RingSource::Modulated {
-                edge,
-                fm_ms,
-                lfo_hz: hz(lfo_rate, tempo),
-                lfo_depth,
-                lfo_square,
-            },
+    let source = match r.source {
+        ir::RingSource::Oscillator => RingSource::Oscillator,
+        ir::RingSource::Sidechain {
+            contour,
+            attack,
+            release,
+            bandpass_hz,
+        } => RingSource::Sidechain {
+            contour,
+            attack,
+            release,
+            bandpass_hz,
         },
-        wet: r.wet,
-        dry: r.dry,
+        ir::RingSource::Radio {
+            gain,
+            tuned_hz,
+            damping,
+            makeup,
+            product,
+            noise,
+        } => RingSource::Radio {
+            gain,
+            tuned_hz,
+            damping,
+            makeup,
+            product,
+            noise,
+        },
+        ir::RingSource::Modulated {
+            edge,
+            fm_ms,
+            lfo_rate,
+            lfo_depth,
+            lfo_square,
+        } => RingSource::Modulated {
+            edge,
+            fm_ms,
+            lfo_hz: hz(lfo_rate, tempo),
+            lfo_depth,
+            lfo_square,
+        },
+    };
+    map_fields!(r => RingMod {
+        source: source;
+        hz, spread, bias, quadrature, drive, highpass_hz, gate, feedback, wet, dry
+    })
+}
+
+fn delay_ms(t: ir::DelayTime, tempo: f32) -> f32 {
+    match t {
+        ir::DelayTime::Ms(ms) => ms,
+        ir::DelayTime::Beats(beats) => beats * 60_000.0 / tempo.max(1.0),
     }
 }
 
 fn dual_delay(d: ir::DualDelay, tempo: f32) -> DualDelaySettings {
-    let to_ms = |t: ir::DelayTime| match t {
-        ir::DelayTime::Ms(ms) => ms,
-        ir::DelayTime::Beats(beats) => beats * 60_000.0 / tempo.max(1.0),
-    };
     DualDelaySettings {
         predelay_ms: [
-            to_ms(d.predelay_l).clamp(0.0, DUAL_MAX_MS),
-            to_ms(d.predelay_r).clamp(0.0, DUAL_MAX_MS),
+            delay_ms(d.predelay_l, tempo).clamp(0.0, DUAL_MAX_MS),
+            delay_ms(d.predelay_r, tempo).clamp(0.0, DUAL_MAX_MS),
         ],
         time_ms: [
-            to_ms(d.time_l).clamp(0.0, DUAL_MAX_MS),
-            to_ms(d.time_r).clamp(0.0, DUAL_MAX_MS),
+            delay_ms(d.time_l, tempo).clamp(0.0, DUAL_MAX_MS),
+            delay_ms(d.time_r, tempo).clamp(0.0, DUAL_MAX_MS),
         ],
         feedback: [d.feedback_l, d.feedback_r],
         cross_feedback: d.cross_feedback,
@@ -871,117 +406,62 @@ fn dual_delay(d: ir::DualDelay, tempo: f32) -> DualDelaySettings {
 }
 
 fn stereo_detune(s: ir::StereoDetune) -> StereoDetuneSettings {
-    StereoDetuneSettings {
-        split_hz: s.split_hz,
-        ratio: s.ratio,
-        spread: s.spread,
-        mix: s.mix,
-    }
+    map_fields!(s => StereoDetuneSettings { split_hz, ratio, spread, mix })
 }
 
-fn wah(w: ir::Wah) -> WahSettings {
-    WahSettings {
-        peak_hz: w.peak_hz,
-        peak_q: w.peak_q,
-        peak_gain: w.peak_gain,
-        low_hz: w.low_hz,
-        low_gain: w.low_gain,
-        mid_hz: w.mid_hz,
-        mid_gain: w.mid_gain,
-        high_hz: w.high_hz,
-        high_gain: w.high_gain,
-        mono: w.mono,
-    }
+pub fn wah(w: ir::Wah) -> WahSettings {
+    map_fields!(w => WahSettings {
+        peak_hz, peak_q, peak_gain, low_hz, low_gain, mid_hz, mid_gain, high_hz, high_gain, mono
+    })
 }
 
-fn amp_stack(a: ir::AmpStack) -> AmpStackSettings {
-    AmpStackSettings {
-        voicing: match a.voicing {
-            ir::AmpVoicing::CleanCombo => AmpVoicing::CleanCombo,
-            ir::AmpVoicing::BritishHighGain => AmpVoicing::BritishHighGain,
-            ir::AmpVoicing::ModernHighGain => AmpVoicing::ModernHighGain,
-            ir::AmpVoicing::ClassACombo => AmpVoicing::ClassACombo,
-            ir::AmpVoicing::LeadHighGain => AmpVoicing::LeadHighGain,
-            ir::AmpVoicing::HardClipPedal => AmpVoicing::HardClipPedal,
-            ir::AmpVoicing::BassTube => AmpVoicing::BassTube,
-            ir::AmpVoicing::MidOverdrive(mode) => AmpVoicing::MidOverdrive(mode),
-        },
-        preamp_gain: a.preamp_gain,
-        drive: a.drive,
-        master: a.master,
-        high_gain: a.high_gain,
-        bright: a.bright,
-        low_boost: a.low_boost,
-        high_boost: a.high_boost,
-        bass_db: a.bass_db,
-        mid_db: a.mid_db,
-        mid_hz: a.mid_hz,
-        treble_db: a.treble_db,
-        presence_db: a.presence_db,
-        resonance_db: a.resonance_db,
-        tone_cut_hz: a.tone_cut_hz,
-        tremolo_hz: a.tremolo_hz,
-        tremolo_depth: a.tremolo_depth,
-        geq_enabled: a.geq_enabled,
-        geq_db: a.geq_db,
-        geq_gain_db: a.geq_gain_db,
-        mono: a.mono,
-    }
+pub fn amp_stack(a: ir::AmpStack) -> AmpStackSettings {
+    let voicing = match a.voicing {
+        ir::AmpVoicing::CleanCombo => AmpVoicing::CleanCombo,
+        ir::AmpVoicing::BritishHighGain => AmpVoicing::BritishHighGain,
+        ir::AmpVoicing::ModernHighGain => AmpVoicing::ModernHighGain,
+        ir::AmpVoicing::ClassACombo => AmpVoicing::ClassACombo,
+        ir::AmpVoicing::LeadHighGain => AmpVoicing::LeadHighGain,
+        ir::AmpVoicing::HardClipPedal => AmpVoicing::HardClipPedal,
+        ir::AmpVoicing::BassTube => AmpVoicing::BassTube,
+        ir::AmpVoicing::MidOverdrive(mode) => AmpVoicing::MidOverdrive(mode),
+    };
+    map_fields!(a => AmpStackSettings {
+        voicing: voicing;
+        preamp_gain, drive, master, high_gain, bright, low_boost, high_boost,
+        bass_db, mid_db, mid_hz, treble_db, presence_db, resonance_db, tone_cut_hz,
+        tremolo_hz, tremolo_depth, geq_enabled, geq_db, geq_gain_db, mono
+    })
 }
 
-fn cabinet(c: ir::Cabinet) -> CabinetSettings {
-    CabinetSettings {
-        model: c.model,
-        size: c.size,
-        air: c.air,
-        bass_db: c.bass_db,
-        treble_db: c.treble_db,
-    }
+pub fn cabinet(c: ir::Cabinet) -> CabinetSettings {
+    map_fields!(c => CabinetSettings { model, size, air, bass_db, treble_db })
 }
 
-fn color_sat(c: ir::ColorSat) -> ColorSatSettings {
-    ColorSatSettings {
-        character: c.character,
-        drive: c.drive,
-        boost: c.boost,
-        boost_db: c.boost_db,
-        bass_saver: c.bass_saver,
-        lpf_hz: c.lpf_hz,
-        hpf_hz: c.hpf_hz,
-        bass_db: c.bass_db,
-        mid_db: c.mid_db,
-        mid_hz: c.mid_hz,
-        mid_q: c.mid_q,
-        treble_db: c.treble_db,
-        mix: c.mix,
-    }
+pub fn color_sat(c: ir::ColorSat) -> ColorSatSettings {
+    map_fields!(c => ColorSatSettings {
+        character, drive, boost, boost_db, bass_saver, lpf_hz, hpf_hz,
+        bass_db, mid_db, mid_hz, mid_q, treble_db, mix
+    })
 }
 
-fn spectral_morph(m: ir::SpectralMorph) -> SpectralMorphSettings {
-    SpectralMorphSettings {
-        morph: m.morph,
-        amount: m.amount,
-        bank: m.bank,
-        tracking: m.tracking,
-    }
+pub fn spectral_morph(m: ir::SpectralMorph) -> SpectralMorphSettings {
+    map_fields!(m => SpectralMorphSettings { morph, amount, bank, tracking })
 }
 
 fn transient(t: ir::Transient) -> TransientSettings {
-    TransientSettings {
-        attack: t.attack,
-        sustain: t.sustain,
-        gain_db: t.gain_db,
-        clip: t.clip,
-    }
+    map_fields!(t => TransientSettings { attack, sustain, gain_db, clip })
 }
 
 /// A convolution playing `r`. Not real-time.
 pub fn convolver(r: &Response) -> Dsp {
-    wet(Box::new(Convolver::new(&r.left, &r.right)))
+    wet(DspUnit::Space(Space::convolver(Convolver::new(
+        &r.left, &r.right,
+    ))))
 }
 
-fn wet(processor: Box<dyn Wet>) -> Dsp {
-    Dsp::Wet(processor, vec![[0.0; 2]; MAX_SPAN as usize].into())
+fn wet(unit: DspUnit) -> Dsp {
+    Dsp::Wet(unit, vec![[0.0; 2]; MAX_SPAN as usize].into())
 }
 
 /// The plan's responses, then those scripts loaded ([`Engine::load_ir_sample`]).
@@ -1009,36 +489,24 @@ pub fn stem(name: &str) -> &str {
 
 /// A compressor's settings in DSP terms.
 pub fn compressor(c: ir::Compressor) -> CompressorSettings {
-    CompressorSettings {
-        threshold_db: c.threshold_db,
-        ratio: c.ratio,
-        knee_db: c.knee_db,
-        attack_ms: c.attack_ms,
-        release_ms: c.release_ms,
+    let detector = match c.detector {
+        ir::Detector::Input => Detector::Input,
+        ir::Detector::Output => Detector::Output,
+        ir::Detector::Trigger => Detector::Trigger,
+        ir::Detector::Enhanced => Detector::Enhanced,
+        ir::Detector::Bus { auto_release } => Detector::Bus { auto_release },
+    };
+    map_fields!(c => CompressorSettings {
         makeup_db: c.makeup(),
-        link: c.link,
-        mix: c.mix,
-        detector: match c.detector {
-            ir::Detector::Input => Detector::Input,
-            ir::Detector::Output => Detector::Output,
-            ir::Detector::Trigger => Detector::Trigger,
-        },
-        sidechain_hz: c.sidechain_hz,
-    }
+        detector: detector;
+        threshold_db, ratio, knee_db, attack_ms, release_ms, link, mix, sidechain_hz
+    })
 }
 
 fn limiter(l: ir::Limiter) -> LimiterSettings {
-    LimiterSettings {
-        input_db: l.input_db,
-        ceiling_db: l.ceiling_db,
-        release_ms: l.release_ms,
-        knee_db: l.knee_db,
-        attack_ms: l.attack_ms,
-        smooth_ms: l.smooth_ms,
-        slow: l.slow,
-        lookahead_ms: l.lookahead_ms,
-        clip: l.clip,
-    }
+    map_fields!(l => LimiterSettings {
+        input_db, ceiling_db, release_ms, knee_db, attack_ms, smooth_ms, slow, lookahead_ms, clip
+    })
 }
 
 /// LFO cycles per second at `tempo`.
@@ -1051,168 +519,96 @@ fn hz(rate: ir::Rate, tempo: f32) -> f32 {
 }
 
 fn shifter(s: ir::Shifter, tempo: f32) -> ShifterSettings {
-    let ms = match s.time {
-        ir::DelayTime::Ms(ms) => ms,
-        ir::DelayTime::Beats(beats) => beats * 60_000.0 / tempo.max(1.0),
-    };
-    ShifterSettings {
-        ms: [ms, ms * s.right],
-        speed: s.speed,
-        feedback: s.feedback,
-        cross: s.cross,
-    }
+    let ms = delay_ms(s.time, tempo);
+    map_fields!(s => ShifterSettings { ms: [ms, ms * s.right]; speed, feedback, cross })
 }
 
 fn delay(d: &ir::Delay, tempo: f32) -> kontra_dsp::delay::Settings {
-    kontra_dsp::delay::Settings {
-        ms: match d.time {
-            ir::DelayTime::Ms(ms) => ms,
-            ir::DelayTime::Beats(beats) => beats * 60_000.0 / tempo.max(1.0),
-        }
-        .clamp(0.0, MAX_MS),
-        depth_ms: d.depth_ms,
-        second_head: d.second_head,
-        input: d.input,
-        feedback: d.feedback,
-        output: d.output,
-        damping_hz: d.damping_hz,
-        low_cut_hz: d.low_cut_hz,
-        steep_low_cut: d.steep_low_cut,
+    map_fields!(d => kontra_dsp::delay::Settings {
+        ms: delay_ms(d.time, tempo).clamp(0.0, MAX_MS),
         body: d.body.clone(),
-        triangle_s: d.triangle_s,
         shape: d.shape.clone(),
-        noise: d.noise,
-        high_shelf: d
-            .high_shelf
-            .filter(|b| b.gain_db != 0.0)
-            .map(|b| kontra_dsp::delay::Shelf {
-                hz: b.hz,
-                gain_db: b.gain_db,
-                slope: b.q,
-            }),
-        spread_ms: d.spread_ms,
-        lfo_hz: hz(d.rate, tempo),
-        phase: d.phase,
-        direct: d.direct,
-    }
+        high_shelf: d.high_shelf.filter(|b| b.gain_db != 0.0).map(|b| kontra_dsp::delay::Shelf {
+            hz: b.hz,
+            gain_db: b.gain_db,
+            slope: b.q,
+        }),
+        lfo_hz: hz(d.rate, tempo);
+        depth_ms, second_head, input, feedback, output, damping_hz, low_cut_hz, steep_low_cut,
+        triangle_s, noise, spread_ms, phase, direct
+    })
 }
 
 fn notches(n: ir::Notches, tempo: f32) -> NotchSettings {
-    NotchSettings {
-        stages: n.stages,
-        hz: n.hz,
-        octaves: n.octaves,
-        spread: n.spread,
-        spread_swing: n.spread_swing,
-        spread_limit: n.spread_limit,
-        feedback: n.feedback,
-        loop_width: n.loop_width,
-        loop_top: n.loop_top,
+    map_fields!(n => NotchSettings {
         lfo_hz: hz(n.rate, tempo),
-        rounding: n.rounding,
-        depth: n.depth,
-        warp: n.warp,
-        phase: n.phase,
         sign: match n.polarity {
             ir::Polarity::Normal => 1.0,
             ir::Polarity::Inverted => -1.0,
-        },
-        mix: n.mix,
-        low_cut_hz: n.low_cut_hz,
-        internal_hz: n.internal_hz,
-    }
+        };
+        stages, hz, octaves, spread, spread_swing, spread_limit, feedback, loop_width, loop_top,
+        rounding, depth, warp, phase, mix, low_cut_hz, internal_hz
+    })
 }
 
 fn comb_bank(c: ir::CombBank, tempo: f32) -> CombSettings {
     use kontra_dsp::delay::ScanShape;
     let blend = |on: bool| if on { 1.0 } else { 0.0 };
-    CombSettings {
-        root_hz: c.root_hz,
-        ratio: c.ratio,
-        detune: c.detune,
-        feedback: c.feedback,
-        voices: c.voices,
-        damping: c.damping,
-        depth: c.depth,
+    map_fields!(c => CombSettings {
         lfo_hz: hz(c.rate, tempo),
-        offset: c.offset,
         polarity: match c.polarity {
             ir::Polarity::Normal => 1.0,
             ir::Polarity::Inverted => -1.0,
         },
         thru_zero: blend(c.mode == ir::CombMode::ThruZero),
         scan: blend(c.mode == ir::CombMode::Scan),
-        scan_depth: c.scan_depth,
         scan_shape: match c.scan_shape {
             ir::ScanShape::Triangle => ScanShape::Triangle,
             ir::ScanShape::SawUp => ScanShape::SawUp,
             ir::ScanShape::SawDown => ScanShape::SawDown,
-        },
-        width: c.width,
-        mix: c.mix,
-    }
+        };
+        root_hz, ratio, detune, feedback, voices, damping, depth, offset, scan_depth, width, mix
+    })
 }
 
 fn phaser(p: ir::Phaser, tempo: f32) -> PhaserSettings {
-    PhaserSettings {
-        stages: p.stages,
-        triangle: p.triangle,
-        hz: p.hz,
-        spread_hz: p.spread_hz,
-        exponent: p.exponent,
-        feedback: p.feedback,
-        lfo_hz: hz(p.rate, tempo),
-        phase: p.phase,
-    }
+    map_fields!(p => PhaserSettings {
+        lfo_hz: hz(p.rate, tempo);
+        stages, triangle, hz, spread_hz, exponent, feedback, phase
+    })
 }
 
 fn cascade(c: ir::Cascade) -> CascadeSettings {
-    let stage = |s: ir::CascadeStage| CascadeStage {
-        q: s.q,
-        limit: s.limit,
-        peak: s.peak,
-        morph: s.morph,
-        wet: s.wet,
-    };
-    CascadeSettings {
-        hz: c.hz,
-        shifts: c.shifts,
-        stages: c.stages.map(stage),
-        gain: c.gain,
-    }
+    let stage = |s: ir::CascadeStage| map_fields!(s => CascadeStage { q, limit, peak, morph, wet });
+    map_fields!(c => CascadeSettings { stages: c.stages.map(stage); hz, shifts, gain })
 }
 
 fn settings(r: &ir::Reverb) -> Settings {
-    Settings {
-        seconds: r.seconds,
-        size: r.size,
-        damping: r.damping,
-        diffusion: r.diffusion,
-        predelay_ms: r.predelay_ms,
-        high_cut_hz: r.high_cut_hz,
-        low_shelf_db: r.low_shelf_db,
-        stereo: r.stereo,
-        modulation_ms: r.modulation_ms,
-        modulation_hz: r.modulation_hz,
-    }
+    map_fields!(r => Settings {
+        seconds, size, damping, diffusion, predelay_ms, high_cut_hz, low_shelf_db, stereo,
+        modulation_ms, modulation_hz
+    })
 }
 
 /// The processor slot `slot` runs. Not real-time.
 pub fn processor(slot: Option<&ir::Effect>, rate: u32, impulses: &Responses<'_>) -> Dsp {
     match slot.map(|e| &e.kind) {
-        // Retuned from its slot each span: a route or a script may move any
-        // band, and one saved flat (no stages) may be raised later.
         Some(ir::EffectKind::Eq(bells)) => {
             Dsp::Bells(Box::new(filters::VoiceEq::new(*bells, rate)))
         }
+        Some(ir::EffectKind::EqPass {
+            bands,
+            hp_hz,
+            lp_hz,
+        }) => Dsp::Bells(Box::new(filters::VoiceEq::with_pass(
+            *bands, *hp_hz, *lp_hz, rate,
+        ))),
         Some(ir::EffectKind::Filter(f)) => {
             let mut svf = Svf::new(filters::shape(f));
             svf.set_cutoff(f.hz, rate);
-            // A script may switch it to any ladder on the audio thread.
             svf.keep_spare();
             Dsp::Filter(Box::new(svf))
         }
-        // Built even while bypassed: a script may enable it later.
         Some(ir::EffectKind::Formant(_)) => {
             let live = slot.map(|e| ir::Effect {
                 bypass: false,
@@ -1227,110 +623,143 @@ pub fn processor(slot: Option<&ir::Effect>, rate: u32, impulses: &Responses<'_>)
                 None => Dsp::None,
             }
         }
-        Some(ir::EffectKind::Reverb(r)) => match &r.network {
-            Some(ir::Network::Lines(law)) => wet(Box::new(Network::new(law, settings(r), rate))),
-            Some(ir::Network::Combs(law)) => wet(Box::new(Combs::new(law, settings(r), rate))),
-            Some(ir::Network::Hadamard(law)) => {
-                wet(Box::new(Hadamard::new(*law, settings(r), rate)))
-            }
-            Some(ir::Network::Plate) => wet(Box::new(Plate::new(settings(r), rate))),
-            None => wet(Box::new(Fdn::new(settings(r), rate))),
-        },
-        Some(ir::EffectKind::Compressor(c)) => {
-            wet(Box::new(Rated(Compressor::new(compressor(*c), rate), rate)))
-        }
-        Some(ir::EffectKind::Limiter(l)) => {
-            wet(Box::new(Rated(Limiter::new(limiter(*l), rate), rate)))
-        }
-        // ponytail: an echo gets the longest line, so a script or a
-        // tempo can lengthen it; a swept line only what it needs.
+        Some(ir::EffectKind::Reverb(r)) => wet(DspUnit::Space(match &r.network {
+            Some(ir::Network::Lines(law)) => Space::network(law, settings(r), rate),
+            Some(ir::Network::Combs(law)) => Space::combs(law, settings(r), rate),
+            Some(ir::Network::Hadamard(law)) => Space::hadamard(*law, settings(r), rate),
+            Some(ir::Network::Plate) => Space::plate(settings(r), rate),
+            None => Space::fdn(settings(r), rate),
+        })),
+        Some(ir::EffectKind::Compressor(c)) => wet(DspUnit::Dynamics(Dynamics::Compressor(
+            Box::new(Compressor::new(compressor(*c), rate)),
+            rate,
+        ))),
+        Some(ir::EffectKind::Limiter(l)) => wet(DspUnit::Dynamics(Dynamics::Limiter(
+            Box::new(Limiter::new(limiter(*l), rate)),
+            rate,
+        ))),
+        Some(ir::EffectKind::Transient(t)) => wet(DspUnit::Dynamics(Dynamics::Transient(
+            Box::new(Transient::new(transient(*t), rate)),
+        ))),
         Some(ir::EffectKind::Delay(d)) => {
             let max_ms = match d.time {
                 ir::DelayTime::Ms(ms) if d.depth_ms > 0.0 => ms,
                 _ => MAX_MS,
             };
-            wet(Box::new(ModDelay::new(delay(d, 120.0), rate, max_ms)))
+            wet(DspUnit::ModDelay(Box::new(ModDelay::new(
+                delay(d, 120.0),
+                rate,
+                max_ms,
+            ))))
         }
-        Some(ir::EffectKind::Shifter(s)) => wet(Box::new(Shifter::new(shifter(*s, 120.0), rate))),
-        Some(ir::EffectKind::Scanner(s)) => wet(Box::new(Scanner::new(scanner(*s), rate))),
-        Some(ir::EffectKind::Phaser(p)) => wet(Box::new(Phaser::new(phaser(*p, 120.0), rate))),
-        Some(ir::EffectKind::Notches(n)) => wet(Box::new(Notches::new(notches(*n, 120.0), rate))),
-        Some(ir::EffectKind::Ensemble(e)) => wet(Box::new(crate::ensemble::Ensemble::new(e, rate))),
-        Some(ir::EffectKind::CombBank(c)) => wet(Box::new(CombBank::new(
+        Some(ir::EffectKind::Shifter(s)) => wet(DspUnit::Shifter(Box::new(Shifter::new(
+            shifter(*s, 120.0),
+            rate,
+        )))),
+        Some(ir::EffectKind::Scanner(s)) => {
+            wet(DspUnit::Scanner(Box::new(Scanner::new(scanner(*s), rate))))
+        }
+        Some(ir::EffectKind::Phaser(p)) => wet(DspUnit::Phaser(Box::new(Phaser::new(
+            phaser(*p, 120.0),
+            rate,
+        )))),
+        Some(ir::EffectKind::Notches(n)) => wet(DspUnit::Notches(Box::new(Notches::new(
+            notches(*n, 120.0),
+            rate,
+        )))),
+        Some(ir::EffectKind::Ensemble(e)) => {
+            wet(DspUnit::Ensemble(Box::new(Ensemble::new(e, rate))))
+        }
+        Some(ir::EffectKind::CombBank(c)) => wet(DspUnit::CombBank(Box::new(CombBank::new(
             comb_bank(*c, 120.0),
             rate,
             c.lowest_hz,
-        ))),
-        Some(ir::EffectKind::Cascade(c)) => wet(Box::new(Cascade::new(cascade(*c), rate))),
+        )))),
+        Some(ir::EffectKind::Cascade(c)) => {
+            wet(DspUnit::Cascade(Box::new(Cascade::new(cascade(*c), rate))))
+        }
         Some(ir::EffectKind::Clocked(c)) => {
             let shape = match c.shape {
                 ir::ClockedShape::Allpass => ClockedShape::Allpass,
                 ir::ClockedShape::VowelLow => ClockedShape::VowelLow,
                 ir::ClockedShape::VowelHigh => ClockedShape::VowelHigh,
             };
-            wet(Box::new(Clocked::new(shape, [c.cutoff, c.resonance], rate)))
+            wet(DspUnit::Clocked(Box::new(Clocked::new(
+                shape,
+                [c.cutoff, c.resonance],
+                rate,
+            ))))
         }
-        // Drive effects run in any rack: on one voice in a group rack, on
-        // the sum in a bus or instrument rack.
-        Some(ir::EffectKind::Shaper(s)) => wet(Box::new(Rated(shaper(s, rate), rate))),
-        Some(ir::EffectKind::Strip(s)) => wet(Box::new(Strip(
-            Compressor::new(compressor(s.compressor), rate),
-            shaper(&s.shaper, rate),
+        Some(ir::EffectKind::Shaper(s)) => wet(DspUnit::Drive(Drive::Shaper(
+            Box::new(shaper(s, rate)),
             rate,
         ))),
-        Some(ir::EffectKind::Overdrive(o)) => {
-            wet(Box::new(Rated(Overdrive::new(voicing(o), rate), rate)))
-        }
-        Some(ir::EffectKind::Crush(c)) => {
-            wet(Box::new(Rated(Crush::new(reduction(*c, rate), 1), rate)))
-        }
-        Some(ir::EffectKind::Clipper(c)) => wet(Box::new(Clipper::new(
-            Circuit {
-                drive: c.drive,
-                limit: c.limit,
-                tone_hz: c.tone_hz,
-                coupling_hz: c.coupling_hz,
-                saturation: c.saturation,
-                slope: c.slope,
-                asymmetry: c.asymmetry,
-                dc_hz: c.dc_hz,
-            },
+        Some(ir::EffectKind::Strip(s)) => wet(DspUnit::Strip(
+            Box::new(Compressor::new(compressor(s.compressor), rate)),
+            Box::new(shaper(&s.shaper, rate)),
+            rate,
+        )),
+        Some(ir::EffectKind::Overdrive(o)) => wet(DspUnit::Drive(Drive::Overdrive(
+            Box::new(Overdrive::new(voicing(o), rate)),
             rate,
         ))),
-        Some(ir::EffectKind::Transient(t)) => wet(Box::new(Transient::new(transient(*t), rate))),
-        Some(ir::EffectKind::RingMod(r)) => {
-            wet(Box::new(Rated(Ring::new(ring(*r, 120.0), rate), rate)))
-        }
-        Some(ir::EffectKind::Rotary(r)) => wet(Box::new(Rotary::new(rotary(*r), rate))),
-        Some(ir::EffectKind::Gater(g)) => wet(Box::new(Gater::new(gater(*g, 120.0), rate))),
-        Some(ir::EffectKind::BeatMasher(m)) => {
-            wet(Box::new(BeatMasher::new(beat_masher(*m, 120.0), rate)))
-        }
-        Some(ir::EffectKind::BeatSlicer(s)) => {
-            wet(Box::new(BeatSlicer::new(beat_slicer(*s, 120.0), rate)))
-        }
-        Some(ir::EffectKind::ReverseGrain(r)) => {
-            wet(Box::new(ReverseGrain::new(reverse_grain(*r), rate)))
-        }
-        Some(ir::EffectKind::TransposeStretch(t)) => wet(Box::new(TransposeStretch::new(
-            transpose_stretch(*t, 120.0),
+        Some(ir::EffectKind::Crush(c)) => wet(DspUnit::Drive(Drive::Crush(
+            Box::new(Crush::new(reduction(*c, rate), 1)),
             rate,
         ))),
-        Some(ir::EffectKind::DualDelay(d)) => wet(Box::new(DualDelay::new(
+        Some(ir::EffectKind::Clipper(c)) => {
+            wet(DspUnit::Drive(Drive::Clipper(Box::new(Clipper::new(
+                map_fields!(c => Circuit {
+                    drive, limit, tone_hz, coupling_hz, saturation, slope, asymmetry, dc_hz
+                }),
+                rate,
+            )))))
+        }
+        Some(ir::EffectKind::RingMod(r)) => wet(DspUnit::Ring(
+            Box::new(Ring::new(ring(*r, 120.0), rate)),
+            rate,
+        )),
+        Some(ir::EffectKind::Rotary(r)) => {
+            wet(DspUnit::Rotary(Box::new(Rotary::new(rotary(*r), rate))))
+        }
+        Some(ir::EffectKind::Gater(g)) => {
+            wet(DspUnit::Gater(Box::new(Gater::new(gater(*g, 120.0), rate))))
+        }
+        Some(ir::EffectKind::BeatMasher(m)) => wet(DspUnit::BeatMasher(Box::new(BeatMasher::new(
+            beat_masher(*m, 120.0),
+            rate,
+        )))),
+        Some(ir::EffectKind::BeatSlicer(s)) => wet(DspUnit::BeatSlicer(Box::new(BeatSlicer::new(
+            beat_slicer(*s, 120.0),
+            rate,
+        )))),
+        Some(ir::EffectKind::ReverseGrain(r)) => wet(DspUnit::ReverseGrain(Box::new(
+            ReverseGrain::new(reverse_grain(*r), rate),
+        ))),
+        Some(ir::EffectKind::TransposeStretch(t)) => wet(DspUnit::TransposeStretch(Box::new(
+            TransposeStretch::new(transpose_stretch(*t, 120.0), rate),
+        ))),
+        Some(ir::EffectKind::DualDelay(d)) => wet(DspUnit::DualDelay(Box::new(DualDelay::new(
             dual_delay(*d, 120.0),
             rate,
             DUAL_MAX_MS,
+        )))),
+        Some(ir::EffectKind::StereoDetune(s)) => wet(DspUnit::StereoDetune(Box::new(
+            StereoDetune::new(stereo_detune(*s), rate),
         ))),
-        Some(ir::EffectKind::StereoDetune(s)) => {
-            wet(Box::new(StereoDetune::new(stereo_detune(*s), rate)))
-        }
-        Some(ir::EffectKind::Wah(w)) => wet(Box::new(Wah::new(wah(*w), rate))),
-        Some(ir::EffectKind::AmpStack(a)) => wet(Box::new(AmpStack::new(amp_stack(*a), rate))),
-        Some(ir::EffectKind::Cabinet(c)) => wet(Box::new(Cabinet::new(cabinet(*c), rate))),
-        Some(ir::EffectKind::ColorSat(c)) => wet(Box::new(ColorSat::new(color_sat(*c), rate))),
-        Some(ir::EffectKind::SpectralMorph(m)) => {
-            wet(Box::new(SpectralMorph::new(spectral_morph(*m), rate)))
-        }
+        Some(ir::EffectKind::Wah(w)) => wet(DspUnit::Wah(Box::new(Wah::new(wah(*w), rate)))),
+        Some(ir::EffectKind::AmpStack(a)) => wet(DspUnit::Drive(Drive::AmpStack(Box::new(
+            AmpStack::new(amp_stack(*a), rate),
+        )))),
+        Some(ir::EffectKind::Cabinet(c)) => wet(DspUnit::Drive(Drive::Cabinet(Box::new(
+            Cabinet::new(cabinet(*c), rate),
+        )))),
+        Some(ir::EffectKind::ColorSat(c)) => wet(DspUnit::Drive(Drive::ColorSat(Box::new(
+            ColorSat::new(color_sat(*c), rate),
+        )))),
+        Some(ir::EffectKind::SpectralMorph(m)) => wet(DspUnit::SpectralMorph(Box::new(
+            SpectralMorph::new(spectral_morph(*m), rate),
+        ))),
         _ => Dsp::None,
     }
 }
@@ -1353,18 +782,12 @@ pub fn shaper(s: &ir::Shaper, rate: u32) -> Shaper {
 
 /// The filters around `s`'s curve.
 pub fn tone(s: &ir::Shaper) -> drive::Tone {
-    drive::Tone {
-        pre_lowpass_hz: s.pre_lowpass_hz,
-        lowpass_hz: s.lowpass_hz,
-        highpass_hz: s.highpass_hz,
-        sections: s.sections,
-    }
+    map_fields!(s => drive::Tone { pre_lowpass_hz, lowpass_hz, highpass_hz, sections })
 }
 
 pub fn curve(c: &ir::DriveCurve) -> drive::Curve {
     match c {
         ir::DriveCurve::Soft(x) => drive::Curve::Soft(*x),
-        ir::DriveCurve::Tube(x) => drive::Curve::Tube(*x),
         ir::DriveCurve::Power(x) => drive::Curve::Power(*x),
         ir::DriveCurve::Sine(x) => drive::Curve::Sine(*x),
         ir::DriveCurve::Fold(x) => drive::Curve::Fold(*x),
@@ -1380,19 +803,16 @@ pub fn curve(c: &ir::DriveCurve) -> drive::Curve {
             rows: rows.clone(),
             t: *t,
         },
+        ir::DriveCurve::AsymBlend { rows, t } => drive::Curve::AsymBlend {
+            rows: rows.clone(),
+            t: *t,
+        },
     }
 }
 
 /// Multiband overdrive settings in DSP terms.
 pub fn voicing(o: &ir::Overdrive) -> Voicing {
-    Voicing {
-        split_hz: o.split_hz,
-        smooth_hz: o.smooth_hz,
-        drive: o.drive,
-        mix: o.mix,
-        level: o.level,
-        curve: o.curve.clone(),
-    }
+    map_fields!(o => Voicing { curve: o.curve.clone(); split_hz, smooth_hz, drive, mix, level })
 }
 
 /// Sample-and-bit reduction settings in DSP terms: sample hold, bits and noise.
@@ -1407,22 +827,11 @@ pub fn reduction(c: ir::Crush, rate: u32) -> Reduction {
         bits: (c.bits < 16.0).then_some(c.bits.max(1.0)),
         noise: c.noise,
         noise_tone: c.noise_tone,
-        converter: c.converter.map(|v| Converter {
-            clock_hz: v.clock_hz,
-            jitter: v.jitter,
-            pre_hz: v.pre_hz,
-            post_hz: v.post_hz,
-            highpass_hz: v.highpass_hz,
-            step: v.step,
-            mu: v.mu,
-            midrise: v.midrise,
-            dither: v.dither,
-            drive_in: v.drive_in,
-            drive_out: v.drive_out,
-            soft: v.soft,
-            trim: v.trim,
-            wet: v.wet,
-            dry: v.dry,
+        converter: c.converter.map(|v| {
+            map_fields!(v => Converter {
+                clock_hz, jitter, pre_hz, post_hz, highpass_hz, step, mu, midrise,
+                dither, drive_in, drive_out, soft, trim, wet, dry
+            })
         }),
         rate,
     }

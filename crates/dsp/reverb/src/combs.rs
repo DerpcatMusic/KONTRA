@@ -8,61 +8,13 @@
 use crate::Settings;
 use crate::fade::flush;
 use crate::fdn::MAX_PREDELAY_MS;
-use kontra_dsp_core::Biquad;
+use kontra_dsp_core::{Biquad, DelayLine};
 use kontra_law::CombNetwork;
 
-/// A power-of-two ring with one read head `delay` frames behind its write.
-pub(crate) struct Line {
-    buf: Box<[f32]>,
-    pub(crate) delay: usize,
-}
-
-impl Line {
-    /// Not real-time: allocates.
-    pub(crate) fn new(delay: usize) -> Self {
-        Self {
-            buf: vec![0.0; (delay + 1).next_power_of_two()].into(),
-            delay,
-        }
-    }
-
-    pub(crate) fn read(&self, w: usize) -> f32 {
-        let mask = self.buf.len() - 1;
-        self.buf
-            .get(w.wrapping_sub(self.delay) & mask)
-            .copied()
-            .unwrap_or(0.0)
-    }
-
-    /// The value `d` frames behind `w`, linearly between frames; `d` ≥ 1.
-    pub(crate) fn at(&self, w: usize, d: f32) -> f32 {
-        let mask = self.buf.len() - 1;
-        let whole = d as usize;
-        let get = |back: usize| {
-            let i = w.wrapping_sub(back) & mask;
-            self.buf.get(i).copied().unwrap_or(0.0)
-        };
-        let t = d - whole as f32;
-        get(whole) + t * (get(whole + 1) - get(whole))
-    }
-
-    /// Frames the ring can reach back.
-    pub(crate) fn reach(&self) -> usize {
-        self.buf.len() - 1
-    }
-
-    pub(crate) fn write(&mut self, w: usize, v: f32) {
-        let mask = self.buf.len() - 1;
-        if let Some(s) = self.buf.get_mut(w & mask) {
-            *s = v;
-        }
-    }
-}
-
 struct Channel {
-    pre: Line,
-    combs: [(Line, f32); 8],
-    allpasses: [Line; 4],
+    pre: DelayLine,
+    combs: [(DelayLine, f32); 8],
+    allpasses: [DelayLine; 4],
 }
 
 pub struct Combs {
@@ -90,12 +42,16 @@ impl Combs {
         let frames = |ms: f32| (ms * 0.001 * rate) as usize;
         let channel = |c: f32| {
             let spread = c * law.spread_ms;
-            let mut pre = Line::new(MAX_PRE_FRAMES);
-            pre.delay = 0;
+            let mut pre = DelayLine::new(MAX_PRE_FRAMES);
+            pre.set_len(0);
             Channel {
                 pre,
-                combs: law.combs_ms.map(|ms| (Line::new(frames(ms + spread)), 0.0)),
-                allpasses: law.allpasses_ms.map(|ms| Line::new(frames(ms + spread))),
+                combs: law
+                    .combs_ms
+                    .map(|ms| (DelayLine::new(frames(ms + spread)), 0.0)),
+                allpasses: law
+                    .allpasses_ms
+                    .map(|ms| DelayLine::new(frames(ms + spread))),
             }
         };
         let mut combs = Self {
@@ -123,7 +79,7 @@ impl Combs {
         self.input.retune(&butterworth(hz / f64::from(self.rate)));
         let pre = (s.predelay_ms.clamp(0.0, MAX_PREDELAY_MS) * 0.001 * self.rate) as usize;
         for c in &mut self.channels {
-            c.pre.delay = if pre > c.pre.reach() { 0 } else { pre };
+            c.pre.set_len(if pre > MAX_PRE_FRAMES { 0 } else { pre });
         }
     }
 
@@ -138,18 +94,18 @@ impl Combs {
         for frame in io {
             let w = self.w;
             for (x, c) in frame.iter_mut().zip(&mut self.channels) {
-                c.pre.write(w, *x);
-                let input = c.pre.read(w);
+                c.pre.write_at(w, *x);
+                let input = c.pre.read_at(w);
                 let mut sum = 0.0;
                 for (line, f) in &mut c.combs {
-                    let out = line.read(w);
+                    let out = line.read_at(w);
                     *f = flush(out * keep + (1.0 - keep) * *f);
-                    line.write(w, *f * feedback + input);
+                    line.write_at(w, *f * feedback + input);
                     sum += out;
                 }
                 for line in &mut c.allpasses {
-                    let v = line.read(w) - g * sum;
-                    line.write(w, flush(g * v + sum));
+                    let v = line.read_at(w) - g * sum;
+                    line.write_at(w, flush(g * v + sum));
                     sum = v;
                 }
                 *x = sum;

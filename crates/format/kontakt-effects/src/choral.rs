@@ -212,21 +212,11 @@ pub fn saved(version: u16, public: &[u8]) -> Option<[f32; 10]> {
     if version != 0x51 || public.len() < 34 {
         return None;
     }
-    let f = |offset: usize| {
-        let bytes = public.get(offset..offset + 4)?.try_into().ok()?;
-        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
-    };
-    let flag = |offset: usize| public.get(offset).map(|&b| if b != 0 { 1.0 } else { 0.0 });
-    let amount = f(0)?;
-    let rate = f(4)?;
-    let delay = f(8)?;
-    let voices = f(12)?;
-    let width = f(16)?;
-    let feedback = f(20)?;
-    let mix = f(24)?;
-    let invert = flag(28)?;
-    let scatter = flag(29)?;
-    let mode = i32::from_le_bytes(public.get(30..34)?.try_into().ok()?);
+    let mut cur = crate::module::Cursor::new(public);
+    let [amount, rate, delay, voices, width, feedback, mix] = cur.f32_array()?;
+    let invert = crate::module::bool_f(cur.bool()?);
+    let scatter = crate::module::bool_f(cur.bool()?);
+    let mode = cur.i32()?;
     if !(0..=3).contains(&mode) {
         return None;
     }
@@ -266,44 +256,25 @@ pub fn model() -> ir::KnobModel {
     model_from(INIT)
 }
 
-/// What `$EFFECT_TYPE_CHORAL` (43) loads, as Morphology Evolved, Conflux
-/// and Shreddage load it: [`INIT`], every knob through [`model`].
+/// What `$EFFECT_TYPE_CHORAL` (43) loads: [`INIT`], every knob through [`model`].
 pub fn slot_type() -> ir::SlotType {
-    let effect = ir::Effect {
-        kind: choral(INIT),
-        bypass: false,
-        output: 1.0,
-        dry: 0.0,
-    };
-    ir::SlotType {
-        id: 43,
-        subtype: false,
-        reads: 0,
-        kind: 43,
-        effect: Some(effect),
-        laws: [].into(),
-        model: Some(model()),
-    }
+    MODULE.slot_type(&INIT)
 }
 
-/// The KSP names of [`model`]'s knobs: a straight 0..1 for the continuous
-/// ones; mode (0..3) and the switches are set as raw values.
+/// The KSP names of [`model`]'s knobs.
 pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 10] {
-    use ir::KnobTarget::Slot;
-    use ir::SlotKnob::Knob;
-    let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
-    let raw = || ir::Law::Linear { lo: 0.0, hi: 1e6 };
+    use crate::module::{RAW_LAW, UNIT_LAW, knob_row};
     [
-        ("$ENGINE_PAR_CHORAL_RATE", Slot(Knob(0)), unit()),
-        ("$ENGINE_PAR_CHORAL_MODE", Slot(Knob(1)), raw()),
-        ("$ENGINE_PAR_CHORAL_AMOUNT", Slot(Knob(2)), unit()),
-        ("$ENGINE_PAR_CHORAL_VOICES", Slot(Knob(3)), unit()),
-        ("$ENGINE_PAR_CHORAL_DELAY", Slot(Knob(4)), unit()),
-        ("$ENGINE_PAR_CHORAL_WIDTH", Slot(Knob(5)), unit()),
-        ("$ENGINE_PAR_CHORAL_FEEDBACK", Slot(Knob(6)), unit()),
-        ("$ENGINE_PAR_CHORAL_SCATTER", Slot(Knob(7)), raw()),
-        ("$ENGINE_PAR_CHORAL_INVERT_PHASE", Slot(Knob(8)), raw()),
-        ("$ENGINE_PAR_CHORAL_MIX", Slot(Knob(9)), unit()),
+        knob_row("$ENGINE_PAR_CHORAL_RATE", 0, UNIT_LAW),
+        knob_row("$ENGINE_PAR_CHORAL_MODE", 1, RAW_LAW),
+        knob_row("$ENGINE_PAR_CHORAL_AMOUNT", 2, UNIT_LAW),
+        knob_row("$ENGINE_PAR_CHORAL_VOICES", 3, UNIT_LAW),
+        knob_row("$ENGINE_PAR_CHORAL_DELAY", 4, UNIT_LAW),
+        knob_row("$ENGINE_PAR_CHORAL_WIDTH", 5, UNIT_LAW),
+        knob_row("$ENGINE_PAR_CHORAL_FEEDBACK", 6, UNIT_LAW),
+        knob_row("$ENGINE_PAR_CHORAL_SCATTER", 7, RAW_LAW),
+        knob_row("$ENGINE_PAR_CHORAL_INVERT_PHASE", 8, RAW_LAW),
+        knob_row("$ENGINE_PAR_CHORAL_MIX", 9, UNIT_LAW),
     ]
 }
 

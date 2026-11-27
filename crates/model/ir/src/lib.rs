@@ -1007,6 +1007,12 @@ pub enum EffectKind {
     Matrix([[f32; 2]; 2]),
     /// Bands in series; a 0 dB band is flat.
     Eq([Bell; 4]),
+    /// Four EQ bands plus console pass-filter bank (18 dB/oct HP, 12 dB/oct LP).
+    EqPass {
+        bands: [Bell; 4],
+        hp_hz: Option<f32>,
+        lp_hz: Option<f32>,
+    },
     /// A state-variable filter.
     Filter(Filter),
     /// A vowel formant filter.

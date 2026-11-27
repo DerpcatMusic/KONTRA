@@ -175,10 +175,7 @@ fn averaged_triangle(cycles: f64, window: f64) -> f32 {
     ((integral(cycles + 0.5 * window) - integral(cycles - 0.5 * window)) / window) as f32
 }
 
-/// Flushes a value that would decay into the subnormal range.
-fn flush(x: f32) -> f32 {
-    if x.abs() < 1e-20 { 0.0 } else { x }
-}
+use kontra_dsp_core::flush_f32 as flush;
 
 /// One-pole coefficient for a corner at `hz`; 1 passes everything.
 fn one_pole(hz: f32, rate: f32) -> f32 {
@@ -768,3 +765,5 @@ mod tests {
         }
     }
 }
+
+kontra_dsp_core::impl_dsp_core!(DualDelay);

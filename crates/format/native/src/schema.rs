@@ -200,6 +200,11 @@ pub enum DetectorSpec {
     Input,
     Output,
     Trigger,
+    Enhanced,
+    Bus {
+        #[serde(default)]
+        auto_release: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -282,6 +287,10 @@ pub enum GraphEffectSpec {
     },
     Eq {
         bands: [BellSpec; 4],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hp_hz: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lp_hz: Option<f32>,
         #[serde(default, skip_serializing_if = "is_false")]
         bypass: bool,
         #[serde(default = "default_one_f32")]

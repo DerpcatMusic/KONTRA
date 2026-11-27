@@ -118,26 +118,25 @@ pub fn saved(version: u16, public: &[u8]) -> Option<[f32; 13]> {
     if version != 0x51 || public.len() < 52 {
         return None;
     }
-    let f = |offset: usize| {
-        let bytes = public.get(offset..offset + 4)?.try_into().ok()?;
-        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
-    };
-    let flag = |offset: usize| public.get(offset).map(|&b| if b != 0 { 1.0 } else { 0.0 });
-    let rate = f(0)?;
-    let centre = f(4)?;
-    let spread = f(8)?;
-    let feedback = f(12)?;
-    let mix = f(16)?;
-    let notches_norm = f(20)?.clamp(0.0, 1.0);
-    // Native [ref] ([ref] = -11.0f): `clamp(trunc(2 + 11 * notches_norm), 2, 12)`.
-    let notches = (2.0 + 11.0 * notches_norm).trunc().clamp(2.0, 12.0);
-    let amount = f(24)?;
-    let stereo = f(28)?;
-    let mod_mix = f(32)?;
-    let ultra = flag(36)?;
-    let invert_phase = flag(37)?;
-    let invert_mod_mix = flag(38)?;
-    let rate_unit_beats = f(39)?;
+    let mut cur = crate::module::Cursor::new(public);
+    let [
+        rate,
+        centre,
+        spread,
+        feedback,
+        mix,
+        notches_norm,
+        amount,
+        stereo,
+        mod_mix,
+    ] = cur.f32_array()?;
+    let notches = (2.0 + 11.0 * notches_norm.clamp(0.0, 1.0))
+        .trunc()
+        .clamp(2.0, 12.0);
+    let ultra = crate::module::bool_f(cur.bool()?);
+    let invert_phase = crate::module::bool_f(cur.bool()?);
+    let invert_mod_mix = crate::module::bool_f(cur.bool()?);
+    let rate_unit_beats = cur.f32()?;
     let unit =
         crate::psyche::beats_to_sync_unit(Some(rate_unit_beats).filter(|&b| b > 1e-9)) as f32;
     Some([
@@ -160,14 +159,7 @@ pub fn saved(version: u16, public: &[u8]) -> Option<[f32; 13]> {
 /// Whether a saved `BParFXPhasis` v0x51 record uses host tempo sync (`rate_unit_beats > 0`).
 #[must_use]
 pub fn synced(version: u16, public: &[u8]) -> bool {
-    if version != 0x51 {
-        return false;
-    }
-    public
-        .get(39..43)
-        .and_then(|b| b.try_into().ok())
-        .map(f32::from_le_bytes)
-        .is_some_and(|beats| beats.is_finite() && beats > 1e-9)
+    version == 0x51 && crate::module::f32_le(public, 39).is_some_and(|beats| beats > 1e-9)
 }
 
 /// Single-encoding module descriptor for Phasis (`0x5b`).
@@ -192,49 +184,28 @@ pub fn model() -> ir::KnobModel {
     model_from(INIT)
 }
 
-/// What `$EFFECT_TYPE_PHASIS` (41) loads, as Morphology Evolved, Conflux
-/// and Shreddage load it: [`INIT`], every knob through [`model`].
+/// What `$EFFECT_TYPE_PHASIS` (41) loads: [`INIT`], every knob through [`model`].
 pub fn slot_type() -> ir::SlotType {
-    let effect = ir::Effect {
-        kind: phasis(INIT),
-        bypass: false,
-        output: 1.0,
-        dry: 0.0,
-    };
-    ir::SlotType {
-        id: 41,
-        subtype: false,
-        reads: 0,
-        kind: 41,
-        effect: Some(effect),
-        laws: [].into(),
-        model: Some(model()),
-    }
+    MODULE.slot_type(&INIT)
 }
 
-/// The KSP names of [`model`]'s active knobs: a straight 0..1 for the continuous
-/// ones (their texts are 0..100 % straight lines, or the laws above); the
-/// stepped ones (notches 2..12, rate unit `$NI_SYNC_UNIT_*`, switches) are set
-/// as raw values.
+/// The KSP names of [`model`]'s active knobs.
 pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 13] {
-    use ir::KnobTarget::Slot;
-    use ir::SlotKnob::Knob;
-    let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
-    let raw = || ir::Law::Linear { lo: 0.0, hi: 1e6 };
+    use crate::module::{RAW_LAW, UNIT_LAW, knob_row};
     [
-        ("$ENGINE_PAR_PHASIS_RATE", Slot(Knob(0)), unit()),
-        ("$ENGINE_PAR_PHASIS_RATE_UNIT", Slot(Knob(1)), raw()),
-        ("$ENGINE_PAR_PHASIS_ULTRA", Slot(Knob(2)), raw()),
-        ("$ENGINE_PAR_PHASIS_AMOUNT", Slot(Knob(3)), unit()),
-        ("$ENGINE_PAR_PHASIS_CENTER", Slot(Knob(4)), unit()),
-        ("$ENGINE_PAR_PHASIS_STEREO", Slot(Knob(5)), unit()),
-        ("$ENGINE_PAR_PHASIS_SPREAD", Slot(Knob(6)), unit()),
-        ("$ENGINE_PAR_PHASIS_FEEDBACK", Slot(Knob(7)), unit()),
-        ("$ENGINE_PAR_PHASIS_MOD_MIX", Slot(Knob(8)), unit()),
-        ("$ENGINE_PAR_PHASIS_NOTCHES", Slot(Knob(9)), raw()),
-        ("$ENGINE_PAR_PHASIS_INVERT_PHASE", Slot(Knob(10)), raw()),
-        ("$ENGINE_PAR_PHASIS_INVERT_MOD_MIX", Slot(Knob(11)), raw()),
-        ("$ENGINE_PAR_PHASIS_MIX", Slot(Knob(12)), unit()),
+        knob_row("$ENGINE_PAR_PHASIS_RATE", 0, UNIT_LAW),
+        knob_row("$ENGINE_PAR_PHASIS_RATE_UNIT", 1, RAW_LAW),
+        knob_row("$ENGINE_PAR_PHASIS_ULTRA", 2, RAW_LAW),
+        knob_row("$ENGINE_PAR_PHASIS_AMOUNT", 3, UNIT_LAW),
+        knob_row("$ENGINE_PAR_PHASIS_CENTER", 4, UNIT_LAW),
+        knob_row("$ENGINE_PAR_PHASIS_STEREO", 5, UNIT_LAW),
+        knob_row("$ENGINE_PAR_PHASIS_SPREAD", 6, UNIT_LAW),
+        knob_row("$ENGINE_PAR_PHASIS_FEEDBACK", 7, UNIT_LAW),
+        knob_row("$ENGINE_PAR_PHASIS_MOD_MIX", 8, UNIT_LAW),
+        knob_row("$ENGINE_PAR_PHASIS_NOTCHES", 9, RAW_LAW),
+        knob_row("$ENGINE_PAR_PHASIS_INVERT_PHASE", 10, RAW_LAW),
+        knob_row("$ENGINE_PAR_PHASIS_INVERT_MOD_MIX", 11, RAW_LAW),
+        knob_row("$ENGINE_PAR_PHASIS_MIX", 12, UNIT_LAW),
     ]
 }
 

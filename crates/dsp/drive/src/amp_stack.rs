@@ -5,7 +5,8 @@
 
 use std::f64::consts::TAU;
 
-use kontra_dsp_core::{Biquad, Side, high_pass, shelf};
+use crate::stage::{DcBlocker, ToneStack3};
+use kontra_dsp_core::{Biquad, Halfband, Side, high_pass, shelf};
 
 /// Graphic EQ band center frequencies (Hz) for 9-band bass amplifiers.
 pub const GEQ_BANDS_HZ: [f32; 9] = [
@@ -59,52 +60,13 @@ pub struct AmpStackSettings {
     pub mono: bool,
 }
 
-#[inline]
-fn flush32(x: f32) -> f32 {
-    if x.abs() < 1e-20 || !x.is_finite() {
-        0.0
-    } else {
-        x
-    }
-}
+use kontra_dsp_core::flush_f32 as flush32;
 
-#[inline]
-fn db_to_lin(db: f32) -> f32 {
-    10.0f32.powf(db / 20.0)
-}
+use kontra_dsp_core::math::db_to_gain_f32 as db_to_lin;
 
-/// Cookbook peaking EQ biquad.
-fn peak(hz: f32, q: f32, gain_db: f32, rate: u32) -> Biquad {
-    let r = f64::from(rate.max(1));
-    let f = f64::from(hz).clamp(20.0, 0.45 * r);
-    let w = TAU * f / r;
-    let a = 10.0f64.powf(f64::from(gain_db) / 40.0);
-    let alpha = w.sin() / (2.0 * f64::from(q).max(0.1));
-    let cos_w = w.cos();
-    let b0 = 1.0 + alpha * a;
-    let b1 = -2.0 * cos_w;
-    let b2 = 1.0 - alpha * a;
-    let a0 = 1.0 + alpha / a;
-    let a1 = -2.0 * cos_w;
-    let a2 = 1.0 - alpha / a;
-    Biquad::new([b0, b1, b2, a0, a1, a2])
-}
+use kontra_dsp_core::peak;
 
-/// Cookbook second-order low-pass biquad.
-fn low_pass(hz: f32, q: f32, rate: u32) -> Biquad {
-    let r = f64::from(rate.max(1));
-    let f = f64::from(hz).clamp(20.0, 0.47 * r);
-    let w = TAU * f / r;
-    let cos_w = w.cos();
-    let alpha = w.sin() / (2.0 * f64::from(q).max(0.1));
-    let b0 = 0.5 * (1.0 - cos_w);
-    let b1 = 1.0 - cos_w;
-    let b2 = b0;
-    let a0 = 1.0 + alpha;
-    let a1 = -2.0 * cos_w;
-    let a2 = 1.0 - alpha;
-    Biquad::new([b0, b1, b2, a0, a1, a2])
-}
+use kontra_dsp_core::low_pass;
 
 /// Smooth saturator with unit small-signal slope at `x = 0` and level-dependent
 /// cathode self-bias (`bias_env`) that shifts the duty cycle under overdrive,
@@ -128,22 +90,20 @@ fn diode_clip(x: f32, threshold: f32) -> f32 {
 }
 
 /// Multi-stage amplifier / overdrive / distortion processor.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct AmpStack {
     s: AmpStackSettings,
     rate: u32,
     pre_hp: Biquad,
     bright_shelf: Biquad,
     pre_mid: Biquad,
-    bass: Biquad,
-    mid: Biquad,
-    treble: Biquad,
+    tone: ToneStack3,
     presence: Biquad,
     resonance: Biquad,
     tone_cut: Biquad,
     geq: [Biquad; 9],
-    /// DC blocker state per channel (`[x_prev, y_prev]`).
-    dc: [[f32; 2]; 2],
+    /// DC blocker state per channel.
+    dc: DcBlocker,
     /// Preamp envelope follower per channel for cathode self-bias (H2 asymmetry).
     bias_env: [f32; 2],
     /// Smoothed preamp gain, secondary drive, master gain, tremolo depth.
@@ -154,6 +114,8 @@ pub struct AmpStack {
     smooth: f32,
     /// Optical tremolo LFO phase in cycles (`0..1`).
     trem_phase: f64,
+    /// 2x polyphase IIR halfband oversampler around the nonlinear stage.
+    oversample: Halfband,
 }
 
 impl AmpStack {
@@ -161,21 +123,18 @@ impl AmpStack {
     pub fn new(s: AmpStackSettings, rate: u32) -> Self {
         let rate = rate.max(8_000);
         let smooth = 1.0 - (-1.0 / (0.008 * rate as f32)).exp();
-        let flat = peak(1000.0, 1.0, 0.0, rate);
         let mut amp = Self {
             s,
             rate,
             pre_hp: high_pass(60.0, 0.707, rate),
             bright_shelf: shelf(2400.0, 0.0, 0.7, Side::High, rate),
-            pre_mid: flat.clone(),
-            bass: shelf(120.0, 0.0, 0.7, Side::Low, rate),
-            mid: flat.clone(),
-            treble: shelf(3200.0, 0.0, 0.7, Side::High, rate),
+            pre_mid: peak(1000.0, 1.0, 0.0, rate),
+            tone: ToneStack3::new(120.0, 1000.0, 3200.0, rate),
             presence: shelf(4200.0, 0.0, 0.7, Side::High, rate),
             resonance: shelf(100.0, 0.0, 0.7, Side::Low, rate),
             tone_cut: low_pass(18_000.0, 0.707, rate),
             geq: GEQ_BANDS_HZ.map(|hz| peak(hz, 1.4, 0.0, rate)),
-            dc: [[0.0; 2]; 2],
+            dc: DcBlocker::new(0.998),
             bias_env: [0.0; 2],
             preamp_cur: s.preamp_gain.max(0.0),
             drive_cur: s.drive.max(0.0),
@@ -183,6 +142,7 @@ impl AmpStack {
             trem_depth_cur: s.tremolo_depth.clamp(0.0, 1.0),
             smooth,
             trem_phase: 0.0,
+            oversample: Halfband::new(rate),
         };
         amp.retune_filters(s);
         amp
@@ -193,6 +153,28 @@ impl AmpStack {
     pub fn set(&mut self, s: AmpStackSettings) {
         self.s = s;
         self.retune_filters(s);
+    }
+
+    /// Clears all filter, oversampler, DC-blocker, and envelope states.
+    pub fn reset(&mut self) {
+        self.pre_hp.reset();
+        self.bright_shelf.reset();
+        self.pre_mid.reset();
+        self.tone.reset();
+        self.presence.reset();
+        self.resonance.reset();
+        self.tone_cut.reset();
+        for band in &mut self.geq {
+            band.reset();
+        }
+        self.dc.reset();
+        self.bias_env = [0.0; 2];
+        self.preamp_cur = self.s.preamp_gain.max(0.0);
+        self.drive_cur = self.s.drive.max(0.0);
+        self.master_cur = self.s.master.max(0.0);
+        self.trem_depth_cur = self.s.tremolo_depth.clamp(0.0, 1.0);
+        self.trem_phase = 0.0;
+        self.oversample.reset();
     }
 
     fn retune_filters(&mut self, s: AmpStackSettings) {
@@ -294,26 +276,16 @@ impl AmpStack {
             .retune(&shelf(bright_hz, bright_db, 0.7, Side::High, rate));
         self.pre_mid
             .retune(&peak(pre_mid_hz, 0.9, pre_mid_db, rate));
-        self.bass.retune(&shelf(
+        self.tone.retune(
             bass_hz,
             (s.bass_db + low_extra).clamp(-20.0, 20.0),
-            0.7,
-            Side::Low,
-            rate,
-        ));
-        self.mid.retune(&peak(
             s.mid_hz.clamp(160.0, 3600.0),
             0.9,
             s.mid_db.clamp(-20.0, 20.0),
-            rate,
-        ));
-        self.treble.retune(&shelf(
             treble_hz,
             s.treble_db.clamp(-20.0, 20.0),
-            0.7,
-            Side::High,
             rate,
-        ));
+        );
         self.presence.retune(&shelf(
             4200.0,
             s.presence_db.clamp(-14.0, 14.0),
@@ -416,35 +388,33 @@ impl AmpStack {
         self.bright_shelf.process(io);
         self.pre_mid.process(io);
 
-        // Nonlinear preamp + power-amp waveshaping + DC block.
-        let dc_r = 0.996f32;
-        let env_att = 1.0 - (-1.0 / (0.004 * self.rate as f32)).exp();
-        let env_rel = 1.0 - (-1.0 / (0.040 * self.rate as f32)).exp();
-        for frame in io.iter_mut() {
-            self.preamp_cur += (preamp_tgt - self.preamp_cur) * smooth;
-            self.drive_cur += (drive_tgt - self.drive_cur) * smooth;
-            let preamp = self.preamp_cur;
-            let drive = self.drive_cur;
-            for ((sample, st), env) in frame
-                .iter_mut()
-                .zip(self.dc.iter_mut())
-                .zip(self.bias_env.iter_mut())
-            {
+        // 2x oversampled nonlinear preamp + power-amp waveshaping + DC block.
+        let os_rate = 2.0 * self.rate as f32;
+        let smooth_os = 1.0 - (-1.0 / (0.008 * os_rate)).exp();
+        let env_att = 1.0 - (-1.0 / (0.004 * os_rate)).exp();
+        let env_rel = 1.0 - (-1.0 / (0.040 * os_rate)).exp();
+        let s = self.s;
+        let preamp_cur = &mut self.preamp_cur;
+        let drive_cur = &mut self.drive_cur;
+        let dc = &mut self.dc;
+        let bias_env = &mut self.bias_env;
+        self.oversample.process(io, |mut frame| {
+            *preamp_cur += (preamp_tgt - *preamp_cur) * smooth_os;
+            *drive_cur += (drive_tgt - *drive_cur) * smooth_os;
+            let preamp = *preamp_cur;
+            let drive = *drive_cur;
+            for (ch, (sample, env)) in frame.iter_mut().zip(bias_env.iter_mut()).enumerate() {
                 let a = sample.abs();
                 let c = if a > *env { env_att } else { env_rel };
                 *env = flush32(*env + (a - *env) * c);
-                let shaped = Self::shape(&self.s, *sample, preamp, drive, *env);
-                let y = flush32(shaped - st[0] + dc_r * st[1]);
-                st[0] = shaped;
-                st[1] = y;
-                *sample = y;
+                let shaped = Self::shape(&s, *sample, preamp, drive, *env);
+                *sample = dc.tick_ch(ch, shaped);
             }
-        }
+            frame
+        });
 
         // Tone stack + power-amp presence/resonance + tone cut.
-        self.bass.process(io);
-        self.mid.process(io);
-        self.treble.process(io);
+        self.tone.process(io);
         self.presence.process(io);
         self.resonance.process(io);
         if use_cut {

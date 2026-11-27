@@ -22,7 +22,7 @@ jobs:
           - layer: base-model
             crates: "-p kontra-time -p kontra-law -p kontra-macros -p kontra-params -p kontra-events -p kontra-ir -p kontra-ui-model -p kontra-protocol"
           - layer: dsp
-            crates: "-p kontra-dsp-core -p kontra-dsp-filter -p kontra-dsp-eq -p kontra-dsp-dynamics -p kontra-dsp-delay -p kontra-dsp-reverb -p kontra-dsp-drive -p kontra-dsp-spatial -p kontra-dsp-modulators -p kontra-dsp"
+            crates: "-p kontra-dsp-core -p kontra-dsp-filter -p kontra-dsp-dynamics -p kontra-dsp-delay -p kontra-dsp-reverb -p kontra-dsp-drive -p kontra-dsp-spatial -p kontra-dsp"
           - layer: engine-script
             crates: "-p kontra-stream -p kontra-voice -p kontra-vm -p kontra-effects -p kontra-plan -p kontra-prepare -p kontra-trace -p kontra-script-ui -p kontra-engine -p kontra-ksp -p kontra-lua"
           - layer: formats

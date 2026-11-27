@@ -176,11 +176,8 @@ pub static MODULE: crate::module::Module = crate::module::Module {
 };
 
 pub fn model(public: &[u8]) -> Option<ir::KnobModel> {
-    let f = |n: usize| {
-        let bytes = public.get(n..n + 4)?.try_into().ok()?;
-        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
-    };
-    Some(MODULE.knob_model(&[f(0)?, f(4)?, f(8)?, f(12)?, f(16)?, f(20)?]))
+    let saved: [f32; 6] = crate::module::Cursor::new(public).f32_array()?;
+    Some(MODULE.knob_model(&saved))
 }
 
 /// Whether the record's mono switch is on (not carried).
@@ -189,19 +186,16 @@ pub fn mono(public: &[u8]) -> bool {
     public.get(24).is_some_and(|&b| b != 0)
 }
 
-/// The KSP names of [`model`]'s knobs; each is the record's field as set
-/// (bindings table `fx_other.tsv`).
+/// The KSP names of [`model`]'s knobs.
 pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 6] {
-    use ir::KnobTarget::Slot;
-    use ir::SlotKnob::Knob;
-    let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
+    use crate::module::{UNIT_LAW, knob_row};
     [
-        ("$ENGINE_PAR_DS_VOLUME", Slot(Knob(0)), unit()),
-        ("$ENGINE_PAR_DS_TONE", Slot(Knob(1)), unit()),
-        ("$ENGINE_PAR_DS_DRIVE", Slot(Knob(2)), unit()),
-        ("$ENGINE_PAR_DS_BASS", Slot(Knob(3)), unit()),
-        ("$ENGINE_PAR_DS_MID", Slot(Knob(4)), unit()),
-        ("$ENGINE_PAR_DS_TREBLE", Slot(Knob(5)), unit()),
+        knob_row("$ENGINE_PAR_DS_VOLUME", 0, UNIT_LAW),
+        knob_row("$ENGINE_PAR_DS_TONE", 1, UNIT_LAW),
+        knob_row("$ENGINE_PAR_DS_DRIVE", 2, UNIT_LAW),
+        knob_row("$ENGINE_PAR_DS_BASS", 3, UNIT_LAW),
+        knob_row("$ENGINE_PAR_DS_MID", 4, UNIT_LAW),
+        knob_row("$ENGINE_PAR_DS_TREBLE", 5, UNIT_LAW),
     ]
 }
 

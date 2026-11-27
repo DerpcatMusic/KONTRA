@@ -1,4 +1,4 @@
-//! An integer-ratio resampler pair (Kontakt's class [ref], quality
+//! An integer-ratio resampler pair (reference resampler [ref], quality
 //! 2): a 16-tap Kaiser-windowed sinc (β 8, [ref]) in `n − 1` phase
 //! rows, 8 low-rate frames of latency per stage. A network
 //! runs between a pair above 48 kHz (wrapper [ref]).

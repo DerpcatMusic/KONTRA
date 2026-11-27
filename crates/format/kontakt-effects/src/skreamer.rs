@@ -66,28 +66,23 @@ pub static MODULE: crate::module::Module = crate::module::Module {
 };
 
 pub fn model(public: &[u8]) -> Option<ir::KnobModel> {
-    let saved = (0..5)
-        .map(|i| {
-            let bytes = public.get(4 * i..4 * i + 4)?.try_into().ok()?;
-            Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
-        })
-        .collect::<Option<Vec<f32>>>()?;
+    let saved: [f32; 5] = crate::module::Cursor::new(public).f32_array()?;
     Some(MODULE.knob_model(&saved))
 }
 
-/// The KSP names of [`model`]'s knobs. Each is the record's field as set
-/// (bindings table `fx_dynamics_dist_tape.tsv`); Kontakt 8.13.1 displays
-/// each as 0..100 % in a straight line (sweep `sk-tp-sweep/sweep.tsv`).
+/// The KSP names of [`model`]'s knobs.
 pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 5] {
-    use ir::KnobTarget::Slot;
-    use ir::SlotKnob::{Knob, Mix};
-    let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
+    use crate::module::{UNIT_LAW, knob_row};
     [
-        ("$ENGINE_PAR_SK_TONE", Slot(Knob(0)), unit()),
-        ("$ENGINE_PAR_SK_DRIVE", Slot(Knob(1)), unit()),
-        ("$ENGINE_PAR_SK_BASS", Slot(Knob(2)), unit()),
-        ("$ENGINE_PAR_SK_BRIGHT", Slot(Knob(3)), unit()),
-        ("$ENGINE_PAR_SK_MIX", Slot(Mix), unit()),
+        knob_row("$ENGINE_PAR_SK_TONE", 0, UNIT_LAW),
+        knob_row("$ENGINE_PAR_SK_DRIVE", 1, UNIT_LAW),
+        knob_row("$ENGINE_PAR_SK_BASS", 2, UNIT_LAW),
+        knob_row("$ENGINE_PAR_SK_BRIGHT", 3, UNIT_LAW),
+        (
+            "$ENGINE_PAR_SK_MIX",
+            ir::KnobTarget::Slot(ir::SlotKnob::Mix),
+            UNIT_LAW,
+        ),
     ]
 }
 

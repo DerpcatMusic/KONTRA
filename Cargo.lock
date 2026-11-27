@@ -1720,11 +1720,9 @@ dependencies = [
  "kontra-dsp-delay",
  "kontra-dsp-drive",
  "kontra-dsp-dynamics",
- "kontra-dsp-eq",
  "kontra-dsp-filter",
  "kontra-dsp-reverb",
  "kontra-dsp-spatial",
- "kontra-params",
 ]
 
 [[package]]
@@ -1761,25 +1759,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "kontra-dsp-eq"
-version = "0.0.0"
-dependencies = [
- "kontra-dsp-core",
- "kontra-law",
-]
-
-[[package]]
 name = "kontra-dsp-filter"
 version = "0.0.0"
 dependencies = [
  "kontra-dsp-core",
- "kontra-law",
-]
-
-[[package]]
-name = "kontra-dsp-modulators"
-version = "0.0.0"
-dependencies = [
  "kontra-law",
 ]
 
@@ -1979,16 +1962,19 @@ dependencies = [
  "anyhow",
  "hound",
  "kontra-engine",
+ "kontra-format-kontakt",
  "kontra-format-uvi",
  "kontra-host",
  "kontra-ksp",
  "kontra-law",
+ "kontra-library",
  "kontra-lua",
  "kontra-prepare",
  "kontra-stream",
  "kontra-ui-model",
  "libc",
  "rustfft",
+ "serde",
  "serde_json",
 ]
 
@@ -2195,7 +2181,6 @@ name = "kontra-ui-model"
 version = "0.0.0"
 dependencies = [
  "kontra-ir",
- "kontra-macros",
 ]
 
 [[package]]

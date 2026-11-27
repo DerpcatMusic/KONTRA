@@ -4,8 +4,6 @@
 use kontra_dsp::delay::{Choir, ChoirSettings};
 use kontra_ir as ir;
 
-use crate::processors::Wet;
-
 pub struct Ensemble {
     choir: Choir,
     direct: f32,
@@ -53,10 +51,8 @@ impl Ensemble {
             direct: e.direct,
         }
     }
-}
 
-impl Wet for Ensemble {
-    fn process(&mut self, io: &mut [[f32; 2]]) {
+    pub fn process(&mut self, io: &mut [[f32; 2]]) {
         const CHUNK: usize = 64;
         for block in io.chunks_mut(CHUNK) {
             let mut dry = [[0.0f32; 2]; CHUNK];
@@ -70,19 +66,21 @@ impl Wet for Ensemble {
         }
     }
 
-    fn memory(&self) -> Option<usize> {
+    #[must_use]
+    pub fn memory(&self) -> Option<usize> {
         Some(self.choir.memory())
     }
 
-    fn written(&self) -> f32 {
+    #[must_use]
+    pub fn written(&self) -> f32 {
         self.choir.written()
     }
 
-    fn idle(&mut self, silence: &mut [[f32; 2]]) {
+    pub fn idle(&mut self, silence: &mut [[f32; 2]]) {
         self.choir.idle(silence.len());
     }
 
-    fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
+    pub fn set(&mut self, kind: &ir::EffectKind, _tempo: f32) {
         if let ir::EffectKind::Ensemble(e) = kind {
             self.choir.set(settings(e));
             self.direct = e.direct;

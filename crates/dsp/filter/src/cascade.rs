@@ -3,7 +3,7 @@
 //! its wet amount; its band state passes a soft knee in the loop. The output
 //! is normalised by the stages' resonant peaks and glides to its gain.
 //! Stage 0's corner and resonance follow a control clock: every 32 frames
-//! they move 0.015 of the way to their settings (Kontakt 8's
+//! they move 0.015 of the way to their settings (the reference
 //! [ref], about 44 ms at 48 kHz), so a sweep does not zipper.
 
 /// One stage: q (damping `2 − 2q`), the highest integrator gain it runs at,
@@ -48,10 +48,7 @@ const STEP: f32 = 0.015;
 /// 111 semitones, in octaves, and of the resonance knob's flatter q slope.
 const STILL: (f32, f32) = (1e-4 * 111.0 / 12.0, 1e-4 * 0.66);
 
-/// Zero for a denormal-range state, so a decaying tail stays cheap.
-fn flush(v: f32) -> f32 {
-    if v.abs() < 1e-20 { 0.0 } else { v }
-}
+use kontra_dsp_core::flush_f32 as flush;
 
 /// A stereo cascade with its stage states and output glide.
 #[derive(Clone, Debug, PartialEq)]

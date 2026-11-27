@@ -43,13 +43,7 @@ pub struct StereoDetune {
     out_lags: [usize; 2],
 }
 
-fn flush(x: f32) -> f32 {
-    if x.abs() < 1e-20 || !x.is_finite() {
-        0.0
-    } else {
-        x
-    }
-}
+use kontra_dsp_core::flush_f32 as flush;
 
 impl StereoDetune {
     /// Allocates pitch-shift and output delay rings for `rate`. Not real-time.

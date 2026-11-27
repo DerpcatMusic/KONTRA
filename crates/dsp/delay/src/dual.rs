@@ -3,6 +3,8 @@
 //! stability-clamped cross-channel feedback, independent wet output levels,
 //! and a stereo width matrix. Outputs the wet signal only.
 
+use kontra_dsp_core::{DelayLine, flush_f32 as flush};
+
 /// Longest delay time [`DualDelay::new`] allocates per line, ms.
 pub const DUAL_MAX_MS: f32 = 4000.0;
 
@@ -18,24 +20,14 @@ pub struct DualDelaySettings {
     pub width: f32,
 }
 
-#[inline]
-fn flush(x: f32) -> f32 {
-    if x.abs() < 1e-20 || !x.is_finite() {
-        0.0
-    } else {
-        x
-    }
-}
-
 /// Dual independent stereo delay processor. Zero allocations in `set`/`process`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DualDelay {
     rate: f32,
     glide: f32,
     max_frames: f32,
-    pre_buf: [Box<[f32]>; 2],
-    main_buf: [Box<[f32]>; 2],
-    mask: usize,
+    pre_buf: [DelayLine; 2],
+    main_buf: [DelayLine; 2],
     write: usize,
     cur_pre: [f32; 2],
     target_pre: [f32; 2],
@@ -58,8 +50,10 @@ impl DualDelay {
     #[must_use]
     pub fn new(s: DualDelaySettings, rate: u32, max_ms: f32) -> Self {
         let rate_f = rate.max(1) as f32;
-        let max_frames = (max_ms.max(1.0) * 0.001 * rate_f).ceil();
-        let cap = (max_frames as usize + 4).next_power_of_two().max(16);
+        let max_frames = ((max_ms.max(1.0) * 0.001 * rate_f).ceil() as usize + 2).max(16);
+        let mk = || DelayLine::new(max_frames);
+        let pre_buf = [mk(), mk()];
+        let cap = pre_buf[0].capacity();
         // ~15 ms glide for delay times, ~5 ms glide for level/feedback/width.
         let glide = 1.0 - (-1.0 / (0.015 * rate_f)).exp();
         let gain_smooth = 1.0 - (-1.0 / (0.005 * rate_f)).exp();
@@ -67,15 +61,8 @@ impl DualDelay {
             rate: rate_f,
             glide,
             max_frames: (cap - 2) as f32,
-            pre_buf: [
-                vec![0.0; cap].into_boxed_slice(),
-                vec![0.0; cap].into_boxed_slice(),
-            ],
-            main_buf: [
-                vec![0.0; cap].into_boxed_slice(),
-                vec![0.0; cap].into_boxed_slice(),
-            ],
-            mask: cap - 1,
+            pre_buf,
+            main_buf: [mk(), mk()],
             write: 0,
             cur_pre: [0.0; 2],
             target_pre: [0.0; 2],
@@ -93,14 +80,17 @@ impl DualDelay {
             written: 0.0,
         };
         d.set(s);
-        // Snap initial state so the first block starts at the saved setting.
-        d.cur_pre = d.target_pre;
-        d.cur_main = d.target_main;
-        d.cur_feedback = d.feedback;
-        d.cur_cross = d.cross;
-        d.cur_level = d.level;
-        d.cur_width = d.width;
+        d.snap();
         d
+    }
+
+    fn snap(&mut self) {
+        self.cur_pre = self.target_pre;
+        self.cur_main = self.target_main;
+        self.cur_feedback = self.feedback;
+        self.cur_cross = self.cross;
+        self.cur_level = self.level;
+        self.cur_width = self.width;
     }
 
     /// Updates settings without allocating.
@@ -125,19 +115,11 @@ impl DualDelay {
 
     /// Clears all delay buffers and snaps glides.
     pub fn reset(&mut self) {
-        for b in &mut self.pre_buf {
-            b.fill(0.0);
-        }
-        for b in &mut self.main_buf {
-            b.fill(0.0);
+        for b in self.pre_buf.iter_mut().chain(self.main_buf.iter_mut()) {
+            b.reset();
         }
         self.write = 0;
-        self.cur_pre = self.target_pre;
-        self.cur_main = self.target_main;
-        self.cur_feedback = self.feedback;
-        self.cur_cross = self.cross;
-        self.cur_level = self.level;
-        self.cur_width = self.width;
+        self.snap();
         self.written = 0.0;
     }
 
@@ -173,24 +155,8 @@ impl DualDelay {
         self.written = 0.0;
     }
 
-    #[inline]
-    fn read_linear(buf: &[f32], mask: usize, write: usize, delay: f32) -> f32 {
-        let i0 = delay as usize;
-        let frac = delay - i0 as f32;
-        let a = buf
-            .get(write.wrapping_sub(i0) & mask)
-            .copied()
-            .unwrap_or(0.0);
-        let b = buf
-            .get(write.wrapping_sub(i0 + 1) & mask)
-            .copied()
-            .unwrap_or(0.0);
-        a + frac * (b - a)
-    }
-
     /// Processes stereo audio in place, replacing `io` with the wet output.
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
-        let mask = self.mask;
         let glide = self.glide;
         let gs = self.gain_smooth;
         let mut peak = 0.0f32;
@@ -199,7 +165,6 @@ impl DualDelay {
             let [in_l, in_r] = *frame;
             let wi = self.write;
 
-            // Step delay-time and gain/width glides for click-free live drags.
             for (c, &t) in self.cur_pre.iter_mut().zip(&self.target_pre) {
                 *c += glide * (t - *c);
             }
@@ -214,49 +179,32 @@ impl DualDelay {
             }
             self.cur_cross += gs * (self.cross - self.cur_cross);
             self.cur_width += gs * (self.width - self.cur_width);
-            let fb_l = self.cur_feedback[0];
-            let fb_r = self.cur_feedback[1];
-            let cross = self.cur_cross;
-            let lvl_l = self.cur_level[0];
-            let lvl_r = self.cur_level[1];
-            let w = self.cur_width;
-            let inv_w = 1.0 - w;
 
-            // Write inputs into pre-delay rings, then read pre-delayed samples
-            // (0-frame predelay reads back the current sample with zero latency).
-            if let Some(s) = self.pre_buf[0].get_mut(wi) {
-                *s = in_l;
-            }
-            if let Some(s) = self.pre_buf[1].get_mut(wi) {
-                *s = in_r;
-            }
-            let pre_l = Self::read_linear(&self.pre_buf[0], mask, wi, self.cur_pre[0]);
-            let pre_r = Self::read_linear(&self.pre_buf[1], mask, wi, self.cur_pre[1]);
+            self.pre_buf[0].write_at(wi, in_l);
+            self.pre_buf[1].write_at(wi, in_r);
+            let pre_l = self.pre_buf[0].read_linear_at(wi, self.cur_pre[0]);
+            let pre_r = self.pre_buf[1].read_linear_at(wi, self.cur_pre[1]);
 
-            // Read main delay lines before writing the next feedback sum.
-            let main_l = Self::read_linear(&self.main_buf[0], mask, wi, self.cur_main[0]);
-            let main_r = Self::read_linear(&self.main_buf[1], mask, wi, self.cur_main[1]);
+            let main_l = self.main_buf[0].read_linear_at(wi, self.cur_main[0]);
+            let main_r = self.main_buf[1].read_linear_at(wi, self.cur_main[1]);
 
-            let next_l = flush(pre_l + fb_l * main_l + cross * main_r);
-            let next_r = flush(pre_r + fb_r * main_r + cross * main_l);
-            if let Some(s) = self.main_buf[0].get_mut(wi) {
-                *s = next_l;
-            }
-            if let Some(s) = self.main_buf[1].get_mut(wi) {
-                *s = next_r;
-            }
+            let next_l = flush(pre_l + self.cur_feedback[0] * main_l + self.cur_cross * main_r);
+            let next_r = flush(pre_r + self.cur_feedback[1] * main_r + self.cur_cross * main_l);
+            self.main_buf[0].write_at(wi, next_l);
+            self.main_buf[1].write_at(wi, next_r);
             peak = peak
                 .max(in_l.abs())
                 .max(in_r.abs())
                 .max(next_l.abs())
                 .max(next_r.abs());
 
-            // Independent wet levels + stereo width matrix.
-            let ol = main_l * lvl_l;
-            let or = main_r * lvl_r;
+            let ol = main_l * self.cur_level[0];
+            let or = main_r * self.cur_level[1];
+            let w = self.cur_width;
+            let inv_w = 1.0 - w;
             *frame = [w * ol + inv_w * or, inv_w * ol + w * or];
 
-            self.write = wi.wrapping_add(1) & mask;
+            self.write = wi.wrapping_add(1);
         }
         self.written = peak;
     }
@@ -287,7 +235,6 @@ mod tests {
     #[test]
     fn independent_lr_echoes_land_at_exact_predelay_plus_time() {
         let rate = 48_000;
-        // L: 10 ms pre + 20 ms main = 30 ms (1440 frames); R: 0 ms pre + 50 ms main = 50 ms (2400 frames).
         let mut d = DualDelay::new(
             settings([10.0, 0.0], [20.0, 50.0], [0.5, 0.0], 0.0, [1.0, 1.0], 1.0),
             rate,
@@ -316,7 +263,6 @@ mod tests {
     #[test]
     fn cross_feedback_is_clamped_stable_and_width_swaps_or_monos() {
         let rate = 48_000;
-        // Cross feedback requested at 1.0 with fb=0.8 must clamp to 0.2 and stay bounded.
         let mut d = DualDelay::new(
             settings([0.0, 0.0], [10.0, 10.0], [0.8, 0.8], 1.0, [1.0, 1.0], 0.0),
             rate,
@@ -326,7 +272,6 @@ mod tests {
         io[0] = [1.0, 0.0];
         d.process(&mut io);
         assert!(io.iter().flatten().all(|v| v.is_finite() && v.abs() <= 2.0));
-        // Width = 0 swaps L and R: left impulse appears on right channel at 10ms (480 frames).
         assert!((io[480][1] - 1.0).abs() < 1e-4 && io[480][0].abs() < 1e-4);
     }
 }

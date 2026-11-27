@@ -16,21 +16,18 @@ pub fn effect(
     if version != 0x10 {
         return None;
     }
-    let f = |n: usize| {
-        let bytes = public.get(4 * n..4 * n + 4)?.try_into().ok()?;
-        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
-    };
-    let byte = |n: usize| public.get(n).map(|&b| b != 0);
     match module {
         // Attack, sustain, gain, then the clip switch as an i32 0 or 1.
         0x43 => {
-            let clip = f(3).map(f32::to_bits).and_then(|bits| match bits {
-                0 => Some(false),
-                1 => Some(true),
-                _ => None,
-            })?;
+            let mut cur = crate::module::Cursor::new(public);
+            let [attack, sustain, gain] = cur.f32_array()?;
+            let clip = match cur.i32()? {
+                0 => false,
+                1 => true,
+                _ => return None,
+            };
             Some((
-                ir::EffectKind::Transient(transient(f(0)?, f(1)?, f(2)?, clip)),
+                ir::EffectKind::Transient(transient(attack, sustain, gain, clip)),
                 None,
             ))
         }
@@ -41,7 +38,7 @@ pub fn effect(
             let c = feedback(saved, link, hq);
             Some((
                 ir::EffectKind::Compressor(c),
-                byte(30)?.then_some("Feedback Compressor side chain"),
+                crate::module::flag_at(public, 30)?.then_some("Feedback Compressor side chain"),
             ))
         }
         _ => None,
@@ -51,20 +48,19 @@ pub fn effect(
 /// Unbound float 6 (offset 24..28) in a version `0x10` Feedback Compressor record.
 #[must_use]
 pub fn feedback_extra_float(public: &[u8]) -> Option<f32> {
-    let bytes: [u8; 4] = public.get(24..28)?.try_into().ok()?;
-    Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
+    crate::module::f32_le(public, 24)
 }
 
 /// A version 0x10 Feedback Compressor record's six knobs (input, make-up,
 /// attack, release, ratio, mix, each 0..=1), its link byte (29), and its
 /// HQ mode byte (28).
 fn feedback_saved(public: &[u8]) -> Option<([f32; 6], bool, bool)> {
-    let f = |n: usize| {
-        let bytes = public.get(4 * n..4 * n + 4)?.try_into().ok()?;
-        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
-    };
-    let saved = [f(0)?, f(1)?, f(2)?, f(3)?, f(4)?, f(5)?];
-    Some((saved, *public.get(29)? != 0, *public.get(28)? != 0))
+    let saved = crate::module::Cursor::new(public).f32_array()?;
+    Some((
+        saved,
+        crate::module::flag_at(public, 29)?,
+        crate::module::flag_at(public, 28)?,
+    ))
 }
 
 /// The Feedback Compressor's script knobs (`$ENGINE_PAR_FCOMP_*`): every

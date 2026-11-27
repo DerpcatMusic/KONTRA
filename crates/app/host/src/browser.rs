@@ -112,6 +112,9 @@ pub struct Browser {
     /// The player's presets folder ([`crate::presets`]), listed after each
     /// library's own presets.
     pub user: Option<PathBuf>,
+    /// Optional wakeup notified from the scan thread when a background scan
+    /// completes, so headless hosts wake their control tick without polling.
+    on_ready: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Drop for Browser {
@@ -159,9 +162,17 @@ impl Browser {
             saved: Arc::default(),
             notices: Vec::new(),
             user: None,
+            on_ready: None,
         };
         browser.rescan();
         browser
+    }
+
+    /// Registers a wakeup called on the scan thread whenever a background scan
+    /// finishes, so headless hosts can poll the catalog and load awaiting parts
+    /// without an open editor.
+    pub fn set_on_ready(&mut self, ready: impl Fn() + Send + Sync + 'static) {
+        self.on_ready = Some(Arc::new(ready));
     }
 
     /// Finds library folders on its own from now on: registrations,
@@ -280,6 +291,7 @@ impl Browser {
         let index_path = self.index_path.clone();
         let mut previous = self.catalog.libraries.clone();
         let scanning = Arc::clone(&progress);
+        let on_ready = self.on_ready.clone();
         self.scans += 1;
         let (scan, saved) = (self.scans, Arc::clone(&self.saved));
         let spawned = std::thread::Builder::new()
@@ -377,6 +389,9 @@ impl Browser {
                         found: found_now,
                         moved,
                     });
+                    if let Some(ready) = &on_ready {
+                        ready();
+                    }
                 }
             });
         if spawned.is_ok() {

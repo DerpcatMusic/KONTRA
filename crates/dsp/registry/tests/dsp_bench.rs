@@ -244,7 +244,7 @@ fn dsp_kernel_suite() {
     });
 
     let mut shaper_tube = Shaper::new(
-        Curve::Tube(0.8),
+        Curve::Tanh(4.0),
         Tone {
             pre_lowpass_hz: Some(8000.0),
             lowpass_hz: Some(12000.0),

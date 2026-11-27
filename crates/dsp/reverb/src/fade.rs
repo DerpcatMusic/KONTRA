@@ -61,6 +61,12 @@ impl Fade {
         self.gain
     }
 
+    pub(crate) fn reset(&mut self) {
+        self.pending = None;
+        self.gain = 1.0;
+        self.step = 0.0;
+    }
+
     /// This frame's wet gain, and the pending settings at the bottom of a
     /// fade-out.
     pub(crate) fn tick(&mut self) -> (f32, Option<Settings>) {
@@ -81,7 +87,4 @@ impl Fade {
     }
 }
 
-/// `x`, or 0 where it would decay into denormals (the lines feed back).
-pub(crate) fn flush(x: f32) -> f32 {
-    if x.abs() < 1e-20 { 0.0 } else { x }
-}
+pub(crate) use kontra_dsp_core::flush_f32 as flush;

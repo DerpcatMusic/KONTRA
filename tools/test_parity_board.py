@@ -35,33 +35,40 @@ try:
         board.SNAP = pathlib.Path(d)
         (board.SNAP / "a.tsv").write_text("k\tv\nb\t1\na\t2\nc\n")
         (board.SNAP / "dsp-oracle.tsv").write_text(
-            "effect_id\ttest_name\tmax_err_db\tstatus\tcommit\n"
-            "bad\tcrates/does/not/exist.rs::fake_test\t0.1\ttested\tdeadbeef\n"
-            "fail\tcrates/dsp/filter/tests/formant.rs::the_formant_matches_kontakt_within_a_tenth_of_a_db\t5.0\tfailing\tdeadbeef\n"
+            "effect_id\ttest_name\tmax_err_db\tprovenance\tkind\tstatus\tcommit\n"
+            "bad\tcrates/does/not/exist.rs::fake_test\t0.1\tbinary-re\tscalar-spot\ttested\tdeadbeef\n"
+            "dead\tcrates/engine/effects/src/measured_dsp.rs::x\t0.1\tbinary-re\tscalar-spot\ttested\tdeadbeef\n"
+            "fail\tcrates/dsp/filter/tests/formant.rs::the_formant_matches_kontakt_within_a_tenth_of_a_db\t5.0\tbinary-re\tspectrum-sweep\tfailing\tdeadbeef\n"
+            "fake\tcrates/dsp/filter/tests/formant.rs::the_formant_matches_kontakt_within_a_tenth_of_a_db\t1.5\tsynthetic-approx\tscalar-spot\ttested\tdeadbeef\n"
         )
         errs = board.snapshot_errors()
         assert any("not sorted" in e for e in errs), errs
         assert any("1 columns" in e for e in errs), errs
         assert any("cited test file missing" in e for e in errs), errs
+        assert any("dead standalone oracle file forbidden" in e for e in errs), errs
+        assert any("cannot mark status='tested'" in e for e in errs), errs
         assert any("marked failing" in e for e in errs), errs
 finally:
     board.SNAP = real_snap
 
-# Verify real board invariants: absent oracle entries grade missing; host-uninstantiable stubs grade partial;
-# oracle-verified modules grade tested; all 11 ni-file partial classes appear.
+# Verify real board invariants: absent oracle entries grade missing; synthetic/sanity/unit proofs
+# grade partial; real production oracle-verified modules grade tested; all 59 modules (including
+# mangling) are tracked; all 11 ni-file partial classes appear.
 assert board.oracle_row("kontakt.dsp.fake.measured", "utility", "Fake: output vs oracle", "fake", True, {})["status"] == "missing"
 _, _, _, _ = board.build(refresh=False)
 manual, status = board.ksp_inputs()
 dsp_rows = {r["id"]: r for r in board.kontakt_dsp(status)}
+for mangled in ("beat_masher", "gater", "beat_slicer", "reverse_grain", "transpose_stretch"):
+    assert f"kontakt.dsp.{mangled}.ir" in dsp_rows, f"mangling module missing: {mangled}"
 assert dsp_rows["kontakt.dsp.core_cell.measured"]["status"] == "partial", dsp_rows["kontakt.dsp.core_cell.measured"]
-assert dsp_rows["kontakt.dsp.send_levels.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.send_levels.measured"]
-assert dsp_rows["kontakt.dsp.jump.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.jump.measured"]
+assert dsp_rows["kontakt.dsp.dyx.measured"]["status"] == "partial", dsp_rows["kontakt.dsp.dyx.measured"]
+assert dsp_rows["kontakt.dsp.jump.measured"]["status"] == "partial", dsp_rows["kontakt.dsp.jump.measured"]
+assert dsp_rows["kontakt.dsp.kolor.measured"]["status"] == "partial", dsp_rows["kontakt.dsp.kolor.measured"]
+assert dsp_rows["kontakt.dsp.compressor.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.compressor.measured"]
 assert dsp_rows["kontakt.dsp.cry_wah.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.cry_wah.measured"]
-assert dsp_rows["kontakt.dsp.plate_reverb.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.plate_reverb.measured"]
-assert dsp_rows["kontakt.dsp.kolor.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.kolor.measured"]
 assert dsp_rows["kontakt.dsp.solid_g_eq.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.solid_g_eq.measured"]
-assert dsp_rows["kontakt.dsp.lo_fi.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.lo_fi.measured"]
 assert dsp_rows["kontakt.dsp.solid_bus_comp.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.solid_bus_comp.measured"]
+assert dsp_rows["kontakt.dsp.stereo_modeller.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.stereo_modeller.measured"]
 assert dsp_rows["kontakt.dsp.filter.measured"]["status"] == "tested", dsp_rows["kontakt.dsp.filter.measured"]
 
 fmt_rows, _, _ = board.kontakt_format()

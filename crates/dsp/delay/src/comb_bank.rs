@@ -24,7 +24,7 @@ const FLOOR: f32 = 3.0;
 /// [ref]).
 const SMOOTHER_DELAY: f32 = 2.0;
 /// The one-pole that rounds the LFO ([ref](+0x3c0, 4.0)`), run
-/// per sample on the triangle before it moves the heads. Kontakt through a
+/// per sample on the triangle before it moves the heads. The reference engine through a
 /// steady 500 Hz sine swings 0.185 / 0.366 / 0.747 / 0.956 of the range at
 /// Rate 100 / 90 / 75 / 50 %; this pole gives 0.184 / 0.375 / 0.741 / 0.948.
 const LFO_SMOOTH_HZ: f32 = 4.0;
@@ -258,10 +258,7 @@ fn scale(k: f32, a: [f32; 2]) -> [f32; 2] {
     a.map(|x| k * x)
 }
 
-/// Flushes a value that would decay into the subnormal range.
-fn flush(x: f32) -> f32 {
-    if x.abs() < 1e-20 { 0.0 } else { x }
-}
+use kontra_dsp_core::flush_f32 as flush;
 
 /// The LFO and what follows it: its phase, its rounded triangle and the
 /// voices' smoothed scan levels.

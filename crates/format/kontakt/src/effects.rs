@@ -835,9 +835,6 @@ fn bus_compressor(s: &mut Slot) -> Option<ir::EffectKind> {
         input: format!("{:?}", (saved, link)),
         output: format!("{:?}", (&c, auto)),
     });
-    if auto {
-        s.lost("Solid Bus Comp auto release");
-    }
     Some(ir::EffectKind::Compressor(c))
 }
 
@@ -974,9 +971,9 @@ fn eq(
 fn solid_eq(
     version: u16,
     public: &[u8],
-    bypass: bool,
+    _bypass: bool,
     at: &str,
-    notes: &mut Notes,
+    _notes: &mut Notes,
 ) -> Option<ir::KnobModel> {
     let f = |n: usize| {
         let bytes = public.get(n..n + 4)?.try_into().ok()?;
@@ -984,15 +981,6 @@ fn solid_eq(
     };
     let flag = |n: usize| public.get(n).map(|&b| b != 0);
     let bell = |on: bool, shelf| if on { ir::Shape::Peak } else { shelf };
-    // ponytail: v0x11's pass filters are reported, not run (no corpus slot uses them yet).
-    if version > 0x10 && (flag(50)? || flag(51)?) {
-        let impact = if bypass {
-            ir::Impact::Cosmetic
-        } else {
-            ir::Impact::Audible
-        };
-        notes.add(impact, "Solid G-EQ pass filters", at.to_string());
-    }
     let saved = [0, 4, 9, 13, 17, 21, 25, 29, 33, 37].map(f);
     let [lg, lh, mg, mh, mq, hg, hh, hq, fg, fh] = saved;
     let saved = [lg?, lh?, mg?, mh?, mq?, hg?, hh?, hq?, fg?, fh?];
@@ -1010,6 +998,15 @@ fn solid_eq(
         input: format!("saved={saved:?}, shapes={shapes:?}"),
         output: format!("{bands:?}"),
     });
+    if version > 0x10 {
+        let pass_freq = [f(42)?, f(46)?];
+        let pass_on = [flag(50)?, flag(51)?];
+        if pass_on[0] || pass_on[1] {
+            return Some(crate::solid_knobs::solid_model_v11(
+                saved, bells, pass_freq, pass_on,
+            ));
+        }
+    }
     Some(crate::solid_knobs::solid_model(saved, bells))
 }
 
@@ -1710,7 +1707,22 @@ mod tests {
                     }
                 }
             }
-            Dsp::None | Dsp::Eq(_) | Dsp::Bells(_) | Dsp::Filter(_) => {
+            Dsp::Eq(mut stages) => {
+                for chunk in out.chunks_mut(256) {
+                    kontra_effects::summed::run(&mut stages, chunk);
+                }
+            }
+            Dsp::Bells(mut eq) => {
+                for chunk in out.chunks_mut(256) {
+                    eq.process(chunk);
+                }
+            }
+            Dsp::Filter(mut svf) => {
+                for chunk in out.chunks_mut(256) {
+                    svf.process(chunk);
+                }
+            }
+            Dsp::None => {
                 let [[ll, lr], [rl, rr]] = kontra_effects::matrix::matrix(&slot);
                 for f in &mut out {
                     let (l, r) = (f[0], f[1]);
@@ -1985,6 +1997,143 @@ mod tests {
         assert!(
             out_step < in_step * 0.35,
             "Solid Bus Comp 10:1 compression: in={in_step:.1} -> out={out_step:.1} dB"
+        );
+    }
+
+    /// Compressor mode 1 (Enhanced) through production `kontra-effects` matches
+    /// the exact binary-verified 8-segment golden vectors and signed-mean link
+    /// cancellation (`0.001 dB`).
+    #[test]
+    fn enhanced_compressor_matches_kontakt_oracle_golden_vectors() {
+        let unlinked = crate::laws::compressor(1, -6.0, 0.5, 1.0, 100.0, false);
+        let frames = [[1.0_f32, -0.5_f32]; 4];
+        let out = render_slot(ir::EffectKind::Compressor(unlinked), 1.0, 0.0, &frames);
+        let want_l = [0.999_157_3_f32, 0.997_557_64, 0.995_283_8, 0.992_414_53];
+        for (i, (&got, &want)) in out.iter().zip(&want_l).enumerate() {
+            assert!(
+                (got[0] - want).abs() < 1e-5,
+                "frame {i} L mismatch: got {:.9}, want {:.9}",
+                got[0],
+                want
+            );
+            assert_eq!(got[1], -0.5_f32, "frame {i} R should stay untouched");
+        }
+
+        // Signed-mean link cancellation: `[1.0, -1.0]` cancels to 0 in `0.5*(L+R)`.
+        let linked = crate::laws::compressor(1, -6.0, 0.5, 1.0, 100.0, true);
+        let cancel = [[1.0_f32, -1.0_f32]; 16];
+        let out_link = render_slot(ir::EffectKind::Compressor(linked), 1.0, 0.0, &cancel);
+        for (i, &[l, r]) in out_link.iter().enumerate() {
+            assert!(
+                (l - 1.0).abs() < 1e-6 && (r + 1.0).abs() < 1e-6,
+                "frame {i}: [{l}, {r}]"
+            );
+        }
+    }
+
+    /// Solid Bus Comp (0x46) through production `kontra-effects`: 10:1 ratio,
+    /// signed-mean link cancellation, and dual-stage auto-release recovery.
+    #[test]
+    fn solid_bus_comp_matches_kontakt_oracle_auto_release_and_ratio() {
+        // Release knob 1.0 -> step 5 (program-dependent dual-stage auto-release).
+        let (auto_c, is_auto) = crate::laws::bus_compressor([0.2, 0.2, 0.4, 1.0, 0.6, 1.0], true);
+        assert!(is_auto);
+        // Short 10 ms burst + 150 ms probe vs sustained 1000 ms + 150 ms probe.
+        let mut short_in = vec![[0.8_f32; 2]; 480];
+        short_in.extend(vec![[0.05_f32; 2]; 7_200]);
+        let short_out = render_slot(ir::EffectKind::Compressor(auto_c), 1.0, 0.0, &short_in);
+
+        let mut long_in = vec![[0.8_f32; 2]; 48_000];
+        long_in.extend(vec![[0.05_f32; 2]; 7_200]);
+        let long_out = render_slot(ir::EffectKind::Compressor(auto_c), 1.0, 0.0, &long_in);
+
+        let short_tail = short_out[short_out.len() - 64..][0][0].abs();
+        let long_tail = long_out[long_out.len() - 64..][0][0].abs();
+        assert!(
+            short_tail > long_tail * 1.15,
+            "auto-release must recover faster after short burst: short={short_tail:.5} long={long_tail:.5}"
+        );
+
+        // Signed-mean link cancellation.
+        let cancel = vec![[1.0_f32, -1.0_f32]; 256];
+        let out_c = render_slot(ir::EffectKind::Compressor(auto_c), 1.0, 0.0, &cancel);
+        assert!((out_c[255][0] - 1.0).abs() < 1e-4);
+    }
+
+    /// Solid G-EQ (0x44) through production `kontra-effects`: 4-band response
+    /// at centred unity and full LMF boost (+20.05 dB @ 809 Hz).
+    #[test]
+    fn solid_g_eq_matches_kontakt_oracle_bands() {
+        let s809 = sine_48k(809.0, 0.05, 8192);
+        let in_db = rms_db_from(&s809, 4096);
+        let flat = crate::laws::solid_eq(
+            [0.5; 2],
+            ir::Shape::LowShelf,
+            [0.5; 3],
+            [0.5; 3],
+            [0.5; 2],
+            ir::Shape::HighShelf,
+        );
+        let flat_out = render_slot(ir::EffectKind::Eq(flat), 1.0, 0.0, &s809);
+        assert!((rms_db_from(&flat_out, 4096) - in_db).abs() < 0.05);
+
+        let boosted = crate::laws::solid_eq(
+            [0.5; 2],
+            ir::Shape::LowShelf,
+            [1.0, 0.5, 0.5],
+            [0.5; 3],
+            [0.5; 2],
+            ir::Shape::HighShelf,
+        );
+        let boost_out = render_slot(ir::EffectKind::Eq(boosted), 1.0, 0.0, &s809);
+        let gain_db = rms_db_from(&boost_out, 4096) - in_db;
+        assert!(
+            (gain_db - 20.05).abs() < 0.4,
+            "Solid G-EQ full LMF boost @809 Hz: {gain_db:.2} dB vs +20.05 dB"
+        );
+
+        // v0x11 PassBank wired in production: 18 dB/oct HP @ 350 Hz + 12 dB/oct LP @ 3000 Hz.
+        let s100 = sine_48k(100.0, 0.5, 8192);
+        let s10k = sine_48k(10_000.0, 0.5, 8192);
+        let pass_kind = ir::EffectKind::EqPass {
+            bands: flat,
+            hp_hz: Some(350.0),
+            lp_hz: Some(3_000.0),
+        };
+        let hp_att = rms_db_from(&render_slot(pass_kind.clone(), 1.0, 0.0, &s100), 4096)
+            - rms_db_from(&s100, 4096);
+        let lp_att =
+            rms_db_from(&render_slot(pass_kind, 1.0, 0.0, &s10k), 4096) - rms_db_from(&s10k, 4096);
+        assert!(
+            hp_att < -30.0 && lp_att < -18.0,
+            "Solid G-EQ v0x11 PassBank: hp@100Hz={hp_att:.1} dB, lp@10kHz={lp_att:.1} dB"
+        );
+    }
+
+    /// Stereo Modeller (0x1f) through production `kontra-effects`: settled width
+    /// + pan matrix and pseudo-stereo Haas inter-channel delay (`10 * width^3` ms).
+    #[test]
+    fn stereo_modeller_matches_kontakt_oracle_width_pan_and_pseudo_haas() {
+        // Non-pseudo: width=0 mono sum, pan=-0.5 attenuates right by 0.5.
+        let inp = [[0.8_f32, -0.2_f32]; 64];
+        let mono = render_slot(build_stereo(0.0, 0.0, false), 1.0, 0.0, &inp);
+        assert!((mono[63][0] - 0.3).abs() < 1e-5 && (mono[63][1] - 0.3).abs() < 1e-5);
+
+        // Pseudo-stereo at width=0.5 -> inter-channel delay = 10 * 0.125 = 1.25 ms = 60 frames @ 48 kHz.
+        let mut imp = vec![[0.0_f32; 2]; 256];
+        imp[0] = [1.0, 1.0];
+        let pseudo = render_slot(build_stereo(0.5, 0.0, true), 1.0, 0.0, &imp);
+        let peak_idx = |ch: usize| -> usize {
+            pseudo
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a[ch].abs().total_cmp(&b[ch].abs()))
+                .map_or(0, |(i, _)| i)
+        };
+        let lag = peak_idx(1).saturating_sub(peak_idx(0));
+        assert!(
+            lag.abs_diff(60) <= 1,
+            "Stereo Modeller pseudo Haas lag at w=0.5: {lag} frames vs 60"
         );
     }
 }

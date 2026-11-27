@@ -938,6 +938,8 @@ fn map_graph(spec: &AudioGraphSpec) -> ir::AudioGraph {
                         DetectorSpec::Input => ir::Detector::Input,
                         DetectorSpec::Output => ir::Detector::Output,
                         DetectorSpec::Trigger => ir::Detector::Trigger,
+                        DetectorSpec::Enhanced => ir::Detector::Enhanced,
+                        DetectorSpec::Bus { auto_release } => ir::Detector::Bus { auto_release },
                     },
                     sidechain_hz,
                 }),
@@ -997,20 +999,34 @@ fn map_graph(spec: &AudioGraphSpec) -> ir::AudioGraph {
             },
             GraphEffectSpec::Eq {
                 bands,
+                hp_hz,
+                lp_hz,
                 bypass,
                 output,
                 dry,
-            } => ir::Effect {
-                kind: ir::EffectKind::Eq(bands.map(|b| ir::Bell {
+            } => {
+                let bands = bands.map(|b| ir::Bell {
                     shape: map_eq_shape(b.shape),
                     hz: b.hz,
                     q: b.q,
                     gain_db: b.gain_db,
-                })),
-                bypass,
-                output,
-                dry,
-            },
+                });
+                let kind = if hp_hz.is_some() || lp_hz.is_some() {
+                    ir::EffectKind::EqPass {
+                        bands,
+                        hp_hz,
+                        lp_hz,
+                    }
+                } else {
+                    ir::EffectKind::Eq(bands)
+                };
+                ir::Effect {
+                    kind,
+                    bypass,
+                    output,
+                    dry,
+                }
+            }
             GraphEffectSpec::Sends {
                 levels,
                 bypass,
@@ -1117,6 +1133,8 @@ fn unmap_graph(graph: &ir::AudioGraph) -> Result<AudioGraphSpec, Error> {
                     ir::Detector::Input => DetectorSpec::Input,
                     ir::Detector::Output => DetectorSpec::Output,
                     ir::Detector::Trigger => DetectorSpec::Trigger,
+                    ir::Detector::Enhanced => DetectorSpec::Enhanced,
+                    ir::Detector::Bus { auto_release } => DetectorSpec::Bus { auto_release },
                 },
                 sidechain_hz: c.sidechain_hz,
                 bypass: e.bypass,
@@ -1156,6 +1174,25 @@ fn unmap_graph(graph: &ir::AudioGraph) -> Result<AudioGraphSpec, Error> {
                     q: b.q,
                     gain_db: b.gain_db,
                 }),
+                hp_hz: None,
+                lp_hz: None,
+                bypass: e.bypass,
+                output: e.output,
+                dry: e.dry,
+            },
+            ir::EffectKind::EqPass {
+                bands,
+                hp_hz,
+                lp_hz,
+            } => GraphEffectSpec::Eq {
+                bands: bands.map(|b| BellSpec {
+                    shape: unmap_eq_shape(b.shape),
+                    hz: b.hz,
+                    q: b.q,
+                    gain_db: b.gain_db,
+                }),
+                hp_hz: *hp_hz,
+                lp_hz: *lp_hz,
                 bypass: e.bypass,
                 output: e.output,
                 dry: e.dry,

@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn fresh_it_passes_with_the_saturators_compression_and_few_bits_step() {
-        // y·(1 − 0.05·|y|): 0.94 → 0.896 (Kontakt 0.856 with its droop).
+        // y·(1 − 0.05·|y|): 0.94 → 0.896 (reference 0.856 with its droop).
         let p = peak(fresh(), 0.94);
         assert!((p - 0.896).abs() < 0.02, "{p}");
         // Two bits, linear: steps of 0.5, 0.06 holds at zero.

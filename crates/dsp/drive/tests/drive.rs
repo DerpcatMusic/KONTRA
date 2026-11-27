@@ -41,18 +41,27 @@ fn the_curves_match_v1s_measured_transfer_vectors() {
             "power {x}"
         );
     }
-    // Kontakt 8.13.1's Tube at DRIVE 0.5 (a fitted point either side, and
-    // the ceilings at full input), and DRIVE 0 passing the input.
-    for (drive, x, y) in [
-        (0.5, 0.5, 0.497),
-        (0.5, -0.5, -0.508),
-        (1.0, 1.0, 0.533),
-        (1.0, -1.0, -0.542),
-    ] {
-        let got = Curve::Tube(drive).transfer(x);
-        assert!((got - y).abs() < 0.01, "tube {drive} at {x}: {got}");
-    }
-    assert_eq!(Curve::Tube(0.0).transfer(0.3), 0.3);
+    // Asymmetric bipolar table blend (`AsymBlend`) interpolates between two curves over -1..=1.
+    let asym_rows: &'static [f32] = &[
+        -1.0, 0.0, 1.0, // lower: identity
+        -0.5, 0.1, 0.7, // upper: asymmetric clip
+    ];
+    let c0 = Curve::AsymBlend {
+        rows: std::borrow::Cow::Borrowed(asym_rows),
+        t: 0.0,
+    };
+    let c1 = Curve::AsymBlend {
+        rows: std::borrow::Cow::Borrowed(asym_rows),
+        t: 1.0,
+    };
+    let ch = Curve::AsymBlend {
+        rows: std::borrow::Cow::Borrowed(asym_rows),
+        t: 0.5,
+    };
+    assert!((c0.transfer(0.5) - 0.5).abs() < 1e-6);
+    assert!((c1.clone().transfer(0.0) - 0.1).abs() < 1e-6);
+    assert!((c1.transfer(-1.0) - (-0.5)).abs() < 1e-6);
+    assert!((ch.transfer(1.0) - 0.85).abs() < 1e-6);
     let half_pi = std::f32::consts::FRAC_PI_2;
     for (curve, y) in [
         (Curve::Sine(half_pi), (0.5 * half_pi).sin()),
@@ -118,7 +127,7 @@ fn twice_the_rate_keeps_aliases_40_db_under_the_harmonics() {
     let mut io: Vec<[f32; 2]> = (0..2 * N)
         .map(|i| [(std::f64::consts::TAU * hz * i as f64 / RATE).sin() as f32; 2])
         .collect();
-    Shaper::new(Curve::Tube(1.0), Tone::NONE, 48_000).process(&mut io);
+    Shaper::new(Curve::Tanh(4.0), Tone::NONE, 48_000).process(&mut io);
     let tail = &io[N..];
     // Energy on the harmonic bins (DC included) against everything else.
     let (mut on, mut off) = (0.0f64, 0.0f64);
@@ -148,8 +157,8 @@ fn the_shaper_is_block_size_free() {
         ..Tone::NONE
     };
     let mut whole = input.clone();
-    Shaper::new(Curve::Tube(0.7), tone, 48_000).process(&mut whole);
-    let mut s = Shaper::new(Curve::Tube(0.7), tone, 48_000);
+    Shaper::new(Curve::Tanh(3.0), tone, 48_000).process(&mut whole);
+    let mut s = Shaper::new(Curve::Tanh(3.0), tone, 48_000);
     let mut parts = input;
     for chunk in parts.chunks_mut(37) {
         s.process(chunk);
@@ -219,7 +228,10 @@ fn the_noise_is_the_lcg_and_its_seed_decides_it() {
 #[test]
 fn nan_settings_stay_finite_and_reset_replays_the_noise() {
     let mut s = Shaper::new(
-        Curve::Tube(f32::NAN),
+        Curve::AsymBlend {
+            rows: std::borrow::Cow::Borrowed(&[-1.0, 0.0, 1.0, -0.5, 0.0, 0.5]),
+            t: f32::NAN,
+        },
         Tone {
             pre_lowpass_hz: None,
             lowpass_hz: Some(f32::NAN),

@@ -438,25 +438,20 @@ fn timing_db(attack: f32, release: f32) -> f32 {
 /// The saved record.
 #[must_use]
 pub fn saved(public: &[u8]) -> Option<Knobs> {
-    let f = |n: usize| {
-        let bytes = public.get(n..n + 4)?.try_into().ok()?;
-        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
-    };
-    let mode = |n: usize| {
-        let saved = i32::from_le_bytes(public.get(n..n + 4)?.try_into().ok()?);
-        Some((2 - saved).clamp(0, 2) as f32)
-    };
+    let mut cur = crate::module::Cursor::new(public);
+    let [trim, saturation, compress, character, mix, attack, release] = cur.f32_array()?;
+    let mut mode = || Some((2 - cur.i32()?).clamp(0, 2) as f32);
     Some(Knobs {
-        trim: f(0)?,
-        saturation: f(4)?,
-        compress: f(8)?,
-        character: f(12)?,
-        mix: f(16)?,
-        attack: f(20)?,
-        release: f(24)?,
-        hpf_mode: mode(28)?,
-        sat_mode: mode(32)?,
-        char_mode: mode(36)?,
+        trim,
+        saturation,
+        compress,
+        character,
+        mix,
+        attack,
+        release,
+        hpf_mode: mode()?,
+        sat_mode: mode()?,
+        char_mode: mode()?,
     })
 }
 
@@ -524,26 +519,19 @@ pub fn model(public: &[u8]) -> Option<ir::KnobModel> {
     ]))
 }
 
-/// The KSP names of [`model`]'s knobs: the floats as set, the modes by their
-/// index (a script sets SAT_MODE 1 as the raw value 1).
+/// The KSP names of [`model`]'s knobs.
 pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 10] {
-    use ir::KnobTarget::Slot;
-    use ir::SlotKnob::Knob;
-    let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
-    let index = || ir::Law::Linear {
-        lo: 0.0,
-        hi: 1_000_000.0,
-    };
+    use crate::module::{RAW_LAW, UNIT_LAW, knob_row};
     [
-        ("$ENGINE_PAR_SUPERGT_TRIM", Slot(Knob(0)), unit()),
-        ("$ENGINE_PAR_SUPERGT_SATURATION", Slot(Knob(1)), unit()),
-        ("$ENGINE_PAR_SUPERGT_CHARACTER", Slot(Knob(2)), unit()),
-        ("$ENGINE_PAR_SUPERGT_SAT_MODE", Slot(Knob(3)), index()),
-        ("$ENGINE_PAR_SUPERGT_CHAR_MODE", Slot(Knob(4)), index()),
-        ("$ENGINE_PAR_SUPERGT_COMPRESS", Slot(Knob(5)), unit()),
-        ("$ENGINE_PAR_SUPERGT_ATTACK", Slot(Knob(6)), unit()),
-        ("$ENGINE_PAR_SUPERGT_RELEASE", Slot(Knob(7)), unit()),
-        ("$ENGINE_PAR_SUPERGT_HPF_MODE", Slot(Knob(8)), index()),
-        ("$ENGINE_PAR_SUPERGT_MIX", Slot(Knob(9)), unit()),
+        knob_row("$ENGINE_PAR_SUPERGT_TRIM", 0, UNIT_LAW),
+        knob_row("$ENGINE_PAR_SUPERGT_SATURATION", 1, UNIT_LAW),
+        knob_row("$ENGINE_PAR_SUPERGT_CHARACTER", 2, UNIT_LAW),
+        knob_row("$ENGINE_PAR_SUPERGT_SAT_MODE", 3, RAW_LAW),
+        knob_row("$ENGINE_PAR_SUPERGT_CHAR_MODE", 4, RAW_LAW),
+        knob_row("$ENGINE_PAR_SUPERGT_COMPRESS", 5, UNIT_LAW),
+        knob_row("$ENGINE_PAR_SUPERGT_ATTACK", 6, UNIT_LAW),
+        knob_row("$ENGINE_PAR_SUPERGT_RELEASE", 7, UNIT_LAW),
+        knob_row("$ENGINE_PAR_SUPERGT_HPF_MODE", 8, RAW_LAW),
+        knob_row("$ENGINE_PAR_SUPERGT_MIX", 9, UNIT_LAW),
     ]
 }

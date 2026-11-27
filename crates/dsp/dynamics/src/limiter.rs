@@ -119,7 +119,7 @@ impl Limiter {
         self.fast = third(frames(s.smooth_ms));
         self.slow = third(100.0 * frames(s.smooth_ms));
         self.blend = s.slow.clamp(0.0, 1.0);
-        // Even, as the UVI Maximizer rounds it.
+        // Even, matching the reference maximizer rounding.
         let window = 2 * (frames(s.lookahead_ms) * 0.5) as usize;
         if window != self.delay.len() {
             self.delay = vec![[0.0; 2]; window];

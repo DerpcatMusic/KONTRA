@@ -72,14 +72,18 @@ impl Engine {
                 Kind::Filter(_) => self
                     .voice_filter(zone, u.insert, note, age)
                     .map(|(hz, k)| Tune::Filter(hz, k)),
-                Kind::Eq(_) => self.voice_bells(zone, u.insert, note, age).map(Tune::Eq),
+                Kind::Eq(_) => self.voice_eq_tune(zone, u.insert, note, age),
                 Kind::Comb(_) => self
                     .voice_comb(zone, u.insert, note, age)
                     .map(|(hz, g)| Tune::Comb(hz, g)),
                 Kind::Clocked(_) => self
                     .voice_clocked(zone, u.insert, note, age)
                     .map(Tune::Clocked),
-                Kind::Formant(_) | Kind::Overdrive(_) => effect.as_ref().map(Tune::Effect),
+                Kind::Formant(_)
+                | Kind::Wah(_)
+                | Kind::SpectralMorph(_)
+                | Kind::Overdrive(_)
+                | Kind::ColorSat(_) => effect.as_ref().map(Tune::Effect),
                 Kind::Shaper(_) | Kind::Strip(..) | Kind::Crush(_) => {
                     // The next refresh, on the grid.
                     let len = (crate::MAX_SPAN - self.now.0 % crate::MAX_SPAN) as u32;
@@ -326,19 +330,25 @@ impl Engine {
         Some(kind)
     }
 
-    /// The bands of the EQ in `insert` of `zone`'s group, each gain moved by
-    /// its routes for this note at `age`.
-    pub(crate) fn voice_bells(
+    /// The bands (and optional console pass filters) of the EQ in `insert` of
+    /// `zone`'s group, each gain moved by its routes for this note at `age`.
+    pub(crate) fn voice_eq_tune(
         &self,
         zone: &Zone,
         insert: u8,
         note: &Note,
         age: Age,
-    ) -> Option<[ir::Bell; 4]> {
+    ) -> Option<Tune<'static>> {
         let group = self.groups.get(zone.group as usize)?;
         let effect = group.inserts.get(usize::from(insert))?.as_ref()?;
-        let ir::EffectKind::Eq(mut bells) = effect.kind else {
-            return None;
+        let (mut bells, pass) = match effect.kind {
+            ir::EffectKind::Eq(b) => (b, None),
+            ir::EffectKind::EqPass {
+                bands,
+                hp_hz,
+                lp_hz,
+            } => (bands, Some((hp_hz, lp_hz))),
+            _ => return None,
         };
         let (mut shift, mut limit) = ([0.0f32; 4], [f32::INFINITY; 4]);
         for m in group.mods.iter().filter(|m| !m.bypass) {
@@ -368,12 +378,30 @@ impl Engine {
             // min/max, not clamp: a NaN limit must not panic on the audio thread.
             b.gain_db = (b.gain_db + s).min(l).max(-l);
         }
-        if let Some(ir::EffectKind::Eq(moved)) = self.voice_effect(zone, insert, note, age) {
+        if let Some(ir::EffectKind::Eq(moved) | ir::EffectKind::EqPass { bands: moved, .. }) =
+            self.voice_effect(zone, insert, note, age)
+        {
             for (b, m) in bells.iter_mut().zip(moved) {
                 b.hz = m.hz;
             }
         }
-        Some(bells)
+        Some(match pass {
+            Some((hp_hz, lp_hz)) => Tune::EqPass(bells, hp_hz, lp_hz),
+            None => Tune::Eq(bells),
+        })
+    }
+
+    pub(crate) fn voice_bells(
+        &self,
+        zone: &Zone,
+        insert: u8,
+        note: &Note,
+        age: Age,
+    ) -> Option<[ir::Bell; 4]> {
+        match self.voice_eq_tune(zone, insert, note, age)? {
+            Tune::Eq(b) | Tune::EqPass(b, _, _) => Some(b),
+            _ => None,
+        }
     }
 
     /// Groups with a filter that runs per voice, and each sounding voice's

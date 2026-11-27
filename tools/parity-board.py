@@ -120,8 +120,13 @@ def load_dsp_oracle():
     return {r["effect_id"]: r for r in tsv(path)}
 
 
+VALID_PROVENANCE = frozenset({"binary-re", "physics", "black-box-lut", "synthetic-approx"})
+VALID_ORACLE_KIND = frozenset({"waveform-vector", "spectrum-sweep", "scalar-spot", "sanity", "unit"})
+
+
 def dsp_oracle_errors():
-    """Validate every row of `snapshots/dsp-oracle.tsv`: real file, real non-ignored test fn, no failing status."""
+    """Validate every row of `snapshots/dsp-oracle.tsv`: real file, real non-ignored test fn,
+    honest provenance & verification kind, no dead-code proofs, and no failing status."""
     path = SNAP / "dsp-oracle.tsv"
     if not path.is_file():
         return ["dsp-oracle.tsv: missing required manifest"]
@@ -131,15 +136,27 @@ def dsp_oracle_errors():
         eid = r.get("effect_id", "")
         test_name = r.get("test_name", "")
         max_err = r.get("max_err_db", "")
+        prov = r.get("provenance", "")
+        kind = r.get("kind", "")
         st = r.get("status", "")
         commit_sha = r.get("commit", "")
         if eid in seen:
             errors.append(f"dsp-oracle.tsv: duplicate effect_id {eid!r}")
         seen.add(eid)
+        if prov not in VALID_PROVENANCE:
+            errors.append(f"dsp-oracle.tsv: {eid}: invalid provenance {prov!r}")
+        if kind not in VALID_ORACLE_KIND:
+            errors.append(f"dsp-oracle.tsv: {eid}: invalid kind {kind!r}")
         if st not in ("tested", "partial", "failing"):
             errors.append(f"dsp-oracle.tsv: {eid}: invalid status {st!r}")
         elif st == "failing":
             errors.append(f"dsp-oracle.tsv: {eid}: test {test_name!r} is marked failing")
+        if st == "tested" and (prov == "synthetic-approx" or kind in ("sanity", "unit")):
+            errors.append(
+                f"dsp-oracle.tsv: {eid}: cannot mark status='tested' with provenance={prov!r}, kind={kind!r} (must be 'partial')"
+            )
+        if "measured_dsp.rs" in test_name:
+            errors.append(f"dsp-oracle.tsv: {eid}: dead standalone oracle file forbidden: {test_name}")
         try:
             float(max_err)
         except ValueError:
@@ -533,7 +550,8 @@ def oracle_row(rid, group, label, slug, ir_ok, oracle):
     if not hit or hit["status"] not in ("tested", "partial"):
         return row(rid, "kontakt.dsp", group, label, "missing", None, "")
     rel_path, fn_name = hit["test_name"].split("::", 1)
-    note = f"max {hit['max_err_db']} dB ({fn_name})"
+    tag = f"[{hit.get('provenance', '?')}/{hit.get('kind', '?')}]"
+    note = f"{tag} max {hit['max_err_db']} dB ({fn_name})"
     if hit["status"] == "partial":
         note = "partial: " + note
     return row(rid, "kontakt.dsp", group, label, hit["status"], (rel_path, fn_name), note)
@@ -552,19 +570,19 @@ def kontakt_dsp(status):
                 own.setdefault(key_of(r["effect"].removeprefix("Effects/")), set()).add(r["par"].lstrip("$").upper())
     played = {n for (k, n), st in status.items() if k == "par" and st == "carried"}
     out = []
-    for m in re.finditer(r'(fx|model)\((0x[0-9a-f]+|&crate::(\w+)::(\w+)), "([^"]+)", [^\n]*?(Read|Unread|\|s\|)', table):
-        kind, name = m[1], m[5]
+    for m in re.finditer(r'(fx|model)\((0x[0-9a-f]+|&crate::[\w:]+), "([^"]+)", [^\n]*?(Read|Unread|\|s\|)', table):
+        kind, name = m[1], m[3]
         words = [w for w in re.findall(r"[a-z0-9]+", name.lower()) if w not in ("legacy",)]
         slug = "_".join(words)
         t = ptype(name)
-        ir_ok = m[6] != "Unread"
+        ir_ok = m[4] != "Unread"
         ev = ("crates/format/kontakt/src/effects.rs", name)
         out.append(row(f"kontakt.dsp.{slug}.ir", "kontakt.dsp", t, f"{name}: in IR", "done" if ir_ok else "missing", ev if ir_ok else None))
         pars = own.get(BINDING.get(name, key_of(name)), set())
-        live = pars <= played if pars else kind == "model"
+        live = bool(pars) and (pars <= played)
         out.append(row(f"kontakt.dsp.{slug}.driven", "kontakt.dsp", t, f"{name}: driven live",
                        "done" if live else "partial" if ir_ok else "missing", ev if ir_ok else None,
-                       "" if live or not ir_ok else "held: " + " ".join(sorted(pars - played)) if pars else "load-time only"))
+                       "" if live or not ir_ok else "held: " + " ".join(sorted(pars - played)) if pars else "no binding TSV (unverified live pars)"))
         out.append(oracle_row(f"kontakt.dsp.{slug}.measured", t, f"{name}: output vs oracle", slug, ir_ok, oracle))
     for r in tsv(ROOT / "docs/re/kontakt-catalog/ser_classes.tsv"):
         cls = re.sub(r"^(class|struct) ", "", r["class"])

@@ -21,6 +21,7 @@ mod bands;
 mod laws;
 mod load;
 mod midi;
+mod migrate;
 mod oracle;
 mod play;
 mod routes;
@@ -31,7 +32,7 @@ mod ui;
 /// The engine's sample rate for every subcommand.
 const RATE: u32 = 48_000;
 
-const USAGE: &str = "usage: kontra-inspect law [NAME] | programs <bank.ufs|multi.nkm> | load <instrument> [--json FILE] | ui <instrument> [--json FILE] | play <instrument> [--scenario user|FILE] [--fresh-state] [--oracle] [--json FILE]";
+const USAGE: &str = "usage: kontra-inspect law [NAME] | programs <bank.ufs|multi.nkm> | load <instrument> [--json FILE] | ui <instrument> [--json FILE] | play <instrument> [--scenario user|FILE] [--fresh-state] [--oracle] [--json FILE] | migrate-chunk <chunk.nkm> [--root DIR]... [--index FILE] [--out-state FILE] | migrate-batch <manifest.json> [--root DIR]... [--index FILE]";
 
 fn main() -> ExitCode {
     match run() {
@@ -109,6 +110,12 @@ fn run() -> Result<()> {
             }
         }
         return Ok(());
+    }
+    if command == "migrate-chunk" {
+        return migrate::run_chunk(&mut args);
+    }
+    if command == "migrate-batch" {
+        return migrate::run_batch(&mut args);
     }
     if command == "law" {
         let name = args.next();

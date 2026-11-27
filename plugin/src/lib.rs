@@ -439,13 +439,15 @@ impl KontraParams {
 
 /// The player's library browser, its prefs in the user's settings; tests
 /// keep nothing on disk.
-fn browse() -> kontra_host::browser::Browser {
+fn browse(shared: &Shared) -> kontra_host::browser::Browser {
     let (config, cache) = if cfg!(test) {
         (None, None)
     } else {
         (dirs::config_dir(), dirs::cache_dir())
     };
     let mut browser = kontra_host::browser::Browser::open(config.as_deref(), cache.as_deref());
+    let tasks = Arc::clone(&shared.tasks);
+    browser.set_on_ready(move || wake(&tasks));
     // Library folders found on their own (not in tests): NI/UVI
     // registrations, default folders, a brief walk of home and the drives.
     if config.is_some() {
@@ -605,7 +607,7 @@ impl BackgroundTask for Tick {
             );
         }
         let mut browser = lock(&p.shared.browser);
-        let browser = browser.get_or_insert_with(browse);
+        let browser = browser.get_or_insert_with(|| browse(&p.shared));
         browser.poll();
         rack.know(browser);
         // What the loads of this tick found missing comes after them.

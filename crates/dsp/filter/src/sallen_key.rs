@@ -6,7 +6,7 @@
 //! `nl = m + a P(b m)` on `m = K(a2 + v2)`, `P(u) = u(u² + 27)/(9u² + 27)`;
 //! `a1 = g·morph·x` and `a2 = g(morph − 1)x` the low and high inputs, the
 //! output `(a2 + v2)/g` (morph 1 a low-pass, 0 a high-pass), `T = πf/rate`
-//! and `K = 0.549 q`. The law is UVIWorkstation's MS20 (process
+//! and `K = 0.549 q`. The law is the reference MS20-style filter (process
 //! [ref], step [ref], setup [ref]): two substeps on the
 //! input's midpoint then its end, at most 20 iterations to 1e-6.
 

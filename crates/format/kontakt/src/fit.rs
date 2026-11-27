@@ -195,7 +195,7 @@ fn fit() {
         let Dsp::Wet(mut unit, _) = processor(Some(&first), 48_000, &Responses(&[], &[])) else {
             panic!("{effect}: no processor");
         };
-        let silence = |unit: &mut Box<dyn kontra_effects::processors::Wet>, seconds: f32| {
+        let silence = |unit: &mut kontra_effects::processors::DspUnit, seconds: f32| {
             for chunk in vec![0.0f32; (seconds * 48_000.0) as usize].chunks(256) {
                 let mut io = vec![[0.0f32; 2]; chunk.len()];
                 unit.process(&mut io);

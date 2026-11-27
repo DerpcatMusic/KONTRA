@@ -4,9 +4,9 @@
 //! enclosure formant filter bank + bass/treble shelving EQ. Zero allocations
 //! after [`Cabinet::new`].
 
-use std::f64::consts::TAU;
-
-use kontra_dsp_core::{Biquad, Side, high_pass, shelf};
+use kontra_dsp_core::{
+    Biquad, DelayLine, Side, flush_f32 as flush32, high_pass, low_pass, peak, shelf,
+};
 
 /// Maximum early-reflection tap delay in milliseconds.
 const MAX_AIR_MS: f32 = 35.0;
@@ -65,44 +65,8 @@ const AIR_TAPS: [(f32, [f32; 2]); 6] = [
     (31.1, [0.11, -0.14]),
 ];
 
-fn peak(hz: f32, q: f32, gain_db: f32, rate: u32) -> Biquad {
-    let r = f64::from(rate.max(1));
-    let f = f64::from(hz).clamp(20.0, 0.45 * r);
-    let w = TAU * f / r;
-    let a = 10.0f64.powf(f64::from(gain_db) / 40.0);
-    let alpha = w.sin() / (2.0 * f64::from(q).max(0.1));
-    let cos_w = w.cos();
-    Biquad::new([
-        1.0 + alpha * a,
-        -2.0 * cos_w,
-        1.0 - alpha * a,
-        1.0 + alpha / a,
-        -2.0 * cos_w,
-        1.0 - alpha / a,
-    ])
-}
-
-fn low_pass(hz: f32, q: f32, rate: u32) -> Biquad {
-    let r = f64::from(rate.max(1));
-    let f = f64::from(hz).clamp(20.0, 0.47 * r);
-    let w = TAU * f / r;
-    let cos_w = w.cos();
-    let alpha = w.sin() / (2.0 * f64::from(q).max(0.1));
-    let b0 = 0.5 * (1.0 - cos_w);
-    Biquad::new([b0, 1.0 - cos_w, b0, 1.0 + alpha, -2.0 * cos_w, 1.0 - alpha])
-}
-
-#[inline]
-fn flush32(x: f32) -> f32 {
-    if x.abs() < 1e-20 || !x.is_finite() {
-        0.0
-    } else {
-        x
-    }
-}
-
 /// Speaker cabinet simulator with room early reflections.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Cabinet {
     s: CabinetSettings,
     rate: u32,
@@ -115,8 +79,7 @@ pub struct Cabinet {
     treble: Biquad,
     tweeter: Biquad,
     trim: f32,
-    ring: Box<[[f32; 2]]>,
-    write: usize,
+    ring: DelayLine,
     tap_offsets: [usize; 6],
     air_lp: [f32; 2],
     air_cur: f32,
@@ -143,8 +106,7 @@ impl Cabinet {
             treble: shelf(2600.0, 0.0, 0.65, Side::High, rate),
             tweeter: shelf(5200.0, 0.0, 0.7, Side::High, rate),
             trim: 1.0,
-            ring: vec![[0.0; 2]; frames].into(),
-            write: 0,
+            ring: DelayLine::new(frames),
             tap_offsets,
             air_lp: [0.0; 2],
             air_cur: s.air.clamp(0.0, 1.0),
@@ -157,6 +119,20 @@ impl Cabinet {
     pub fn set(&mut self, s: CabinetSettings) {
         self.s = s;
         self.retune(s);
+    }
+
+    pub fn reset(&mut self) {
+        self.hp.reset();
+        self.body.reset();
+        self.cone.reset();
+        self.lp1.reset();
+        self.lp2.reset();
+        self.bass.reset();
+        self.treble.reset();
+        self.tweeter.reset();
+        self.ring.reset();
+        self.air_lp = [0.0; 2];
+        self.air_cur = self.s.air.clamp(0.0, 1.0);
     }
 
     fn retune(&mut self, s: CabinetSettings) {
@@ -215,7 +191,6 @@ impl Cabinet {
         self.treble.process(io);
 
         let trim = self.trim;
-        let len = self.ring.len();
         let air_tgt = self.s.air.clamp(0.0, 1.0);
         let smooth = self.smooth;
         let damp = 0.35f32;
@@ -225,19 +200,11 @@ impl Cabinet {
             frame[1] *= trim;
             self.air_cur += (air_tgt - self.air_cur) * smooth;
             let [l, r] = *frame;
-            if let Some(slot) = self.ring.get_mut(self.write) {
-                *slot = [l, r];
-            }
+            self.ring.push(0.5 * (l + r));
             if self.air_cur > 1e-5 {
                 let mut er = [0.0f32; 2];
                 for (&off, &(_, g)) in self.tap_offsets.iter().zip(AIR_TAPS.iter()) {
-                    let idx = if self.write >= off {
-                        self.write - off
-                    } else {
-                        self.write + len - off
-                    };
-                    let tap = self.ring.get(idx).copied().unwrap_or([0.0; 2]);
-                    let mono_tap = 0.5 * (tap[0] + tap[1]);
+                    let mono_tap = self.ring.read_int(off);
                     er[0] += mono_tap * g[0];
                     er[1] += mono_tap * g[1];
                 }
@@ -246,10 +213,6 @@ impl Cabinet {
                 let wet = 0.65 * self.air_cur;
                 frame[0] = flush32(l + wet * self.air_lp[0]);
                 frame[1] = flush32(r + wet * self.air_lp[1]);
-            }
-            self.write += 1;
-            if self.write >= len {
-                self.write = 0;
             }
         }
     }

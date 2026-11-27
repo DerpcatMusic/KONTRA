@@ -10,4 +10,3 @@ workspace = true
 
 [dependencies]
 kontra-ir = { path = "../ir" }
-kontra-macros = { path = "../../base/macros" }

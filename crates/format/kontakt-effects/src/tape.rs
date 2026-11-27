@@ -226,29 +226,25 @@ pub fn quality(public: &[u8]) -> bool {
     public.get(12).is_some_and(|&b| b != 0)
 }
 
-/// The saved knobs (gain, warmth, roll-off, quality) as a script moves
-/// them: every move rebuilds the shaper through [`MODULE`].
+/// The saved knobs (gain, warmth, roll-off, quality) as a script moves them.
 pub fn model(public: &[u8]) -> Option<ir::KnobModel> {
-    let f = |n: usize| {
-        let bytes = public.get(n..n + 4)?.try_into().ok()?;
-        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
-    };
-    let q = f32::from(u8::from(*public.get(12)? != 0));
-    Some(MODULE.knob_model(&[f(0)?, f(4)?, f(8)?, q]))
+    let mut cur = crate::module::Cursor::new(public);
+    Some(MODULE.knob_model(&[
+        cur.f32()?,
+        cur.f32()?,
+        cur.f32()?,
+        crate::module::bool_f(cur.bool()?),
+    ]))
 }
 
-/// The KSP names of [`model`]'s active knobs; each continuous knob is 0..1,
-/// quality is a raw bool switch.
+/// The KSP names of [`model`]'s active knobs.
 pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 4] {
-    use ir::KnobTarget::Slot;
-    use ir::SlotKnob::Knob;
-    let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
-    let raw = || ir::Law::Linear { lo: 0.0, hi: 1e6 };
+    use crate::module::{RAW_LAW, UNIT_LAW, knob_row};
     [
-        ("$ENGINE_PAR_TP_GAIN", Slot(Knob(0)), unit()),
-        ("$ENGINE_PAR_TP_WARMTH", Slot(Knob(1)), unit()),
-        ("$ENGINE_PAR_TP_HF_ROLLOFF", Slot(Knob(2)), unit()),
-        ("$ENGINE_PAR_TP_QUALITY", Slot(Knob(3)), raw()),
+        knob_row("$ENGINE_PAR_TP_GAIN", 0, UNIT_LAW),
+        knob_row("$ENGINE_PAR_TP_WARMTH", 1, UNIT_LAW),
+        knob_row("$ENGINE_PAR_TP_HF_ROLLOFF", 2, UNIT_LAW),
+        knob_row("$ENGINE_PAR_TP_QUALITY", 3, RAW_LAW),
     ]
 }
 

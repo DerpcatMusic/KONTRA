@@ -473,6 +473,23 @@ impl Rack {
                         continue;
                     }
                 }
+                (
+                    Dsp::Bells(eq),
+                    ir::EffectKind::EqPass {
+                        bands,
+                        hp_hz,
+                        lp_hz,
+                    },
+                ) => {
+                    eq.retune_pass(*bands, *hp_hz, *lp_hz, self.rate);
+                    if !io_silent || !eq.is_silent() {
+                        eq.process(io);
+                        io_silent = is_silent(io);
+                    } else {
+                        levels.idle_matrix(effects::matrix(e), io.len());
+                        continue;
+                    }
+                }
                 // The wet path from the input, then the dry level, then the wet at the output gain.
                 (Dsp::Wet(processor, wet), kind) => {
                     // A script or the tempo may have moved it since the last block.

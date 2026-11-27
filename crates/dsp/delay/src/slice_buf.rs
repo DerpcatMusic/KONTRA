@@ -13,12 +13,7 @@ use std::f32::consts::TAU;
 /// Default capture capacity in seconds (supports 2 bars down to ~60 BPM).
 pub const CAPTURE_MAX_S: f32 = 8.5;
 
-/// Flushes subnormal values to zero.
-#[inline]
-#[must_use]
-pub fn flush(x: f32) -> f32 {
-    if x.abs() < 1e-20 { 0.0 } else { x }
-}
+pub use kontra_dsp_core::flush_f32 as flush;
 
 /// Raised-cosine (Hann) window on `phase` in `0..=1`: `0.5 * (1 - cos(2*pi*p))`.
 /// Satisfies `hann(p) + hann((p + 0.5) % 1.0) == 1.0` identically.
@@ -28,48 +23,7 @@ pub fn hann(phase: f32) -> f32 {
     0.5 * (1.0 - (TAU * phase.clamp(0.0, 1.0)).cos())
 }
 
-/// Per-sample one-pole parameter smoother.
-#[derive(Clone, Copy, Debug)]
-pub struct Smoother {
-    value: f32,
-    coeff: f32,
-}
-
-impl Smoother {
-    /// Initializes a smoother at `initial` with time constant `tau_s` seconds.
-    #[must_use]
-    pub fn new(initial: f32, tau_s: f32, rate: f32) -> Self {
-        let coeff = if tau_s <= 1e-6 || rate <= 1.0 {
-            1.0
-        } else {
-            1.0 - (-1.0 / (tau_s * rate)).exp()
-        };
-        Self {
-            value: initial,
-            coeff,
-        }
-    }
-
-    /// Advances one sample toward `target` and returns the smoothed value.
-    #[inline]
-    pub fn tick(&mut self, target: f32) -> f32 {
-        self.value += (target - self.value) * self.coeff;
-        self.value
-    }
-
-    /// Returns the current smoothed value.
-    #[inline]
-    #[must_use]
-    pub fn get(self) -> f32 {
-        self.value
-    }
-
-    /// Snaps immediately to `value` (used on initialization/reset).
-    #[inline]
-    pub fn snap(&mut self, value: f32) {
-        self.value = value;
-    }
-}
+pub use kontra_dsp_core::Smoother;
 
 /// Tempo-synced or free-running `[0.0, 1.0)` phase clock.
 #[derive(Clone, Copy, Debug, Default)]
@@ -265,15 +219,7 @@ impl CaptureRing {
     }
 }
 
-/// 4-point cubic Hermite interpolation on `t` in `[0, 1]`.
-#[inline]
-fn hermite(ym1: f32, y0: f32, y1: f32, y2: f32, t: f32) -> f32 {
-    let c0 = y0;
-    let c1 = 0.5 * (y1 - ym1);
-    let c2 = ym1 - 2.5 * y0 + 2.0 * y1 - 0.5 * y2;
-    let c3 = 0.5 * (y2 - ym1) + 1.5 * (y0 - y1);
-    ((c3 * t + c2) * t + c1) * t + c0
-}
+use kontra_dsp_core::hermite;
 
 /// Dual overlapping Hann-windowed grain reader (phases 0.5 apart so
 /// `hann(p0) + hann(p1) == 1.0`). Shared by Reverse Grain and Transpose Stretch.

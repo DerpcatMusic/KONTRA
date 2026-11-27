@@ -11,6 +11,46 @@ use ni_file::nis::LibraryKey;
 /// Maximum `.nicnt` prefix scanned for `<JDX>` / `<HU>` registration tags.
 const NICNT_SCAN_BYTES: u64 = 256 * 1024;
 
+/// Parsed metadata and optional decryption keystream from a `.nicnt` file.
+pub(crate) struct NicntInfo {
+    pub snpid: String,
+    pub name: Option<String>,
+    pub keystream: Option<Arc<[u8]>>,
+}
+
+/// Reads `<SNPID>`, `<Name>`, and `<JDX>`/`<HU>` keystream from a `.nicnt` file.
+pub(crate) fn read_nicnt(path: &Path) -> Option<NicntInfo> {
+    let mut bytes = Vec::new();
+    File::open(path)
+        .and_then(|f| f.take(NICNT_SCAN_BYTES).read_to_end(&mut bytes))
+        .ok()?;
+    let snpid = text_tag(&bytes, b"SNPID")?;
+    let name = text_tag(&bytes, b"Name");
+    let keystream = field::<32>(&bytes, b"JDX")
+        .zip(field::<16>(&bytes, b"HU"))
+        .map(|(key, iv)| expand(key, iv));
+    Some(NicntInfo {
+        snpid,
+        name,
+        keystream,
+    })
+}
+
+/// Wraps an already expanded 64 KiB keystream as an `ni_file::nis::LibraryKey`.
+pub(crate) fn key_from_stream(stream: Arc<[u8]>) -> Arc<dyn LibraryKey> {
+    Arc::new(Key(stream))
+}
+
+fn text_tag(bytes: &[u8], tag: &[u8]) -> Option<String> {
+    let open = [b"<", tag, b">"].concat();
+    let close = [b"</", tag, b">"].concat();
+    let start = bytes.windows(open.len()).position(|w| w == open)? + open.len();
+    let rest = bytes.get(start..)?;
+    let end = rest.windows(close.len()).position(|w| w == close)?;
+    let text = std::str::from_utf8(rest.get(..end)?.trim_ascii()).ok()?;
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
 /// The keystream of the library `path` belongs to, for presets.
 pub(crate) fn library_key(path: &Path) -> Result<Arc<dyn LibraryKey>, String> {
     Ok(Arc::new(Key(keystream(path)?)))

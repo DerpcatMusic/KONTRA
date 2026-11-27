@@ -11,8 +11,6 @@ use crate::{Effect, EffectKind};
 pub enum DriveCurve {
     /// −1..=1: above 0 a soft clip, below 0 a cubic expansion.
     Soft(f32),
-    /// 0..=1: an asymmetric rational clip.
-    Tube(f32),
     /// 0..=1: a power law on small signals.
     Power(f32),
     /// The drive `d`: `sin(d·x)`.
@@ -42,6 +40,10 @@ pub enum DriveCurve {
         rows: Cow<'static, [f32]>,
         t: f32,
     },
+    /// Two asymmetric bipolar transfer curves, `rows` the lower then the upper
+    /// (half its points each), each spread evenly over inputs −1..=1 (held
+    /// beyond), blended linearly by `t` in 0..=1.
+    AsymBlend { rows: Cow<'static, [f32]>, t: f32 },
 }
 
 impl DriveCurve {
@@ -49,7 +51,6 @@ impl DriveCurve {
     pub fn amount_mut(&mut self) -> &mut f32 {
         match self {
             Self::Soft(x)
-            | Self::Tube(x)
             | Self::Power(x)
             | Self::Sine(x)
             | Self::Fold(x)
@@ -57,7 +58,8 @@ impl DriveCurve {
             | Self::Atan(x)
             | Self::Saturate(x)
             | Self::Table { drive: x, .. }
-            | Self::Blend { drive: x, .. } => x,
+            | Self::Blend { drive: x, .. }
+            | Self::AsymBlend { t: x, .. } => x,
         }
     }
 }

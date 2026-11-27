@@ -11,6 +11,7 @@ mod network;
 mod plate;
 mod resample;
 pub mod shape;
+mod space;
 
 pub use combs::Combs;
 pub use convolver::Convolver;
@@ -18,3 +19,6 @@ pub use fdn::{Fdn, Settings};
 pub use hadamard::Hadamard;
 pub use network::Network;
 pub use plate::Plate;
+pub use space::{Diffuser, Space};
+
+kontra_dsp_core::impl_dsp_core!(Plate, Convolver, Fdn, Diffuser, Space);

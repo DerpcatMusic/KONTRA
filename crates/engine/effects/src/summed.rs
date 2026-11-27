@@ -1,7 +1,9 @@
 //! EQ bands and filters as stages on summed audio.
 
 use kontra_dsp::eq::{Bell, Biquad, Side};
-use kontra_dsp::filter::{Formant, LadderKind, Pass, Shape, Svf, VowelSet, Vowels};
+use kontra_dsp::filter::{
+    Formant, LadderKind, Pass, PassBank, PassBankSettings, Shape, Svf, VowelSet, Vowels,
+};
 use kontra_ir as ir;
 
 /// The rack's active EQs (their audible bands) and filters, in slot order.
@@ -13,6 +15,12 @@ pub fn sections(rack: &[Option<ir::Effect>]) -> Vec<ir::EffectKind> {
             ir::EffectKind::Eq(bands) => bands
                 .iter()
                 .any(|b| b.gain_db != 0.0)
+                .then(|| e.kind.clone()),
+            ir::EffectKind::EqPass {
+                bands,
+                hp_hz,
+                lp_hz,
+            } => (hp_hz.is_some() || lp_hz.is_some() || bands.iter().any(|b| b.gain_db != 0.0))
                 .then(|| e.kind.clone()),
             kind @ (ir::EffectKind::Filter(_) | ir::EffectKind::Formant(_)) => Some(kind.clone()),
             _ => None,
@@ -36,28 +44,63 @@ fn band(b: &ir::Bell, rate: u32) -> Biquad {
     }
 }
 
-/// A group's EQ run on one voice: its four bands, moved by their routes.
-/// Flat bands (`gain_db == 0.0`) with settled filter state are skipped
-/// bit-identically.
+fn pass_settings(hp_hz: Option<f32>, lp_hz: Option<f32>) -> PassBankSettings {
+    PassBankSettings {
+        hp_on: hp_hz.is_some(),
+        hp_hz: hp_hz.unwrap_or(20.0),
+        lp_on: lp_hz.is_some(),
+        lp_hz: lp_hz.unwrap_or(20_000.0),
+    }
+}
+
+/// A group's EQ run on one voice or bus: its four bands plus optional console
+/// pass-filter bank (18 dB/oct HP, 12 dB/oct LP). Flat bands (`gain_db == 0.0`)
+/// with settled filter state are skipped bit-identically.
 #[derive(Clone)]
 pub struct VoiceEq {
     biquads: [Biquad; 4],
     bells: [ir::Bell; 4],
+    pass: PassBank,
+    pass_cfg: PassBankSettings,
     rate: u32,
 }
 
 impl VoiceEq {
     pub fn new(bells: [ir::Bell; 4], rate: u32) -> Self {
+        Self::with_pass(bells, None, None, rate)
+    }
+
+    pub fn with_pass(
+        bells: [ir::Bell; 4],
+        hp_hz: Option<f32>,
+        lp_hz: Option<f32>,
+        rate: u32,
+    ) -> Self {
+        let pass_cfg = pass_settings(hp_hz, lp_hz);
         Self {
             biquads: bells.map(|b| band(&b, rate)),
             bells,
+            pass: PassBank::new(pass_cfg, rate),
+            pass_cfg,
             rate,
         }
     }
 
-    /// Moves the bands' coefficients and keeps their state.
+    /// Moves the bands' coefficients and keeps their state (pass filters off).
     pub fn retune(&mut self, bells: [ir::Bell; 4], rate: u32) {
-        if self.bells == bells && self.rate == rate {
+        self.retune_pass(bells, None, None, rate);
+    }
+
+    /// Moves both bands and console pass-filter bank coefficients in place.
+    pub fn retune_pass(
+        &mut self,
+        bells: [ir::Bell; 4],
+        hp_hz: Option<f32>,
+        lp_hz: Option<f32>,
+        rate: u32,
+    ) {
+        let next_pass = pass_settings(hp_hz, lp_hz);
+        if self.bells == bells && self.pass_cfg == next_pass && self.rate == rate {
             return;
         }
         for ((f, prev), &next) in self.biquads.iter_mut().zip(&mut self.bells).zip(&bells) {
@@ -66,10 +109,19 @@ impl VoiceEq {
                 *prev = next;
             }
         }
+        if self.rate != rate {
+            self.pass = PassBank::new(next_pass, rate);
+        } else if self.pass_cfg != next_pass {
+            self.pass.set(next_pass);
+        }
+        self.pass_cfg = next_pass;
         self.rate = rate;
     }
 
     pub fn process(&mut self, io: &mut [[f32; 2]]) {
+        if self.pass_cfg.hp_on || self.pass_cfg.lp_on {
+            self.pass.process(io);
+        }
         for (f, b) in self.biquads.iter_mut().zip(&self.bells) {
             if b.gain_db != 0.0 || !f.is_silent() {
                 f.process(io);
@@ -78,7 +130,7 @@ impl VoiceEq {
     }
 
     pub fn is_silent(&self) -> bool {
-        self.biquads.iter().all(Biquad::is_silent)
+        self.pass.is_silent() && self.biquads.iter().all(Biquad::is_silent)
     }
 }
 
@@ -125,6 +177,11 @@ pub fn live_stage(kind: &ir::EffectKind, rate: u32) -> Option<Stage> {
             Stage::Running(Box::new(svf))
         }
         ir::EffectKind::Eq(bells) => Stage::Eq(Box::new(VoiceEq::new(*bells, rate))),
+        ir::EffectKind::EqPass {
+            bands,
+            hp_hz,
+            lp_hz,
+        } => Stage::Eq(Box::new(VoiceEq::with_pass(*bands, *hp_hz, *lp_hz, rate))),
         ir::EffectKind::Formant(f) => Stage::Formant(Box::new(Formant::new(vowels(*f), rate))),
         _ => return None,
     })
@@ -139,6 +196,17 @@ pub fn retune(stage: &mut Stage, kind: &ir::EffectKind, rate: u32) -> bool {
             q.retune(*bells, rate);
             true
         }
+        (
+            Stage::Eq(q),
+            ir::EffectKind::EqPass {
+                bands,
+                hp_hz,
+                lp_hz,
+            },
+        ) => {
+            q.retune_pass(*bands, *hp_hz, *lp_hz, rate);
+            true
+        }
         (Stage::Formant(v), ir::EffectKind::Formant(f)) => {
             v.set(vowels(*f), rate);
             true
@@ -151,21 +219,29 @@ pub fn retune(stage: &mut Stage, kind: &ir::EffectKind, rate: u32) -> bool {
 pub fn summed(e: &ir::Effect) -> bool {
     matches!(
         e.kind,
-        ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_) | ir::EffectKind::Formant(_)
+        ir::EffectKind::Eq(_)
+            | ir::EffectKind::EqPass { .. }
+            | ir::EffectKind::Filter(_)
+            | ir::EffectKind::Formant(_)
     )
 }
 
 /// Whether a summed insert is heard: not bypassed, and an EQ only while a
-/// band cuts or boosts.
+/// band cuts or boosts (or a pass filter is active).
 pub fn sounds(e: &ir::Effect) -> bool {
     !e.bypass
         && match e.kind {
             ir::EffectKind::Eq(bands) => bands.iter().any(|b| b.gain_db != 0.0),
+            ir::EffectKind::EqPass {
+                bands,
+                hp_hz,
+                lp_hz,
+            } => hp_hz.is_some() || lp_hz.is_some() || bands.iter().any(|b| b.gain_db != 0.0),
             _ => true,
         }
 }
 
-fn vowels(f: ir::Formant) -> Vowels {
+pub fn vowels(f: ir::Formant) -> Vowels {
     Vowels {
         talk: f.talk,
         sharp: f.sharp,
@@ -188,6 +264,15 @@ pub fn stages(sections: &[ir::EffectKind], rate: u32) -> Box<[Stage]> {
                         .filter(|b| b.gain_db != 0.0)
                         .map(|b| Stage::Biquad(band(b, rate))),
                 );
+            }
+            ir::EffectKind::EqPass {
+                bands,
+                hp_hz,
+                lp_hz,
+            } => {
+                out.push(Stage::Eq(Box::new(VoiceEq::with_pass(
+                    *bands, *hp_hz, *lp_hz, rate,
+                ))));
             }
             ir::EffectKind::Filter(f) => {
                 let shape = shape(f);

@@ -34,49 +34,7 @@ const DRUM_DOPPLER_MS: f32 = 0.7;
 /// Parameter smoothing time constant (seconds).
 const SMOOTH_S: f32 = 0.015;
 
-/// Fixed power-of-two mono delay line with linear interpolation and panic-free access.
-#[derive(Debug)]
-struct DelayLine {
-    buf: Box<[f32]>,
-    write: usize,
-}
-
-impl DelayLine {
-    fn new(max_frames: usize) -> Self {
-        let len = max_frames.max(16).next_power_of_two();
-        Self {
-            buf: vec![0.0; len].into_boxed_slice(),
-            write: 0,
-        }
-    }
-
-    #[inline]
-    fn push(&mut self, sample: f32) {
-        let mask = self.buf.len().saturating_sub(1);
-        self.write = (self.write + 1) & mask;
-        if let Some(slot) = self.buf.get_mut(self.write) {
-            *slot = flush(sample);
-        }
-    }
-
-    #[inline]
-    fn read(&self, delay_frames: f32) -> f32 {
-        let len = self.buf.len();
-        if len == 0 {
-            return 0.0;
-        }
-        let max_d = (len.saturating_sub(2)) as f32;
-        let d = delay_frames.clamp(0.0, max_d);
-        let whole = d.floor() as usize;
-        let frac = d - whole as f32;
-        let mask = len - 1;
-        let i0 = self.write.wrapping_sub(whole) & mask;
-        let i1 = self.write.wrapping_sub(whole + 1) & mask;
-        let s0 = self.buf.get(i0).copied().unwrap_or(0.0);
-        let s1 = self.buf.get(i1).copied().unwrap_or(0.0);
-        s0 + (s1 - s0) * frac
-    }
-}
+use kontra_dsp_core::DelayLine;
 
 /// Real-time stereo rotary speaker processor.
 #[derive(Debug)]
@@ -174,7 +132,7 @@ impl Rotary {
     /// Tail memory in frames.
     #[must_use]
     pub fn memory(&self) -> usize {
-        self.horn_line.buf.len()
+        self.horn_line.capacity()
     }
 
     /// Advances rotor clocks while silent. Real-time.
@@ -289,10 +247,10 @@ impl Rotary {
                 let d_sin_l = ds * st_cos + dc * st_sin;
                 let d_sin_r = ds * st_cos - dc * st_sin;
 
-                let horn_raw_l = self.horn_line.read(base_frames + h_depth * h_cos_l);
-                let horn_raw_r = self.horn_line.read(base_frames + h_depth * h_cos_r);
-                let drum_raw_l = self.drum_line.read(base_frames + d_depth * d_cos_l);
-                let drum_raw_r = self.drum_line.read(base_frames + d_depth * d_cos_r);
+                let horn_raw_l = self.horn_line.read_linear(base_frames + h_depth * h_cos_l);
+                let horn_raw_r = self.horn_line.read_linear(base_frames + h_depth * h_cos_r);
+                let drum_raw_l = self.drum_line.read_linear(base_frames + d_depth * d_cos_l);
+                let drum_raw_r = self.drum_line.read_linear(base_frames + d_depth * d_cos_r);
 
                 let h_front_l = 0.5 + 0.5 * h_sin_l;
                 let h_front_r = 0.5 + 0.5 * h_sin_r;
@@ -387,10 +345,10 @@ impl Rotary {
             let h_depth = HORN_DOPPLER_MS * closeness * ms_to_frames;
             let d_depth = DRUM_DOPPLER_MS * closeness * ms_to_frames;
 
-            let horn_raw_l = self.horn_line.read(base_frames + h_depth * h_cos_l);
-            let horn_raw_r = self.horn_line.read(base_frames + h_depth * h_cos_r);
-            let drum_raw_l = self.drum_line.read(base_frames + d_depth * d_cos_l);
-            let drum_raw_r = self.drum_line.read(base_frames + d_depth * d_cos_r);
+            let horn_raw_l = self.horn_line.read_linear(base_frames + h_depth * h_cos_l);
+            let horn_raw_r = self.horn_line.read_linear(base_frames + h_depth * h_cos_r);
+            let drum_raw_l = self.drum_line.read_linear(base_frames + d_depth * d_cos_l);
+            let drum_raw_r = self.drum_line.read_linear(base_frames + d_depth * d_cos_r);
 
             // Directional AM + mild horn off-axis HF damping.
             let h_front_l = 0.5 + 0.5 * h_sin_l;
@@ -449,10 +407,7 @@ fn xover_svf(hz: f32, rate: f32) -> SvfCoeffs<f32> {
     SvfCoeffs::new(hz.clamp(80.0, 0.45 * rate), std::f32::consts::SQRT_2, rate)
 }
 
-#[inline]
-fn flush(x: f32) -> f32 {
-    if x.abs() < 1e-20 { 0.0 } else { x }
-}
+use kontra_dsp_core::flush_f32 as flush;
 
 #[cfg(test)]
 mod tests {

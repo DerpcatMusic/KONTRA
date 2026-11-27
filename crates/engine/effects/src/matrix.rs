@@ -117,9 +117,10 @@ pub fn matrix(e: &ir::Effect) -> Gain {
             // Its taps run in the instrument rack (racks.rs).
             ir::EffectKind::Sends(_) => IDENTITY,
             // Its bands run on summed audio (filters.rs, racks.rs).
-            ir::EffectKind::Eq(_) | ir::EffectKind::Filter(_) | ir::EffectKind::Formant(_) => {
-                IDENTITY
-            }
+            ir::EffectKind::Eq(_)
+            | ir::EffectKind::EqPass { .. }
+            | ir::EffectKind::Filter(_)
+            | ir::EffectKind::Formant(_) => IDENTITY,
             // Its wet path runs in instrument and bus racks (racks.rs); a
             // compressor's, limiter's, notch phaser's, ensemble's or comb
             // bank's output is its wet path.

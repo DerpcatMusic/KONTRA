@@ -42,14 +42,7 @@ pub struct EnvelopeFollower {
     adapt: f32,
 }
 
-#[inline]
-fn flush32(x: f32) -> f32 {
-    if x.abs() < 1e-20 || !x.is_finite() {
-        0.0
-    } else {
-        x
-    }
-}
+use kontra_dsp_core::flush_f32 as flush32;
 
 impl EnvelopeFollower {
     /// Builds a new envelope follower for sample rate `rate`.

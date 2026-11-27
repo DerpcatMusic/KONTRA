@@ -141,8 +141,8 @@ fn ir_has_zero_fn_pointers_and_zero_fn_addr_eq() {
 #[test]
 fn vendor_word_ratchet_in_engine_dsp_and_model() {
     let crates_dir = kontra_crates_dir();
-    // Tight ceilings measured at Wave 2A; only allowed to move DOWN.
-    let ceilings = [("engine", 275usize), ("dsp", 17usize), ("model", 176usize)];
+    // Tight ceilings; only allowed to move DOWN. `crates/dsp` is strictly vendor-neutral (0).
+    let ceilings = [("engine", 275usize), ("dsp", 0usize), ("model", 176usize)];
     for (layer, max_allowed) in ceilings {
         let files = layer_rs_files(&crates_dir, layer);
         assert!(!files.is_empty(), "no source files found in {layer}");
@@ -990,5 +990,150 @@ fn cyclic_audio_graph_surfaces_error_in_prepare_and_engine() {
     assert!(
         engine.graph_error().is_some_and(|e| e.contains("cycle")),
         "Engine::new must expose cyclic graph error via graph_error()"
+    );
+}
+
+#[test]
+fn dsp_primitives_are_not_duplicated_and_no_dead_oracle_cores() {
+    let crates_dir = kontra_crates_dir();
+
+    // 1. Dead standalone oracle file and `Box<dyn Wet>` dynamic dispatch must never come back.
+    assert!(
+        !crates_dir
+            .join("engine/effects/src/measured_dsp.rs")
+            .exists(),
+        "measured_dsp.rs must stay deleted; every DSP core belongs in crates/dsp/* and runs in production"
+    );
+    let processors_code: String =
+        std::fs::read_to_string(crates_dir.join("engine/effects/src/processors.rs"))
+            .expect("read processors.rs")
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+    assert!(
+        !processors_code.contains("dyn Wet") && !processors_code.contains("trait Wet"),
+        "Box<dyn Wet> dynamic dispatch crept back into processors.rs; use static-dispatch DspUnit"
+    );
+
+    // 2. Zero local `fn flush` / `fn flush32` / `fn db_to_lin` / cookbook `fn peak` / `fn low_pass`
+    //    clones outside `crates/dsp/core`.
+    let dsp_files = layer_rs_files(&crates_dir, "dsp");
+    let mut violations = Vec::new();
+    for path in dsp_files {
+        let rel = path
+            .strip_prefix(&crates_dir)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if rel.starts_with("dsp/core/") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read dsp src");
+        let prod = text.split("\n#[cfg(test)]").next().unwrap_or(&text);
+        for (idx, line) in prod.lines().enumerate() {
+            let t = line.trim_start();
+            if t.starts_with("//") {
+                continue;
+            }
+            let is_local_flush = t.starts_with("fn flush(")
+                || t.starts_with("pub fn flush(")
+                || t.starts_with("pub(crate) fn flush(")
+                || t.starts_with("fn flush32(")
+                || t.starts_with("pub fn flush32(");
+            let is_local_db = t.starts_with("fn db_to_lin(") || t.starts_with("pub fn db_to_lin(");
+            let is_local_biquad = (rel.starts_with("dsp/drive/") || rel.starts_with("dsp/filter/"))
+                && (t.starts_with("fn peak(hz:") || t.starts_with("fn low_pass(hz:"));
+            let is_local_ring = t.starts_with("struct DelayLine")
+                || t.starts_with("pub struct DelayLine")
+                || t.starts_with("struct FixedRing")
+                || t.starts_with("pub struct FixedRing")
+                || t.starts_with("struct Ring ")
+                || t.starts_with("struct Ring{")
+                || t.starts_with("struct Delay ")
+                || t.starts_with("struct Delay{");
+            if is_local_flush || is_local_db || is_local_biquad || is_local_ring {
+                violations.push(format!("{rel}:{}: {t}", idx + 1));
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "duplicated DSP primitives outside crates/dsp/core (use kontra_dsp_core / moose_dsp instead):\n{}",
+        violations.join("\n")
+    );
+
+    // 2b. Zero hand-rolled `from_le_bytes` byte decoding outside `kontakt-effects/src/module.rs`,
+    //     and `PassBank` stays wired into production `summed.rs` (dead `units.rs` stays removed).
+    let mut ke_files = Vec::new();
+    walk_rs(
+        &crates_dir.join("format/kontakt-effects/src"),
+        &mut ke_files,
+    );
+    let mut decode_violations = Vec::new();
+    for path in ke_files {
+        if path.file_name().is_some_and(|n| n == "module.rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read kontakt-effects src");
+        let prod = text.split("\n#[cfg(test)]").next().unwrap_or(&text);
+        for (idx, line) in prod.lines().enumerate() {
+            let t = line.trim_start();
+            if !t.starts_with("//") && t.contains("from_le_bytes") {
+                decode_violations.push(format!("{}:{}: {t}", path.display(), idx + 1));
+            }
+        }
+    }
+    assert!(
+        decode_violations.is_empty(),
+        "use module::Cursor / f32_le / i32_le instead of inline from_le_bytes:\n{}",
+        decode_violations.join("\n")
+    );
+    let summed_src = std::fs::read_to_string(crates_dir.join("engine/effects/src/summed.rs"))
+        .expect("read summed.rs");
+    assert!(
+        summed_src.contains("PassBank"),
+        "PassBank must remain wired into production VoiceEq in summed.rs"
+    );
+    assert!(
+        !crates_dir.join("dsp/core/src/units.rs").exists(),
+        "dead crates/dsp/core/src/units.rs must stay removed"
+    );
+
+    // 3. Production LOC ratchets & no empty stub crates in `crates/dsp/*`.
+    let prod_lines = |dir: &Path| -> usize {
+        let mut files = Vec::new();
+        walk_rs(dir, &mut files);
+        files
+            .into_iter()
+            .filter(|p| !p.components().any(|c| c.as_os_str() == "tests"))
+            .map(|p| {
+                let text = std::fs::read_to_string(&p).expect("read rs");
+                text.split("\n#[cfg(test)]")
+                    .next()
+                    .unwrap_or(&text)
+                    .lines()
+                    .count()
+            })
+            .sum()
+    };
+    let effects_prod = prod_lines(&crates_dir.join("engine/effects/src"));
+    let ke_prod = prod_lines(&crates_dir.join("format/kontakt-effects/src"));
+    let dsp_prod = prod_lines(&crates_dir.join("dsp"));
+    assert!(
+        effects_prod <= 1_600,
+        "engine/effects production lines regressed: {effects_prod} > 1600"
+    );
+    assert!(
+        ke_prod <= 5_080,
+        "format/kontakt-effects production lines regressed: {ke_prod} > 5080"
+    );
+    assert!(
+        dsp_prod <= 16_320,
+        "crates/dsp production lines regressed: {dsp_prod} > 16320"
+    );
+    assert!(
+        !crates_dir.join("dsp/modulators").exists() && !crates_dir.join("dsp/eq").exists(),
+        "stub/trivial crates crates/dsp/modulators and crates/dsp/eq must stay removed"
     );
 }

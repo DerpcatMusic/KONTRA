@@ -37,6 +37,7 @@ mod resources;
 mod reverb;
 mod samples;
 mod script_knobs;
+pub mod session;
 mod snapshot;
 pub use snapshot::{
     Base as SnapshotBase, Preset, load_onto as load_snapshot_onto, open_base as open_snapshot_base,

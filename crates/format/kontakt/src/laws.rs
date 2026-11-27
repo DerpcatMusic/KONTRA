@@ -939,7 +939,6 @@ pub(crate) const KONTAKT_DB: f32 = 20.0 * std::f32::consts::LOG10_2 / 6.0;
 /// runs a two-pole detector at `2513.2/max(ms, 1)` rad/s with damping 1.8 and
 /// a peak hold falling by `1778.3/max(ms, 50)` per second; Classic (core
 /// [ref]) steps by `0.625^(1/n)` and `(1/3)^(1/n)` over the n frames.
-// ponytail: Enhanced's piecewise curve runs as the soft knee; unmeasured.
 pub(crate) fn compressor(
     mode: i32,
     threshold_db: f32,
@@ -954,28 +953,16 @@ pub(crate) fn compressor(
             attack_ms.max(0.0) / 1.6f32.ln(),
             release_ms.max(0.0) / 3f32.ln(),
         ),
-        1 => (
-            attack_ms.max(1.0) * 1800.0 / 2513.2,
-            release_ms.max(50.0) * 1000.0 / 1778.3,
-        ),
+        1 => (attack_ms.max(1.0), release_ms.max(0.0)),
         _ => (
             attack_ms.clamp(0.1, 10.0) / std::f32::consts::TAU,
             release_ms.clamp(10.0, 1000.0) / std::f32::consts::LN_2,
         ),
     };
-    // Enhanced (mode 1) drives its gain-reduction curve from the steeper slope
-    // term `1 / (r + 0.13) - 1 / 1.13` (5.0 below r = 0.04, 0 at r = 1.0),
-    // mapped onto the neutral IR compressor with hard knee (fitted to comp-grid.tsv:
-    // halves RMS error on thr50_ratio50 to 0.62 dB vs 1.68 dB with 1/r).
-    let (ratio, knee_db) = if mode == 1 {
-        let term = if r < 0.04 {
-            5.0
-        } else {
-            (1.0 / (r + 0.13) - 1.0 / 1.13).max(0.0)
-        };
-        (1.0 + 2.8 * term, 0.0)
-    } else {
-        (1.0 / r.max(1e-3), 12.0)
+    let (ratio, knee_db, detector) = match mode {
+        0 => (1.0 / r.max(1e-3), 12.0, ir::Detector::Trigger),
+        1 => (1.0 / r.max(1e-4), 0.0, ir::Detector::Enhanced),
+        _ => (1.0 / r.max(1e-3), 12.0, ir::Detector::Input),
     };
     ir::Compressor {
         threshold_db: threshold_db * KONTAKT_DB,
@@ -988,11 +975,7 @@ pub(crate) fn compressor(
         makeup_slope: if mode == 2 { 0.666 / KONTAKT_DB } else { 0.0 },
         link: link || mode == 2,
         mix: 1.0,
-        detector: if mode == 0 {
-            ir::Detector::Trigger
-        } else {
-            ir::Detector::Input
-        },
+        detector,
         sidechain_hz: None,
     }
 }
@@ -1030,8 +1013,6 @@ pub(crate) fn transparent_limiter(drive: f32, release: f32, ceiling: f32) -> ir:
 /// tables [ref]..[ref], `docs/re/engine/dyn-compressors.md`).
 /// Release step 5 is the auto release on a 75 ms base; the second value is
 /// set then, for the caller to report.
-// Core detector/auto-release state machine is approximated by
-// the neutral IR compressor at the binary-verified switch parameters (Wave 2 DSP).
 pub(crate) fn bus_compressor(knobs: [f32; 6], link: bool) -> (ir::Compressor, bool) {
     const RATIO: [f32; 6] = [1.5, 2.0, 3.0, 4.0, 5.0, 10.0];
     const OFFSET_DB: [f32; 6] = [-12.0, -9.0, -5.0, -4.0, -3.3, -0.2];
@@ -1040,20 +1021,21 @@ pub(crate) fn bus_compressor(knobs: [f32; 6], link: bool) -> (ir::Compressor, bo
     let [threshold, makeup, attack, release, ratio, mix] = knobs.map(|x| x.clamp(0.0, 1.0));
     let step = |x: f32| ((x * 5.0 + 0.5).floor() as usize).min(5);
     let at = |table: [f32; 6], x: f32| table.get(step(x)).copied().unwrap_or(1.0);
+    let auto_release = step(release) == 5;
     let c = ir::Compressor {
         threshold_db: -18.6 + 37.2 * threshold - 20.0 + at(OFFSET_DB, ratio),
         ratio: at(RATIO, ratio),
-        knee_db: 0.0,
+        knee_db: 2.0,
         attack_ms: at(ATTACK_MS, attack),
         release_ms: at(RELEASE_MS, release),
         makeup_db: -5.25 + 26.25 * makeup,
         makeup_slope: 0.0,
         link,
         mix,
-        detector: ir::Detector::Input,
+        detector: ir::Detector::Bus { auto_release },
         sidechain_hz: None,
     };
-    (c, step(release) == 5)
+    (c, auto_release)
 }
 
 #[cfg(test)]
@@ -1190,23 +1172,20 @@ mod tests {
         );
         let enhanced = compressor(1, -20.0, 0.25, 100.0, 20.0, false);
         assert!(
-            (enhanced.attack_ms - 71.6).abs() < 0.1 && (enhanced.release_ms - 28.1).abs() < 0.1
+            (enhanced.attack_ms - 100.0).abs() < 1e-4 && (enhanced.release_ms - 20.0).abs() < 1e-4
         );
         // A knob of 1 leaves the signal alone.
         assert!((compressor(0, -20.0, 1.0, 1.0, 100.0, true).ratio - 1.0).abs() < 1e-6);
-        // KT-06: Enhanced (mode 1) uses the steeper 1/(r + 0.13) - 1/1.13 slope term
-        // with hard knee: 1:1 at r = 1.0, ~5.9:1 at r = 0.25 (vs 4:1 for Pro), and
-        // monotonic limiting (15:1) below r = 0.04.
+        // Enhanced (mode 1) uses the binary-verified 8-segment piecewise curve
+        // detector directly (`Detector::Enhanced`), preserving `1/r` ratio and
+        // unscaled attack/release ms.
         let enh_off = compressor(1, -42.0, 1.0, 15.0, 200.0, false);
         let enh_mid = compressor(1, -42.0, 0.25, 15.0, 200.0, false);
         let enh_max = compressor(1, -42.0, 0.02, 15.0, 200.0, false);
+        assert_eq!(enh_off.detector, ir::Detector::Enhanced);
         assert!((enh_off.ratio - 1.0).abs() < 1e-6 && enh_off.knee_db == 0.0);
-        assert!(
-            enh_mid.ratio > 5.5 && enh_mid.ratio < 6.3,
-            "Enhanced r=0.25 ratio: {}",
-            enh_mid.ratio
-        );
-        assert!((enh_max.ratio - 15.0).abs() < 1e-4);
+        assert!((enh_mid.ratio - 4.0).abs() < 1e-5);
+        assert!((enh_max.ratio - 50.0).abs() < 1e-4);
     }
 
     #[test]

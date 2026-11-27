@@ -5,7 +5,7 @@
 //! high-pass, [`Stage::Out`] sections). The curves are ported from v2
 //! sampler-core dsp/color/{shaping,distortion}.rs and checked against v1's
 //! measured transfer vectors (tests/drive.rs), except Tube, which is
-//! Kontakt 8.13.1's measured curves (`tube.rs`); the format translators
+//! reference measured tube curves (`tube.rs`); the format translators
 //! carry their provenance and knob laws.
 //!
 //! Twice the rate because it is audible and cheap: a full-scale 1.76 kHz
@@ -26,9 +26,6 @@ pub enum Curve {
     /// −1..=1: above 0 a soft clip `2|x| − x²` blended in (fully at 0.25,
     /// with gain up to 4 beyond); below 0 a cubic expansion `(x² + q)x/(1 + q)`.
     Soft(f32),
-    /// 0..=1: Kontakt's measured Tube curves (`tube.rs`), asymmetric,
-    /// blended between the measured drives.
-    Tube(f32),
     /// 0..=1: a power law on small signals (|x| < 0.25) that thins the
     /// negative half and thickens the positive one.
     Power(f32),
@@ -58,6 +55,10 @@ pub enum Curve {
         rows: Cow<'static, [f32]>,
         t: f32,
     },
+    /// Two asymmetric bipolar curves, `rows` the lower then the upper (half its
+    /// points each), each spread evenly over inputs −1..=1 (held beyond),
+    /// blended linearly by `t` in 0..=1.
+    AsymBlend { rows: Cow<'static, [f32]>, t: f32 },
 }
 
 impl Curve {
@@ -103,9 +104,8 @@ enum Prepared {
     Expand {
         q: f32,
     },
-    Tube {
-        lower: Option<&'static [f32; crate::tube::POINTS]>,
-        upper: &'static [f32; crate::tube::POINTS],
+    AsymBlend {
+        rows: Cow<'static, [f32]>,
         t: f32,
     },
     Power {
@@ -154,11 +154,11 @@ impl Prepared {
             Curve::Soft(s) => Self::Clip {
                 amount: 4.0 * s.min(1.0),
             },
-            Curve::Tube(d) if d.is_nan() => Self::Identity,
-            Curve::Tube(d) => {
-                let (lower, upper, t) = crate::tube::between(d);
-                Self::Tube { lower, upper, t }
-            }
+            Curve::AsymBlend { rows, t } if t.is_nan() || rows.len() < 4 => Self::Identity,
+            Curve::AsymBlend { rows, t } => Self::AsymBlend {
+                rows,
+                t: t.clamp(0.0, 1.0),
+            },
             Curve::Sine(d) => Self::Sine(d),
             Curve::Fold(d) => Self::Fold(d),
             Curve::Tanh(d) => Self::Tanh(d),
@@ -238,7 +238,13 @@ impl Prepared {
                 let a = read(lower, at);
                 ((read(upper, at) - a) * t + a).copysign(x) * inverse
             }
-            Self::Tube { lower, upper, t } => crate::tube::tube(x, *lower, upper, *t),
+            Self::AsymBlend { rows, t } => {
+                let half = rows.len() / 2;
+                let (lower, upper) = rows.split_at(half);
+                let at = (x.clamp(-1.0, 1.0) + 1.0) * 0.5 * half.saturating_sub(1) as f32;
+                let a = read(lower, at);
+                a + (read(upper, at) - a) * t
+            }
             Self::Power {
                 drive,
                 power,
@@ -505,14 +511,6 @@ impl Core {
                 Prepared::Saturate(d2) => {
                     self.halfband.process(io, |[l, r]| {
                         [l / (1.0 + d2 * l * l).sqrt(), r / (1.0 + d2 * r * r).sqrt()]
-                    });
-                }
-                Prepared::Tube { lower, upper, t } => {
-                    self.halfband.process(io, |[l, r]| {
-                        [
-                            crate::tube::tube(l, lower, upper, t),
-                            crate::tube::tube(r, lower, upper, t),
-                        ]
                     });
                 }
                 _ => {

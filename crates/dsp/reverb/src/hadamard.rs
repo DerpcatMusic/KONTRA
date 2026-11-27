@@ -16,8 +16,8 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 use kontra_law::HadamardNetwork;
 
 use crate::Settings;
-use crate::combs::Line;
 use crate::fade::flush;
+use kontra_dsp_core::DelayLine;
 
 const BLOCK: usize = 64;
 const MAX_LINES: usize = 16;
@@ -96,7 +96,7 @@ impl Section {
 }
 
 struct Tap {
-    line: Line,
+    line: DelayLine,
     len: f32,
     depth: f32,
     /// LFO cycles per frame, and where it is.
@@ -114,8 +114,8 @@ pub struct Hadamard {
     law: HadamardNetwork,
     rate: f32,
     taps: Box<[Tap]>,
-    pre: [Line; 2],
-    diffusers: [[Line; 4]; 2],
+    pre: [DelayLine; 2],
+    diffusers: [[DelayLine; 4]; 2],
     diffusion: f32,
     input: f32,
     /// Even lines' and odd lines' weights into each channel.
@@ -141,7 +141,7 @@ impl Hadamard {
             .iter()
             .take(n)
             .map(|&len| Tap {
-                line: Line::new(len + swing(s, len as f32).ceil() as usize + 2),
+                line: DelayLine::new(len + swing(s, len as f32).ceil() as usize + 2),
                 len: len as f32,
                 depth: 0.0,
                 inc: 0.0,
@@ -158,14 +158,14 @@ impl Hadamard {
             std::array::from_fn(|k| {
                 let skew = SKEW.get(c).and_then(|s| s.get(k)).copied().unwrap_or(0);
                 let ms = law.diffuser_ms * FRAC_PI_2.powi(k as i32);
-                Line::new((rate * 0.001 * ms).round().max(1.0) as usize + skew)
+                DelayLine::new((rate * 0.001 * ms).round().max(1.0) as usize + skew)
             })
         };
         let mut h = Self {
             law,
             rate,
             taps,
-            pre: [Line::new(pre), Line::new(pre)],
+            pre: [DelayLine::new(pre), DelayLine::new(pre)],
             diffusers: [diffuser(0), diffuser(1)],
             diffusion: 0.0,
             input: 0.0,
@@ -232,7 +232,7 @@ impl Hadamard {
         self.diffusion = s.diffusion.clamp(0.0, 0.99);
         let pre = (s.predelay_ms.max(0.0) * 0.001 * rate) as usize;
         for p in &mut self.pre {
-            p.delay = pre.min(p.reach());
+            p.set_len(pre.min(p.reach()));
         }
         if self.rolloff.is_none() {
             self.rolled = [0.0; 2];
@@ -270,13 +270,13 @@ impl Hadamard {
                 else {
                     continue;
                 };
-                pre.write(w, x * input);
-                let mut v = pre.read(w);
+                pre.write_at(w, x * input);
+                let mut v = pre.read_at(w);
                 if self.law.diffusers {
                     for ap in aps {
-                        let held = ap.read(w);
+                        let held = ap.read_at(w);
                         let u = v - g * held;
-                        ap.write(w, flush(u));
+                        ap.write_at(w, flush(u));
                         v = held + g * u;
                     }
                 }
@@ -285,7 +285,7 @@ impl Hadamard {
             let mut y = [0.0; MAX_LINES];
             let at = (k + 1) as f32;
             for (((y, t), from), step) in y.iter_mut().zip(&*self.taps).zip(&from).zip(&step) {
-                *y = t.line.at(w, (from + step * at).max(1.0)) * t.gain;
+                *y = t.line.read_linear_at(w, (from + step * at).max(1.0)) * t.gain;
             }
             let n = self.taps.len();
             let lines = y.get_mut(..n).unwrap_or_default();
@@ -301,7 +301,7 @@ impl Hadamard {
                 let v = t.high.tick(t.low.tick(*y));
                 t.dc = flush(t.dc + keep * (v - t.dc));
                 let back = v - t.dc + fed.get(i % 2).copied().unwrap_or(0.0);
-                t.line.write(w, flush(back));
+                t.line.write_at(w, flush(back));
             }
             if let Some(p) = self.rolloff {
                 for (r, wet) in self.rolled.iter_mut().zip(&mut wet) {

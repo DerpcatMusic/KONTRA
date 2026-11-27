@@ -12,6 +12,7 @@ mod formant;
 mod huovilainen;
 mod ladder;
 mod notches;
+mod pass_bank;
 mod sallen_key;
 mod spectral_morph;
 mod wah;
@@ -24,6 +25,7 @@ pub use kontra_dsp_core::Biquad;
 use kontra_dsp_core::flush;
 pub use ladder::Ladder;
 pub use notches::{MAX_STAGES, NotchSettings, Notches};
+pub use pass_bank::{PassBank, PassBankSettings};
 pub use sallen_key::SallenKey;
 pub use spectral_morph::{SpectralMorph, SpectralMorphSettings};
 pub use wah::{Wah, WahSettings};
@@ -317,88 +319,51 @@ impl Svf {
                 Pass::Notch => [v[0] - k * band_l, v[1] - k * band_r],
             }
         }
+        #[inline(always)]
+        fn run_n<const N: usize>(
+            io: &mut [[f32; 2]],
+            state: &mut [[[f64; 2]; 2]; 3],
+            c: [[f64; 4]; 3],
+            pass: Pass,
+            gain: f64,
+        ) {
+            let mut ic1 = [[0.0f64; 2]; N];
+            let mut ic2 = [[0.0f64; 2]; N];
+            for ((i1, i2), st) in ic1.iter_mut().zip(&mut ic2).zip(state.iter()) {
+                *i1 = [st[0][0], st[1][0]];
+                *i2 = [st[0][1], st[1][1]];
+            }
+            for frame in io {
+                let mut v = [f64::from(frame[0]), f64::from(frame[1])];
+                for ((i1, i2), &cs) in ic1.iter_mut().zip(&mut ic2).zip(c.iter()) {
+                    v = svf_stage(pass, v, i1, i2, cs);
+                }
+                frame[0] = (v[0] * gain) as f32;
+                frame[1] = (v[1] * gain) as f32;
+            }
+            for (st, (&i1, &i2)) in state.iter_mut().zip(ic1.iter().zip(&ic2)) {
+                *st = [[i1[0], i2[0]], [i1[1], i2[1]]];
+            }
+        }
         // Per stage: k, then the TPT gains a1, a2, a3.
         let c = self.shape.damping.map(|k| {
             let k = f64::from(k);
             let a1 = 1.0 / (1.0 + g * (g + k));
             [k, a1, g * a1, g * g * a1]
         });
-        let run_1 = |io: &mut [[f32; 2]], state: &mut [[[f64; 2]; 2]; 3], pass: Pass| {
-            let mut ic1 = [state[0][0][0], state[0][1][0]];
-            let mut ic2 = [state[0][0][1], state[0][1][1]];
-            let c0 = c[0];
-            for frame in io {
-                let v = svf_stage(
-                    pass,
-                    [f64::from(frame[0]), f64::from(frame[1])],
-                    &mut ic1,
-                    &mut ic2,
-                    c0,
-                );
-                frame[0] = (v[0] * gain) as f32;
-                frame[1] = (v[1] * gain) as f32;
-            }
-            state[0] = [[ic1[0], ic2[0]], [ic1[1], ic2[1]]];
-        };
-        let run_2 = |io: &mut [[f32; 2]], state: &mut [[[f64; 2]; 2]; 3], pass: Pass| {
-            let mut ic1_0 = [state[0][0][0], state[0][1][0]];
-            let mut ic2_0 = [state[0][0][1], state[0][1][1]];
-            let mut ic1_1 = [state[1][0][0], state[1][1][0]];
-            let mut ic2_1 = [state[1][0][1], state[1][1][1]];
-            let (c0, c1) = (c[0], c[1]);
-            for frame in io {
-                let v = svf_stage(
-                    pass,
-                    [f64::from(frame[0]), f64::from(frame[1])],
-                    &mut ic1_0,
-                    &mut ic2_0,
-                    c0,
-                );
-                let v = svf_stage(pass, v, &mut ic1_1, &mut ic2_1, c1);
-                frame[0] = (v[0] * gain) as f32;
-                frame[1] = (v[1] * gain) as f32;
-            }
-            state[0] = [[ic1_0[0], ic2_0[0]], [ic1_0[1], ic2_0[1]]];
-            state[1] = [[ic1_1[0], ic2_1[0]], [ic1_1[1], ic2_1[1]]];
-        };
-        let run_3 = |io: &mut [[f32; 2]], state: &mut [[[f64; 2]; 2]; 3], pass: Pass| {
-            let mut ic1_0 = [state[0][0][0], state[0][1][0]];
-            let mut ic2_0 = [state[0][0][1], state[0][1][1]];
-            let mut ic1_1 = [state[1][0][0], state[1][1][0]];
-            let mut ic2_1 = [state[1][0][1], state[1][1][1]];
-            let mut ic1_2 = [state[2][0][0], state[2][1][0]];
-            let mut ic2_2 = [state[2][0][1], state[2][1][1]];
-            let (c0, c1, c2) = (c[0], c[1], c[2]);
-            for frame in io {
-                let v = svf_stage(
-                    pass,
-                    [f64::from(frame[0]), f64::from(frame[1])],
-                    &mut ic1_0,
-                    &mut ic2_0,
-                    c0,
-                );
-                let v = svf_stage(pass, v, &mut ic1_1, &mut ic2_1, c1);
-                let v = svf_stage(pass, v, &mut ic1_2, &mut ic2_2, c2);
-                frame[0] = (v[0] * gain) as f32;
-                frame[1] = (v[1] * gain) as f32;
-            }
-            state[0] = [[ic1_0[0], ic2_0[0]], [ic1_0[1], ic2_0[1]]];
-            state[1] = [[ic1_1[0], ic2_1[0]], [ic1_1[1], ic2_1[1]]];
-            state[2] = [[ic1_2[0], ic2_2[0]], [ic1_2[1], ic2_2[1]]];
-        };
         match (stages, pass) {
-            (1, Pass::Low) => run_1(io, &mut self.state, Pass::Low),
-            (1, Pass::High) => run_1(io, &mut self.state, Pass::High),
-            (1, Pass::Band) => run_1(io, &mut self.state, Pass::Band),
-            (1, Pass::Notch) => run_1(io, &mut self.state, Pass::Notch),
-            (2, Pass::Low) => run_2(io, &mut self.state, Pass::Low),
-            (2, Pass::High) => run_2(io, &mut self.state, Pass::High),
-            (2, Pass::Band) => run_2(io, &mut self.state, Pass::Band),
-            (2, Pass::Notch) => run_2(io, &mut self.state, Pass::Notch),
-            (_, Pass::Low) => run_3(io, &mut self.state, Pass::Low),
-            (_, Pass::High) => run_3(io, &mut self.state, Pass::High),
-            (_, Pass::Band) => run_3(io, &mut self.state, Pass::Band),
-            (_, Pass::Notch) => run_3(io, &mut self.state, Pass::Notch),
+            (1, Pass::Low) => run_n::<1>(io, &mut self.state, c, Pass::Low, gain),
+            (1, Pass::High) => run_n::<1>(io, &mut self.state, c, Pass::High, gain),
+            (1, Pass::Band) => run_n::<1>(io, &mut self.state, c, Pass::Band, gain),
+            (1, Pass::Notch) => run_n::<1>(io, &mut self.state, c, Pass::Notch, gain),
+            (2, Pass::Low) => run_n::<2>(io, &mut self.state, c, Pass::Low, gain),
+            (2, Pass::High) => run_n::<2>(io, &mut self.state, c, Pass::High, gain),
+            (2, Pass::Band) => run_n::<2>(io, &mut self.state, c, Pass::Band, gain),
+            (2, Pass::Notch) => run_n::<2>(io, &mut self.state, c, Pass::Notch, gain),
+            (_, Pass::Low) => run_n::<3>(io, &mut self.state, c, Pass::Low, gain),
+            (_, Pass::High) => run_n::<3>(io, &mut self.state, c, Pass::High, gain),
+            (_, Pass::Band) => run_n::<3>(io, &mut self.state, c, Pass::Band, gain),
+            (_, Pass::Notch) => run_n::<3>(io, &mut self.state, c, Pass::Notch, gain),
         }
         flush(self.state.as_flattened_mut().as_flattened_mut());
     }
@@ -665,3 +630,5 @@ mod tests {
         }
     }
 }
+
+kontra_dsp_core::impl_dsp_core!(PassBank, Wah, Svf, SpectralMorph);

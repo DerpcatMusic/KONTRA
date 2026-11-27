@@ -1,5 +1,5 @@
 //! Filters whose 0..=1 cutoff and resonance knobs follow a control clock
-//! (Kontakt 8's [ref]): in 32-frame segments, carried across calls,
+//! (reference [ref]): in 32-frame segments, carried across calls,
 //! the cutoff steps at most `clamp(1/(31·r + 4), 1/35, 1/4)` toward its
 //! knob (`r` the resonance at the call's start) and the resonance moves
 //! 0.015 of the way while either is more than 1e-4 off. A still call runs in
@@ -258,7 +258,7 @@ fn clamp01(v: f32) -> f32 {
 
 /// The allpass coefficient `(1 − f)/(1 + f)` with
 /// `f = 0.0543·(e − 1)·0.33 + 0.02`, `e` the series of `e^(3c)` through its sixth power; feedback
-/// `0.85·r`. Kontakt's `f` ignores the rate (its corner follows the host's);
+/// `0.85·r`. The reference `f` ignores the rate (its corner follows the host's);
 /// here it is held at its 48 kHz corner.
 fn allpass(cutoff: f32, resonance: f32, scale: f32) -> Law {
     let p = clamp01(cutoff);

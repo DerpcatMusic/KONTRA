@@ -247,9 +247,7 @@ fn read(ring: &[[f32; 2]], newest: usize, head: Head, ch: usize, scale: f32) -> 
     scale * acc
 }
 
-fn flush(x: f32) -> f32 {
-    if x.abs() < 1e-20 { 0.0 } else { x }
-}
+use kontra_dsp_core::flush_f32 as flush;
 
 #[cfg(test)]
 mod tests {

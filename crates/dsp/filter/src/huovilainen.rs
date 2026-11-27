@@ -2,7 +2,7 @@
 //! input, four one-poles `y = (1 − g)·y₋₁ + g·(x + 0.3·x₋₁)/1.3` in series,
 //! the last fed back a sample late, the output a weighted mix of the taps.
 //!
-//! The law is UVIWorkstation's XpanderFilter (core [ref], coefficients
+//! The law is the reference Xpander-style ladder (core [ref], coefficients
 //! [ref], tap table filled by [ref]):
 //! - `g = 0.9892ω − 0.4242ω² + 0.1381ω³ − 0.0202ω⁴` and the feedback gain
 //!   `G = R·(1.0029 + 0.0526ω − 0.0926ω² + 0.0218ω³)`, `ω` the cutoff in

@@ -3,6 +3,7 @@
 //! input allpasses. Formats load their own laws into [`Settings`].
 
 use crate::fade::{Fade, flush};
+use kontra_dsp_core::DelayLine;
 use moose_dsp::time::coeff;
 
 /// What a reverb sounds like, in physical units.
@@ -41,67 +42,6 @@ const MAX_MODULATION_MS: f32 = 5.0;
 /// Gains, shelf and width glide over about this long.
 const GLIDE_S: f32 = 0.01;
 
-/// A power-of-two delay line allocated for `max` samples; its read length moves within that.
-struct Delay {
-    buf: Box<[f32]>,
-    mask: usize,
-    at: usize,
-    len: usize,
-}
-
-impl Delay {
-    /// Not real-time: allocates. Two spare samples keep reads clear of the write.
-    fn new(max: usize) -> Self {
-        let max = max.max(1);
-        let cap = (max + 2).next_power_of_two();
-        Self {
-            buf: vec![0.0; cap].into(),
-            mask: cap - 1,
-            at: 0,
-            len: max,
-        }
-    }
-
-    /// Reads `len` samples back from now; never allocates. Returns `true` if `len` increased.
-    fn set_len(&mut self, len: usize) -> bool {
-        let next = len.clamp(1, self.buf.len().saturating_sub(2));
-        let grew = next > self.len;
-        self.len = next;
-        grew
-    }
-
-    /// The sample written `len` samples ago.
-    #[inline(always)]
-    fn read(&self) -> f32 {
-        self.buf
-            .get(self.at.wrapping_sub(self.len) & self.mask)
-            .copied()
-            .unwrap_or(0.0)
-    }
-
-    /// `len + offset` samples ago (`offset` ≥ 0), linearly interpolated.
-    #[inline(always)]
-    fn read_late(&self, offset: f32) -> f32 {
-        let max_back = (self.buf.len().saturating_sub(2)) as f32;
-        let back = (self.len as f32 + offset).min(max_back);
-        let whole = back as usize;
-        let t = back - whole as f32;
-        let idx0 = self.at.wrapping_sub(whole) & self.mask;
-        let idx1 = idx0.wrapping_sub(1) & self.mask;
-        let a = self.buf.get(idx0).copied().unwrap_or(0.0);
-        let b = self.buf.get(idx1).copied().unwrap_or(0.0);
-        a + t * (b - a)
-    }
-
-    #[inline(always)]
-    fn write(&mut self, x: f32) {
-        if let Some(s) = self.buf.get_mut(self.at) {
-            *s = x;
-        }
-        self.at = self.at.wrapping_add(1) & self.mask;
-    }
-}
-
 /// Delay samples for `ms` at `rate`, at least one.
 fn samples(ms: f32, rate: f32) -> usize {
     (ms * 0.001 * rate).round().max(1.0) as usize
@@ -115,10 +55,10 @@ fn pole(hz: f32, rate: f32) -> f32 {
 pub struct Fdn {
     rate: f32,
     fade: Fade,
-    predelay: Delay,
-    diffusers: Vec<Delay>,
+    predelay: DelayLine,
+    diffusers: Vec<DelayLine>,
     diffusion: f32,
-    lines: Vec<Delay>,
+    lines: Vec<DelayLine>,
     /// Per line: feedback gain for the decay, and its damping filter state.
     gains: [f32; 8],
     damp: f32,
@@ -159,15 +99,15 @@ impl Fdn {
         let mut fdn = Self {
             rate,
             fade: Fade::new(s, rate),
-            predelay: Delay::new(samples(MAX_PREDELAY_MS, rate)),
+            predelay: DelayLine::new(samples(MAX_PREDELAY_MS, rate)),
             diffusers: DIFFUSERS_MS
                 .iter()
-                .map(|&ms| Delay::new(samples(ms, rate)))
+                .map(|&ms| DelayLine::new(samples(ms, rate)))
                 .collect(),
             diffusion: 0.0,
             lines: LINES_MS
                 .iter()
-                .map(|&ms| Delay::new(samples(ms * MAX_SIZE + 2.0 * MAX_MODULATION_MS, rate)))
+                .map(|&ms| DelayLine::new(samples(ms * MAX_SIZE + 2.0 * MAX_MODULATION_MS, rate)))
                 .collect(),
             gains: [0.0; 8],
             damp: 0.0,
@@ -201,6 +141,25 @@ impl Fdn {
         if let Some(s) = self.fade.set(s) {
             self.apply(s);
         }
+    }
+
+    /// Clears all delay lines, damping/output states, and fades back to silence.
+    pub fn reset(&mut self) {
+        self.fade.reset();
+        self.predelay.reset();
+        for d in &mut self.diffusers {
+            d.reset();
+        }
+        for line in &mut self.lines {
+            line.reset();
+        }
+        self.lows = [0.0; 8];
+        self.out = [[0.0; 2]; 2];
+        self.cycle = 0.0;
+        (self.gains, self.shelf_gain, self.stereo) =
+            (self.to.gains, self.to.shelf_gain, self.to.stereo);
+        self.asleep = true;
+        self.quiet_frames = 0;
     }
 
     /// Writes `s` into the lines and coefficients. Never allocates.
@@ -310,13 +269,13 @@ impl Fdn {
                 w
             };
             let [l, r] = *frame;
-            let mut x = self.predelay.read();
-            self.predelay.write(0.5 * (l + r));
+            let mut x = self.predelay.read_len();
+            self.predelay.push(0.5 * (l + r));
             // Schroeder allpasses: y = −g·x + d, d' = x + g·y.
             let diff = self.diffusion;
             for d in &mut self.diffusers {
-                let y = d.read() - diff * x;
-                d.write(flush(x + diff * y));
+                let y = d.read_len() - diff * x;
+                d.push(x + diff * y);
                 x = y;
             }
             let mut y = [0.0f32; 8];
@@ -336,7 +295,7 @@ impl Fdn {
                     .enumerate()
                 {
                     let out = if i == 0 {
-                        line.read()
+                        line.read_len()
                     } else {
                         line.read_late(off)
                     };
@@ -349,7 +308,7 @@ impl Fdn {
                     .zip(self.lines.iter().zip(&mut self.lows))
                     .zip(self.gains)
                 {
-                    let out = line.read();
+                    let out = line.read_len();
                     *low = out + damp * (*low - out);
                     *v = *low * g;
                 }
@@ -361,7 +320,7 @@ impl Fdn {
             for ((line, v), sign) in self.lines.iter_mut().zip(y).zip(SIGNS) {
                 let w = flush(v + sign * x);
                 block_peak = block_peak.max(w.abs());
-                line.write(w);
+                line.push(w);
             }
             let (mid, side) = (0.5 * (left + right), 0.5 * (left - right) * self.stereo);
             let hc = self.high_cut;
@@ -393,9 +352,10 @@ impl Fdn {
             && self.out.iter().flatten().all(|v| v.abs() < 1e-7)
         {
             self.quiet_frames = self.quiet_frames.saturating_add(io.len());
-            let max_line = self.lines.iter().map(|l| l.len).max().unwrap_or(0);
-            let diff_sum: usize = self.diffusers.iter().map(|d| d.len).sum();
-            let max_mem = self.predelay.len + diff_sum + max_line + self.swing.ceil() as usize + 8;
+            let max_line = self.lines.iter().map(DelayLine::len).max().unwrap_or(0);
+            let diff_sum: usize = self.diffusers.iter().map(DelayLine::len).sum();
+            let max_mem =
+                self.predelay.len() + diff_sum + max_line + self.swing.ceil() as usize + 8;
             if self.quiet_frames >= max_mem {
                 self.asleep = true;
             }

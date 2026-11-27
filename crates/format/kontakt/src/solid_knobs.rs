@@ -26,7 +26,7 @@ pub(crate) static SOLID_EQ_MODULE: Module = Module {
         ir::SlotKnob::BandBell(3),
     ],
     build: |p| {
-        let [lg, lh, mg, mh, mq, hg, hh, hq, fg, fh, lb, hb] = *p else {
+        let [lg, lh, mg, mh, mq, hg, hh, hq, fg, fh, lb, hb] = *p.get(..12)? else {
             return None;
         };
         let bell = |on: f32, shelf| if on > 0.5 { ir::Shape::Peak } else { shelf };
@@ -35,6 +35,19 @@ pub(crate) static SOLID_EQ_MODULE: Module = Module {
             bell(hb, ir::Shape::HighShelf),
         );
         let bands = crate::laws::solid_eq([lg, lh], lf, [mg, mh, mq], [hg, hh, hq], [fg, fh], hf);
+        if let Some([hp_x, lp_x, hp_on, lp_on]) =
+            p.get(12..16).and_then(|s| <[f32; 4]>::try_from(s).ok())
+        {
+            let hp_hz = (hp_on > 0.5).then(|| kontra_law::FormulaId::SolidEqHpHz.eval(hp_x));
+            let lp_hz = (lp_on > 0.5).then(|| kontra_law::FormulaId::SolidEqLpHz.eval(lp_x));
+            if hp_hz.is_some() || lp_hz.is_some() {
+                return Some(ir::EffectKind::EqPass {
+                    bands,
+                    hp_hz,
+                    lp_hz,
+                });
+            }
+        }
         Some(ir::EffectKind::Eq(bands))
     },
 };
@@ -72,6 +85,22 @@ pub(crate) fn solid_model(saved: [f32; 10], bells: [bool; 2]) -> ir::KnobModel {
     let [p0, p1, p2, p3, p4, p5, p6, p7, p8, p9] = saved;
     let [b0, b1] = bells.map(|on| f32::from(u8::from(on)));
     SOLID_EQ_MODULE.knob_model(&[p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, b0, b1])
+}
+
+/// Solid G-EQ v0x11 model including HP/LP pass-filter frequencies and enables.
+pub(crate) fn solid_model_v11(
+    saved: [f32; 10],
+    bells: [bool; 2],
+    pass_freq: [f32; 2],
+    pass_on: [bool; 2],
+) -> ir::KnobModel {
+    let [p0, p1, p2, p3, p4, p5, p6, p7, p8, p9] = saved;
+    let [b0, b1] = bells.map(|on| f32::from(u8::from(on)));
+    let [hp_f, lp_f] = pass_freq;
+    let [hp_on, lp_on] = pass_on.map(|on| f32::from(u8::from(on)));
+    SOLID_EQ_MODULE.knob_model(&[
+        p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, b0, b1, hp_f, lp_f, hp_on, lp_on,
+    ])
 }
 
 /// The Solid Bus Comp's knobs: every move rebuilds the compressor from

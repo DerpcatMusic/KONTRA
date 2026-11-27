@@ -3,7 +3,7 @@
 //! the frames. Every value is computed by the same operations, in the same
 //! order, as frame by frame; only the order of independent work changes.
 
-use super::{Line, Network, Ring, Unit};
+use super::{Line, Network, Unit};
 use crate::fade::flush;
 
 /// The longest span; its scratch lives on the stack.
@@ -20,7 +20,7 @@ impl Line {
         let swing = self.depth.abs() * 1.01 + 1.0;
         let nearest = (self.base - swing).floor();
         let farthest = (self.base + swing).ceil() + 1.0;
-        if nearest < 1.0 || farthest >= self.ring.buf.len() as f32 {
+        if nearest < 1.0 || farthest >= self.ring.capacity() as f32 {
             1
         } else {
             nearest as usize
@@ -55,8 +55,8 @@ impl Network {
             for ((x, ring), (&v, &d)) in
                 (x.iter_mut().zip(&mut self.pre)).zip(input.iter().zip(&self.predelay))
             {
-                ring.put(w, v);
-                *x = ring.weighted(w, d);
+                ring.write_at(w, v);
+                *x = ring.read_linear_at(w, d.max(0.0));
             }
         }
         // Each line's reads, the input added behind them as a frame adds
@@ -75,7 +75,7 @@ impl Network {
             } else {
                 line.read(w0, n, swing, read);
                 line.ring
-                    .add_run(at, x.get(..n).unwrap_or_default(), line.inject);
+                    .add_slice_at(at, x.get(..n).unwrap_or_default(), line.inject);
             }
         }
         for (lines, reads) in self.lines.chunks_mut(4).zip(v.chunks_mut(4)) {
@@ -109,7 +109,7 @@ impl Network {
                     }
                 }
             }
-            line.ring.put_run(w0, u.get(..n).unwrap_or_default());
+            line.ring.write_slice_at(w0, u.get(..n).unwrap_or_default());
         }
         self.written = peak.into_iter().fold(0.0, |m, p| if p > m { p } else { m });
         // The taps, then each allpass unit over the span in turn (a unit's
@@ -172,7 +172,7 @@ impl Unit {
                 *z = if f == 0 {
                     z0
                 } else {
-                    ring.at(w0.wrapping_add(f), d)
+                    ring.read_offset_at(w0.wrapping_add(f), d)
                 };
             }
         }
@@ -194,7 +194,7 @@ impl Unit {
                     *p = p.max(v.abs());
                 }
             }
-            ring.put_run(w0, v);
+            ring.write_slice_at(w0, v);
         }
         *written = peak.into_iter().fold(*written, f32::max);
         let (q, r) = (self.q, self.r);
@@ -203,55 +203,16 @@ impl Unit {
         }
         let end = w0.wrapping_add(n);
         for ((z, ring), &d) in self.z.iter_mut().zip(&self.rings).zip(&self.d) {
-            *z = ring.at(end, d);
-        }
-    }
-}
-
-impl Ring {
-    /// The ring's stretch from `w` for `len` frames (`len` within the
-    /// ring), as the run up to its end and the rest from its start.
-    fn run_mut(&mut self, w: usize, len: usize) -> (&mut [f32], &mut [f32]) {
-        let start = w & self.mask;
-        let (wrapped, from) = self.buf.split_at_mut(start);
-        let head = len.min(from.len());
-        let tail = wrapped.get_mut(..len - head).unwrap_or_default();
-        (from.get_mut(..head).unwrap_or_default(), tail)
-    }
-
-    /// `vals` put at `w`, `w + 1`, …, as [`Ring::put`] one by one.
-    fn put_run(&mut self, w: usize, vals: &[f32]) {
-        let (head, tail) = self.run_mut(w, vals.len());
-        let (a, b) = vals.split_at(head.len());
-        for (s, v) in [(head, a), (tail, b)] {
-            for (s, &v) in s.iter_mut().zip(v) {
-                *s = v;
-            }
-        }
-    }
-
-    /// `vals · gain` added at `w`, `w + 1`, …, as [`Ring::add`] one by one.
-    fn add_run(&mut self, w: usize, vals: &[f32], gain: f32) {
-        let (head, tail) = self.run_mut(w, vals.len());
-        let (a, b) = vals.split_at(head.len());
-        for (s, v) in [(head, a), (tail, b)] {
-            for (s, &v) in s.iter_mut().zip(v) {
-                *s += v * gain;
-            }
+            *z = ring.read_offset_at(end, d);
         }
     }
 }
 
 impl Line {
-    /// The undamped reads of `n` frames from `w0`, as [`Ring::weighted`]
-    /// at `swing·depth + base`.
+    /// The undamped reads of `n` frames from `w0` at `swing·depth + base`.
     fn read(&self, w0: usize, n: usize, swing: &[f32; MAX], out: &mut [f32; MAX]) {
-        let (depth, base, mask) = (self.depth, self.base, self.ring.mask);
-        // The ring's length is `mask + 1`; said here, the masked loads below
-        // need no bounds checks.
-        let Some(buf) = self.ring.buf.get(..=mask) else {
-            return;
-        };
+        let (depth, base, mask) = (self.depth, self.base, self.ring.reach());
+        let buf = self.ring.as_slice();
         let d = swing.map(|s| s * depth + base);
         let i = d.map(|d| (d as i32).max(0));
         // The two neighbours of every frame first, then the blend as a
@@ -303,10 +264,11 @@ impl Line {
     ) {
         let frames = out.iter_mut().zip(swing.iter().zip(x)).take(n).enumerate();
         for (f, (out, (&swing, &x))) in frames {
-            *out = self
-                .ring
-                .weighted(w0.wrapping_add(f), swing * self.depth + self.base);
-            self.ring.add(at.wrapping_add(f), x * self.inject);
+            *out = self.ring.read_linear_at(
+                w0.wrapping_add(f),
+                (swing * self.depth + self.base).max(0.0),
+            );
+            self.ring.add_at(at.wrapping_add(f), x * self.inject);
         }
     }
 }

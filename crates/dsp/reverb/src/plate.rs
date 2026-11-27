@@ -135,19 +135,17 @@ impl Shelf {
     }
 }
 
-struct DelayLine {
-    buf: Box<[f32]>,
-    pos: usize,
+struct TankLine {
+    ring: kontra_dsp_core::FixedRing,
     gain: f32,
     low: Shelf,
     high: Shelf,
 }
 
-impl DelayLine {
+impl TankLine {
     fn new(len: usize) -> Self {
         Self {
-            buf: vec![0.0; len.max(1)].into_boxed_slice(),
-            pos: 0,
+            ring: kontra_dsp_core::FixedRing::new(len),
             gain: 0.0,
             low: Shelf::default(),
             high: Shelf::default(),
@@ -156,23 +154,16 @@ impl DelayLine {
 
     #[inline]
     fn read(&self) -> f32 {
-        self.buf.get(self.pos).copied().unwrap_or(0.0)
+        self.ring.read()
     }
 
     #[inline]
     fn write_advance(&mut self, x: f32) {
-        if let Some(slot) = self.buf.get_mut(self.pos) {
-            *slot = flush(x);
-        }
-        self.pos += 1;
-        if self.pos >= self.buf.len() {
-            self.pos = 0;
-        }
+        self.ring.write_advance(x);
     }
 
     fn reset(&mut self) {
-        self.buf.fill(0.0);
-        self.pos = 0;
+        self.ring.reset();
         self.low.reset();
         self.high.reset();
     }
@@ -185,7 +176,7 @@ pub struct Plate {
     er_ring: Box<[f32]>,
     er_pos: usize,
     er_offsets: [usize; ER_TAPS],
-    lines: Box<[DelayLine]>,
+    lines: Box<[TankLine]>,
     predelay: Box<[[f32; 2]]>,
     pre_write: usize,
     pre_frames: f32,
@@ -207,9 +198,9 @@ impl Plate {
         let max_er = ER_TIMES_S.iter().fold(0.0f32, |a, &b| a.max(b));
         let er_len = ((max_er * rate_f).ceil() as usize + 8).max(64);
         let er_offsets = ER_TIMES_S.map(|t| ((t * rate_f) as usize).clamp(1, er_len - 1));
-        let lines: Box<[DelayLine]> = LINE_TIMES_S
+        let lines: Box<[TankLine]> = LINE_TIMES_S
             .iter()
-            .map(|&t| DelayLine::new((t * rate_f).round().max(1.0) as usize))
+            .map(|&t| TankLine::new((t * rate_f).round().max(1.0) as usize))
             .collect();
         let pre_cap = ((MAX_PREDELAY_MS * 0.001 * rate_f).ceil() as usize + 4).max(16);
         let smooth = 1.0 - (-1.0 / (0.020 * rate_f)).exp();

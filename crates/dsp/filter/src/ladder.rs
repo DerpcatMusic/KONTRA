@@ -3,7 +3,7 @@
 //! (the clipped input and each pole). Its passband falls `1/(1 + 4.16 q)`
 //! as resonance rises, and each selector's compensation curve lifts it back.
 //!
-//! The law is Kontakt 8's Ladder core [ref]: feedback scale 4.16, the tan series `((40.80263 w² + 10.335426) w² + π) w`
+//! The law is the reference Ladder core [ref]: feedback scale 4.16, the tan series `((40.80263 w² + 10.335426) w² + π) w`
 //! for the pole gain clamped at 8, the ±24 clamp then `v (1 − |v|/48)`
 //! clip, tap weights [ref] and compensation knots/values
 //! [ref] (all twelve rows read from the binary).
@@ -216,7 +216,7 @@ impl Ladder {
 mod tests {
     use super::*;
 
-    /// Kontakt's Ladder (cutoff knob 0.4997, about 717 Hz, gain 0) in dB
+    /// Reference Ladder (cutoff knob 0.4997, about 717 Hz, gain 0) in dB
     /// against bypass at 200, 500, 1000, 2000 and 5000 Hz, per selector and
     /// resonance knob (docs/re captures, v2 ladder_kernel.rs).
     const MEASURED: [(u8, f64, [f64; 5]); 6] = [
@@ -249,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn the_taps_match_kontakts_measured_responses() {
+    fn the_taps_match_reference_measured_responses() {
         for (taps, r, expected) in MEASURED {
             for (hz, want) in [200.0, 500.0, 1000.0, 2000.0, 5000.0]
                 .into_iter()

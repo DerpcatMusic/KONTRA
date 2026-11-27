@@ -157,34 +157,28 @@ pub fn saved(version: u16, public: &[u8]) -> Option<[f32; 15]> {
     if version != 0x51 || public.len() < 66 {
         return None;
     }
-    let f = |offset: usize| {
-        let bytes = public.get(offset..offset + 4)?.try_into().ok()?;
-        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
-    };
-    let i = |offset: usize| {
-        Some(i32::from_le_bytes(
-            public.get(offset..offset + 4)?.try_into().ok()?,
-        ))
-    };
-    let amount = f(0)?;
-    // Native [ref] ([ref] = 97.0f): `clamp(trunc(97 * pitch_norm), 0, 96)`.
-    let pitch = (97.0 * f(4)?.clamp(0.0, 1.0)).trunc().clamp(0.0, 96.0);
-    let rate = f(8)?;
-    let width = f(12)?;
-    let mix = f(16)?;
-    let voices = f(20)?;
-    let feedback = f(24)?;
-    let damping = f(28)?;
-    let detune = f(32)?;
-    let offset = f(36)?;
-    let invert = if *public.get(40)? != 0 { 1.0 } else { 0.0 };
-    let mode = i(41)?;
-    let scan_mode = i(45)?;
-    let chord = i(49)?;
+    let mut cur = crate::module::Cursor::new(public);
+    let [
+        amount,
+        pitch_norm,
+        rate,
+        width,
+        mix,
+        voices,
+        feedback,
+        damping,
+        detune,
+        offset,
+    ] = cur.f32_array()?;
+    let pitch = (97.0 * pitch_norm.clamp(0.0, 1.0)).trunc().clamp(0.0, 96.0);
+    let invert = crate::module::bool_f(cur.bool()?);
+    let mode = cur.i32()?;
+    let scan_mode = cur.i32()?;
+    let chord = cur.i32()?;
     if !(0..=2).contains(&mode) || !(0..=2).contains(&scan_mode) || !(0..=23).contains(&chord) {
         return None;
     }
-    let unit = if f(53)? > 1e-9 { 1.0 } else { 0.0 };
+    let unit = crate::module::bool_f(cur.f32()? > 1e-9);
     Some([
         mode as f32,
         chord as f32,
@@ -226,49 +220,29 @@ pub fn model() -> ir::KnobModel {
     model_from(INIT)
 }
 
-/// What `$EFFECT_TYPE_FLAIR` (42) loads, as Morphology Evolved, Conflux
-/// and Shreddage load it: [`INIT`], every knob through [`model`].
+/// What `$EFFECT_TYPE_FLAIR` (42) loads: [`INIT`], every knob through [`model`].
 pub fn slot_type() -> ir::SlotType {
-    let effect = ir::Effect {
-        kind: flair(INIT),
-        bypass: false,
-        output: 1.0,
-        dry: 0.0,
-    };
-    ir::SlotType {
-        id: 42,
-        subtype: false,
-        reads: 0,
-        kind: 42,
-        effect: Some(effect),
-        laws: [].into(),
-        model: Some(model()),
-    }
+    MODULE.slot_type(&INIT)
 }
 
-/// The KSP names of [`model`]'s knobs but the unit (see the module docs): a
-/// straight 0..1 for the continuous ones; mode, chord, pitch (a note) and
-/// the switches are raw.
+/// The KSP names of [`model`]'s knobs (excluding the rate unit).
 pub fn rows() -> [(&'static str, ir::KnobTarget, ir::Law); 14] {
-    use ir::KnobTarget::Slot;
-    use ir::SlotKnob::Knob;
-    let unit = || ir::Law::Linear { lo: 0.0, hi: 1.0 };
-    let raw = || ir::Law::Linear { lo: 0.0, hi: 1e6 };
+    use crate::module::{RAW_LAW, UNIT_LAW, knob_row};
     [
-        ("$ENGINE_PAR_FLAIR_MODE", Slot(Knob(0)), raw()),
-        ("$ENGINE_PAR_FLAIR_CHORD", Slot(Knob(1)), raw()),
-        ("$ENGINE_PAR_FLAIR_INVERT_PHASE", Slot(Knob(2)), raw()),
-        ("$ENGINE_PAR_FLAIR_RATE", Slot(Knob(3)), unit()),
-        ("$ENGINE_PAR_FLAIR_FEEDBACK", Slot(Knob(5)), unit()),
-        ("$ENGINE_PAR_FLAIR_AMOUNT", Slot(Knob(6)), unit()),
-        ("$ENGINE_PAR_FLAIR_WIDTH", Slot(Knob(7)), unit()),
-        ("$ENGINE_PAR_FLAIR_PITCH", Slot(Knob(8)), raw()),
-        ("$ENGINE_PAR_FLAIR_DAMPING", Slot(Knob(9)), unit()),
-        ("$ENGINE_PAR_FLAIR_VOICES", Slot(Knob(10)), unit()),
-        ("$ENGINE_PAR_FLAIR_DETUNE", Slot(Knob(11)), unit()),
-        ("$ENGINE_PAR_FLAIR_MIX", Slot(Knob(12)), unit()),
-        ("$ENGINE_PAR_FLAIR_OFFSET", Slot(Knob(13)), unit()),
-        ("$ENGINE_PAR_FLAIR_SCANMODE", Slot(Knob(14)), raw()),
+        knob_row("$ENGINE_PAR_FLAIR_MODE", 0, RAW_LAW),
+        knob_row("$ENGINE_PAR_FLAIR_CHORD", 1, RAW_LAW),
+        knob_row("$ENGINE_PAR_FLAIR_INVERT_PHASE", 2, RAW_LAW),
+        knob_row("$ENGINE_PAR_FLAIR_RATE", 3, UNIT_LAW),
+        knob_row("$ENGINE_PAR_FLAIR_FEEDBACK", 5, UNIT_LAW),
+        knob_row("$ENGINE_PAR_FLAIR_AMOUNT", 6, UNIT_LAW),
+        knob_row("$ENGINE_PAR_FLAIR_WIDTH", 7, UNIT_LAW),
+        knob_row("$ENGINE_PAR_FLAIR_PITCH", 8, RAW_LAW),
+        knob_row("$ENGINE_PAR_FLAIR_DAMPING", 9, UNIT_LAW),
+        knob_row("$ENGINE_PAR_FLAIR_VOICES", 10, UNIT_LAW),
+        knob_row("$ENGINE_PAR_FLAIR_DETUNE", 11, UNIT_LAW),
+        knob_row("$ENGINE_PAR_FLAIR_MIX", 12, UNIT_LAW),
+        knob_row("$ENGINE_PAR_FLAIR_OFFSET", 13, UNIT_LAW),
+        knob_row("$ENGINE_PAR_FLAIR_SCANMODE", 14, RAW_LAW),
     ]
 }
 

@@ -65,11 +65,9 @@ pub fn saved(version: u16, public: &[u8]) -> Option<(f32, [f32; 4])> {
     if version != 0x50 {
         return None;
     }
-    let f = |n: usize| {
-        let bytes = public.get(4 * n..4 * n + 4)?.try_into().ok()?;
-        Some(f32::from_le_bytes(bytes)).filter(|v| v.is_finite())
-    };
-    Some((f(0)?, [f(1)?, f(3)?, f(2)?, f(4)?]))
+    let [predelay, size, stereo, colour, damping] =
+        crate::module::Cursor::new(public).f32_array()?;
+    Some((predelay, [size, colour, stereo, damping]))
 }
 
 /// Builds the legacy Reverb IR in physical units. `predelay_ms` is preserved up to

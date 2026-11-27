@@ -7,3 +7,5 @@ mod stereo_detune;
 pub use ringmod::{Ring, RingMod, Source as RingSource};
 pub use rotator::{Rotary, RotarySettings};
 pub use stereo_detune::{StereoDetune, StereoDetuneSettings};
+
+kontra_dsp_core::impl_dsp_core!(Ring, StereoDetune);

@@ -310,6 +310,142 @@ pub fn i32_le(bytes: &[u8], at: usize) -> Option<i32> {
     Some(i32::from_le_bytes(raw))
 }
 
+/// Reads a boolean byte at offset `at` (`!= 0`).
+#[must_use]
+#[inline]
+pub fn flag_at(bytes: &[u8], at: usize) -> Option<bool> {
+    bytes.get(at).map(|&b| b != 0)
+}
+
+/// Encodes a boolean as a `0.0` / `1.0` knob value.
+#[must_use]
+#[inline]
+pub const fn bool_f(b: bool) -> f32 {
+    if b { 1.0 } else { 0.0 }
+}
+
+/// Clamps `x` to `[0.0, 1.0]`.
+#[must_use]
+#[inline]
+pub fn unit(x: f32) -> f32 {
+    x.clamp(0.0, 1.0)
+}
+
+/// Maps a normalized `0..=1` EQ knob symmetrically onto `[-span, +span]` dB.
+#[must_use]
+#[inline]
+pub fn eq_db(x: f32, span: f32) -> f32 {
+    (unit(x) * 2.0 - 1.0) * span
+}
+
+/// Exponential sweep across `[lo, hi]` for normalized `x` in `0..=1`.
+#[must_use]
+#[inline]
+pub fn exp_range(x: f32, lo: f32, hi: f32) -> f32 {
+    lo * (hi / lo).powf(unit(x))
+}
+
+/// Sequential little-endian byte reader for saved Kontakt effect records.
+pub struct Cursor<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Cursor<'a> {
+    #[must_use]
+    #[inline]
+    pub const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, pos: 0 }
+    }
+
+    #[inline]
+    pub fn f32(&mut self) -> Option<f32> {
+        let v = f32_le(self.bytes, self.pos)?;
+        self.pos += 4;
+        Some(v)
+    }
+
+    #[inline]
+    pub fn i32(&mut self) -> Option<i32> {
+        let v = i32_le(self.bytes, self.pos)?;
+        self.pos += 4;
+        Some(v)
+    }
+
+    #[inline]
+    pub fn bool(&mut self) -> Option<bool> {
+        let v = flag_at(self.bytes, self.pos)?;
+        self.pos += 1;
+        Some(v)
+    }
+
+    #[inline]
+    pub fn f32_array<const N: usize>(&mut self) -> Option<[f32; N]> {
+        let mut out = [0.0f32; N];
+        for slot in &mut out {
+            *slot = self.f32()?;
+        }
+        Some(out)
+    }
+}
+
+/// Field type supported by [`crate::define_effect!`] for knob round-tripping
+/// and sequential saved-record decoding.
+pub trait KnobField: Copy {
+    const DEFAULT_LAW: ir::Law;
+    fn to_knob(self) -> f32;
+    fn from_knob(v: f32) -> Self;
+    fn read_saved(cur: &mut Cursor<'_>) -> Option<Self>;
+}
+
+impl KnobField for f32 {
+    const DEFAULT_LAW: ir::Law = UNIT_LAW;
+    #[inline]
+    fn to_knob(self) -> f32 {
+        self
+    }
+    #[inline]
+    fn from_knob(v: f32) -> Self {
+        v
+    }
+    #[inline]
+    fn read_saved(cur: &mut Cursor<'_>) -> Option<Self> {
+        cur.f32()
+    }
+}
+
+impl KnobField for bool {
+    const DEFAULT_LAW: ir::Law = RAW_LAW;
+    #[inline]
+    fn to_knob(self) -> f32 {
+        bool_f(self)
+    }
+    #[inline]
+    fn from_knob(v: f32) -> Self {
+        v >= 0.5
+    }
+    #[inline]
+    fn read_saved(cur: &mut Cursor<'_>) -> Option<Self> {
+        cur.bool()
+    }
+}
+
+impl KnobField for i32 {
+    const DEFAULT_LAW: ir::Law = RAW_LAW;
+    #[inline]
+    fn to_knob(self) -> f32 {
+        self as f32
+    }
+    #[inline]
+    fn from_knob(v: f32) -> Self {
+        v.round() as i32
+    }
+    #[inline]
+    fn read_saved(cur: &mut Cursor<'_>) -> Option<Self> {
+        cur.i32()
+    }
+}
+
 /// Normalized `0..=1` KSP knob law.
 pub const UNIT_LAW: ir::Law = ir::Law::Linear { lo: 0.0, hi: 1.0 };
 
@@ -324,6 +460,125 @@ pub const fn knob_row(
     law: ir::Law,
 ) -> (&'static str, ir::KnobTarget, ir::Law) {
     (name, ir::KnobTarget::Slot(ir::SlotKnob::Knob(slot)), law)
+}
+
+/// Declares a single-encoding Kontakt effect module (`struct`, `INIT`/`FRESH`,
+/// `MODULE`, `model`, `slot_type`, `rows`, and optional sequential `saved`)
+/// from one field table.
+///
+/// Field entries support three forms:
+/// - `(name: ty = init, "$ENGINE_PAR_...")` — KSP row using `ty::DEFAULT_LAW`
+/// - `(name: ty = init, "$ENGINE_PAR_...", custom_law)` — KSP row with explicit law
+/// - `(name: ty = init)` — saved/model field without a KSP row
+#[macro_export]
+macro_rules! define_effect {
+    // Internal helper: count exposed KSP rows.
+    (@count_rows ) => { 0usize };
+    (@count_rows ($f:ident : $ty:ty = $init:expr, $par:literal $(, $law:expr)?) $($rest:tt)*) => {
+        1usize + $crate::define_effect!(@count_rows $($rest)*)
+    };
+    (@count_rows ($f:ident : $ty:ty = $init:expr) $($rest:tt)*) => {
+        $crate::define_effect!(@count_rows $($rest)*)
+    };
+
+    // Internal helper: construct compile-time indexed `rows()` array.
+    (@rows $idx:expr; [$($acc:expr,)*]; ) => { [$($acc),*] };
+    (@rows $idx:expr; [$($acc:expr,)*]; ($f:ident : $ty:ty = $init:expr, $par:literal, $law:expr) $($rest:tt)*) => {
+        $crate::define_effect!(@rows ($idx + 1u8); [$($acc,)* $crate::module::knob_row($par, $idx, $law),]; $($rest)*)
+    };
+    (@rows $idx:expr; [$($acc:expr,)*]; ($f:ident : $ty:ty = $init:expr, $par:literal) $($rest:tt)*) => {
+        $crate::define_effect!(@rows ($idx + 1u8); [$($acc,)* $crate::module::knob_row($par, $idx, <$ty as $crate::module::KnobField>::DEFAULT_LAW),]; $($rest)*)
+    };
+    (@rows $idx:expr; [$($acc:expr,)*]; ($f:ident : $ty:ty = $init:expr) $($rest:tt)*) => {
+        $crate::define_effect!(@rows ($idx + 1u8); [$($acc,)*]; $($rest)*)
+    };
+
+    // Internal helper: optional sequential `saved(version, public)` reader.
+    (@saved $Struct:ident; ; $($field:ident : $ty:ty),*) => {};
+    (@saved $Struct:ident; $saved_ver:expr; $($field:ident : $ty:ty),*) => {
+        #[must_use]
+        pub fn saved(version: u16, public: &[u8]) -> Option<$Struct> {
+            if version != $saved_ver {
+                return None;
+            }
+            let mut cur = $crate::module::Cursor::new(public);
+            Some($Struct {
+                $( $field: <$ty as $crate::module::KnobField>::read_saved(&mut cur)?, )*
+            })
+        }
+    };
+
+    // Main entry point.
+    (
+        struct $Struct:ident,
+        init: $InitName:ident,
+        id: $id:expr,
+        module_id: $module_id:expr,
+        versions: $versions:expr,
+        name: $name:literal,
+        script_type: $script_type:expr,
+        mix: $mix:expr,
+        $(saved: $saved_ver:expr,)?
+        build: $build_fn:expr,
+        fields: [
+            $( ( $field:ident : $ty:ty = $init:expr $(, $par:literal $(, $law:expr)?)? ) ),* $(,)?
+        ]
+    ) => {
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        pub struct $Struct {
+            $( pub $field: $ty, )*
+        }
+
+        pub const $InitName: $Struct = $Struct {
+            $( $field: $init, )*
+        };
+
+        $crate::define_effect!(@saved $Struct; $($saved_ver)?; $($field : $ty),*);
+
+        pub static MODULE: $crate::module::Module = $crate::module::Module {
+            id: $id,
+            module_id: $module_id,
+            versions: $versions,
+            name: $name,
+            script_type: $script_type,
+            mix: $mix,
+            knobs: $crate::module::KNOBS
+                .split_at($crate::define_effect!(@count_rows $( ($field : $ty = $init $(, $par $(, $law)?)?) )*))
+                .0,
+            build: |v| {
+                let [$($field),*] = *v else {
+                    return None;
+                };
+                let s = $Struct {
+                    $( $field: <$ty as $crate::module::KnobField>::from_knob($field), )*
+                };
+                let f: fn($Struct) -> kontra_ir::EffectKind = $build_fn;
+                Some(f(s))
+            },
+        };
+
+        #[must_use]
+        pub fn model(s: $Struct) -> kontra_ir::KnobModel {
+            MODULE.knob_model(&[
+                $( <$ty as $crate::module::KnobField>::to_knob(s.$field), )*
+            ])
+        }
+
+        #[must_use]
+        pub fn slot_type() -> kontra_ir::SlotType {
+            MODULE.slot_type_model(model($InitName))
+        }
+
+        #[must_use]
+        pub fn rows() -> [(&'static str, kontra_ir::KnobTarget, kontra_ir::Law);
+            $crate::define_effect!(@count_rows $( ($field : $ty = $init $(, $par $(, $law)?)?) )*)
+        ] {
+            $crate::define_effect!(
+                @rows 0u8; [];
+                $( ($field : $ty = $init $(, $par $(, $law)?)?) )*
+            )
+        }
+    };
 }
 
 #[cfg(test)]
